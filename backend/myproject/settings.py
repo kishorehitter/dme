@@ -14,6 +14,7 @@ Install requirements:
 from logging import config
 from pathlib import Path
 from datetime import timedelta
+import dj_database_url
 import os
 
 import environ
@@ -110,22 +111,12 @@ TEMPLATES = [
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
-if IS_DEVELOPMENT:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
-else:
-    # Production — DATABASE_URL set by Render automatically
-    # e.g. DATABASE_URL=postgres://user:pass@host:5432/dbname
-    DATABASES = {
-        'default': env.db('DATABASE_URL')   # django-environ parses the full URL
-    }
-    # Force SSL in production
-    DATABASES['default']['OPTIONS'] = {'sslmode': 'require'}
-
+DATABASES = {
+    'default': dj_database_url.config(
+        default=env('DATABASE_URL', default='sqlite:///db.sqlite3'),
+        conn_max_age=600,
+    )
+}
 # ─── Custom User Model ────────────────────────────────────────────────────────
 
 AUTH_USER_MODEL = 'accounts.User'

@@ -11,22 +11,20 @@ class NotificationsConfig(AppConfig):
 
     def ready(self):
         # Initialize Firebase Admin SDK
-        firebase_config = getattr(settings, 'FIREBASE_CONFIG', None)
-        firebase_cert_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', None)
+        import json
+        import os
+        from firebase_admin import credentials
+        import firebase_admin
 
-        if firebase_cert_path and os.path.exists(firebase_cert_path):
+        firebase_json = os.environ.get('FIREBASE_CREDENTIALS')
+
+        if firebase_json:
             try:
-                cred = credentials.Certificate(firebase_cert_path)
+                cred_dict = json.loads(firebase_json)
+                cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
-            except ValueError:
-                # App already initialized
-                pass
-        elif firebase_config:
-            try:
-                cred = credentials.Certificate(firebase_config)
-                firebase_admin.initialize_app(cred)
-            except ValueError:
-                # App already initialized
-                pass
+                print("Firebase Admin SDK initialized successfully.")
+            except Exception as e:
+                print(f"Warning: Failed to initialize Firebase: {e}")
         else:
-            print("Warning: Firebase credentials not configured. FCM notifications will not work.")
+            print("Warning: FIREBASE_CREDENTIALS not configured in environment variables.")

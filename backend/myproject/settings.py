@@ -263,15 +263,29 @@ else:
 
 # ─── Firebase ─────────────────────────────────────────────────────────────────
 
-# Option A: path to a service-account JSON file (local dev)
-FIREBASE_CREDENTIALS_PATH = env(
-    'FIREBASE_CREDENTIALS_PATH',
-    default=str(BASE_DIR / 'firebase-service-account.json'),
-)
+FIREBASE_CREDENTIALS_JSON = env.json('FIREBASE_CREDENTIALS', default=None)
 
-# Option B: individual fields from environment (recommended for Render / CI)
-# Set FIREBASE_TYPE, FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY, etc. in your env.
-# Your notifications app should prefer env vars over the file when they are set.
+if FIREBASE_CREDENTIALS_JSON:
+    # If you set FIREBASE_CREDENTIALS as a JSON string (all keys in one variable)
+    import json
+    firebase_creds = json.loads(FIREBASE_CREDENTIALS_JSON)
+else:
+    # Or build from individual fields
+    firebase_creds = {
+        "type": env("FIREBASE_TYPE", default="service_account"),
+        "project_id": env("FIREBASE_PROJECT_ID"),
+        "private_key_id": env("FIREBASE_PRIVATE_KEY_ID"),
+        "private_key": env("FIREBASE_PRIVATE_KEY").replace('\\n', '\n'),
+        "client_email": env("FIREBASE_CLIENT_EMAIL"),
+        "client_id": env("FIREBASE_CLIENT_ID"),
+        "auth_uri": env("FIREBASE_AUTH_URI", default="https://accounts.google.com/o/oauth2/auth"),
+        "token_uri": env("FIREBASE_TOKEN_URI", default="https://oauth2.googleapis.com/token"),
+        "auth_provider_x509_cert_url": env("FIREBASE_AUTH_PROVIDER_X509_CERT_URL", default="https://www.googleapis.com/oauth2/v1/certs"),
+        "client_x509_cert_url": env("FIREBASE_CLIENT_X509_CERT_URL"),
+        "universe_domain": env("FIREBASE_UNIVERSE_DOMAIN", default="googleapis.com"),
+    }
+
+FIREBASE_CREDENTIALS = firebase_creds
 
 # ─── Logging (production) ─────────────────────────────────────────────────────
 

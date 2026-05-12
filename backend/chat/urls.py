@@ -19,10 +19,14 @@ from .views import (
     DeleteConversationView,
     StatusViewersListView,
     ConversationUpdateProfileView,
+    HealthCheckView,
 )
-from .status_views import StatusViewSet
+# ... (rest of imports)
 
-router = DefaultRouter()
+urlpatterns = [
+    path('health/', HealthCheckView.as_view(), name='health-check'),
+    path('', include(router.urls)),
+# ... (rest of urlpatterns)
 router.register(r'conversations', ConversationViewSet, basename='conversation')
 router.register(r'statuses', StatusViewSet, basename='status')
 

@@ -9,6 +9,13 @@ from django.db.models import Q, Max
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+class HealthCheckView(APIView):
+    """Simple ping endpoint for keep-alive."""
+    permission_classes = [] # Allow anyone to ping
+
+    def get(self, request):
+        return Response({'status': 'ok'}, status=status.HTTP_200_OK)
+
 from .models import Conversation, ConversationParticipant, Message, MessageReaction, Status
 from .serializers import (
     ConversationSerializer,

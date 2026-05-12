@@ -1,0 +1,34 @@
+# --- Python / Django Backend ---
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+backend/logs.txt
+backend/media/
+backend/db.sqlite3
+backend/.env
+backend/firebase-service-account.json
+
+# --- React Native / Frontend ---
+DME/node_modules/
+DME/.expo/
+DME/dist/
+DME/build/
+DME/.gradle/
+DME/android/app/build/
+DME/android/.gradle/
+DME/android/local.properties
+DME/ios/build/
+DME/ios/Pods/
+DME/.DS_Store
+DME/*.keystore
+DME/android/app/debug.keystore
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+Thumbs.db
+.DS_Store

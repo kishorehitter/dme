@@ -1,0 +1,6 @@
+.env
+.env.*
+*.key
+*.pem
+db.sqlite3
+secrets.py

@@ -27,8 +27,7 @@ class UserSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             if request:
                 return request.build_absolute_uri(obj.profile_picture.url)
-            # Fallback to hardcoded URL if request not available
-            return f'http://10.190.93.197:8000{obj.profile_picture.url}'
+            return obj.profile_picture.url
         return None
 
 
@@ -116,6 +115,5 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             if request:
                 return request.build_absolute_uri(obj.profile_picture.url)
-            # Fallback to hardcoded URL if request not available
-            return f'http://10.190.93.197:8000{obj.profile_picture.url}'
+            return obj.profile_picture.url
         return None

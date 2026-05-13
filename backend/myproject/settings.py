@@ -111,12 +111,24 @@ TEMPLATES = [
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
-DATABASES = {
-    'default': dj_database_url.config(
-        default=env('DATABASE_URL', default='sqlite:///db.sqlite3'),
-        conn_max_age=600,
-    )
-}
+# ─── Database ─────────────────────────────────────────────────────────────────
+if DEBUG:
+    # Local development – SQLite
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+    # Production – PostgreSQL via DATABASE_URL
+    import dj_database_url
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=env('DATABASE_URL'),   # must be set in production
+            conn_max_age=600,
+        )
+    }
 # ─── Custom User Model ────────────────────────────────────────────────────────
 
 AUTH_USER_MODEL = 'accounts.User'

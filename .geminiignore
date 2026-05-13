@@ -1,6 +1,7 @@
 .env
 .env.*
 *.key
+*.keystore
 *.pem
 db.sqlite3
 secrets.py

@@ -23,7 +23,7 @@ class Conversation(models.Model):
         null=True,
         blank=True
     )
-    profile_picture = models.ImageField(upload_to='conversation_pics/', blank=True, null=True)
+    profile_picture = models.ImageField(upload_to='conversation_pics/', max_length=255, blank=True, null=True)
     
     class Meta:
         ordering = ['-updated_at']
@@ -110,8 +110,8 @@ class Message(models.Model):
     )
     content = models.TextField(blank=True)  # Empty for media-only messages
     message_type = models.CharField(max_length=20, choices=MESSAGE_TYPE_CHOICES, default='text')
-    media_file = models.FileField(upload_to='chat_media/', blank=True, null=True)
-    thumbnail = models.ImageField(upload_to='chat_thumbnails/', blank=True, null=True)
+    media_file = models.FileField(upload_to='chat_media/', max_length=255, blank=True, null=True)
+    thumbnail = models.ImageField(upload_to='chat_thumbnails/', max_length=255, blank=True, null=True)
     reply_to = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
@@ -191,7 +191,7 @@ class Status(models.Model):
       choices=[('photo', 'Photo'), ('video', 'Video')],
       default='photo',
     )
-    media_file = models.FileField(upload_to='status_media/')
+    media_file = models.FileField(upload_to='status_media/', max_length=255)
     caption = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     

@@ -41,7 +41,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True, help_text="Unique username for search")
     # phone_number = models.CharField(max_length=20, blank=True, null=True)
-    profile_picture = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
+    profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True)
     avatar_sticker = models.CharField(max_length=10, blank=True, null=True, help_text="Emoji avatar sticker")
     display_name = models.CharField(max_length=100, blank=True, null=True, help_text="Public profile name (can include emojis)")
     bio = models.CharField(max_length=255, blank=True, default='Hey there! I am using DME')

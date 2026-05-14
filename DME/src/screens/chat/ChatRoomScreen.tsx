@@ -583,24 +583,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const requestPermission = async (): Promise<boolean> => {
-    if (Platform.OS !== 'android') return true;
-    try {
-      const r = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        {
-          title: 'Microphone',
-          message: 'Needed to record voice messages.',
-          buttonNeutral: 'Ask Later',
-          buttonNegative: 'Cancel',
-          buttonPositive: 'OK',
-        },
-      );
-      if (r === PermissionsAndroid.RESULTS.GRANTED) return true;
-      setShowPermissionModal(true);
-      return false;
-    } catch {
-      return false;
+    const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.MICROPHONE : PERMISSIONS.ANDROID.RECORD_AUDIO;
+    const status = await check(perm);
+    
+    if (status === RESULTS.GRANTED) return true;
+    
+    if (status === RESULTS.DENIED) {
+      const result = await request(perm);
+      return result === RESULTS.GRANTED;
     }
+    
+    if (status === RESULTS.BLOCKED) {
+      Alert.alert('Permission Blocked', 'Microphone access is blocked. Please enable it in Settings.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Settings', onPress: () => openSettings() }
+      ]);
+    }
+    return false;
   };
 
   const loadConversationDetails = async () => {
@@ -1349,22 +1348,20 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onShouldBlockNativeResponder: () => true,
-      onPanResponderGrant: () => {
+      onPanResponderGrant: async () => {
         isHoldingRef.current = true;
         if (isRecordingRef.current) return;
-        PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        ).then(ok => {
-          if (!ok) {
-            isHoldingRef.current = false;
-            requestPermission();
-            return;
-          }
-          if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-          holdTimerRef.current = setTimeout(() => {
-            if (isHoldingRef.current) startRecordingProcess();
-          }, 1000);
-        });
+        
+        const ok = await requestPermission();
+        if (!ok) {
+          isHoldingRef.current = false;
+          return;
+        }
+
+        if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = setTimeout(() => {
+          if (isHoldingRef.current) startRecordingProcess();
+        }, 1000);
       },
       onPanResponderMove: (_, g) => {
         if (!isRecordingRef.current) return;
@@ -1446,11 +1443,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               messageWithDuration,
               ...(Array.isArray(prev) ? prev : []),
             ]);
-            Toast.show({
-              type: 'success',
-              text1: 'Voice sent',
-              position: 'bottom',
-            });
             res(nm);
           } else {
             console.error('Upload failed:', xhr.status, xhr.responseText);

@@ -57,7 +57,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   navigation,
   route,
 }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const viewingOtherProfile = route?.params?.user;
   const isReadOnly = !!viewingOtherProfile; // Read-only mode when viewing other users
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -361,47 +361,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
-  const compressImage = async (uri: string): Promise<string | null> => {
-    return new Promise(resolve => {
-      const img = new Image();
-      img.src = uri;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-
-        const maxSize = 800;
-        if (width > maxSize || height > maxSize) {
-          if (width > height) {
-            height = (height * maxSize) / width;
-            width = maxSize;
-          } else {
-            width = (width * maxSize) / height;
-            height = maxSize;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-        const estimatedSize = (compressedDataUrl.length * 3) / 4;
-
-        if (estimatedSize > 50000) {
-          const finalDataUrl = canvas.toDataURL('image/jpeg', 0.5);
-          resolve(finalDataUrl);
-        } else {
-          resolve(compressedDataUrl);
-        }
-      };
-      img.onerror = () => {
-        resolve(null);
-      };
-    });
-  };
-
   const pickImage = async () => {
     try {
       const result = await launchImageLibrary({
@@ -409,34 +368,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         maxWidth: 800,
         maxHeight: 800,
         quality: 0.7,
-        includeBase64: true,
       });
 
-      if (result.didCancel) {
-        return;
-      }
-
-      if (result.errorCode) {
-        Alert.alert('Error', result.errorMessage || 'Failed to pick image');
-        return;
-      }
+      if (result.didCancel || result.errorCode) return;
 
       const asset = result.assets?.[0];
-      if (asset?.base64) {
-        const base64Image = `data:${asset.type};base64,${asset.base64}`;
-        const estimatedSize = (asset.base64.length * 3) / 4;
-
+      if (asset?.uri) {
         setIsUploadingImage(true);
-
-        let imageToUpload = base64Image;
-        if (estimatedSize > 50000) {
-          const compressedImage = await compressImage(asset.uri || '');
-          if (compressedImage) {
-            imageToUpload = compressedImage;
-          }
-        }
-
-        await uploadProfilePicture(imageToUpload);
+        await uploadProfilePicture(asset);
         setIsUploadingImage(false);
       }
     } catch (error) {
@@ -446,18 +385,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
-  const uploadProfilePicture = async (imageData: string) => {
+  const uploadProfilePicture = async (asset: any) => {
     try {
       const token = await AsyncStorage.getItem('access_token');
-
       const formDataUpload = new FormData();
+      
       formDataUpload.append('profile_picture', {
-        uri: imageData,
-        type: 'image/jpeg',
-        name: 'profile.jpg',
+        uri: asset.uri,
+        type: asset.type || 'image/jpeg',
+        name: asset.fileName || 'profile.jpg',
       } as any);
-      // Clear avatar sticker when uploading image
-      formDataUpload.append('avatar_sticker', '');
+      
+      // Explicitly send null or empty for sticker to signal removal
+      formDataUpload.append('avatar_sticker', ''); 
 
       const response = await fetch(
         getApiUrl('accounts/profile/update/'),
@@ -465,6 +405,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           method: 'PATCH',
           headers: {
             Authorization: `Bearer ${token}`,
+            'Content-Type': 'multipart/form-data',
           },
           body: formDataUpload,
         },
@@ -472,14 +413,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
       if (response.ok) {
         const data = await response.json();
-        setProfile(data);
-        Alert.alert('Success', 'Profile picture updated successfully');
+        // Add cache-buster to the profile picture URL
+        const freshData = { ...data, profile_picture: data.profile_picture ? `${data.profile_picture}?t=${Date.now()}` : null };
+        setProfile(freshData);
+        await refreshUser(); // Sync AuthContext
+        Toast.show({ type: 'success', text1: 'Profile picture updated' });
       } else {
         const errorData = await response.json().catch(() => ({}));
-        Alert.alert(
-          'Error',
-          errorData.message || 'Failed to update profile picture',
-        );
+        Alert.alert('Error', errorData.message || 'Failed to update profile picture');
       }
     } catch (error) {
       console.error('Error uploading image:', error);
@@ -510,6 +451,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       if (response.ok) {
         const data = await response.json();
         setProfile(data);
+        await refreshUser(); // Sync AuthContext
         setShowStickerModal(false);
         Alert.alert('Success', 'Avatar sticker updated successfully');
       } else {

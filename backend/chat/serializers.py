@@ -30,9 +30,11 @@ class UserMinimalSerializer(serializers.ModelSerializer):
         """Return full URL for profile picture."""
         if obj.profile_picture:
             request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.profile_picture.url)
-            return obj.profile_picture.url
+            url = request.build_absolute_uri(obj.profile_picture.url) if request else obj.profile_picture.url
+            # Add a timestamp to bypass client-side caching
+            # User model has 'last_seen' which is updated on activity
+            timestamp = int(obj.last_seen.timestamp()) if hasattr(obj, 'last_seen') and obj.last_seen else 0
+            return f"{url}?t={timestamp}"
         return None
 
 
@@ -108,12 +110,13 @@ class MessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(source='sender.id', read_only=True)
     reply_to = serializers.SerializerMethodField()
     reactions = serializers.SerializerMethodField()
+    media_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = (
             'id', 'conversation', 'sender', 'sender_id', 'content', 'message_type',
-            'media_file', 'thumbnail', 'is_read', 'delivered_at', 'is_deleted', 'created_at', 'edited_at',
+            'media_file', 'media_url', 'thumbnail', 'is_read', 'delivered_at', 'is_deleted', 'created_at', 'edited_at',
             'reply_to', 'reactions', 'audio_duration'
         )
         read_only_fields = ('id', 'conversation', 'sender', 'sender_id', 'is_read', 'delivered_at', 'is_deleted', 'created_at', 'edited_at', 'audio_duration')
@@ -141,6 +144,15 @@ class MessageSerializer(serializers.ModelSerializer):
         for reaction in obj.reactions.all():
             reactions[str(reaction.user.id)] = reaction.emoji
         return reactions
+
+    def get_media_url(self, obj):
+        """Return full absolute URL for media file."""
+        if obj.media_file:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.media_file.url)
+            return obj.media_file.url
+        return None
 
     def create(self, validated_data):
         # Handle media file upload
@@ -318,7 +330,8 @@ class ConversationListSerializer(serializers.ModelSerializer):
             return None
         other = obj.participants.exclude(user=request.user).select_related('user').first()
         if other:
-            return UserMinimalSerializer(other.user).data
+            # Pass context=self.context so UserMinimalSerializer can build absolute URLs
+            return UserMinimalSerializer(other.user, context=self.context).data
         return None
 
     def get_last_message(self, obj):

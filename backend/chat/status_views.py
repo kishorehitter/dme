@@ -117,7 +117,13 @@ class StatusViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='reply')
     def reply(self, request, pk=None):
+        import os
         from .models import Conversation, ConversationParticipant, Message
+        from .serializers import MessageSerializer
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+        from notifications.fcm_service import FCMService
+
         status_obj = self.get_object()
         message_text = request.data.get('message', '').strip()
         if not message_text:
@@ -154,12 +160,55 @@ class StatusViewSet(viewsets.ModelViewSet):
                 conversation=conversation, user=owner
             )
 
-        # Send message
-        Message.objects.create(
+        # Send message: include status media so it's "tagged" in the chat
+        msg_type = 'video' if status_obj.media_type == 'video' else 'image'
+        # Add indicator prefix to content
+        full_content = f"↩ Replied to status: {message_text}" if message_text else "↩ Replied to status"
+
+        message = Message(
             conversation=conversation,
             sender=sender,
-            content=f'↩ Replied to status: {message_text}',
-            message_type='text',
+            content=full_content,
+            message_type=msg_type,
         )
+        if status_obj.media_file:
+            # Manually copy the file with seek(0) to ensure reliability
+            from django.core.files.base import ContentFile
+            status_obj.media_file.seek(0)
+            message.media_file.save(
+                os.path.basename(status_obj.media_file.name),
+                ContentFile(status_obj.media_file.read()),
+                save=False
+            )
+        message.save()
         conversation.save()
+
+        # Broadcast & Notify
+        try:
+            serializer = MessageSerializer(message, context={'request': request})
+            message_data = serializer.data
+
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                room_group_name = f'chat_{conversation.id}'
+                async_to_sync(channel_layer.group_send)(
+                    room_group_name,
+                    {
+                        'type': 'chat_message',
+                        'message': message_data
+                    }
+                )
+
+            sender_name = sender.display_name or sender.email
+            FCMService.send_chat_notification(
+                recipient=owner,
+                sender_name=sender_name,
+                message_content=full_content,
+                conversation_id=conversation.id,
+                message_id=message.id,
+                message_type=msg_type
+            )
+        except Exception as e:
+            print(f"Error broadcasting status reply: {e}")
+
         return Response({'detail': 'Reply sent.'}, status=status.HTTP_200_OK)

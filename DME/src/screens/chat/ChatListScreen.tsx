@@ -193,7 +193,11 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
     const profilePicture = item.is_group
       ? item.profile_picture
-      : item.other_user?.profile_picture;
+      : item.other_user?.profile_picture 
+        ? (item.other_user.profile_picture.includes('?') 
+            ? item.other_user.profile_picture 
+            : `${item.other_user.profile_picture}?t=${Date.now()}`)
+        : null;
 
     const avatarSticker = item.is_group
       ? null

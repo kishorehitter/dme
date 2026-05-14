@@ -77,7 +77,7 @@ class ProfileSetupSerializer(serializers.ModelSerializer):
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating user profile with 14-day username change constraint."""
-    profile_picture = serializers.SerializerMethodField()
+    profile_picture = serializers.ImageField(required=False, allow_null=True)
 
     class Meta:
         model = User
@@ -108,12 +108,3 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
             instance.profile_picture = profile_picture
             
         return super().update(instance, validated_data)
-
-    def get_profile_picture(self, obj):
-        """Return full URL for profile picture."""
-        if obj.profile_picture:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.profile_picture.url)
-            return obj.profile_picture.url
-        return None

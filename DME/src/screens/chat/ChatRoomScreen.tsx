@@ -19,12 +19,13 @@ import {
   ActivityIndicator,
   Image,
   Modal,
-  PermissionsAndroid,
   Animated,
   PanResponder,
   Linking,
   DeviceEventEmitter,
+  Alert,
 } from 'react-native';
+import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import RNFS from 'react-native-fs';
@@ -39,6 +40,7 @@ import fcmService from '../../services/fcm';
 import notifee from '@notifee/react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
+import FullScreenMediaViewer from '../../components/FullScreenMediaViewer';
 import { API_BASE_URL, getApiUrl } from '../../config/network';
 
 const THEME_COLOR = '#8100D1';
@@ -363,6 +365,7 @@ interface OtherUser {
 }
 
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
+  const [viewingMedia, setViewingMedia] = useState<{ url: string, type: 'image' | 'video' } | null>(null);
   const { conversationId, name } = route.params;
   const { user: currentUser } = useAuth();
 
@@ -1091,48 +1094,85 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }, 2000);
   };
 
-  const handleAttachment = async () => {
-    const options = [
+  // Functional camera handler: Launch directly with video/photo mode
+  const handleCameraCapture = () => {
+    Alert.alert('Camera', 'Choose mode', [
       {
-        text: 'Camera',
+        text: '📷 Photo',
         onPress: async () => {
-          try {
-            const result = await launchCamera({
-              mediaType: 'photo',
-              quality: 0.8,
-              saveToPhotos: true,
-            });
-            if (result.didCancel || result.errorCode) return;
-            const asset = result.assets?.[0];
-            if (asset?.uri) await sendImageMessage(asset);
-          } catch (error) {
-            console.error('Camera error:', error);
+          const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
+          const status = await check(perm);
+          
+          if (status === RESULTS.DENIED) {
+            const requested = await request(perm);
+            if (requested !== RESULTS.GRANTED) {
+              Alert.alert('Permission Denied', 'Camera access is required. Please enable it in Settings.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Settings', onPress: () => openSettings() }
+              ]);
+              return;
+            }
+          } else if (status === RESULTS.BLOCKED) {
+            Alert.alert('Permission Blocked', 'Camera access is blocked. Please enable it in Settings.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Settings', onPress: () => openSettings() }
+            ]);
+            return;
           }
-        },
-      },
-      {
-        text: 'Gallery',
-        onPress: async () => {
-          try {
-            const result = await launchImageLibrary({
-              mediaType: 'photo',
-              quality: 0.8,
-            });
-            if (result.didCancel || result.errorCode) return;
-            const asset = result.assets?.[0];
-            if (asset?.uri) await sendImageMessage(asset);
-          } catch (error) {
-            console.error('Gallery error:', error);
-          }
-        },
-      },
-      {
-        text: 'Cancel',
-        style: 'cancel',
-      },
-    ];
 
-    require('react-native').Alert.alert('Send Image', 'Choose source', options);
+          const result = await launchCamera({ mediaType: 'photo', quality: 0.85, saveToPhotos: true });
+          if (result.didCancel || result.errorCode) return;
+          const asset = result.assets?.[0];
+          if (asset?.uri) await sendImageMessage(asset);
+        },
+      },
+      {
+        text: '🎥 Video',
+        onPress: async () => {
+          const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
+          const status = await check(perm);
+          
+          if (status === RESULTS.DENIED) {
+            const requested = await request(perm);
+            if (requested !== RESULTS.GRANTED) {
+              Alert.alert('Permission Denied', 'Camera access is required. Please enable it in Settings.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Settings', onPress: () => openSettings() }
+              ]);
+              return;
+            }
+          } else if (status === RESULTS.BLOCKED) {
+            Alert.alert('Permission Blocked', 'Camera access is blocked. Please enable it in Settings.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Settings', onPress: () => openSettings() }
+            ]);
+            return;
+          }
+
+          const result = await launchCamera({ mediaType: 'video', videoQuality: 'medium', durationLimit: 30 });
+          if (result.didCancel || result.errorCode) return;
+          const asset = result.assets?.[0];
+          if (asset?.uri) await sendImageMessage(asset);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleAttachment = async () => {
+    // Gallery: Force local files by choosing image library directly
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'mixed',
+        quality: 0.85,
+        selectionLimit: 1,
+      });
+      if (result.didCancel || result.errorCode) return;
+      const asset = result.assets?.[0];
+      if (asset?.uri) await sendImageMessage(asset);
+    } catch (error) {
+      console.error('Gallery error:', error);
+    }
   };
 
   const sendImageMessage = async (asset: any) => {
@@ -1141,28 +1181,45 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
       fd.append('content', '');
-      fd.append('message_type', 'image');
+      
+      const isVideo = asset.type?.startsWith('video') || asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov');
+      const messageType = isVideo ? 'video' : 'image';
+      
+      fd.append('message_type', messageType);
       fd.append('media_file', {
         uri: asset.uri,
-        type: asset.type || 'image/jpeg',
-        name: asset.fileName || `img_${Date.now()}.jpg`,
+        type: asset.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
+        name: asset.fileName || `${messageType}_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}`,
       } as any);
+
+      console.log(`[Chat] Sending ${messageType} message:`, asset.uri);
+      
       const res = await fetch(
         `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
         {
           method: 'POST',
-          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          headers: { 
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'Content-Type': 'multipart/form-data',
+          },
           body: fd,
         },
       );
+
       if (res.ok) {
         const nm = await res.json();
         setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
+      } else {
+        const errorText = await res.text();
+        console.error('[Chat] Upload failed:', res.status, errorText);
+        throw new Error(`Upload failed: ${res.status}`);
       }
-    } catch {
+    } catch (e) {
+      console.error('[Chat] Exception during upload:', e);
       Toast.show({
         type: 'error',
-        text1: 'Failed to send image',
+        text1: 'Failed to send media',
+        text2: 'Please check your connection and try again',
         position: 'bottom',
       });
     } finally {
@@ -1693,28 +1750,46 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       );
     }
 
-    const renderMedia = () => {
-      if (item.message_type === 'image' && item.media_file)
-        return (
-          <Image
-            source={{ uri: item.media_file }}
-            style={styles.messageImage}
-            resizeMode="cover"
-          />
-        );
+  const renderMedia = () => {
+    let url = (item as any).media_url || item.media_file;
+    if (!url) return null;
 
-      if (item.message_type === 'audio' && item.media_file)
-        // FIX 2: AudioPlayer manages its OWN state — always re-renders on press
-        // Pass the actual duration if available (from recording time)
+    // Fix: Prepend BASE_URL if url is relative
+    if (url && !url.startsWith('http')) {
+      const BASE_URL = API_BASE_URL.replace('/api', '');
+      url = `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+    }
+
+    if (item.message_type === 'image')
+      return (
+        <TouchableOpacity onPress={() => setViewingMedia({ url: url, type: 'image' })}>
+          <Image source={{ uri: url }} style={styles.messageImage} resizeMode="cover" />
+        </TouchableOpacity>
+      );
+
+    if (item.message_type === 'video' || item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov'))
+      return (
+        <TouchableOpacity 
+          style={styles.videoPreviewContainer}
+          onPress={() => setViewingMedia({ url: url, type: 'video' })}
+        >
+          <View style={styles.videoPlayOverlay}>
+            <Icon name="play-circle" size={56} color="rgba(255,255,255,0.9)" />
+          </View>
+        </TouchableOpacity>
+      );
+
+      if (item.message_type === 'audio')
         return (
           <AudioPlayer
-            mediaUrl={item.media_file}
+            mediaUrl={url}
             themeColor={THEME_COLOR}
             duration={item.audio_duration}
           />
         );
+// ... existing document logic
 
-      if (item.message_type === 'document' && item.media_file)
+      if (item.message_type === 'document')
         return (
           <View style={styles.documentMessage}>
             <Icon
@@ -1786,13 +1861,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
           {!isMe && isGroup && <Text style={styles.senderName}>{sName}</Text>}
 
-          {item.message_type !== 'text' ? (
-            renderMedia()
-          ) : (
+          {/* Media inside bubble */}
+          {renderMedia()}
+
+          {(item.message_type === 'text' || !!item.content) && (
             <Text
               style={[
                 styles.messageText,
                 isMe ? styles.myMessageText : styles.theirMessageText,
+                item.message_type !== 'text' && { marginTop: 6 }
               ]}
             >
               {item.content}
@@ -2030,6 +2107,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         removeClippedSubviews={false}
       />
 
+      {/* Full screen media viewer — Global to the screen */}
+      {viewingMedia && (
+        <FullScreenMediaViewer
+          mediaUrl={viewingMedia.url}
+          mediaType={viewingMedia.type}
+          onClose={() => setViewingMedia(null)}
+        />
+      )}
+
       {/* Scroll to bottom button */}
       {showScrollToBottom && (
         <TouchableOpacity
@@ -2044,7 +2130,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       {/* Typing */}
       {typingUsers.length > 0 && (
         <View style={styles.typingContainer}>
-          <Text style={styles.typingText}>{typingUsers[0]} is typing...</Text>
+          <Text style={styles.typingText}>
+            {typingUsers.join(', ')} {typingUsers.length > 1 ? 'are' : 'is'} typing...
+          </Text>
         </View>
       )}
 
@@ -2442,25 +2530,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.attachmentButton}
-                onPress={async () => {
-                  try {
-                    const result = await launchCamera({
-                      mediaType: 'photo',
-                      quality: 0.8,
-                      saveToPhotos: true,
-                    });
-                    if (result.didCancel || result.errorCode) return;
-                    const asset = result.assets?.[0];
-                    if (asset?.uri) await sendImageMessage(asset);
-                  } catch (error) {
-                    console.error('Camera error:', error);
-                    Toast.show({
-                      type: 'error',
-                      text1: 'Failed to open camera',
-                      position: 'bottom',
-                    });
-                  }
-                }}
+                onPress={handleCameraCapture}
               >
                 <Icon name="camera" size={28} color="#666" />
               </TouchableOpacity>
@@ -2684,6 +2754,21 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: borderRadius.lg,
     marginBottom: spacing.xs,
+  },
+  videoPreviewContainer: {
+    width: 200,
+    height: 150,
+    borderRadius: borderRadius.lg,
+    marginBottom: spacing.xs,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+  videoPlayOverlay: {
+    position: 'absolute',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   documentMessage: {
     flexDirection: 'row',

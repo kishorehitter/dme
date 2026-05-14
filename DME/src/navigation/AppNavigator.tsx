@@ -19,11 +19,8 @@ import {
   IncomingCallScreen,
   StatusTabScreen,
   CallLogTabScreen,
-  StatusDetailScreen,
-  FullScreenStatusView,
 } from '../screens/index';
 import StatusViewer from '../components/StatusViewer';
-import StatusViewersModal from '../screens/StatusViewersModal';
 import StatusEditorScreen from '../screens/StatusEditorScreen';
 import GoogleLoginScreen from '../screens/GoogleLoginScreen';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -185,10 +182,7 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
       <Stack.Screen name="Profile"      component={ProfileScreen}      options={{ title: 'Profile' }} />
       <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusViewer" component={StatusViewer}       options={{ headerShown: false }} />
-      <Stack.Screen name="StatusViewersModal" component={StatusViewersModal} options={{ presentation: 'modal', title: 'Viewers' }} />
       <Stack.Screen name="StatusEditor" component={StatusEditorScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="StatusDetail" component={StatusDetailScreen} options={{ title: 'My Status Updates' }} />
-      <Stack.Screen name="FullScreenStatus" component={FullScreenStatusView} options={{ headerShown: false }} />
     </Stack.Navigator>
   );
 };

@@ -11,7 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { chatAPI } from '../../services/api';
+import { chatAPI, callsAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
 import { getApiUrl } from '../../config/network';
@@ -138,6 +138,27 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
     }
   };
 
+
+  const currentRoomName = route?.params?.roomName;
+  const currentCallId = route?.params?.callId;
+  const callType = route?.params?.callType;
+
+  const handleInviteToCall = async (user: User) => {
+    setIsSubmitting(true);
+    console.log('[NewChat] Inviting user:', { userId: user.id, roomName: currentRoomName, callId: currentCallId, callType: callType });
+    try {
+      if (!currentRoomName) throw new Error('Missing roomName');
+      await callsAPI.inviteToGroupCall(user.id, currentRoomName, currentCallId, callType);
+      Alert.alert('Success', `Invitation sent to ${user.display_name || user.email}`);
+      navigation.goBack();
+    } catch (error) {
+      console.error('[NewChat] Invite error:', error);
+      Alert.alert('Error', 'Failed to send invite');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const renderUser = ({ item }: { item: User }) => {
     const isSelected = selectedUserIds.includes(item.id);
     const isAlreadyMember = existingMemberIds.includes(item.id);
@@ -150,7 +171,11 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
         style={[styles.userItem, isAlreadyMember && styles.disabledUserItem]}
         onPress={() => {
           if (isAlreadyMember) return;
-          isAdding ? toggleUserSelection(item.id) : startChat(item);
+          if (isInvitingToCall) {
+            handleInviteToCall(item);
+          } else {
+            isAdding ? toggleUserSelection(item.id) : startChat(item);
+          }
         }}
         disabled={isAlreadyMember}
       >

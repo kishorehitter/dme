@@ -434,7 +434,7 @@ const StatusViewerScreen: React.FC = () => {
         <Video
           source={{ uri: current.media_url || current.media_file }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"
+          resizeMode="contain"
           paused={videoPaused || showViewers || replyFocused}
           repeat={false}
           onLoad={({ duration }) => {
@@ -452,7 +452,8 @@ const StatusViewerScreen: React.FC = () => {
         <Image
           source={{ uri: current.media_url || current.media_file }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"
+          resizeMode="contain"
+          resizeMethod={Platform.OS === 'android' ? 'resize' : 'auto'}
         />
       )}
 
@@ -494,13 +495,8 @@ const StatusViewerScreen: React.FC = () => {
           </View>
         </View>
         <View style={s.headerRight}>
-          {isOwner && (
-            <TouchableOpacity onPress={handleDelete} style={s.iconBtn}>
-              <Icon name="trash-outline" size={22} color="#fff" />
-            </TouchableOpacity>
-          )}
           <TouchableOpacity onPress={() => navigation.goBack()} style={s.iconBtn}>
-            <Icon name="close" size={26} color="#fff" />
+            <Icon name="close" size={26} color="#fff" style={s.iconShadow} />
           </TouchableOpacity>
         </View>
       </View>
@@ -538,21 +534,32 @@ const StatusViewerScreen: React.FC = () => {
       >
         <View style={[s.bottomBar, { paddingBottom: insets.bottom + 10 }]}>
           {isOwner ? (
-            /* Owner view */
-            <TouchableOpacity
-              style={s.viewsBtn}
-              onPress={() => { stopProgress(); setShowViewers(true); }}
-            >
-              <Icon name="eye-outline" size={20} color="#fff" />
-              <Text style={s.viewsText}>
-                {current.view_count} view{current.view_count !== 1 ? 's' : ''}
-              </Text>
-              <Text style={s.viewsText}>·</Text>
-              <Icon name="heart" size={18} color="#ff4d6d" />
-              <Text style={s.viewsText}>
-                {(current as any).like_count ?? 0}
-              </Text>
-            </TouchableOpacity>
+            /* Owner view redesigned: Views LEFT | Likes CENTER | Delete RIGHT */
+            <>
+              {/* LEFT — Views */}
+              <TouchableOpacity
+                style={s.ownerActionBtn}
+                onPress={() => { stopProgress(); setShowViewers(true); }}
+              >
+                <Icon name="eye-outline" size={26} color="#fff" style={s.iconShadow} />
+                <Text style={s.ownerActionText}>{current.view_count}</Text>
+              </TouchableOpacity>
+
+              {/* CENTER — Likes */}
+              <View style={s.ownerLikesCenter}>
+                <Icon name="heart" size={24} color="#ff4d6d" style={s.iconShadow} />
+                <Text style={s.ownerActionText}>{(current as any).like_count ?? 0}</Text>
+              </View>
+
+              {/* RIGHT — Delete */}
+              <TouchableOpacity
+                style={s.ownerActionBtn}
+                onPress={handleDelete}
+              >
+                <Icon name="trash-outline" size={24} color="#fff" style={s.iconShadow} />
+                
+              </TouchableOpacity>
+            </>
           ) : (
             /* Viewer row: Like | Reply input + Send | Save */
             <>
@@ -568,7 +575,6 @@ const StatusViewerScreen: React.FC = () => {
                   size={28}
                   color={liked ? '#ff4d6d' : '#fff'}
                 />
-                {likeCount > 0 && <Text style={s.likeCount}>{likeCount}</Text>}
               </TouchableOpacity>
 
               {/* CENTER — Reply rounded input with send button inside */}
@@ -639,29 +645,38 @@ const StatusViewerScreen: React.FC = () => {
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
 
-  topScrim: {
-    position: 'absolute', top: 0, left: 0, right: 0, height: 180,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  bottomScrim: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, height: 160,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-
   // Progress
-  progressRow: { position: 'absolute', left: 10, right: 10, flexDirection: 'row', gap: 4 },
+  progressRow: { position: 'absolute', left: 10, right: 10, flexDirection: 'row', gap: 4, zIndex: 10 },
   track:       { flex: 1, height: 2, backgroundColor: 'rgba(255,255,255,0.35)', borderRadius: 1, overflow: 'hidden' },
   trackFill:   { height: '100%', backgroundColor: '#fff', borderRadius: 1 },
 
   // Header
-  header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12 },
+  header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, zIndex: 10 },
   headerLeft:    { flexDirection: 'row', alignItems: 'center' },
   avatar:        { width: 36, height: 36, borderRadius: 18, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)' },
   avatarFallback:{ backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
-  headerName:    { color: '#fff', fontWeight: '600', fontSize: 14 },
-  headerTime:    { color: 'rgba(255,255,255,0.7)', fontSize: 11 },
+  headerName:    { 
+    color: '#fff', 
+    fontWeight: '600', 
+    fontSize: 14,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  headerTime:    { 
+    color: 'rgba(255,255,255,0.9)', 
+    fontSize: 11,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
   headerRight:   { flexDirection: 'row', alignItems: 'center' },
   iconBtn:       { padding: 8, marginLeft: 4 },
+  iconShadow: {
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
 
   // FIX [1]: tap zones stop at bottom bar, not full screen
   tapZones: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row' },
@@ -692,8 +707,26 @@ const s = StyleSheet.create({
   },
 
   // Owner
-  viewsBtn:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  viewsText: { color: '#fff', fontSize: 15, fontWeight: '500' },
+  ownerActionBtn: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    minWidth: 44 
+  },
+  ownerActionText: {
+    color: '#fff',
+    fontSize: 14,
+    marginLeft: 6,
+    fontWeight: '600',
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  ownerLikesCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
 
   // FIX [3]: Like button — LEFT
   likeBtn:   { alignItems: 'center', minWidth: 36 },

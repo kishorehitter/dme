@@ -341,6 +341,16 @@ export const callsAPI = {
     return response.data;
   },
 
+  inviteToGroupCall: async (receiverId: number, roomName: string, callId: number, callType: 'audio' | 'video') => {
+    const response = await api.post('/calls/group/invite/', {
+      receiver_id: receiverId,
+      room_name: roomName,
+      call_id: callId,
+      call_type: callType,
+    });
+    return response.data;
+  },
+
   endCall: async (callId: number) => {
     const response = await api.post('/calls/end/', { call_id: callId });
     return response.data;

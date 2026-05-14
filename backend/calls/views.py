@@ -1,14 +1,60 @@
-"""
-Views for calls app - REST API endpoints.
+from django.db import models, transaction
+from rest_framework import status, permissions
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from django.utils import timezone
+from django.contrib.auth import get_user_model
+from notifications.fcm_service import FCMService
 
-Fixed:
-- CallInitiateView._send_call_notification now includes:
-    * conversation_id  → so receiver's IncomingCallScreen/CallScreen gets it
-    * caller_avatar    → URL of caller's profile picture for IncomingCallScreen
-- CallAcceptView: added transaction.atomic and select_for_update
-- CallEndView: added fallback to detect answered calls via answer_sdp
-"""
-from accounts.models import User
+User = get_user_model()
+
+def get_profile_picture_url(user, request):
+    if user.profile_picture:
+        if request:
+            return request.build_absolute_uri(user.profile_picture.url)
+        return user.profile_picture.url
+    return None
+
+class InviteToCallView(APIView):
+    """
+    Invite a user to an active LiveKit room without creating a conversation.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        receiver_id = request.data.get('receiver_id')
+        room_name   = request.data.get('room_name')
+        call_id     = request.data.get('call_id')
+        call_type   = request.data.get('call_type', 'audio')
+
+        if not all([receiver_id, room_name]):
+            return Response({'error': 'receiver_id and room_name required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            receiver = User.objects.get(id=receiver_id)
+            caller_name = request.user.display_name or request.user.email
+            caller_avatar = get_profile_picture_url(request.user, request)
+
+            data = {
+                'type':            'incoming_call',
+                'call_id':         str(call_id) if call_id else '0',
+                'caller_id':       str(request.user.id),
+                'caller_name':     caller_name,
+                'call_type':       call_type,
+                'room_name':       room_name,
+                'notif_title':     f'Incoming {call_type} call',
+                'notif_body':      f'{caller_name} invited you to a call',
+                'is_group':        'true' # Ensure UI treats it as group-like
+            }
+            if caller_avatar:
+                data['caller_avatar'] = caller_avatar
+
+            FCMService.send_to_user(receiver, None, data)
+            return Response({'message': 'Invite sent'})
+        except User.DoesNotExist:
+            return Response({'error': 'Receiver not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 from django.db import models, transaction
 from rest_framework import status, permissions
 from rest_framework.response import Response

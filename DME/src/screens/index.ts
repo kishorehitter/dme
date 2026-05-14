@@ -12,8 +12,6 @@ export { CreateGroupScreen } from './chat/CreateGroupScreen';
 export { GroupInfoScreen } from './chat/GroupInfoScreen';
 export { ProfileScreen } from './chat/ProfileScreen';
 export { ProfileSetupScreen } from './chat/ProfileSetupScreen';
-export { default as StatusDetailScreen } from './StatusDetailScreen';
-export { default as FullScreenStatusView } from './FullScreenStatusView';
 
 // Call Screens
 export { default as CallScreen } from './CallScreen';

@@ -9,6 +9,7 @@ from .views import (
     CallRejectView,
     CallHistoryView,
     GroupCallInitiateView,
+    InviteToCallView,
     JoinGroupCallView,
     LiveKitTokenView,
 )
@@ -23,6 +24,7 @@ urlpatterns = [
 
     # Group Call management
     path('group/initiate/', GroupCallInitiateView.as_view(), name='group_call_initiate'),
+    path('group/invite/', InviteToCallView.as_view(), name='group_call_invite'),
     path('group/<int:call_id>/join/', JoinGroupCallView.as_view(), name='group_call_join'),
     path('livekit/token/', LiveKitTokenView.as_view(), name='livekit-token'),
 ]

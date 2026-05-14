@@ -895,8 +895,12 @@ const CallScreen = () => {
       await setupSignaling(currentCallIdRef.current);
     } catch (err) {
       console.error('[Call] Init error:', err);
-      setError('Failed to connect: ' + (err?.message || 'Unknown'));
-      setTimeout(() => handleEndCall(), 2000);
+      Toast.show({
+        type: 'error',
+        text1: 'Connection lost',
+        position: 'bottom',
+      });
+      handleEndCall();
     }
   };
 
@@ -1016,7 +1020,13 @@ const CallScreen = () => {
           if (msg.includes('Client initiated disconnect')) return;
           if (msg.includes('NegotiationError')) return;
           if (msg.includes('cancelled')) return;
-          setError('Connection error: ' + msg);
+          
+          Toast.show({
+            type: 'error',
+            text1: 'Connection lost',
+            position: 'bottom',
+          });
+          handleEndCall();
         }}
       >
         <RoomCapture onRoom={onRoomConnected} />
@@ -1085,7 +1095,10 @@ const CallScreen = () => {
               conversationId: conversationId, 
               receiverId: receiverId,
               isAdding: true, 
-              isInvitingToCall: true 
+              isInvitingToCall: true,
+              roomName: roomRef.current?.name || params.room_id || params.roomName,
+              callId: currentCallIdRef.current,
+              callType: callType
             })}>
             <Icon name="person-add" size={24} color="#fff" />
           </TouchableOpacity>

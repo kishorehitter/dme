@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
   StatusBar,
   View,
@@ -13,6 +13,7 @@ import { AuthProvider } from './src/context/AuthContext';
 import { CallProvider } from './src/context/CallContext';
 import CallOverlay from './src/components/CallOverlay';
 import AppNavigator from './src/navigation/AppNavigator';
+import HeartbeatSplash from './src/components/HeartbeatSplash';
 import { CommonActions, NavigationContainerRef } from '@react-navigation/native';
 import fcmService, { FCMData, ACTIONS } from './src/services/fcm';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -73,9 +74,6 @@ export function handleNotificationNavigation(data: FCMData) {
   if (type === 'missed_call') {
     DeviceEventEmitter.emit('call_missed_externally', data);
     
-    // If it's just a press on the missed call notification (not the Call Back button),
-    // we might want to navigate to a missed call detail or chat, but for now we follow the existing flow.
-    // However, if the action is CALLBACK, we MUST initiate the call.
     if (_action === ACTIONS.CALLBACK) {
       const targetUserId = data.caller_id || data.sender_id || data.from_id;
       if (targetUserId) {
@@ -92,7 +90,6 @@ export function handleNotificationNavigation(data: FCMData) {
       }
     }
 
-    // Default missed call navigation
     navigationRef.dispatch(
       CommonActions.navigate('IncomingCall', {
         ...data,
@@ -102,7 +99,6 @@ export function handleNotificationNavigation(data: FCMData) {
     return;
   }
 
-  // Fallback for direct CALLBACK action without type='missed_call'
   if (_action === ACTIONS.CALLBACK) {
     const targetUserId = data.caller_id || data.sender_id || data.from_id;
     if (targetUserId) {
@@ -130,6 +126,7 @@ export function handleNotificationNavigation(data: FCMData) {
 }
 
 function App() {
+  const [isSplashFinished, setIsSplashFinished] = useState(false);
   const pendingNavigation = useRef<FCMData | null>(null);
   const navigationReadyRef = useRef(false);
 
@@ -137,7 +134,6 @@ function App() {
     if (!navigationReadyRef.current) return;
 
     try {
-      // 1. Check for CALLBACK action (Missed call notification button)
       const pendingCallback = await AsyncStorage.getItem('pending_callback_call');
       if (pendingCallback) {
         const parsed = JSON.parse(pendingCallback);
@@ -147,15 +143,11 @@ function App() {
         return;
       }
 
-      // 2. Check for ANSWER action (Incoming call notification button)
       const pendingAnswer = await AsyncStorage.getItem('pending_call_answer');
       if (pendingAnswer) {
         const parsed = JSON.parse(pendingAnswer);
-        // If it was an ANSWER action, trigger the navigation
         if (parsed._action === ACTIONS.ANSWER) {
           console.log('[App] Found pending answer on resume:', parsed);
-          // We don't remove it here as IncomingCallScreen also checks for it,
-          // but we do trigger the navigation.
           handleNotificationNavigation(parsed);
         }
       }
@@ -200,8 +192,6 @@ function App() {
 
     fcmService.getInitialNotification().then(async data => {
       let finalData = data;
-      
-      // Check for CALLBACK action stored in background (killed state)
       try {
         const pendingCallback = await AsyncStorage.getItem('pending_callback_call');
         if (pendingCallback) {
@@ -234,14 +224,12 @@ function App() {
   function onNavigatorReady() {
     navigationReadyRef.current = true;
     
-    // Check for standard pending navigation (e.g. notification press while launching)
     if (pendingNavigation.current) {
       console.log('[App] Flushing pending navigation');
       handleNotificationNavigation(pendingNavigation.current);
       pendingNavigation.current = null;
     }
     
-    // Check for persistent actions (e.g. background button clicks)
     checkPendingActions();
   }
 
@@ -249,20 +237,24 @@ function App() {
     <GestureHandlerRootView style={styles.container}>
       <SafeAreaProvider style={styles.container}>
         <View style={styles.safeAreaWrapper}>
-          <AuthProvider>
-            <CallProvider>
-              <StatusBar
-                barStyle="dark-content"
-                backgroundColor="#FFFFFF"
-                translucent={false}
-              />
-              <AppNavigator
-                setNavigationRef={setNavigationRef}
-                onNavigatorReady={onNavigatorReady}
-              />
-              <CallOverlay />
-            </CallProvider>
-          </AuthProvider>
+          {!isSplashFinished ? (
+            <HeartbeatSplash onFinish={() => setIsSplashFinished(true)} />
+          ) : (
+            <AuthProvider>
+              <CallProvider>
+                <StatusBar
+                  barStyle="dark-content"
+                  backgroundColor="#FFFFFF"
+                  translucent={false}
+                />
+                <AppNavigator
+                  setNavigationRef={setNavigationRef}
+                  onNavigatorReady={onNavigatorReady}
+                />
+                <CallOverlay />
+              </CallProvider>
+            </AuthProvider>
+          )}
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>

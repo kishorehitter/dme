@@ -159,7 +159,7 @@ export const StatusService = {
   },
 
   /**
-   * Alias for markViewed — used by FullScreenStatusView and StatusViewerScreen.
+   * Alias for markViewed — used by StatusViewerScreen.
    * Keeps new screens consistent without renaming your existing method.
    */
   async recordView(statusId: number): Promise<void> {
@@ -168,12 +168,8 @@ export const StatusService = {
 
   /**
    * Fetch the live view count for a single status.
-   * NEW — needed by FullScreenStatusView fix [3] and StatusDetailScreen fix [4].
-   * Backend: GET /chat/statuses/<id>/viewers/ already exists — we just count
-   * the array length, so no new Django endpoint is required.
    */
-  async getViewCount(statusId: number): Promise<number> {
-    try {
+  async getViewCount(statusId: number): Promise<number> {    try {
       const viewers = await StatusService.getViewers(statusId);
       return viewers.length;
     } catch {

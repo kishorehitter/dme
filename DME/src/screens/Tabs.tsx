@@ -281,7 +281,12 @@ export const StatusTabScreen = () => {
 
   const viewMyStatuses = () => {
     if (myStatuses.length === 0) { openPicker(); return; }
-    navigation.navigate('StatusDetail');
+    navigation.navigate('StatusViewer', {
+      statuses:      myStatuses,
+      initialIndex:  0,
+      currentUserId: currentUser?.id,
+      isOwn:         true,
+    });
   };
 
   const viewFriendStatuses = (group: UserStatusGroup) => {
@@ -301,15 +306,18 @@ export const StatusTabScreen = () => {
       <MyStatusRow
         statuses={myStatuses}
         username={currentUser?.username ?? 'You'}
-        avatar={currentUser?.profile_picture ?? null}
+        avatar={currentUser?.profile_picture 
+          ? (currentUser.profile_picture.includes('?') 
+              ? currentUser.profile_picture 
+              : `${currentUser.profile_picture}?t=${Date.now()}`)
+          : null}
         avatarSticker={currentUser?.avatar_sticker ?? null}
         onView={viewMyStatuses}
         onAdd={openPicker}
         onViewViewers={() => {
-           if (myStatuses.length > 0) navigation.navigate('StatusViewersModal', { statusId: myStatuses[0].id });
+           // Viewers are now handled inside StatusViewer via ViewerSheet
         }}
       />
-
       {/* Divider */}
       {friendGroups.length > 0 && (
         <Text style={styles.sectionHeader}>Recent updates</Text>

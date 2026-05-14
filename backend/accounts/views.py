@@ -143,6 +143,22 @@ class ProfileUpdateView(generics.UpdateAPIView):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+        
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Handle profile picture upload if present in multipart/form-data
+        profile_picture = request.FILES.get('profile_picture')
+        if profile_picture:
+            serializer.save(profile_picture=profile_picture)
+        else:
+            serializer.save()
+
+        return Response(UserSerializer(instance, context={'request': request}).data)
 
 
 class UsernameCheckView(APIView):

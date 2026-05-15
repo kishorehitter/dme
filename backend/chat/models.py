@@ -4,23 +4,21 @@ Models for chat app - Conversations and Messages.
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
+from cloudinary_storage.storage import MediaCloudinaryStorage
 import cloudinary.uploader
 # import cloudinary.utils
 
 
 # ─── Universal Cloudinary Storage ────────────────────────────────────────────
-# Handles image, video, audio, and document uploads to Cloudinary.
-# Root cause of previous bug: overriding _upload() is wrong — django-cloudinary-storage
-# uses _save() internally. We must override _save() and _open() correctly.
 
-class UniversalCloudinaryStorage:
+class UniversalCloudinaryStorage(MediaCloudinaryStorage):
     """
     Storage backend that uploads any file type to Cloudinary with the correct
     resource_type (image / video / raw) based on file extension.
-    
-    Replaces django-cloudinary-storage's MediaCloudinaryStorage entirely to
-    avoid its image-only assumptions.
     """
+    
+    def deconstruct(self):
+        return ('chat.models.UniversalCloudinaryStorage', [], {})
 
     # Map extensions → Cloudinary resource_type
     VIDEO_EXTENSIONS  = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
@@ -36,16 +34,9 @@ class UniversalCloudinaryStorage:
         return 'raw'         # documents, unknown types
 
     def _get_public_id(self, name: str) -> str:
-        """
-        Return public_id WITH extension so Cloudinary stores and serves
-        the file with the correct format.
-        """
-        # Strip leading upload directory prefix if present
-        # e.g. 'chat_media/file.m4a' → 'chat_media/file.m4a'
-        return name  # keep full path including extension as public_id
+        return name
 
     def _save(self, name, content):
-        """Upload file to Cloudinary and return the stored name (public_id)."""
         resource_type = self._get_resource_type(name)
         public_id     = self._get_public_id(name)
 
@@ -57,15 +48,10 @@ class UniversalCloudinaryStorage:
                 overwrite=True,
                 invalidate=True,
             )
-            # Return the public_id with version so URL generation works
-            # Cloudinary returns public_id WITHOUT extension for video/image
-            # but WITH extension for raw. We normalise to always include it.
             stored_public_id = response.get('public_id', public_id)
             version          = response.get('version')
             fmt              = response.get('format', '')
 
-            # Build the canonical stored name that url() will later reconstruct
-            # Format: v{version}/{public_id}.{format}
             if version and fmt and not stored_public_id.endswith(f'.{fmt}'):
                 return f"v{version}/{stored_public_id}.{fmt}"
             elif version:
@@ -76,39 +62,20 @@ class UniversalCloudinaryStorage:
             raise IOError(f"[UniversalCloudinaryStorage] Upload failed for '{name}': {e}") from e
 
     def _open(self, name, mode='rb'):
-        """Not supported — Cloudinary files are accessed via URL only."""
         raise NotImplementedError("Opening Cloudinary files directly is not supported.")
 
     def url(self, name):
-        """
-        Return the full Cloudinary CDN URL for a stored file.
-        Handles both versioned ('v123/path.ext') and plain ('path.ext') names.
-        """
-        if not name:
-            return ''
-
-        # Already a full URL (e.g. previously stored as absolute URL) — return as-is
-        if name.startswith('http://') or name.startswith('https://'):
-            return name
-
-        # Determine resource type from extension
+        if not name: return ''
+        if name.startswith('http://') or name.startswith('https://'): return name
         resource_type = self._get_resource_type(name)
-
-        # Strip leading v{version}/ prefix to get clean public_id for cloudinary.utils
         clean_name = name
         if clean_name.startswith('v') and '/' in clean_name:
             parts = clean_name.split('/', 1)
-            if parts[0][1:].isdigit():  # 'v123' → version prefix
-                clean_name = parts[1]
-
+            if parts[0][1:].isdigit(): clean_name = parts[1]
         cloud_name = settings.CLOUDINARY_STORAGE.get('CLOUD_NAME', '')
-        
-        # Build URL manually — reliable across all resource types
-        url = f"https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{name}"
-        return url
+        return f"https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{name}"
 
     def exists(self, name):
-        """Check if file exists on Cloudinary."""
         try:
             resource_type = self._get_resource_type(name)
             cloudinary.uploader.explicit(name, type='upload', resource_type=resource_type)
@@ -117,18 +84,16 @@ class UniversalCloudinaryStorage:
             return False
 
     def delete(self, name):
-        """Delete file from Cloudinary."""
         try:
             resource_type = self._get_resource_type(name)
             cloudinary.uploader.destroy(name, resource_type=resource_type)
-        except Exception:
-            pass
+        except Exception: pass
 
     def size(self, name):
-        return 0  # Not needed for chat app
+        return 0
 
     def get_available_name(self, name, max_length=None):
-        return name  # Cloudinary handles overwrites via overwrite=True
+        return name
 
 
 def get_universal_storage():
@@ -258,10 +223,11 @@ class Message(models.Model):
 
     media_file = models.FileField(
         upload_to='chat_media/',
-        max_length=500,           # ← 500 chars — Cloudinary URLs are long
+        max_length=255,
         blank=True, null=True,
-        storage=get_universal_storage,  # ← callable
+        storage=get_universal_storage,
     )
+
     thumbnail = models.ImageField(
         upload_to='chat_thumbnails/',
         max_length=500,
@@ -348,9 +314,10 @@ class Status(models.Model):
     )
     media_file = models.FileField(
         upload_to='status_media/',
-        max_length=500,
-        storage=get_universal_storage,  # ← callable
+        max_length=255,
+        storage=get_universal_storage,
     )
+
     caption    = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

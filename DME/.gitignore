@@ -77,3 +77,10 @@ yarn-error.log
 android/app/google-services.json
 firebase-service-account.json
 
+.env
+*.sqlite3
+
+backend/media/
+backend/chat_media/
+backend/status_media/
+backend/staticfiles/

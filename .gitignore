@@ -32,3 +32,11 @@ DME/android/app/debug.keystore
 # --- OS ---
 Thumbs.db
 .DS_Store
+
+.env
+*.sqlite3
+
+backend/media/
+backend/chat_media/
+backend/status_media/
+backend/staticfiles/

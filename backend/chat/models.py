@@ -167,9 +167,9 @@ class Conversation(models.Model):
     )
     profile_picture = models.ImageField(
         upload_to='conversation_pics/',
-        max_length=500,
+        max_length=255,
         blank=True, null=True,
-        storage=get_image_storage,   # ← callable, not instance
+        storage=get_universal_storage,
     )
 
     @property

@@ -42,6 +42,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 
 import FullScreenMediaViewer from '../../components/FullScreenMediaViewer';
 import { API_BASE_URL, getApiUrl } from '../../config/network';
+import { resolveImageUrl } from '../../utils/image';
 
 const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
@@ -119,17 +120,21 @@ const AudioPlayer: React.FC<{
     // Start playing
     setIsLoading(true);
     try {
-      const url = mediaUrl.replace(':8001', ':8000');
+      const url = mediaUrl;
 
       // Download if not cached
       if (!localPathRef.current) {
-        const local = `${RNFS.CachesDirectoryPath}/vc_${encodeURIComponent(
-          url.split('/').pop() ?? 'audio',
-        )}.m4a`;
+        const urlParts = url.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        const local = `${RNFS.CachesDirectoryPath}/vc_${encodeURIComponent(fileName)}`;
+        
         if (!(await RNFS.exists(local))) {
           const dl = await RNFS.downloadFile({ fromUrl: url, toFile: local })
             .promise;
-          if (dl.statusCode !== 200) throw new Error('download failed');
+          if (dl.statusCode !== 200) {
+            console.error(`Download failed for ${url} with status ${dl.statusCode}`);
+            throw new Error('download failed');
+          }
         }
         localPathRef.current = local;
       }
@@ -1712,7 +1717,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 </Text>
               ) : item.sender.profile_picture ? (
                 <Image
-                  source={{ uri: item.sender.profile_picture }}
+                  source={{ uri: resolveImageUrl(item.sender.profile_picture) }}
                   style={styles.avatar}
                 />
               ) : (
@@ -1743,14 +1748,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
 
   const renderMedia = () => {
-    let url = (item as any).media_url || item.media_file;
+    const rawUrl = (item as any).media_url || item.media_file;
+    const url = resolveImageUrl(rawUrl);
     if (!url) return null;
-
-    // Fix: Prepend BASE_URL if url is relative
-    if (url && !url.startsWith('http')) {
-      const BASE_URL = API_BASE_URL.replace('/api', '');
-      url = `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
-    }
 
     if (item.message_type === 'image')
       return (
@@ -1759,7 +1759,17 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         </TouchableOpacity>
       );
 
-    if (item.message_type === 'video' || item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov'))
+    if (item.message_type === 'audio')
+      return (
+        <AudioPlayer
+          mediaUrl={url}
+          themeColor={THEME_COLOR}
+          duration={item.audio_duration}
+          messageId={item.id}
+        />
+      );
+
+    if (item.message_type === 'video' || (item.message_type === 'text' && (item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov'))))
       return (
         <TouchableOpacity 
           style={styles.videoPreviewContainer}
@@ -1770,15 +1780,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
         </TouchableOpacity>
       );
-
-      if (item.message_type === 'audio')
-        return (
-          <AudioPlayer
-            mediaUrl={url}
-            themeColor={THEME_COLOR}
-            duration={item.audio_duration}
-          />
-        );
 // ... existing document logic
 
       if (item.message_type === 'document')
@@ -3013,11 +3014,12 @@ const styles = StyleSheet.create({
   scrollToBottomButton: {
     position: 'absolute',
     bottom: 70,
-    right: 20,
+    left: '50%',
+    marginLeft: -22,
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: '#999999',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',

@@ -80,8 +80,8 @@ class StatusViewSet(viewsets.ModelViewSet):
                 {
                     'user_id': like.user.id,
                     'username': like.user.username,
-                    'avatar': request.build_absolute_uri(like.user.profile_picture.url)
-                            if like.user.profile_picture else None,
+                    'avatar': like.user.clean_profile_picture_url,
+                    'avatar_sticker': like.user.avatar_sticker,
                     'liked_at': like.created_at,
                 }
                 for like in likes

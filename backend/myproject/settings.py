@@ -36,6 +36,7 @@ env = environ.Env(
 
 environ.Env.read_env(BASE_DIR / '.env')
 
+
 # ─── Core ─────────────────────────────────────────────────────────────────────
 
 SECRET_KEY  = env('SECRET_KEY')
@@ -162,27 +163,28 @@ USE_TZ        = True
 STATIC_URL  = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
-# ─── Media Files (Cloudinary in production, local in dev) ────────────────────
-
-MEDIA_URL  = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-
 # Cloudinary credentials — read from env vars (never hardcode)
 CLOUDINARY_STORAGE = {
-    'CLOUD_NAME': env('CLOUDINARY_CLOUD_NAME', default=''),
-    'API_KEY':    env('CLOUDINARY_API_KEY',    default=''),
-    'API_SECRET': env('CLOUDINARY_API_SECRET', default=''),
+    'CLOUD_NAME': env('CLOUDINARY_CLOUD_NAME'),
+    'API_KEY':    env('CLOUDINARY_API_KEY'),
+    'API_SECRET': env('CLOUDINARY_API_SECRET'),
 }
 
-if IS_DEVELOPMENT:
-    # Local dev — save files to disk (simpler, no Cloudinary account needed)
-    DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
-else:
-    # Production — Render's filesystem is ephemeral (files deleted on restart).
-    # Cloudinary stores files permanently on their CDN.
-    DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+# Force Cloudinary for all environments
+DEFAULT_FILE_STORAGE = 'chat.models.UniversalCloudinaryStorage'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'chat.models.UniversalCloudinaryStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+}
+STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
+
+# Set the MEDIA_URL to point to Cloudinary
+# MEDIA_URL = f"https://res.cloudinary.com/{env('CLOUDINARY_CLOUD_NAME')}/"
 
 # ─── Default PK ───────────────────────────────────────────────────────────────
 

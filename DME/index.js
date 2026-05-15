@@ -500,6 +500,44 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
       };
       await AsyncStorage.setItem('pending_callback_call', JSON.stringify(enrichedData));
       await notifee.cancelNotification(notification.id);
+    } else if (pressAction.id === ACTIONS.REPLY) {
+      const text = detail.input;
+      const convId = callData.conv_id || callData.conversation_id;
+      console.log(`[Notifee Background] REPLY action, convId: ${convId}, text: ${text}`);
+      
+      if (convId && text) {
+        await notifee.cancelNotification(notification.id);
+        
+        try {
+          const token = await AsyncStorage.getItem('access_token');
+          console.log(`[Notifee Background] Token found: ${!!token}`);
+          
+          if (token) {
+            const url = `${API_BASE_URL}/chat/conversations/${convId}/messages/`;
+            console.log(`[Notifee Background] Fetching: ${url}`);
+            
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ content: text, message_type: 'text' }),
+            });
+            
+            if (response.ok) {
+              console.log('[Notifee Background] Reply sent successfully');
+            } else {
+              const errBody = await response.text();
+              console.error(`[Notifee Background] Reply failed: ${response.status} - ${errBody}`);
+            }
+          }
+        } catch (err) {
+          console.error('[Notifee Background] Reply API error:', err);
+        }
+      } else {
+        console.warn('[Notifee Background] Missing convId or text');
+      }
     }
   }
 });

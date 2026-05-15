@@ -12,6 +12,7 @@ export interface LikedUser {
   user_id:   number;
   username:  string;
   avatar:    string | null;
+  avatar_sticker?: string | null;
   liked_at:  string;
 }
 
@@ -20,6 +21,7 @@ export interface Status {
   user_id:    number;
   username:   string;
   user_avatar: string | null;
+  user_avatar_sticker?: string | null;
   media_url:  string;
   media_file: string;
   media_type: 'photo' | 'video';
@@ -33,6 +35,7 @@ export interface StatusViewer {
   viewer_id:       number;
   viewer_username: string;
   viewer_avatar:   string | null;
+  viewer_avatar_sticker?: string | null;
   viewed_at:       string;
 }
 
@@ -41,6 +44,7 @@ export interface UserStatusGroup {
   user_id:     number;
   username:    string;
   user_avatar: string | null;
+  user_avatar_sticker?: string | null;
   statuses:    Status[];
   /** true if ANY status in this group is unseen by the current user */
   has_unseen:  boolean;
@@ -51,6 +55,7 @@ export interface CallLog {
   id:                 string;
   other_party:        { id: number; name: string; email: string } | null;
   other_party_avatar: string | null;
+  other_party_avatar_sticker?: string | null;
   call_type:          'audio' | 'video';
   status:             'initiated' | 'ringing' | 'accepted' | 'rejected' | 'ended' | 'missed';
   started_at:         string;
@@ -286,6 +291,7 @@ export const StatusService = {
           user_id:     s.user_id,
           username:    s.username,
           user_avatar: s.user_avatar,
+          user_avatar_sticker: s.user_avatar_sticker,
           statuses:    [],
           has_unseen:  false,
           latest_at:   s.created_at,

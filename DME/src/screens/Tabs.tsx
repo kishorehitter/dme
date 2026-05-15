@@ -132,7 +132,11 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
           styles.statusRing,
           group.has_unseen ? styles.ringUnseen : styles.ringViewed,
         ]} />
-        {group.user_avatar && !imgError ? (
+        {group.user_avatar_sticker ? (
+          <View style={[styles.avatar, styles.avatarFallback]}>
+            <Text style={styles.stickerAvatar}>{group.user_avatar_sticker}</Text>
+          </View>
+        ) : (group.user_avatar && !imgError) ? (
           <Image 
             source={{ uri: group.user_avatar }} 
             style={styles.avatar} 
@@ -415,6 +419,7 @@ export const CallLogTabScreen = () => {
         const isMissed = dir === 'missed';
         const name     = item.other_party?.name ?? 'Unknown';
         const avatar   = item.other_party_avatar;
+        const sticker  = item.other_party_avatar_sticker;
         const userId   = item.other_party?.id;
 
         return (
@@ -442,7 +447,11 @@ export const CallLogTabScreen = () => {
           >
             {/* Avatar */}
             <View>
-              {avatar ? (
+              {sticker ? (
+                <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
+                  <Text style={{ fontSize: 24 }}>{sticker}</Text>
+                </View>
+              ) : avatar ? (
                 <Image source={{ uri: avatar }} style={styles.logAvatarImg} />
               ) : (
                 <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>

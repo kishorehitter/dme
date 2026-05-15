@@ -18,6 +18,7 @@ import Toast from 'react-native-toast-message';
 import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
+import { resolveImageUrl } from '../../utils/image';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -785,7 +786,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             ) : profile?.profile_picture ? (
               <Image
-                source={{ uri: profile.profile_picture }}
+                source={{ uri: resolveImageUrl(profile.profile_picture) }}
                 style={styles.profilePicture}
               />
             ) : (
@@ -823,7 +824,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             ) : profile?.profile_picture ? (
               <Image
-                source={{ uri: profile.profile_picture }}
+                source={{ uri: resolveImageUrl(profile.profile_picture) }}
                 style={styles.profilePicture}
               />
             ) : (

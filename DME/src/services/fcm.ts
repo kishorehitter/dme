@@ -12,7 +12,7 @@ import notifee, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform, DeviceEventEmitter, AppState, AppStateStatus } from 'react-native';
 import Toast from 'react-native-toast-message';
-import { API_BASE_URL } from '../config/network';
+import { API_BASE_URL, getApiUrl } from '../config/network';
 
 export const ACTIONS = {
   ANSWER: 'answer_call',
@@ -66,6 +66,7 @@ class FCMService {
   private _initialNotificationHandled = false;
   private _activeConversationId: string | null = null;
   private _isInCall = false;
+  private _processedEventIds: Set<string> = new Set();
   private _onNotificationPress: PressCallback | null = null;
   private _lastHandledCallId: string | null = null;
   private _lastHandledType: string | null = null;
@@ -171,7 +172,7 @@ class FCMService {
       const token = await AsyncStorage.getItem('access_token');
       if (!token) return;
       const res = await fetch(
-        `${API_BASE_URL}/chat/conversations/${conversationId}/messages/`,
+        getApiUrl(`chat/conversations/${conversationId}/messages/`),
         {
           method: 'POST',
           headers: {
@@ -583,6 +584,14 @@ class FCMService {
           _action: ACTIONS.CALLBACK,
           timestamp: Date.now()
         }));
+      } else if (pressAction?.id === ACTIONS.REPLY) {
+        const text = (detail as any).input;
+        const convId = data.conv_id || data.conversation_id;
+        console.log(`[FCMService] Background REPLY action for conv ${convId}, text: ${text}`);
+        if (convId && text) {
+          await notifee.cancelNotification(notification?.id || '');
+          await this.replyMessageAPI(convId, text);
+        }
       }
     });
 
@@ -622,6 +631,11 @@ class FCMService {
     const unsubFore = notifee.onForegroundEvent(async ({ type, detail }: Event) => {
       if (type !== EventType.PRESS && type !== EventType.ACTION_PRESS) return;
 
+      const eventId = detail.notification?.id || Math.random().toString();
+      if (this._processedEventIds.has(eventId)) return;
+      this._processedEventIds.add(eventId);
+      setTimeout(() => this._processedEventIds.delete(eventId), 2000);
+
       const { notification, pressAction } = detail;
       const data = (notification?.data ?? {}) as FCMData;
 
@@ -651,11 +665,14 @@ class FCMService {
           await notifee.cancelNotification(notification?.id || '');
           onNotificationPress?.({ ...data, _action: ACTIONS.CALLBACK });
         } else if (actionId === ACTIONS.REPLY) {
-          const text = detail.input;
+          const text = (detail as any).input;
           const convId = data.conv_id || data.conversation_id;
+          console.log(`[FCMService] REPLY action triggered, convId: ${convId}, text: ${text}`);
           if (convId && text) {
             await notifee.cancelNotification(notification?.id || '');
             await this.replyMessageAPI(convId, text);
+          } else {
+            console.error(`[FCMService] REPLY failed: missing convId or text`, { convId, text });
           }
         }
       }

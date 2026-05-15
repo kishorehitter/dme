@@ -14,6 +14,7 @@ import {
 import { launchImageLibrary } from 'react-native-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
 import { chatAPI } from '../../services/api';
+import { resolveImageUrl } from '../../utils/image';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useAuth } from '../../context/AuthContext';
 
@@ -140,7 +141,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
         <View style={styles.avatarContainer}>
           <TouchableOpacity onPress={isAdmin ? handleUpdateImage : undefined} disabled={!isAdmin}>
             {conversation?.profile_picture ? (
-              <Image source={{ uri: conversation.profile_picture }} style={styles.avatar} />
+              <Image source={{ uri: resolveImageUrl(conversation.profile_picture) }} style={styles.avatar} />
             ) : (
               <View style={styles.avatarPlaceholder}>
                 <Text style={styles.avatarText}>👥</Text>
@@ -148,6 +149,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
             )}
             {isAdmin && <View style={styles.editBadge}><Text style={styles.editBadgeText}>Edit</Text></View>}
           </TouchableOpacity>
+
         </View>
 // ... rest of the file ...
 
@@ -206,11 +208,20 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
         {conversation?.participants.map((p: any) => (
           <View key={p.id} style={styles.participantItem}>
             <View style={styles.participantAvatar}>
-              <Text>{(p.user.display_name || p.user.email).charAt(0).toUpperCase()}</Text>
+              {p.user.avatar_sticker ? (
+                <Text style={{ fontSize: 20 }}>{p.user.avatar_sticker}</Text>
+              ) : p.user.profile_picture ? (
+                <Image 
+                  source={{ uri: resolveImageUrl(p.user.profile_picture) }} 
+                  style={{ width: 40, height: 40, borderRadius: 20 }} 
+                />
+              ) : (
+                <Text>{(p.user.display_name || p.user.username || p.user.email).charAt(0).toUpperCase()}</Text>
+              )}
             </View>
             <View style={styles.participantInfo}>
               <Text style={styles.participantName}>
-                {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.email)}
+                {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.username || p.user.email)}
               </Text>
               {p.is_admin && <View style={styles.adminBadge}><Text style={styles.adminBadgeText}>Admin</Text></View>}
             </View>

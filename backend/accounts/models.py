@@ -8,7 +8,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils import timezone
 from datetime import timedelta
 from django.conf import settings
-
+from cloudinary_storage.storage import MediaCloudinaryStorage
 
 class UserManager(BaseUserManager):
     """Custom user manager that uses email as the username."""
@@ -34,14 +34,13 @@ class UserManager(BaseUserManager):
         
         return self.create_user(email, password, **extra_fields)
 
-
 class User(AbstractUser):
     """Custom User model using email as unique identifier and unique username."""
 
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True, help_text="Unique username for search")
     # phone_number = models.CharField(max_length=20, blank=True, null=True)
-    profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True)
+    profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True, storage=MediaCloudinaryStorage())
     avatar_sticker = models.CharField(max_length=10, blank=True, null=True, help_text="Emoji avatar sticker")
     display_name = models.CharField(max_length=100, blank=True, null=True, help_text="Public profile name (can include emojis)")
     bio = models.CharField(max_length=255, blank=True, default='Hey there! I am using DME')
@@ -49,6 +48,45 @@ class User(AbstractUser):
     is_profile_complete = models.BooleanField(default=False, help_text="Whether the user has completed onboarding")
     last_username_change = models.DateTimeField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True, help_text="Last time user disconnected from WebSocket")
+
+    @property
+    def clean_profile_picture_url(self):
+        """Standardized absolute URL accessor that handles various mangled formats."""
+        if not self.profile_picture:
+            return None
+        
+        try:
+            url = self.profile_picture.url
+            if not url: return None
+            
+            if 'cloudinary.com' in url:
+                last_https = url.rfind('https:/')
+                if last_https > 0:
+                    url = url[last_https:]
+                
+                if url.startswith('https:/') and not url.startswith('https://'):
+                    url = url.replace('https:/', 'https://', 1)
+            
+            return url
+        except Exception:
+            return None
+
+    def save(self, *args, **kwargs):
+        # Sanitize profile_picture path if it contains duplicated or mangled prefixes
+        if self.profile_picture and self.profile_picture.name:
+            name = self.profile_picture.name
+            if 'https:/' in name:
+                last_idx = name.rfind('https:/')
+                if last_idx > 0:
+                    name = name[last_idx:]
+                
+                for prefix in ['profile_pics/']:
+                    if prefix in name:
+                        name = name[name.find(prefix):]
+                        break
+                self.profile_picture.name = name
+
+        super().save(*args, **kwargs)
 
     objects = UserManager()
 

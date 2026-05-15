@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Video from 'react-native-video';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { resolveImageUrl } from '../utils/image';
 import {
   StatusService, Status, StatusViewer as ViewerType, LikedUser, CallLog
 } from '../services/StatusService';
@@ -109,7 +110,11 @@ const ViewerSheet: React.FC<ViewerSheetProps> = ({
               keyExtractor={v => String(v.viewer_id)}
               renderItem={({ item }) => (
                 <View style={vs.row}>
-                  {item.viewer_avatar ? (
+                  {item.viewer_avatar_sticker ? (
+                    <View style={[vs.avatar, vs.fallback]}>
+                      <Text style={{ fontSize: 24 }}>{item.viewer_avatar_sticker}</Text>
+                    </View>
+                  ) : item.viewer_avatar ? (
                     <Image source={{ uri: item.viewer_avatar }} style={vs.avatar} />
                   ) : (
                     <View style={[vs.avatar, vs.fallback]}>
@@ -143,7 +148,11 @@ const ViewerSheet: React.FC<ViewerSheetProps> = ({
               keyExtractor={u => String(u.user_id)}
               renderItem={({ item }) => (
                 <View style={vs.row}>
-                  {item.avatar ? (
+                  {item.avatar_sticker ? (
+                    <View style={[vs.avatar, vs.fallback]}>
+                      <Text style={{ fontSize: 24 }}>{item.avatar_sticker}</Text>
+                    </View>
+                  ) : item.avatar ? (
                     <Image source={{ uri: item.avatar }} style={vs.avatar} />
                   ) : (
                     <View style={[vs.avatar, vs.fallback]}>
@@ -432,7 +441,7 @@ const StatusViewerScreen: React.FC = () => {
       {/* ── Media ── */}
       {isVideo ? (
         <Video
-          source={{ uri: current.media_url || current.media_file }}
+          source={{ uri: resolveImageUrl(current.media_url || current.media_file) }}
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
           paused={videoPaused || showViewers || replyFocused}
@@ -450,7 +459,7 @@ const StatusViewerScreen: React.FC = () => {
         />
       ) : (
         <Image
-          source={{ uri: current.media_url || current.media_file }}
+          source={{ uri: resolveImageUrl(current.media_url || current.media_file) }}
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
           resizeMethod={Platform.OS === 'android' ? 'resize' : 'auto'}
@@ -478,7 +487,11 @@ const StatusViewerScreen: React.FC = () => {
       {/* ── Header ── */}
       <View style={[s.header, { top: insets.top + 22 }]} pointerEvents="box-none">
         <View style={s.headerLeft}>
-          {current.user_avatar ? (
+          {current.user_avatar_sticker ? (
+            <View style={[s.avatar, s.avatarFallback]}>
+              <Text style={{ fontSize: 24 }}>{current.user_avatar_sticker}</Text>
+            </View>
+          ) : current.user_avatar ? (
             <Image source={{ uri: current.user_avatar }} style={s.avatar} />
           ) : (
             <View style={[s.avatar, s.avatarFallback]}>

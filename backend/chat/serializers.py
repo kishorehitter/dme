@@ -27,14 +27,13 @@ class UserMinimalSerializer(serializers.ModelSerializer):
         return 'Unknown'
 
     def get_profile_picture(self, obj):
-        """Return full URL for profile picture."""
-        if obj.profile_picture:
-            request = self.context.get('request')
-            url = request.build_absolute_uri(obj.profile_picture.url) if request else obj.profile_picture.url
-            # Add a timestamp to bypass client-side caching
-            # User model has 'last_seen' which is updated on activity
-            timestamp = int(obj.last_seen.timestamp()) if hasattr(obj, 'last_seen') and obj.last_seen else 0
-            return f"{url}?t={timestamp}"
+        """Return full clean URL for profile picture."""
+        if hasattr(obj, 'clean_profile_picture_url'):
+            url = obj.clean_profile_picture_url
+            if url:
+                # Add a timestamp to bypass client-side caching
+                timestamp = int(obj.last_seen.timestamp()) if hasattr(obj, 'last_seen') and obj.last_seen else 0
+                return f"{url}?t={timestamp}"
         return None
 
 
@@ -42,21 +41,22 @@ class StatusViewSerializer(serializers.ModelSerializer):
     viewer_id       = serializers.IntegerField(source='viewer.id',       read_only=True)
     viewer_username = serializers.CharField(source='viewer.username',    read_only=True)
     viewer_avatar   = serializers.SerializerMethodField()
+    viewer_avatar_sticker = serializers.CharField(source='viewer.avatar_sticker', read_only=True)
  
     class Meta:
         model  = StatusView
-        fields = ['viewer_id', 'viewer_username', 'viewer_avatar', 'viewed_at']
+        fields = ['viewer_id', 'viewer_username', 'viewer_avatar', 'viewer_avatar_sticker', 'viewed_at']
  
     def get_viewer_avatar(self, obj):
-        request = self.context.get('request')
-        if obj.viewer.profile_picture and request:
-            return request.build_absolute_uri(obj.viewer.profile_picture.url)
+        if obj.viewer:
+            return obj.viewer.clean_profile_picture_url
         return None
  
  
 class StatusSerializer(serializers.ModelSerializer):
     username    = serializers.CharField(source='user.username', read_only=True)
     user_avatar = serializers.SerializerMethodField()
+    user_avatar_sticker = serializers.CharField(source='user.avatar_sticker', read_only=True)
     media_url   = serializers.SerializerMethodField()
     view_count  = serializers.SerializerMethodField()
     is_viewed   = serializers.SerializerMethodField()
@@ -66,26 +66,19 @@ class StatusSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Status
         fields = [
-            'id', 'user_id', 'username', 'user_avatar',
+            'id', 'user_id', 'username', 'user_avatar', 'user_avatar_sticker',
             'media_file', 'media_url', 'media_type',
             'caption', 'created_at', 'view_count',
             'is_viewed', 'like_count', 'is_liked',
         ]
 
     def get_user_avatar(self, obj):
-        request = self.context.get('request')
-        if obj.user.profile_picture and request:
-            try:
-                return request.build_absolute_uri(obj.user.profile_picture.url)
-            except Exception:
-                return None
+        if obj.user:
+            return obj.user.clean_profile_picture_url
         return None
 
     def get_media_url(self, obj):
-        request = self.context.get('request')
-        if obj.media_file and request:
-            return request.build_absolute_uri(obj.media_file.url)
-        return None
+        return obj.clean_media_url
 
     def get_view_count(self, obj):
         return obj.views.count()
@@ -146,19 +139,28 @@ class MessageSerializer(serializers.ModelSerializer):
         return reactions
 
     def get_media_url(self, obj):
-        """Return full absolute URL for media file."""
-        if obj.media_file:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.media_file.url)
-            return obj.media_file.url
-        return None
+        """Return a clean absolute URL using the model's standardized accessor."""
+        return obj.clean_media_url
 
     def create(self, validated_data):
         # Handle media file upload
         request = self.context.get('request')
         if request and request.FILES.get('media_file'):
-            validated_data['media_file'] = request.FILES.get('media_file')
+            file_obj = request.FILES.get('media_file')
+            
+            # AGGRESSIVE CLEANING: Strip EVERYTHING except the last part of a path
+            # This handles cases where the 'name' is a full URL or absolute path
+            original_name = file_obj.name
+            clean_name = original_name.replace('\\', '/').split('/')[-1]
+            
+            # Ensure we have an extension if it's missing (Cloudinary needs it for resource type)
+            if '.' not in clean_name:
+                message_type = validated_data.get('message_type', 'image')
+                ext = 'mp4' if message_type == 'video' else 'm4a' if message_type == 'audio' else 'jpg'
+                clean_name = f"{clean_name}.{ext}"
+            
+            file_obj.name = clean_name
+            validated_data['media_file'] = file_obj
         
         # Handle reply_to
         reply_to_id = request.data.get('reply_to') if request else None
@@ -204,10 +206,11 @@ class ConversationParticipantSerializer(serializers.ModelSerializer):
 
 
 class ConversationSerializer(serializers.ModelSerializer):
-    """Serializer for Conversation model."""
+    """Serializer for conversation model."""
     participants = ConversationParticipantSerializer(many=True, read_only=True)
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
     
     class Meta:
         model = Conversation
@@ -216,6 +219,9 @@ class ConversationSerializer(serializers.ModelSerializer):
             'profile_picture', 'participants', 'last_message', 'unread_count'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'created_by')
+    
+    def get_profile_picture(self, obj):
+        return obj.clean_profile_picture_url
     
     def get_last_message(self, obj):
         last_msg = obj.messages.filter(is_deleted=False).order_by('-created_at').first()
@@ -262,6 +268,12 @@ class ConversationCreateSerializer(serializers.ModelSerializer):
         # Extract created_by if it was passed via serializer.save() or fallback to request.user
         created_by = validated_data.pop('created_by', request.user if request else None)
         
+        # Clean profile picture filename
+        profile_picture = validated_data.get('profile_picture')
+        if profile_picture:
+            if '/' in profile_picture.name: profile_picture.name = profile_picture.name.split('/')[-1]
+            if '\\' in profile_picture.name: profile_picture.name = profile_picture.name.split('\\')[-1]
+
         # Create conversation
         conversation = Conversation.objects.create(
             created_by=created_by,
@@ -314,6 +326,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
     other_user = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -321,6 +334,9 @@ class ConversationListSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'is_group', 'profile_picture', 'updated_at',
             'other_user', 'last_message', 'unread_count'
         )
+
+    def get_profile_picture(self, obj):
+        return obj.clean_profile_picture_url
 
     def get_other_user(self, obj):
         if obj.is_group:

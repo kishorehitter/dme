@@ -66,15 +66,24 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     // Connect to WebSocket for real-time updates
     websocketService.connectToChatList();
 
-    // Listen for read_receipt events to update chat list immediately
+    // Listen for WebSocket events to update the chat list immediately
     const unsubscribe = websocketService.onMessage((wsMessage: WebSocketMessage) => {
-      if (wsMessage.type === 'read_receipt') {
-        // Update unread count for affected conversations
-        console.log('📋 Read receipt received, refreshing chat list');
-        loadConversations();
-      } else if (wsMessage.type === 'message') {
-        // New message received, refresh chat list
-        console.log('📋 New message received, refreshing chat list');
+      if (wsMessage.type === 'message' && wsMessage.data) {
+        console.log('📋 Real-time message received, updating chat list');
+        const newMessage = wsMessage.data;
+        const conversationId = newMessage.conversation;
+
+        setConversations(prev => prev.map(conv => {
+          if (conv.id === conversationId) {
+            return {
+              ...conv,
+              last_message: newMessage,
+              unread_count: conv.unread_count + 1
+            };
+          }
+          return conv;
+        }));
+      } else if (wsMessage.type === 'read_receipt') {
         loadConversations();
       }
     });

@@ -79,12 +79,13 @@ class CallHistorySerializer(serializers.ModelSerializer):
     """Serializer for call history."""
     other_party = serializers.SerializerMethodField()
     other_party_avatar = serializers.SerializerMethodField()
+    other_party_avatar_sticker = serializers.SerializerMethodField()
     is_caller = serializers.SerializerMethodField()
 
     class Meta:
         model = Call
         fields = (
-            'id', 'other_party', 'other_party_avatar', 'call_type',
+            'id', 'other_party', 'other_party_avatar', 'other_party_avatar_sticker', 'call_type',
             'status', 'started_at', 'ended_at', 'duration', 'is_caller'
         )
         read_only_fields = fields
@@ -105,11 +106,15 @@ class CallHistorySerializer(serializers.ModelSerializer):
         """Get other party's avatar URL."""
         user = self.context['request'].user
         other = obj.receiver if obj.caller == user else obj.caller
-        if other and other.profile_picture:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(other.profile_picture.url)
+        if other:
+            return other.clean_profile_picture_url
         return None
+
+    def get_other_party_avatar_sticker(self, obj):
+        """Get other party's avatar sticker."""
+        user = self.context['request'].user
+        other = obj.receiver if obj.caller == user else obj.caller
+        return other.avatar_sticker if other else None
 
     def get_is_caller(self, obj):
         """Check if current user was the caller."""

@@ -6,7 +6,7 @@
  * Common scenarios:
  * - Android Emulator: Use '10.0.2.2' (special alias to host loopback)
  * - iOS Simulator: Use 'localhost'
- * - Physical device on same WiFi: Use your PC's IP (e.g., '10.113.164.218')
+ * - Physical device on same WiFi: Use your PC's IP (e.g., '10.113.164.183')
  * - Production: Use your domain (e.g., 'dme-19zq.onrender.com')
  */
 
@@ -19,7 +19,7 @@ const PRODUCTION_HOST = 'dme-19zq.onrender.com';
 const PRODUCTION_PORT = ''; // HTTPS default port 443 – leave empty
 
 // Development (local machine)
-const DEVELOPMENT_HOST = '10.113.164.218';
+const DEVELOPMENT_HOST = '10.113.164.183';
 const DEVELOPMENT_PORT = '8000';
 
 // Auto‑switch based on environment

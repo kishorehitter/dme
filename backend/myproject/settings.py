@@ -177,7 +177,7 @@ CLOUDINARY_STORAGE = {
     'API_SECRET': env('CLOUDINARY_API_SECRET'),
 }
 
-# Force Cloudinary for all environments
+# Force Cloudinary for media only
 DEFAULT_FILE_STORAGE = 'chat.models.UniversalCloudinaryStorage'
 
 STORAGES = {
@@ -185,10 +185,11 @@ STORAGES = {
         'BACKEND': 'chat.models.UniversalCloudinaryStorage',
     },
     'staticfiles': {
-        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
 }
-STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
+# Remove old style storage setting to avoid conflict
+# STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 
 # Set the MEDIA_URL to point to Cloudinary
 # MEDIA_URL = f"https://res.cloudinary.com/{env('CLOUDINARY_CLOUD_NAME')}/"

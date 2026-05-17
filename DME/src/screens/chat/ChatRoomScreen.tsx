@@ -31,10 +31,12 @@ import Toast from 'react-native-toast-message';
 import RNFS from 'react-native-fs';
 import { chatAPI } from '../../services/api';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
-import { spacing, borderRadius, fontSize } from '../../utils/theme';
+import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import audioRecorder from '../../modules/AudioRecorder';
+import AudioPlayer from '../../components/AudioPlayer';
+import { pick, types, errorCodes } from '@react-native-documents/picker';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import fcmService from '../../services/fcm';
 import notifee from '@notifee/react-native';
@@ -47,313 +49,6 @@ import { resolveImageUrl } from '../../utils/image';
 const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
-
-// ─────────────────────────────────────────────
-// WhatsApp-style Audio Player
-// ─────────────────────────────────────────────
-// Global ref to track currently playing audio across all instances
-let currentlyPlayingAudioRef: { stop: () => void; id?: string } | null = null;
-
-const AudioPlayer: React.FC<{
-  mediaUrl: string;
-  themeColor: string;
-  duration?: number;
-  messageId?: string | number; // Unique identifier for this audio
-}> = ({ mediaUrl, themeColor, duration, messageId }) => {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [audioDuration, setAudioDuration] = useState(duration || 30);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [isCompleted, setIsCompleted] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const localPathRef = useRef<string | null>(null);
-  const resetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Animated value for smooth progress bar
-  const progressAnim = useRef(new Animated.Value(0)).current;
-
-  const stopTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-
-  const stopPlayback = () => {
-    try {
-      audioRecorder.stopPlaying();
-    } catch {}
-    stopTimer();
-  };
-
-  const resetPlayer = () => {
-    if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
-    setCurrentTime(0);
-    progressAnim.setValue(0);
-    setIsPlaying(false);
-    setIsCompleted(false);
-    currentlyPlayingAudioRef = null;
-  };
-
-  const handlePress = async () => {
-    // If this audio is completed, reset first
-    if (isCompleted) {
-      resetPlayer();
-    }
-
-    // If playing → pause this audio
-    if (isPlaying) {
-      stopPlayback();
-      setIsPlaying(false);
-      if (currentlyPlayingAudioRef?.id === String(messageId)) {
-        currentlyPlayingAudioRef = null;
-      }
-      return;
-    }
-
-    // Stop any other currently playing audio first
-    if (currentlyPlayingAudioRef) {
-      currentlyPlayingAudioRef.stop();
-      currentlyPlayingAudioRef = null;
-    }
-
-    // Start playing
-    setIsLoading(true);
-    try {
-      const url = mediaUrl;
-
-      // Download if not cached
-      if (!localPathRef.current) {
-        const urlParts = url.split('/');
-        const fileName = urlParts[urlParts.length - 1];
-        const local = `${RNFS.CachesDirectoryPath}/vc_${encodeURIComponent(fileName)}`;
-        
-        if (!(await RNFS.exists(local))) {
-          const dl = await RNFS.downloadFile({ fromUrl: url, toFile: local })
-            .promise;
-          if (dl.statusCode !== 200) {
-            console.error(`Download failed for ${url} with status ${dl.statusCode}`);
-            throw new Error('download failed');
-          }
-        }
-        localPathRef.current = local;
-      }
-
-      // Use the actual duration
-      if (!duration) {
-        const stat = await RNFS.stat(localPathRef.current);
-        const fileSizeKB = stat.size / 1024;
-        setAudioDuration(Math.ceil(fileSizeKB / 2));
-      }
-
-      // Start playing
-      audioRecorder.playRecording(localPathRef.current).catch(() => {});
-
-      // Update UI immediately
-      setIsLoading(false);
-      setIsPlaying(true);
-
-      // Set this as the currently playing audio
-      currentlyPlayingAudioRef = {
-        id: String(messageId),
-        stop: () => {
-          stopPlayback();
-          setIsPlaying(false);
-          setIsCompleted(false);
-        },
-      };
-
-      // Start timer with 100ms intervals for smooth progress
-      stopTimer();
-      const intervalMs = 100;
-      timerRef.current = setInterval(() => {
-        setCurrentTime(prev => {
-          const next = prev + intervalMs / 1000;
-          if (next >= audioDuration) {
-            // Audio completed
-            stopTimer();
-            stopPlayback();
-            setIsPlaying(false);
-            setIsCompleted(true);
-
-            // Clear any existing reset timeout
-            if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
-
-            // Reset after 1 second
-            resetTimeoutRef.current = setTimeout(() => {
-              resetPlayer();
-            }, 1000);
-
-            if (currentlyPlayingAudioRef?.id === String(messageId)) {
-              currentlyPlayingAudioRef = null;
-            }
-
-            return audioDuration;
-          }
-          return next;
-        });
-      }, intervalMs);
-
-      audioRecorder.setOnPlaybackComplete(() => {
-        stopTimer();
-        stopPlayback();
-        setIsPlaying(false);
-        setIsCompleted(true);
-        setCurrentTime(audioDuration);
-        progressAnim.setValue(100);
-
-        // Clear any existing reset timeout
-        if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
-
-        // Reset after 1 second
-        resetTimeoutRef.current = setTimeout(() => {
-          resetPlayer();
-        }, 1000);
-
-        if (currentlyPlayingAudioRef?.id === String(messageId)) {
-          currentlyPlayingAudioRef = null;
-        }
-      });
-    } catch (err) {
-      console.error('Audio play error:', err);
-      setIsLoading(false);
-      setIsPlaying(false);
-      if (currentlyPlayingAudioRef?.id === String(messageId)) {
-        currentlyPlayingAudioRef = null;
-      }
-      Toast.show({
-        type: 'error',
-        text1: 'Cannot play audio',
-        position: 'bottom',
-      });
-    }
-  };
-
-  // Handle seek on progress bar tap
-  const handleSeek = (evt: any) => {
-    if (audioDuration <= 0 || !trackRef.current || isCompleted) return;
-
-    const { locationX } = evt.nativeEvent;
-
-    trackRef.current.measure((x, y, width, height) => {
-      const percentage = Math.max(0, Math.min(1, locationX / width));
-      const newTime = percentage * audioDuration;
-
-      setCurrentTime(newTime);
-      progressAnim.setValue(percentage * 100);
-
-      console.log('Seeked to:', newTime.toFixed(1), 'seconds');
-    });
-  };
-
-  const trackRef = useRef<View>(null);
-
-  useEffect(() => {
-    // Update animated progress bar
-    const percentage = (currentTime / audioDuration) * 100;
-    progressAnim.setValue(Math.min(percentage, 100));
-  }, [currentTime]);
-
-  useEffect(() => {
-    // Cleanup on unmount
-    return () => {
-      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
-      stopTimer();
-      stopPlayback();
-      if (currentlyPlayingAudioRef?.id === String(messageId)) {
-        currentlyPlayingAudioRef = null;
-      }
-    };
-  }, []);
-
-  // Format time as M:SS
-  const fmt = (s: number) => {
-    const mins = Math.floor(s / 60);
-    const secs = Math.floor(s % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  return (
-    <View style={audioStyles.row}>
-      <TouchableOpacity
-        style={audioStyles.btn}
-        onPress={handlePress}
-        activeOpacity={0.7}
-      >
-        {isLoading ? (
-          <ActivityIndicator size="small" color={themeColor} />
-        ) : (
-          <Icon name={isPlaying ? 'pause' : 'play'} size={18} color="#333" />
-        )}
-      </TouchableOpacity>
-      <View style={audioStyles.info}>
-        <View
-          ref={trackRef}
-          style={audioStyles.track}
-          onStartShouldSetResponder={() => true}
-          onResponderRelease={handleSeek}
-        >
-          <Animated.View
-            style={[
-              audioStyles.fill,
-              {
-                width: progressAnim.interpolate({
-                  inputRange: [0, 100],
-                  outputRange: ['0%', '100%'],
-                  extrapolate: 'clamp',
-                }),
-                backgroundColor: themeColor,
-              },
-            ]}
-          />
-        </View>
-        <View style={audioStyles.timeRow}>
-          <Text style={audioStyles.time}>{fmt(currentTime)}</Text>
-          <Text style={audioStyles.timeSeparator}>/</Text>
-          <Text style={audioStyles.time}>{fmt(audioDuration)}</Text>
-        </View>
-      </View>
-    </View>
-  );
-};
-
-const audioStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minWidth: 180,
-    paddingVertical: 4,
-  },
-  btn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  icon: { fontSize: 13, color: '#333', fontWeight: '600' },
-  info: { flex: 1 },
-  track: {
-    height: 4,
-    backgroundColor: 'rgba(0,0,0,0.1)',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  fill: {
-    height: '100%',
-    borderRadius: 2,
-  },
-  timeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-  },
-  time: { fontSize: 11, color: '#666' },
-  timeSeparator: { fontSize: 11, color: '#999', marginHorizontal: 3 },
-});
 
 // ─────────────────────────────────────────────
 // MAIN COMPONENT
@@ -370,7 +65,6 @@ interface OtherUser {
 }
 
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
-  const [viewingMedia, setViewingMedia] = useState<{ url: string, type: 'image' | 'video' } | null>(null);
   const { conversationId, name } = route.params;
   const { user: currentUser } = useAuth();
 
@@ -434,6 +128,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [showFullEmojiPicker, setShowFullEmojiPicker] = useState(false); // Full emoji picker overlay
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null); // Message being edited
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
+  const [highlightMessageId, setHighlightMessageId] = useState<number | null>(null); // Message to highlight
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [searchResults, setSearchResults] = useState<number[]>([]); // Indices of matches
+  const [currentResultIndex, setCurrentResultIndex] = useState(-1);
 
   // Double-tap reaction animation state
   const [doubleTapReaction, setDoubleTapReaction] = useState<{
@@ -507,6 +206,32 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     // Only load messages if not cleared
     if (!isCleared) {
       loadMessages();
+    }
+
+    // Scroll to specific message if ID provided
+    const scrollToId = route.params?.scrollToMessageId;
+    if (scrollToId) {
+      setTimeout(() => {
+        const index = messagesRef.current.findIndex(m => m.id === scrollToId);
+        if (index >= 0) {
+            setHighlightMessageId(scrollToId);
+            try {
+              flatListRef.current?.scrollToIndex({ 
+                index, 
+                animated: true, 
+                viewPosition: 0.5 
+              });
+            } catch (err) {
+              console.warn('ScrollToIndex failed initially:', err);
+              // Fallback to offset if needed, though onScrollToIndexFailed usually handles this
+            }
+        }
+      }, 1000); // Give it time to load and render
+    }
+
+    // Activate search mode if requested
+    if (route.params?.searchMode) {
+      setSearchMode(true);
     }
 
     const focusSub = navigation.addListener('focus', () => {
@@ -670,7 +395,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       }
 
       // Also check if I'm blocked by this user (reverse check would need a different endpoint)
-      // For now, we'll infer from the fact that messages aren't being sent
+      // For now, we'll use a heuristic: if last_seen is very old but they're connecting to WebSocket, they might have blocked us
+      // Better approach: add a new endpoint to check if I'm blocked
     } catch (error) {
       console.error('Error checking block status:', error);
     }
@@ -924,6 +650,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     setIsSending(true);
     setInputText('');
+    setHighlightMessageId(null); // Clear any active highlight when sending a new message
 
     if (websocketService.getConnectionState()) {
       const optimistic: any = {
@@ -1164,18 +891,82 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const handleAttachment = async () => {
-    // Gallery: Force local files by choosing image library directly
+    Alert.alert('Attach File', 'Select an option', [
+      {
+        text: '🖼️ Gallery',
+        onPress: async () => {
+          try {
+            const result = await launchImageLibrary({
+              mediaType: 'mixed',
+              quality: 0.85,
+              selectionLimit: 1,
+            });
+            if (result.didCancel || result.errorCode) return;
+            const asset = result.assets?.[0];
+            if (asset?.uri) await sendImageMessage(asset);
+          } catch (error) {
+            console.error('Gallery error:', error);
+          }
+        },
+      },
+      {
+        text: '📄 Document',
+        onPress: async () => {
+          try {
+            const [res] = await pick({
+              type: [types.allFiles],
+              allowMultiSelection: false,
+            });
+            if (res) {
+              await sendDocumentMessage(res);
+            }
+          } catch (err: any) {
+            if (err?.code !== errorCodes.OPERATION_CANCELED) {
+              console.error('DocumentPicker error:', err);
+            }
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const sendDocumentMessage = async (doc: any) => {
+    setIsSending(true);
     try {
-      const result = await launchImageLibrary({
-        mediaType: 'mixed',
-        quality: 0.85,
-        selectionLimit: 1,
-      });
-      if (result.didCancel || result.errorCode) return;
-      const asset = result.assets?.[0];
-      if (asset?.uri) await sendImageMessage(asset);
-    } catch (error) {
-      console.error('Gallery error:', error);
+      const token = await AsyncStorage.getItem('access_token');
+      const fd = new FormData();
+      fd.append('content', '');
+      fd.append('message_type', 'document');
+      fd.append('media_file', {
+        uri: doc.uri,
+        type: doc.type || 'application/octet-stream',
+        name: doc.name || 'document',
+      } as any);
+
+      const res = await fetch(
+        `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
+        {
+          method: 'POST',
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'Content-Type': 'multipart/form-data',
+          },
+          body: fd,
+        },
+      );
+
+      if (res.ok) {
+        const nm = await res.json();
+        setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
+      } else {
+        throw new Error('Upload failed');
+      }
+    } catch (e) {
+      console.error('Document upload error:', e);
+      Toast.show({ type: 'error', text1: 'Failed to send document' });
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -1532,18 +1323,24 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const jumpToMessage = (id: number) => {
     const idx = messages.findIndex(m => m.id === id);
-    if (idx >= 0)
-      flatListRef.current?.scrollToIndex({
-        index: idx,
-        animated: true,
-        viewPosition: 0.5,
-      });
+    if (idx >= 0) {
+      try {
+        flatListRef.current?.scrollToIndex({
+          index: idx,
+          animated: true,
+          viewPosition: 0.5,
+        });
+      } catch (err) {
+        console.warn('jumpToMessage scroll failed:', err);
+      }
+    }
   };
 
   // Scroll to bottom button handler
   const scrollToBottom = () => {
     flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
     setShowScrollToBottom(false);
+    setHighlightMessageId(null); // Clear highlight when returning to bottom
   };
 
   // Handle scroll to show/hide scroll-to-bottom button
@@ -1551,6 +1348,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     const offset = event.nativeEvent.contentOffset.y;
     // Show button when scrolled up more than 200px from bottom
     setShowScrollToBottom(offset > 200);
+
+    // If we are highlighted and scroll back to very bottom, clear highlight
+    if (highlightMessageId && offset < 20) {
+        setHighlightMessageId(null);
+    }
   };
 
   // Instagram-style long press menu handlers
@@ -1621,6 +1423,96 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     // Toggle the heart reaction (add if not present, remove if present)
     toggleReaction(item.id, '❤️');
+  };
+
+  const handleSearchTextChange = (text: string) => {
+    setSearchText(text);
+    if (!text.trim()) {
+      setSearchResults([]);
+      setCurrentResultIndex(-1);
+      return;
+    }
+
+    const term = text.toLowerCase();
+    const matches: number[] = [];
+    messages.forEach((m, index) => {
+      if (m.content?.toLowerCase().includes(term)) {
+        matches.push(index);
+      }
+    });
+
+    setSearchResults(matches);
+    if (matches.length > 0) {
+      setCurrentResultIndex(0);
+      // Optional: auto-scroll to the first match
+      jumpToSearchIndex(matches[0]);
+    } else {
+      setCurrentResultIndex(-1);
+    }
+  };
+
+  const jumpToSearchIndex = (index: number) => {
+    try {
+      flatListRef.current?.scrollToIndex({
+        index,
+        animated: true,
+        viewPosition: 0.5,
+      });
+      // Optionally highlight the message ID
+      setHighlightMessageId(messages[index].id);
+    } catch (err) {
+      console.warn('jumpToSearchIndex failed:', err);
+    }
+  };
+
+  const goToNextResult = () => {
+    if (searchResults.length === 0) return;
+    const nextIndex = (currentResultIndex + 1) % searchResults.length;
+    setCurrentResultIndex(nextIndex);
+    jumpToSearchIndex(searchResults[nextIndex]);
+  };
+
+  const goToPrevResult = () => {
+    if (searchResults.length === 0) return;
+    const prevIndex = (currentResultIndex - 1 + searchResults.length) % searchResults.length;
+    setCurrentResultIndex(prevIndex);
+    jumpToSearchIndex(searchResults[prevIndex]);
+  };
+
+  const renderSearchBar = () => {
+    if (!searchMode) return null;
+    return (
+      <View style={styles.searchBar}>
+        <TouchableOpacity onPress={() => { setSearchMode(false); setSearchText(''); setSearchResults([]); setCurrentResultIndex(-1); }}>
+          <Icon name="arrow-back" size={24} color="#666" />
+        </TouchableOpacity>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search messages..."
+          value={searchText}
+          onChangeText={handleSearchTextChange}
+          autoFocus
+        />
+        {searchResults.length > 0 && (
+          <View style={styles.searchNav}>
+            <Text style={styles.searchCount}>
+              {currentResultIndex + 1} of {searchResults.length}
+            </Text>
+            <TouchableOpacity onPress={goToPrevResult} style={styles.searchNavButton}>
+              <Icon name="chevron-up" size={24} color={THEME_COLOR} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={goToNextResult} style={styles.searchNavButton}>
+              <Icon name="chevron-down" size={24} color={THEME_COLOR} />
+            </TouchableOpacity>
+          </View>
+        )}
+        {searchText.length > 0 && !searchResults.length && (
+            <TouchableOpacity onPress={() => {setSearchText(''); setSearchResults([]); setCurrentResultIndex(-1);}}>
+                <Icon name="close-circle" size={20} color="#999" />
+            </TouchableOpacity>
+        )}
+      </View>
+    );
   };
 
   const handleQuickReaction = async (emoji: string) => {
@@ -1752,9 +1644,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     const url = resolveImageUrl(rawUrl);
     if (!url) return null;
 
-    if (item.message_type === 'image')
+    // Image check: item type or file extension
+    const isImage = item.message_type === 'image' || 
+                    (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
+
+    if (isImage)
       return (
-        <TouchableOpacity onPress={() => setViewingMedia({ url: url, type: 'image' })}>
+        <TouchableOpacity onPress={() => navigation.navigate('MediaViewer', { mediaUrl: url, mediaType: 'image' })}>
           <Image source={{ uri: url }} style={styles.messageImage} resizeMode="cover" />
         </TouchableOpacity>
       );
@@ -1771,31 +1667,56 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     if (item.message_type === 'video' || (item.message_type === 'text' && (item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov'))))
       return (
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.videoPreviewContainer}
-          onPress={() => setViewingMedia({ url: url, type: 'video' })}
+          onPress={() => navigation.navigate('MediaViewer', { mediaUrl: url, mediaType: 'video' })}
         >
           <View style={styles.videoPlayOverlay}>
             <Icon name="play-circle" size={56} color="rgba(255,255,255,0.9)" />
           </View>
         </TouchableOpacity>
       );
-// ... existing document logic
 
       if (item.message_type === 'document')
         return (
-          <View style={styles.documentMessage}>
-            <Icon
-              name="file-document-outline"
-              size={24}
-              color={THEME_COLOR}
-              style={{ marginRight: spacing.sm }}
-            />
-            <Text style={styles.documentText}>Document</Text>
-          </View>
+          <TouchableOpacity 
+            style={styles.documentMessage}
+            onPress={() => Linking.openURL(url)}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Icon
+                  name="document-text-outline"
+                  size={24}
+                  color={THEME_COLOR}
+                  style={{ marginRight: spacing.sm }}
+                />
+                <Text style={styles.documentText} numberOfLines={1}>
+                  {item.media_file ? item.media_file.split('/').pop() : 'Document'}
+                </Text>
+            </View>
+            <Icon name="download-outline" size={20} color={colors.textSecondary} style={{ marginLeft: spacing.sm }} />
+          </TouchableOpacity>
         );
 
       return null;
+    };
+
+    const renderHighlightedText = (text: string, term: string) => {
+        if (!term || !text) return <Text>{text}</Text>;
+        
+        const parts = text.split(new RegExp(`(${term})`, 'gi'));
+        return (
+            <Text>
+                {parts.map((part, i) => (
+                    <Text 
+                        key={i} 
+                        style={part.toLowerCase() === term.toLowerCase() ? styles.highlightedText : null}
+                    >
+                        {part}
+                    </Text>
+                ))}
+            </Text>
+        );
     };
 
     return (
@@ -1826,6 +1747,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           style={[
             styles.messageBubble,
             isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+            highlightMessageId === item.id && { 
+              backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
+              borderWidth: 2,
+              borderColor: THEME_COLOR 
+            }
           ]}
           onPress={e => handleMessagePress(item, e)}
           onLongPress={() => handleMessageLongPress(item)}
@@ -1857,7 +1783,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           {/* Media inside bubble */}
           {renderMedia()}
 
-          {(item.message_type === 'text' || !!item.content) && (
+          {(item.message_type === 'text' || (!!item.content && !['image', 'video', 'voice note', 'voice message', 'document', 'media'].includes(item.content.toLowerCase()))) && (
             <Text
               style={[
                 styles.messageText,
@@ -1865,7 +1791,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 item.message_type !== 'text' && { marginTop: 6 }
               ]}
             >
-              {item.content}
+              {renderHighlightedText(item.content, searchText)}
             </Text>
           )}
 
@@ -1913,8 +1839,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     );
   }
 
-// Remove this entire block if it exists
-
   const renderGroupCallBanner = () => {
     if (!activeGroupCall || !isGroup) return null;
     return (
@@ -1944,15 +1868,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Header */}
+      {searchMode ? renderSearchBar() : (
       <View style={styles.customHeader}>
-        <TouchableOpacity
-          style={styles.headerLeft}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.7}
-        >
-          <Icon name="arrow-back" size={28} color={THEME_COLOR} />
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={styles.headerCenter}
           onPress={() =>
@@ -2068,6 +1985,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           </TouchableOpacity>
         </View>
       </View>
+      )}
 
       {renderGroupCallBanner()}
 
@@ -2083,6 +2001,17 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         onEndReached={loadOlderMessages}
         onEndReachedThreshold={0.3}
         onScroll={handleOnScroll}
+        onScrollToIndexFailed={info => {
+            console.warn('ScrollToIndex failed, retrying after layout...', info);
+            const wait = setTimeout(() => {
+                flatListRef.current?.scrollToIndex({ 
+                    index: info.index, 
+                    animated: true, 
+                    viewPosition: 0.5 
+                });
+            }, 500);
+            return () => clearTimeout(wait);
+        }}
         scrollEventThrottle={16}
         ListFooterComponent={
           isLoadingOlder ? (
@@ -2098,16 +2027,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         maxToRenderPerBatch={20}
         windowSize={10}
         removeClippedSubviews={false}
+        ListEmptyComponent={
+          !isLoading && searchText ? (
+            <View style={styles.emptySearchContainer}>
+              <Icon name="search-outline" size={48} color="#DDD" />
+              <Text style={styles.emptySearchText}>No messages found</Text>
+            </View>
+          ) : null
+        }
       />
-
-      {/* Full screen media viewer — Global to the screen */}
-      {viewingMedia && (
-        <FullScreenMediaViewer
-          mediaUrl={viewingMedia.url}
-          mediaType={viewingMedia.type}
-          onClose={() => setViewingMedia(null)}
-        />
-      )}
 
       {/* Scroll to bottom button */}
       {showScrollToBottom && (
@@ -2346,7 +2274,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                       style={{ marginRight: 12 }}
                     />
                     <Text
-                      style={[styles.actionMenuItemText, { color: '#FF4444' }]}
+                      style={[styles.actionMenuItemText, { color: '#FF4444' },]}
                     >
                       Delete
                     </Text>
@@ -2635,6 +2563,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
+    height: 60,
   },
   headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },
   backIcon: { fontSize: 28, color: '#8100D1', fontWeight: '300' },
@@ -3121,104 +3050,50 @@ const styles = StyleSheet.create({
     fontSize: 80,
     textAlign: 'center',
   },
-  customHeader: {
+  // Search bar styles
+  searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: spacing.md,
     backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    paddingHorizontal: spacing.md,
     height: 60,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
-  headerLeft: {
-    padding: spacing.sm,
-  },
-  backIcon: {
-    fontSize: 24,
-    color: THEME_COLOR,
-  },
-  headerCenter: {
+  searchInput: {
     flex: 1,
+    fontSize: 16,
+    color: '#000',
+    marginLeft: spacing.md,
+  },
+  searchNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: spacing.sm,
+    gap: spacing.sm,
   },
-  headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  searchCount: {
+    fontSize: 14,
+    color: '#666',
     marginRight: spacing.sm,
   },
-  headerSticker: {
-    fontSize: 24,
+  searchNavButton: {
+    padding: 4,
   },
-  headerAvatarText: {
-    fontSize: 18,
-    color: THEME_COLOR,
-    fontWeight: 'bold',
-  },
-  headerTextContainer: {
+  // Empty search styles
+  emptySearchContainer: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 100,
+    transform: [{ scaleY: -1 }], // Because list is inverted
   },
-  headerName: {
-    fontSize: fontSize.lg,
-    fontWeight: '600',
+  emptySearchText: {
+    marginTop: spacing.md,
+    fontSize: 16,
+    color: '#999',
+  },
+  highlightedText: {
+    backgroundColor: '#FFEB3B',
     color: '#000',
   },
-  headerStatus: {
-    fontSize: 11,
-    color: '#666',
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  callIcon: {
-    padding: spacing.sm,
-    marginLeft: spacing.sm,
-  },
-  callIconText: {
-    fontSize: 22,
-    color: THEME_COLOR,
-  joinCallButton: {
-    backgroundColor: '#34C759',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.full,
-    marginRight: spacing.sm,
-  },
-  joinCallText: {
-    color: '#FFF',
-    fontWeight: 'bold',
-  },
-  callBanner: {
-    backgroundColor: '#E8F5E9',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#C8E6C9',
-  },
-  callBannerText: {
-    fontSize: 14,
-    color: '#2E7D32',
-    fontWeight: '600',
-  },
-  joinButton: {
-    backgroundColor: '#2E7D32',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  joinButtonText: {
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-    fontSize: fontSize.sm,
-  },
 });
-
-export default ChatRoomScreen;

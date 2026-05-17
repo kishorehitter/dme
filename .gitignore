@@ -10,6 +10,7 @@ backend/.env
 backend/firebase-service-account.json
 
 # --- React Native / Frontend ---
+node_modules/
 DME/node_modules/
 DME/.expo/
 DME/dist/
@@ -23,6 +24,9 @@ DME/ios/Pods/
 DME/.DS_Store
 DME/*.keystore
 DME/android/app/debug.keystore
+
+# --- Temporary / Logs ---
+er.md
 
 # --- IDE / Editor ---
 .vscode/

@@ -6,6 +6,8 @@ import {
   DeviceEventEmitter,
   AppState,
   AppStateStatus,
+  NativeModules,
+  Platform,
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -219,6 +221,14 @@ function App() {
       unsubscribeFCM?.();
       deviceEventSub.remove();
     };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      // Set default app colors: White bars with dark icons
+      NativeModules.SystemBar.setStatusBarColor('#FFFFFF', false);
+      NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+    }
   }, []);
 
   function onNavigatorReady() {

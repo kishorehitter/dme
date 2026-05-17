@@ -96,6 +96,27 @@ class StatusSerializer(serializers.ModelSerializer):
         if not request: return False
         return obj.likes.filter(user=request.user).exists()
 
+    def create(self, validated_data):
+        # Handle media file upload
+        request = self.context.get('request')
+        if request and request.FILES.get('media_file'):
+            file_obj = request.FILES.get('media_file')
+            
+            # AGGRESSIVE CLEANING: Strip EVERYTHING except the last part of a path
+            original_name = file_obj.name
+            clean_name = original_name.replace('\\', '/').split('/')[-1]
+            
+            # Ensure we have an extension if it's missing (Cloudinary needs it for resource type)
+            if '.' not in clean_name:
+                media_type = validated_data.get('media_type', 'photo')
+                ext = 'mp4' if media_type == 'video' else 'jpg'
+                clean_name = f"{clean_name}.{ext}"
+            
+            file_obj.name = clean_name
+            validated_data['media_file'] = file_obj
+            
+        return super().create(validated_data)
+
 
 class MessageSerializer(serializers.ModelSerializer):
     """Serializer for Message model."""
@@ -174,13 +195,13 @@ class MessageSerializer(serializers.ModelSerializer):
         if not validated_data.get('content') and validated_data.get('media_file'):
             message_type = validated_data.get('message_type', 'text')
             if message_type == 'audio':
-                validated_data['content'] = 'Voice note'
+                validated_data['content'] = ''
             elif message_type == 'image':
-                validated_data['content'] = 'Image'
+                validated_data['content'] = ''
             elif message_type == 'document':
-                validated_data['content'] = 'Document'
+                validated_data['content'] = ''
             elif message_type == 'video':
-                validated_data['content'] = 'Video'
+                validated_data['content'] = ''
         
         # Sender and conversation are set by the view
         return super().create(validated_data)
@@ -269,10 +290,18 @@ class ConversationCreateSerializer(serializers.ModelSerializer):
         created_by = validated_data.pop('created_by', request.user if request else None)
         
         # Clean profile picture filename
-        profile_picture = validated_data.get('profile_picture')
-        if profile_picture:
-            if '/' in profile_picture.name: profile_picture.name = profile_picture.name.split('/')[-1]
-            if '\\' in profile_picture.name: profile_picture.name = profile_picture.name.split('\\')[-1]
+        file_obj = validated_data.get('profile_picture')
+        if file_obj:
+            # AGGRESSIVE CLEANING: Strip EVERYTHING except the last part of a path
+            original_name = file_obj.name
+            clean_name = original_name.replace('\\', '/').split('/')[-1]
+            
+            # Ensure we have an extension if it's missing
+            if '.' not in clean_name:
+                clean_name = f"{clean_name}.jpg"
+            
+            file_obj.name = clean_name
+            validated_data['profile_picture'] = file_obj
 
         # Create conversation
         conversation = Conversation.objects.create(

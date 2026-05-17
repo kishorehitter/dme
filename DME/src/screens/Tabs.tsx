@@ -310,11 +310,7 @@ export const StatusTabScreen = () => {
       <MyStatusRow
         statuses={myStatuses}
         username={currentUser?.username ?? 'You'}
-        avatar={currentUser?.profile_picture 
-          ? (currentUser.profile_picture.includes('?') 
-              ? currentUser.profile_picture 
-              : `${currentUser.profile_picture}?t=${Date.now()}`)
-          : null}
+        avatar={currentUser?.profile_picture}
         avatarSticker={currentUser?.avatar_sticker ?? null}
         onView={viewMyStatuses}
         onAdd={openPicker}

@@ -1,10 +1,11 @@
-import React from 'react';
-import { View, StyleSheet, TouchableOpacity, Modal, StatusBar, Dimensions } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, StyleSheet, TouchableOpacity, Modal, StatusBar, Dimensions, NativeModules, Platform } from 'react-native';
 import Video from 'react-native-video';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const { width, height } = Dimensions.get('window');
+const { SystemBar } = NativeModules;
 
 interface Props {
   mediaUrl: string;
@@ -13,9 +14,38 @@ interface Props {
 }
 
 const FullScreenMediaViewer: React.FC<Props> = ({ mediaUrl, mediaType, onClose }) => {
+  useEffect(() => {
+    if (Platform.OS === 'android' && SystemBar) {
+      // Industry Standard: Black bars for media viewing
+      SystemBar.setStatusBarColor('#000000', true);
+      SystemBar.setNavigationBarColor('#000000', true);
+    }
+    
+    return () => {
+      if (Platform.OS === 'android' && SystemBar) {
+        // Restore to app standard: White bars
+        SystemBar.setStatusBarColor('#FFFFFF', false);
+        SystemBar.setNavigationBarColor('#FFFFFF', false);
+      }
+    };
+  }, []);
+
   return (
-    <Modal visible={true} transparent={false} animationType="fade" onRequestClose={onClose}>
-      <StatusBar hidden />
+    <Modal
+      visible={true}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent={true}
+      presentationStyle="overFullScreen"
+      onShow={() => {
+        if (Platform.OS === 'android' && SystemBar) {
+          SystemBar.setStatusBarColor('#000000', true);
+          SystemBar.setNavigationBarColor('#000000', true);
+        }
+      }}
+    >
+      <StatusBar barStyle="light-content" backgroundColor="#000000" translucent={true} />
       <View style={styles.container}>
         {mediaType === 'video' ? (
           <Video

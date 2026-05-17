@@ -368,10 +368,10 @@ class MessageViewSet(viewsets.ModelViewSet):
         if not data.get('content') and request.FILES.get('media_file'):
             message_type = data.get('message_type', 'text')
             content_map = {
-                'audio': 'Voice note',
-                'image': 'Image',
-                'document': 'Document',
-                'video': 'Video',
+                'audio': '',
+                'image': '',
+                'document': '',
+                'video': '',
             }
             data['content'] = content_map.get(message_type, 'Media')
 
@@ -992,4 +992,72 @@ class DeleteConversationView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class ConversationMediaView(APIView):
+    """Fetch all media messages in a conversation with strict type filtering."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, conversation_id):
+        # Verify user has access to this conversation
+        user_has_access = Conversation.objects.filter(
+            id=conversation_id,
+            participants__user=request.user
+        ).exists()
+
+        if not user_has_access:
+            return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        msg_type = request.query_params.get('type')
+        
+        # Define strict extension filters
+        image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic']
+        video_exts = ['.mp4', '.mov', '.avi', '.mkv']
+        audio_exts = ['.mp3', '.m4a', '.wav', '.aac', '.ogg']
+        # Documents are anything else that isn't one of the above if type is 'document'
+
+        queryset = Message.objects.filter(
+            conversation_id=conversation_id,
+            is_deleted=False
+        ).exclude(
+            cleared_by=request.user
+        ).select_related('sender').order_by('-created_at')
+
+        if msg_type == 'image':
+            queryset = queryset.filter(
+                Q(message_type='image') | 
+                Q(media_file__icontains='.jpg') | Q(media_file__icontains='.png') |
+                Q(media_file__icontains='.jpeg') | Q(media_file__icontains='.webp')
+            ).filter(message_type__in=['image', 'text', 'document']) # Handle cases where images were sent as docs
+        elif msg_type == 'video':
+            queryset = queryset.filter(
+                Q(message_type='video') |
+                Q(media_file__icontains='.mp4') | Q(media_file__icontains='.mov')
+            )
+        elif msg_type == 'audio':
+            queryset = queryset.filter(
+                Q(message_type='audio') |
+                Q(media_file__icontains='.mp3') | Q(media_file__icontains='.m4a') |
+                Q(media_file__icontains='.wav')
+            )
+        elif msg_type == 'document':
+            # Exclude images, videos, and audio from documents
+            queryset = queryset.filter(message_type='document').exclude(
+                Q(media_file__icontains='.jpg') | Q(media_file__icontains='.png') |
+                Q(media_file__icontains='.jpeg') | Q(media_file__icontains='.webp') |
+                Q(media_file__icontains='.mp4') | Q(media_file__icontains='.mov') |
+                Q(media_file__icontains='.mp3') | Q(media_file__icontains='.m4a')
+            )
+        else:
+            # Default fallback for old behavior
+            media_types = ['image', 'video', 'audio', 'document']
+            queryset = queryset.filter(message_type__in=media_types)
+
+        # Optional: Filter by specific sender
+        sender_id = request.query_params.get('sender_id')
+        if sender_id:
+            queryset = queryset.filter(sender_id=sender_id)
+
+        serializer = MessageSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
 

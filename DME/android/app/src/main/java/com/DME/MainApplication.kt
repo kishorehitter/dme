@@ -22,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
             removeAll { it is FFmpegKitReactNativePackage }
           }
           add(AudioRecorderPackage())
+          add(SystemBarPackage())
         },
     )
   }

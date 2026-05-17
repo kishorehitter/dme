@@ -17,6 +17,7 @@ from .views import (
     MessageDeleteView,
     ClearChatView,
     DeleteConversationView,
+    ConversationMediaView,
     StatusViewersListView,
     ConversationUpdateProfileView,
     HealthCheckView,
@@ -31,9 +32,6 @@ urlpatterns = [
     # Health Check
     path('health/', HealthCheckView.as_view(), name='health-check'),
     
-    # Router URLs
-    path('', include(router.urls)),
-
     # Conversation details
     path('conversations/<int:pk>/detail/', ConversationDetailView.as_view(), name='conversation-detail'),
     path('conversations/<int:pk>/update-profile/', ConversationUpdateProfileView.as_view(), name='update-conversation-profile'),
@@ -47,6 +45,9 @@ urlpatterns = [
 
     # Delete conversation (remove from user's chat list)
     path('conversations/<int:conversation_id>/delete/', DeleteConversationView.as_view(), name='delete-conversation'),
+
+    # Conversation media
+    path('conversations/<int:conversation_id>/media/', ConversationMediaView.as_view(), name='conversation-media'),
 
     # Mark messages as read
     path('conversations/<int:conversation_id>/mark-read/', MarkMessagesReadView.as_view(), name='mark-read'),
@@ -74,4 +75,7 @@ urlpatterns = [
 
     # Status viewers list
     path('statuses/<int:status_id>/viewers/', StatusViewersListView.as_view(), name='status-viewers'),
+
+    # Router URLs (keep at the end)
+    path('', include(router.urls)),
 ]

@@ -21,6 +21,7 @@ import {
   StatusBar, Animated, FlatList, Modal,
   ActivityIndicator, Alert, Platform,
   PanResponder, TextInput, KeyboardAvoidingView,
+  NativeModules,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -238,6 +239,21 @@ const StatusViewerScreen: React.FC = () => {
   const route      = useRoute();
   const insets     = useSafeAreaInsets();
 
+  useEffect(() => {
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      // Industry Standard: Black bars for status viewing
+      NativeModules.SystemBar.setStatusBarColor('#000000', true);
+      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+    }
+    return () => {
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        // Restore to app standard: White bars
+        NativeModules.SystemBar.setStatusBarColor('#FFFFFF', false);
+        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+      }
+    };
+  }, []);
+
   const { statuses: initialStatuses, initialIndex, isOwn } = route.params as RouteParams;
 
   const [statuses,      setStatuses]      = useState<Status[]>(initialStatuses);
@@ -436,7 +452,7 @@ const StatusViewerScreen: React.FC = () => {
       style={[s.container, { transform: [{ translateY }] }]}
       {...panResponder.panHandlers}
     >
-      <StatusBar hidden />
+      <StatusBar barStyle="light-content" backgroundColor="#000000" translucent={true} />
 
       {/* ── Media ── */}
       {isVideo ? (

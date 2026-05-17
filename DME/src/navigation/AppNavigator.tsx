@@ -19,6 +19,8 @@ import {
   IncomingCallScreen,
   StatusTabScreen,
   CallLogTabScreen,
+  MediaViewerScreen,
+  SharedMediaScreen,
 } from '../screens/index';
 import StatusViewer from '../components/StatusViewer';
 import StatusEditorScreen from '../screens/StatusEditorScreen';
@@ -183,11 +185,11 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
       <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusViewer" component={StatusViewer}       options={{ headerShown: false }} />
       <Stack.Screen name="StatusEditor" component={StatusEditorScreen} options={{ headerShown: false }} />
-    </Stack.Navigator>
-  );
-};
-
-interface AppNavigatorProps {
+      <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animationEnabled: false }} />
+      <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media' }} />
+      </Stack.Navigator>
+      );
+      };interface AppNavigatorProps {
   setNavigationRef: (ref: any) => void;
   onNavigatorReady?: () => void;
 }

@@ -12,6 +12,7 @@ import {
   Modal,
   FlatList,
 } from 'react-native';
+import Icon from 'react-native-vector-icons/Ionicons';
 import { launchImageLibrary } from 'react-native-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
@@ -76,77 +77,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   // For friend profile - clear chat and block
   const [isBlocked, setIsBlocked] = useState(false);
-  const [sharedMedia, setSharedMedia] = useState<any[]>([]);
-  const [isLoadingMedia, setIsLoadingMedia] = useState(false);
-  const [displayedMedia, setDisplayedMedia] = useState<any[]>([]);
-  const [hasMoreMedia, setHasMoreMedia] = useState(true);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const displayedCountRef = useRef(3); // Start with 3 images
-
-  const loadSharedMedia = async () => {
-    if (!viewingOtherProfile?.id) return;
-    setIsLoadingMedia(true);
-    try {
-      const token = await AsyncStorage.getItem('access_token');
-
-      // Get ALL messages first (not just images)
-      const messagesResponse = await fetch(
-        getApiUrl(`chat/conversations/${viewingOtherProfile.id}/messages/`),
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
-
-      if (messagesResponse.ok) {
-        const data = await messagesResponse.json();
-        const allMessages = Array.isArray(data) ? data : data?.results ?? [];
-
-        // Filter for image messages only
-        const allImages = allMessages.filter(
-          (m: any) => m.message_type === 'image' && m.media_file,
-        );
-
-        setSharedMedia(allImages);
-
-        // Show only first 3 initially
-        const initialImages = allImages.slice(0, 3);
-        setDisplayedMedia(initialImages);
-        setHasMoreMedia(allImages.length > 3);
-        displayedCountRef.current = 3;
-
-        console.log(
-          'Loaded media:',
-          allImages.length,
-          'images, showing:',
-          initialImages.length,
-        );
-      }
-    } catch (error) {
-      console.error('Error loading media:', error);
-    } finally {
-      setIsLoadingMedia(false);
-    }
-  };
-
-  const loadMoreMedia = () => {
-    if (isLoadingMore || !hasMoreMedia) return;
-
-    setIsLoadingMore(true);
-    const nextCount = displayedCountRef.current + 3;
-    const nextImages = sharedMedia.slice(0, nextCount);
-
-    setDisplayedMedia(nextImages);
-    displayedCountRef.current = nextCount;
-
-    if (nextCount >= sharedMedia.length) {
-      setHasMoreMedia(false);
-    }
-
-    setIsLoadingMore(false);
-  };
 
   const loadBlockStatus = async () => {
     if (!viewingOtherProfile?.id) return;
@@ -300,24 +230,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   };
 
   useEffect(() => {
-    if (viewingOtherProfile) {
-      loadSharedMedia();
-      loadBlockStatus();
-    }
-  }, [viewingOtherProfile]);
-
-  useEffect(() => {
-    if (viewingOtherProfile) {
-      // Viewing another user's profile - read-only mode
-      setProfile(viewingOtherProfile);
-      setFormData({
-        display_name: viewingOtherProfile.display_name || '',
-        username: viewingOtherProfile.username || '', // Add
-        bio: viewingOtherProfile.bio || '', // Add (replace status)
-      });
-    } else {
-      loadProfile();
-    }
+    const initializeProfile = async () => {
+      if (viewingOtherProfile) {
+        // 1. Load block status
+        loadBlockStatus();
+        
+        // 2. Fetch full user data to ensure bio, etc. are loaded
+        try {
+          const token = await AsyncStorage.getItem('access_token');
+          const response = await fetch(getApiUrl(`accounts/users/${viewingOtherProfile.id}/`), {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (response.ok) {
+            const fullProfile = await response.json();
+            setProfile(fullProfile);
+            setFormData({
+              display_name: fullProfile.display_name || '',
+              username: fullProfile.username || '',
+              bio: fullProfile.bio || '',
+            });
+          } else {
+            // Fallback to params if fetch fails
+            setProfile(viewingOtherProfile);
+            setFormData({
+              display_name: viewingOtherProfile.display_name || '',
+              username: viewingOtherProfile.username || '',
+              bio: viewingOtherProfile.bio || '',
+            });
+          }
+        } catch (err) {
+          console.error("Error fetching full profile:", err);
+          setProfile(viewingOtherProfile);
+        }
+      } else {
+        loadProfile();
+      }
+    };
+    
+    initializeProfile();
   }, []);
 
   const loadProfile = async () => {
@@ -563,15 +513,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   );
 
   // Simplified friend profile view
-  if (isReadOnly && viewingOtherProfile) {
+  if (isReadOnly && profile) {
     // Use username as primary identifier for display if available, then fallback
     const displayName =
-      viewingOtherProfile.display_name ||
-      viewingOtherProfile.username || // Add username here
-      viewingOtherProfile.first_name ||
-      viewingOtherProfile.email ||
+      profile.display_name ||
+      profile.username ||
+      profile.first_name ||
+      profile.email ||
       'User';
-    const bio = viewingOtherProfile.bio || 'No bio available'; // Use 'bio' instead of 'status'
+    const bio = profile.bio || 'No bio available'; 
 
     return (
       <ScrollView style={styles.container}>
@@ -579,17 +529,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <View style={styles.friendProfileHeader}>
           {/* Profile Picture */}
           <View style={styles.friendAvatarContainer}>
-            {viewingOtherProfile.avatar_sticker ? (
+            {profile.avatar_sticker ? (
               <View
                 style={[styles.friendAvatar, styles.friendAvatarPlaceholder]}
               >
                 <Text style={styles.stickerAvatar}>
-                  {viewingOtherProfile.avatar_sticker}
+                  {profile.avatar_sticker}
                 </Text>
               </View>
-            ) : viewingOtherProfile.profile_picture ? (
+            ) : profile.profile_picture ? (
               <Image
-                source={{ uri: viewingOtherProfile.profile_picture }}
+                source={{ uri: profile.profile_picture }}
                 style={styles.friendAvatar}
               />
             ) : (
@@ -608,87 +558,74 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
           {/* Bio */}
           <Text style={styles.friendBio}>{bio}</Text>
+
+          {/* Action Grid */}
+          <View style={styles.actionGrid}>
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={styles.gridButton}
+                onPress={() => navigation.navigate('Call', {
+                  callType: 'audio',
+                  remoteUserId: profile.id,
+                  remoteUserName: displayName,
+                  remoteUserPic: profile.profile_picture,
+                  conversationId: route.params.conversationId,
+                })}
+              >
+                <View style={styles.gridIconContainer}>
+                  <Icon name="call" size={24} color={colors.primary} />
+                </View>
+                <Text style={styles.gridButtonText}>Audio Call</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.gridButton}
+                onPress={() => navigation.navigate('Call', {
+                  callType: 'video',
+                  remoteUserId: profile.id,
+                  remoteUserName: displayName,
+                  remoteUserPic: profile.profile_picture,
+                  conversationId: route.params.conversationId,
+                })}
+              >
+                <View style={styles.gridIconContainer}>
+                  <Icon name="videocam" size={24} color={colors.primary} />
+                </View>
+                <Text style={styles.gridButtonText}>Video Call</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={styles.gridButton}
+                onPress={() => navigation.navigate('SharedMedia', { 
+                  conversationId: route.params.conversationId, 
+                  otherUserId: profile.id 
+                })}
+              >
+                <View style={styles.gridIconContainer}>
+                  <Icon name="images" size={24} color={colors.primary} />
+                </View>
+                <Text style={styles.gridButtonText}>Shared Media</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.gridButton}
+                onPress={() => navigation.navigate('ChatRoom', { 
+                  conversationId: route.params.conversationId, 
+                  searchMode: true 
+                })}
+              >
+                <View style={styles.gridIconContainer}>
+                  <Icon name="search" size={24} color={colors.primary} />
+                </View>
+                <Text style={styles.gridButtonText}>Search</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
 
-        {/* Shared Media Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Shared Media</Text>
-          </View>
-
-          {isLoadingMedia ? (
-            <View style={styles.mediaLoading}>
-              <ActivityIndicator size="small" color={colors.primary} />
-            </View>
-          ) : displayedMedia.length > 0 ? (
-            <>
-              <FlatList
-                data={displayedMedia}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyExtractor={item => item.id.toString()}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.mediaItemHorizontal}
-                    onPress={() => setSelectedImage(item.media_file)}
-                  >
-                    <Image
-                      source={{ uri: item.media_file }}
-                      style={styles.mediaImageHorizontal}
-                      resizeMode="cover"
-                    />
-                  </TouchableOpacity>
-                )}
-                onEndReached={loadMoreMedia}
-                onEndReachedThreshold={0.5}
-                ListFooterComponent={
-                  isLoadingMore ? (
-                    <View style={styles.mediaLoadingFooter}>
-                      <ActivityIndicator size="small" color={colors.primary} />
-                    </View>
-                  ) : null
-                }
-              />
-              {hasMoreMedia && (
-                <TouchableOpacity
-                  style={styles.loadMoreButton}
-                  onPress={loadMoreMedia}
-                >
-                  <Text style={styles.loadMoreButtonText}>Load More</Text>
-                </TouchableOpacity>
-              )}
-            </>
-          ) : (
-            <View style={styles.mediaEmpty}>
-              <Text style={styles.mediaEmptyText}>No shared media</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Image Viewer Modal */}
-        <Modal
-          visible={!!selectedImage}
-          transparent
-          onRequestClose={() => setSelectedImage(null)}
-        >
-          <View style={styles.imageViewerModal}>
-            <TouchableOpacity
-              style={styles.imageViewerClose}
-              onPress={() => setSelectedImage(null)}
-            >
-              <Text style={styles.imageViewerCloseText}>✕</Text>
-            </TouchableOpacity>
-            {selectedImage && (
-              <Image
-                source={{ uri: selectedImage }}
-                style={styles.imageViewerImage}
-                resizeMode="contain"
-              />
-            )}
-          </View>
-        </Modal>
-
-        {/* Action Buttons - Stacked vertically */}
+        {/* Action Buttons - Remaining vertical actions */}
         <View style={styles.friendActionsSection}>
           <TouchableOpacity
             style={styles.friendActionButton}
@@ -696,17 +633,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             activeOpacity={0.7}
           >
             <View style={styles.actionIconContainer}>
-              <Text style={styles.actionIcon}>🗑️</Text>
+              <Icon name="trash-outline" size={22} color="#F44336" />
             </View>
             <View style={styles.actionTextContainer}>
-              <Text style={styles.actionTitle}>Clear Chat</Text>
-              <Text style={styles.actionSubtitle}>
-                Clear messages from your view
-              </Text>
+              <Text style={[styles.actionTitle, { color: '#F44336' }]}>Clear Chat</Text>
             </View>
-            <Text style={styles.actionArrow}>›</Text>
           </TouchableOpacity>
-
           <View style={styles.actionSeparator} />
 
           <TouchableOpacity
@@ -723,7 +655,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 isBlocked && styles.actionIconContainerActive,
               ]}
             >
-              <Text style={styles.actionIcon}>{isBlocked ? '✓' : '🚫'}</Text>
+              <Icon name={isBlocked ? 'shield-checkmark-outline' : 'ban-outline'} size={22} color={isBlocked ? colors.primary : '#F44336'} />
             </View>
             <View style={styles.actionTextContainer}>
               <Text
@@ -734,18 +666,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               >
                 {isBlocked ? 'Unblock User' : 'Block User'}
               </Text>
-              <Text
-                style={[
-                  styles.actionSubtitle,
-                  isBlocked && styles.actionSubtitleActive,
-                ]}
-              >
-                {isBlocked
-                  ? 'User is currently blocked'
-                  : 'Prevent them from messaging you'}
-              </Text>
             </View>
-            <Text style={styles.actionArrow}>›</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -1452,6 +1373,41 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
     marginHorizontal: spacing.lg,
+  },
+  // Action Grid Styles
+  actionGrid: {
+    paddingHorizontal: spacing.lg,
+    width: '100%',
+    marginTop: spacing.md,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  gridButton: {
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.lg,
+    width: '48%',
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  gridIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#F0E6FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  gridButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textPrimary,
   },
 });
 

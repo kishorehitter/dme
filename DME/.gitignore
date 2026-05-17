@@ -84,3 +84,5 @@ backend/media/
 backend/chat_media/
 backend/status_media/
 backend/staticfiles/
+
+node_modules/

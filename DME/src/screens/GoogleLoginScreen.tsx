@@ -97,12 +97,13 @@ const GoogleLoginScreen = () => {
     <View style={styles.container}>
       <View style={styles.content}>
         <Text style={styles.appName}>DME</Text>
-        <Text style={styles.tagline}>Secure messaging, powered by Google</Text>
+        
 
          <Image
                 source={require('../assets/logo.png')}
                 style={{ width: 100, height: 100, borderRadius: 5, marginBottom: 40}}
               />
+        {/* <Text style={styles.tagline}>Secure messaging, powered by Google</Text> */}
 
         <TouchableOpacity
           style={styles.googleButton}

@@ -34,11 +34,24 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
         return 'raw'         # documents, unknown types
 
     def _get_public_id(self, name: str) -> str:
+        """
+        Strip extension for Cloudinary public_id to avoid double extensions in URLs.
+        Cloudinary adds the format extension automatically when requested.
+        """
+        if '.' in name:
+            # Strip the extension from the public_id
+            return name.rsplit('.', 1)[0]
         return name
 
     def _save(self, name, content):
+        print(f"DEBUG: UniversalCloudinaryStorage._save called for name: {name}")
         resource_type = self._get_resource_type(name)
         public_id     = self._get_public_id(name)
+        
+        # FIX: Normalize backslashes to forward slashes for Cloudinary
+        public_id = public_id.replace('\\', '/')
+        
+        print(f"DEBUG: Uploading to Cloudinary - resource_type: {resource_type}, public_id: {public_id}")
 
         try:
             response = cloudinary.uploader.upload(
@@ -48,45 +61,93 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
                 overwrite=True,
                 invalidate=True,
             )
+            print(f"DEBUG: Cloudinary upload successful: {response.get('public_id')}")
+            
             stored_public_id = response.get('public_id', public_id)
             version          = response.get('version')
             fmt              = response.get('format', '')
 
-            if version and fmt and not stored_public_id.endswith(f'.{fmt}'):
-                return f"v{version}/{stored_public_id}.{fmt}"
+            # FIX: For raw files, Cloudinary doesn't return a format. 
+            # We must restore the original extension for 'raw' types.
+            if resource_type == 'raw':
+                extension = name.rsplit('.', 1)[-1] if '.' in name else ''
+                if extension and not stored_public_id.lower().endswith(f".{extension.lower()}"):
+                    stored_public_id = f"{stored_public_id}.{extension}"
+
+            # Case-insensitive check for extension to avoid double extensions like .JPG.jpg
+            if version and fmt and resource_type != 'raw':
+                ext = f".{fmt}".lower()
+                if not stored_public_id.lower().endswith(ext):
+                    return f"v{version}/{stored_public_id}.{fmt}"
+                return f"v{version}/{stored_public_id}"
             elif version:
                 return f"v{version}/{stored_public_id}"
+            
             return stored_public_id
 
         except Exception as e:
+            print(f"DEBUG: Cloudinary upload FAILED: {e}")
             raise IOError(f"[UniversalCloudinaryStorage] Upload failed for '{name}': {e}") from e
 
     def _open(self, name, mode='rb'):
         raise NotImplementedError("Opening Cloudinary files directly is not supported.")
 
     def url(self, name):
+        """
+        Return the full Cloudinary CDN URL for a stored file.
+        """
         if not name: return ''
         if name.startswith('http://') or name.startswith('https://'): return name
+
+        # 1. Determine resource type
         resource_type = self._get_resource_type(name)
+
+        # 2. Build absolute URL with correct resource_type.
+        # We keep the 'name' as is because it already contains the version and extension
+        # from the _save method (e.g., 'v1778865260/chat_media/1000085395.jpg').
+        cloud_name = settings.CLOUDINARY_STORAGE.get('CLOUD_NAME', '')
+        
+        url = f"https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{name}"
+        
+        # 3. Enforce extension for video/audio resources if missing (Cloudinary requirement)
+        if resource_type == 'video':
+            if not any(url.lower().endswith(ext) for ext in ['.mp4', '.m4a', '.mp3', '.wav', '.aac', '.flac', '.ogg']):
+                url = f"{url}.mp4"
+            
+        return url
+
+    def _extract_public_id(self, name: str) -> str:
+        """
+        Extract the Cloudinary public_id from a stored name.
+        Example: 'v123/path/to/file.jpg' -> 'path/to/file'
+        """
         clean_name = name
+        # Strip version prefix if exists (e.g., 'v123/')
         if clean_name.startswith('v') and '/' in clean_name:
             parts = clean_name.split('/', 1)
-            if parts[0][1:].isdigit(): clean_name = parts[1]
-        cloud_name = settings.CLOUDINARY_STORAGE.get('CLOUD_NAME', '')
-        return f"https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{name}"
+            if parts[0][1:].isdigit():
+                clean_name = parts[1]
+        
+        # Strip extension
+        if '.' in clean_name:
+            clean_name = clean_name.rsplit('.', 1)[0]
+            
+        return clean_name
 
     def exists(self, name):
         try:
+            public_id = self._extract_public_id(name)
             resource_type = self._get_resource_type(name)
-            cloudinary.uploader.explicit(name, type='upload', resource_type=resource_type)
+            cloudinary.uploader.explicit(public_id, type='upload', resource_type=resource_type)
             return True
         except Exception:
             return False
 
     def delete(self, name):
         try:
+            public_id = self._extract_public_id(name)
             resource_type = self._get_resource_type(name)
-            cloudinary.uploader.destroy(name, resource_type=resource_type)
+            cloudinary.uploader.destroy(public_id, resource_type=resource_type)
         except Exception: pass
 
     def size(self, name):
@@ -98,14 +159,14 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
 
 def get_universal_storage():
     """
-    Return the appropriate storage backend.
-    - Production: UniversalCloudinaryStorage (all file types → Cloudinary)
-    - Development: Django default FileSystemStorage (local disk)
+    Return Cloudinary storage if configured in settings, 
+    otherwise fallback to local disk storage.
     """
-    if getattr(settings, 'IS_DEVELOPMENT', True):
-        from django.core.files.storage import FileSystemStorage
-        return FileSystemStorage()
-    return UniversalCloudinaryStorage()
+    if getattr(settings, 'CLOUDINARY_STORAGE', {}).get('CLOUD_NAME'):
+        return UniversalCloudinaryStorage()
+    
+    from django.core.files.storage import FileSystemStorage
+    return FileSystemStorage()
 
 
 def get_image_storage():

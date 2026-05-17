@@ -16,5 +16,10 @@ export const resolveImageUrl = (url?: string | null): string | undefined => {
 
   // Prepend base URL for relative paths
   const BASE_URL = API_BASE_URL.replace('/api', '');
-  return `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+  let resolvedUrl = `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+  
+  // Fix for double-slashes in protocol (e.g., https:/res.cloudinary.com → https://res.cloudinary.com)
+  resolvedUrl = resolvedUrl.replace(/https:\/([^/])/g, 'https://$1');
+  
+  return resolvedUrl;
 };

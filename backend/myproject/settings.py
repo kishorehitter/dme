@@ -191,6 +191,9 @@ STORAGES = {
 # Keep for compatibility with older packages like django-cloudinary-storage
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# Prevent build failure if third-party CSS references missing files (e.g. DRF fonts)
+WHITENOISE_MANIFEST_STRICT = False
+
 # Set the MEDIA_URL to point to Cloudinary
 # MEDIA_URL = f"https://res.cloudinary.com/{env('CLOUDINARY_CLOUD_NAME')}/"
 

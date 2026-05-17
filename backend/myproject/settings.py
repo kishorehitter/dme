@@ -185,11 +185,11 @@ STORAGES = {
         'BACKEND': 'chat.models.UniversalCloudinaryStorage',
     },
     'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        'BACKEND': 'whitenoise.storage.StaticFilesStorage',
     },
 }
 # Keep for compatibility with older packages like django-cloudinary-storage
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.StaticFilesStorage'
 
 # Prevent build failure if third-party CSS references missing files (e.g. DRF fonts)
 WHITENOISE_MANIFEST_STRICT = False

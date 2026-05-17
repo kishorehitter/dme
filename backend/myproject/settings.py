@@ -177,7 +177,7 @@ CLOUDINARY_STORAGE = {
     'API_SECRET': env('CLOUDINARY_API_SECRET'),
 }
 
-# Storage configuration: Cloudinary for media, WhiteNoise for static
+# Storage configuration
 DEFAULT_FILE_STORAGE = 'chat.models.UniversalCloudinaryStorage'
 
 STORAGES = {
@@ -185,12 +185,12 @@ STORAGES = {
         'BACKEND': 'chat.models.UniversalCloudinaryStorage',
     },
     'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
     },
 }
 
-# Keep for compatibility with django-cloudinary-storage package
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+# Keep for compatibility with django-cloudinary-storage
+STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 
 # Prevent build failure if third-party CSS references missing files (e.g. DRF fonts)
 WHITENOISE_MANIFEST_STRICT = False

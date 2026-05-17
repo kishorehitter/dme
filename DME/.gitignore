@@ -85,3 +85,6 @@ backend/chat_media/
 backend/status_media/
 
 node_modules/
+
+staticfiles/*
+!staticfiles/.gitkeep

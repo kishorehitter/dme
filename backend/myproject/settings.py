@@ -55,6 +55,7 @@ CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 #   cloudinary_storage must come BEFORE django.contrib.staticfiles
 
 INSTALLED_APPS = [
+    'myproject',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -78,6 +79,7 @@ INSTALLED_APPS = [
     'chat',
     'notifications',
     'calls',
+    
 ]
 
 # ─── Middleware ───────────────────────────────────────────────────────────────

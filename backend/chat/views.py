@@ -767,16 +767,19 @@ class RemoveParticipantView(APIView):
         except ConversationParticipant.DoesNotExist:
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 class SearchUsersView(APIView):
-    """Search users to start conversation with by username or email."""
+    """Search users to start conversation with by exact username match."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         query = request.query_params.get('q', '')
+        if not query:
+            return Response([])
+            
         User = get_user_model()
 
+        # Strict exact match for username
         users = User.objects.filter(
-            Q(username__icontains=query) |
-            Q(email__icontains=query)
+            username=query
         ).exclude(id=request.user.id)[:20]
 
         serializer = UserMinimalSerializer(users, many=True, context={'request': request})

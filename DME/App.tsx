@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import Toast from 'react-native-toast-message';
 import { AuthProvider } from './src/context/AuthContext';
 import { CallProvider } from './src/context/CallContext';
 import CallOverlay from './src/components/CallOverlay';
@@ -127,7 +128,7 @@ export function handleNotificationNavigation(data: FCMData) {
   }
 }
 
-function App() {
+export default function App() {
   const [isSplashFinished, setIsSplashFinished] = useState(false);
   const pendingNavigation = useRef<FCMData | null>(null);
   const navigationReadyRef = useRef(false);
@@ -167,7 +168,13 @@ function App() {
     };
 
     const sub = AppState.addEventListener('change', handleAppStateChange);
-    return () => sub.remove();
+    return () => {
+      if (sub && typeof sub.remove === 'function') {
+        sub.remove();
+      } else {
+        AppState.removeEventListener('change', handleAppStateChange);
+      }
+    };
   }, [checkPendingActions]);
 
   useEffect(() => {
@@ -219,16 +226,12 @@ function App() {
 
     return () => {
       unsubscribeFCM?.();
-      deviceEventSub.remove();
+      if (deviceEventSub && typeof deviceEventSub.remove === 'function') {
+        deviceEventSub.remove();
+      } else if (DeviceEventEmitter.removeSubscription) {
+        DeviceEventEmitter.removeSubscription(deviceEventSub as any);
+      }
     };
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      // Set default app colors: White bars with dark icons
-      NativeModules.SystemBar.setStatusBarColor('#FFFFFF', false);
-      NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
-    }
   }, []);
 
   function onNavigatorReady() {
@@ -262,6 +265,7 @@ function App() {
                   onNavigatorReady={onNavigatorReady}
                 />
                 <CallOverlay />
+                <Toast />
               </CallProvider>
             </AuthProvider>
           )}
@@ -273,7 +277,8 @@ function App() {
 
 const styles = StyleSheet.create({
   container:        { flex: 1 },
-  safeAreaWrapper:  { flex: 1, backgroundColor: '#FFFFFF' },
+  safeAreaWrapper:  { 
+    flex: 1, 
+    backgroundColor: '#FFFFFF',
+  },
 });
-
-export default App;

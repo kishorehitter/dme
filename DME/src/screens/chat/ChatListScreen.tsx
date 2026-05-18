@@ -10,11 +10,15 @@ import {
   ActivityIndicator,
   Alert,
   DeviceEventEmitter,
+  StatusBar,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { useAuth } from '../../context/AuthContext';
 import { chatAPI } from '../../services/api';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
+import { StatusService, Status, UserStatusGroup } from '../../services/StatusService';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { Conversation } from '../../types';
 
@@ -23,7 +27,9 @@ interface ChatListScreenProps {
 }
 
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
+  const insets = useSafeAreaInsets();
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
   const [activeTab, setActiveTab] = useState<'all' | 'groups'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -32,33 +38,29 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
 
   const loadConversations = useCallback(async () => {
-    // Prevent duplicate loads
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
-
     try {
-      const data = await chatAPI.getConversations();
-      console.log('Conversations loaded:', data);
-      // Handle both array and paginated response {count, results}
+      const [convs, statuses] = await Promise.all([
+        chatAPI.getConversations(),
+        StatusService.getStatuses()
+      ]);
+      
       let conversationsArray: Conversation[] = [];
-      if (Array.isArray(data)) {
-        conversationsArray = data;
-      } else if (data && data.results && Array.isArray(data.results)) {
-        conversationsArray = data.results;
-      }
-      // Filter out deleted conversations
-      conversationsArray = conversationsArray.filter(
-        (c) => !deletedConversationIdsRef.current.has(c.id)
-      );
+      if (Array.isArray(convs)) conversationsArray = convs;
+      else if (convs?.results) conversationsArray = convs.results;
+      
+      conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
       setConversations(conversationsArray);
+      setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id)));
     } catch (error: any) {
-      console.error('Error loading conversations:', error);
+      console.error('Error loading data:', error);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
       isLoadingRef.current = false;
     }
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     loadConversations();
@@ -213,16 +215,33 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       ? formatTime(item.last_message.created_at)
       : '';
 
+    // Determine status ring style
+    const userStatus = !item.is_group && item.other_user ? statusGroups.find(g => g.user_id === item.other_user?.id) : null;
+    const hasStatus = !!userStatus;
+    const allSeen = hasStatus ? !userStatus!.has_unseen : true;
+    const ringStyle = hasStatus 
+      ? allSeen ? styles.statusViewedRing : styles.statusNewRing
+      : {};
+
     return (
-      <TouchableOpacity
-        style={styles.conversationItem}
-        onPress={() => navigation.navigate('ChatRoom', { conversationId: item.id, name: displayName })}
-        onLongPress={() => {
-          handleLongPressConversation(item);
-        }}
-      >
-        {/* Avatar */}
-        <View style={styles.avatarContainer}>
+      <View style={styles.conversationItem}>
+        {/* Avatar triggered: Status/Preview */}
+        <TouchableOpacity
+          onPress={() => {
+            if (hasStatus && userStatus) {
+              navigation.navigate('StatusViewer', { 
+                statuses: userStatus.statuses, 
+                initialIndex: 0,
+                currentUserId: user?.id,
+                isOwn: false
+              });
+            } else {
+              // Optionally show a full-screen image preview here if no status
+              Alert.alert('Profile', 'Showing profile picture preview...');
+            }
+          }}
+          style={[styles.avatarContainer, hasStatus && styles.avatarRingContainer, ringStyle]}
+        >
           {avatarSticker ? (
             <View style={[styles.avatar, styles.avatarPlaceholder]}>
               <Text style={styles.stickerAvatar}>{avatarSticker}</Text>
@@ -236,29 +255,23 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               </Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
 
-        {/* Content */}
-        <View style={styles.content}>
+        {/* Content triggered: Open Chat */}
+        <TouchableOpacity
+          style={styles.content}
+          onPress={() => navigation.navigate('ChatRoom', { conversationId: item.id, name: displayName })}
+          onLongPress={() => {
+            handleLongPressConversation(item);
+          }}
+        >
           <View style={styles.contentHeader}>
-            <Text style={styles.name} numberOfLines={1}>
-              {displayName}
-            </Text>
-            {time ? <Text style={styles.time}>{time}</Text> : null}
+            <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
+            <Text style={styles.time}>{time}</Text>
           </View>
-
-          <View style={styles.contentFooter}>
-            <Text style={styles.lastMessage} numberOfLines={1}>
-              {lastMessage}
-            </Text>
-            {item.unread_count > 0 ? (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{item.unread_count}</Text>
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </TouchableOpacity>
+          <Text style={styles.lastMessage} numberOfLines={1}>{lastMessage}</Text>
+        </TouchableOpacity>
+      </View>
     );
   };
 
@@ -400,6 +413,18 @@ const styles = StyleSheet.create({
   },
   avatarContainer: {
     marginRight: spacing.md,
+  },
+  avatarRingContainer: {
+    padding: 2,
+    borderRadius: 29,
+  },
+  statusNewRing: {
+    borderWidth: 2,
+    borderColor: '#8100D1', // Purple
+  },
+  statusViewedRing: {
+    borderWidth: 2,
+    borderColor: '#CCC', // Light Grey
   },
   avatar: {
     width: 50,

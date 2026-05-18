@@ -19,7 +19,7 @@ const PRODUCTION_HOST = 'dme-19zq.onrender.com';
 const PRODUCTION_PORT = ''; // HTTPS default port 443 – leave empty
 
 // Development (local machine)
-const DEVELOPMENT_HOST = '10.113.164.156';
+const DEVELOPMENT_HOST = '10.113.164.140';
 const DEVELOPMENT_PORT = '8000';
 
 // Auto‑switch based on environment

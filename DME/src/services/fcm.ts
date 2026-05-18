@@ -680,11 +680,11 @@ class FCMService {
 
     return {
       unsubscribe: () => {
-        unsubToken();
-        unsubMsg();
-        unsubOpen();
-        unsubFore();
-        unsubBackground();
+        if (typeof unsubToken === 'function') unsubToken();
+        if (typeof unsubMsg === 'function') unsubMsg();
+        if (typeof unsubOpen === 'function') unsubOpen();
+        if (typeof unsubFore === 'function') unsubFore();
+        // unsubBackground is not a function (notifee.onBackgroundEvent returns void)
       },
     };
   }

@@ -29,15 +29,12 @@ import Video from 'react-native-video';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../utils/image';
 import {
-  StatusService, Status, StatusViewer as ViewerType, LikedUser, CallLog
+  StatusService, Status, StatusViewer as ViewerType, LikedUser
 } from '../services/StatusService';
 
 const { width: W, height: H } = Dimensions.get('window');
 const PHOTO_DURATION = 5000;
-// Height of the bottom action bar — tap zones stop above this
 const BOTTOM_BAR_HEIGHT = 80;
-
-// ─── Viewer Sheet (owner only) ────────────────────────────────────────────────
 
 interface ViewerSheetProps {
   statusId:  number;
@@ -61,9 +58,14 @@ const ViewerSheet: React.FC<ViewerSheetProps> = ({
     setLoading(true);
     StatusService.getViewers(statusId)
       .then(data => {
-        setViewers(data.viewers);
-        setLikeCount(data.like_count);
-        setLikedUsers(data.liked_users);
+        // Ensure data exists and has the expected properties
+        setViewers(data?.viewers || []);
+        setLikeCount(data?.like_count || 0);
+        setLikedUsers(data?.liked_users || []);
+      })
+      .catch(err => {
+        console.error('[StatusViewer] Error loading viewers:', err);
+        setViewers([]);
       })
       .finally(() => setLoading(false));
   }, [visible, statusId]);
@@ -77,7 +79,6 @@ const ViewerSheet: React.FC<ViewerSheetProps> = ({
       <View style={[vs.sheet, { paddingBottom: insets.bottom + 16 }]}>
         <View style={vs.handle} />
 
-        {/* Tab row: Views LEFT | Likes RIGHT */}
         <View style={vs.tabRow}>
           <TouchableOpacity
             style={[vs.tab, tab === 'views' && vs.tabActive]}
@@ -132,10 +133,7 @@ const ViewerSheet: React.FC<ViewerSheetProps> = ({
                       })}
                     </Text>
                   </View>
-                  {/* Heart icon if this viewer also liked */}
-                  {item.has_liked && (
-                    <Icon name="heart" size={16} color="#ff4d6d" />
-                  )}
+                  {item.has_liked && <Icon name="heart" size={16} color="#ff4d6d" />}
                 </View>
               )}
             />
@@ -225,8 +223,6 @@ const vs = StyleSheet.create({
   time:    { fontSize: 12, color: '#888', marginTop: 2 },
 });
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 interface RouteParams {
   statuses:      Status[];
   initialIndex:  number;
@@ -239,21 +235,6 @@ const StatusViewerScreen: React.FC = () => {
   const route      = useRoute();
   const insets     = useSafeAreaInsets();
 
-  useEffect(() => {
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      // Industry Standard: Black bars for status viewing
-      NativeModules.SystemBar.setStatusBarColor('#000000', true);
-      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
-    }
-    return () => {
-      if (Platform.OS === 'android' && NativeModules.SystemBar) {
-        // Restore to app standard: White bars
-        NativeModules.SystemBar.setStatusBarColor('#FFFFFF', false);
-        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
-      }
-    };
-  }, []);
-
   const { statuses: initialStatuses, initialIndex, isOwn } = route.params as RouteParams;
 
   const [statuses,      setStatuses]      = useState<Status[]>(initialStatuses);
@@ -262,17 +243,14 @@ const StatusViewerScreen: React.FC = () => {
   const [videoDuration, setVideoDuration] = useState(PHOTO_DURATION);
   const [videoPaused,   setVideoPaused]   = useState(false);
 
-  // Like
   const [liked,       setLiked]       = useState(false);
   const [likeCount,   setLikeCount]   = useState(0);
   const [likeLoading, setLikeLoading] = useState(false);
 
-  // Reply — input always visible, focused state controls pause
   const [replyText,   setReplyText]   = useState('');
   const [replyFocused,setReplyFocused]= useState(false);
   const [replySending,setReplySending]= useState(false);
 
-  // Save
   const [saving, setSaving] = useState(false);
 
   const progress  = useRef(new Animated.Value(0)).current;
@@ -284,7 +262,6 @@ const StatusViewerScreen: React.FC = () => {
   const isVideo = current?.media_type === 'video';
   const isOwner = isOwn;
 
-  // ── Swipe down ────────────────────────────────────────────────────────────
   const translateY   = useRef(new Animated.Value(0)).current;
   const panResponder = useRef(
     PanResponder.create({
@@ -302,7 +279,6 @@ const StatusViewerScreen: React.FC = () => {
     }),
   ).current;
 
-  // ── Progress ──────────────────────────────────────────────────────────────
   const startProgress = useCallback((duration: number) => {
     progress.setValue(0);
     animation.current?.stop();
@@ -319,37 +295,31 @@ const StatusViewerScreen: React.FC = () => {
 
   const stopProgress = useCallback(() => animation.current?.stop(), []);
 
-  // ── Mark viewed + load like state ────────────────────────────────────────
   useEffect(() => {
     if (!current) return;
 
-    // Mark as viewed
     if (!isOwner && !viewedSet.current.has(current.id)) {
       viewedSet.current.add(current.id);
       StatusService.markViewed(current.id);
     }
 
-    // Use like data already in status object — no extra API calls, no 404s
     if (!isOwner) {
       setLiked((current as any).is_liked ?? false);
       setLikeCount((current as any).like_count ?? 0);
     }
   }, [index, current?.id]);
 
-  // ── Start timer on slide change ───────────────────────────────────────────
   useEffect(() => {
     if (!current || isVideo) return;
     startProgress(PHOTO_DURATION);
     return () => animation.current?.stop();
   }, [index]);
 
-  // Pause progress while reply input is focused
   useEffect(() => {
     if (replyFocused) stopProgress();
     else if (!isVideo) startProgress(PHOTO_DURATION);
   }, [replyFocused]);
 
-  // ── Tap navigation ────────────────────────────────────────────────────────
   const handleTap = (side: 'left' | 'right') => {
     if (replyFocused) {
       replyRef.current?.blur();
@@ -367,7 +337,6 @@ const StatusViewerScreen: React.FC = () => {
     }
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
   const handleDelete = () => {
     Alert.alert('Delete Status', 'Remove this status?', [
       { text: 'Cancel', style: 'cancel' },
@@ -386,7 +355,6 @@ const StatusViewerScreen: React.FC = () => {
     ]);
   };
 
-  // ── Like ──────────────────────────────────────────────────────────────────
   const handleLike = async () => {
     if (likeLoading) return;
     setLikeLoading(true);
@@ -404,7 +372,6 @@ const StatusViewerScreen: React.FC = () => {
     }
   };
 
-  // ── Reply ─────────────────────────────────────────────────────────────────
   const handleSendReply = async () => {
     if (!replyText.trim() || replySending) return;
     setReplySending(true);
@@ -420,7 +387,6 @@ const StatusViewerScreen: React.FC = () => {
     }
   };
 
-  // ── Save ──────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -441,18 +407,17 @@ const StatusViewerScreen: React.FC = () => {
     }
   };
 
-  if (!current) { navigation.goBack(); return null; }
+  if (!current) { return null; }
 
   const displayName = isOwner ? 'My Status' : current.username;
-  // Height of bottom bar including safe area
   const bottomBarH = BOTTOM_BAR_HEIGHT + insets.bottom;
 
   return (
-    <Animated.View
-      style={[s.container, { transform: [{ translateY }] }]}
+    <View
+      style={s.container}
       {...panResponder.panHandlers}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#000000" translucent={true} />
+      <StatusBar barStyle="light-content" backgroundColor="#000000" translucent={false} />
 
       {/* ── Media ── */}
       {isVideo ? (
@@ -501,7 +466,7 @@ const StatusViewerScreen: React.FC = () => {
       </View>
 
       {/* ── Header ── */}
-      <View style={[s.header, { top: insets.top + 22 }]} pointerEvents="box-none">
+      <View style={[s.header, { top: insets.top + 6 }]} pointerEvents="box-none">
         <View style={s.headerLeft}>
           {current.user_avatar_sticker ? (
             <View style={[s.avatar, s.avatarFallback]}>
@@ -530,11 +495,6 @@ const StatusViewerScreen: React.FC = () => {
         </View>
       </View>
 
-      {/*
-        FIX [1]: tapZones only cover the area ABOVE the bottom bar.
-        Bottom is set to bottomBarH so taps on Like/Reply/Save pass through.
-        Previously absoluteFillObject covered 100% of screen height.
-      */}
       <View style={[s.tapZones, { bottom: bottomBarH }]} pointerEvents="box-none">
         <TouchableWithoutFeedback onPress={() => handleTap('left')}>
           <View style={{ flex: 1 }} />
@@ -544,28 +504,19 @@ const StatusViewerScreen: React.FC = () => {
         </TouchableWithoutFeedback>
       </View>
 
-      {/* ── Caption — FIX [2]: centered ── */}
       {!!current.caption && !replyFocused && (
         <View style={[s.captionWrap, { bottom: bottomBarH + 12 }]} pointerEvents="none">
           <Text style={s.caption}>{current.caption}</Text>
         </View>
       )}
 
-      {/*
-        FIX [3]: Bottom bar layout
-        OWNER:  [ 👁 N views ]
-        VIEWER: [ ❤️ Like ]  [ ___reply input___  ➤ ]  [ 💾 Save ]
-                  LEFT            CENTER                   RIGHT
-      */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={s.kvWrapper}
       >
         <View style={[s.bottomBar, { paddingBottom: insets.bottom + 10 }]}>
           {isOwner ? (
-            /* Owner view redesigned: Views LEFT | Likes CENTER | Delete RIGHT */
             <>
-              {/* LEFT — Views */}
               <TouchableOpacity
                 style={s.ownerActionBtn}
                 onPress={() => { stopProgress(); setShowViewers(true); }}
@@ -574,25 +525,20 @@ const StatusViewerScreen: React.FC = () => {
                 <Text style={s.ownerActionText}>{current.view_count}</Text>
               </TouchableOpacity>
 
-              {/* CENTER — Likes */}
               <View style={s.ownerLikesCenter}>
                 <Icon name="heart" size={24} color="#ff4d6d" style={s.iconShadow} />
                 <Text style={s.ownerActionText}>{(current as any).like_count ?? 0}</Text>
               </View>
 
-              {/* RIGHT — Delete */}
               <TouchableOpacity
                 style={s.ownerActionBtn}
                 onPress={handleDelete}
               >
                 <Icon name="trash-outline" size={24} color="#fff" style={s.iconShadow} />
-                
               </TouchableOpacity>
             </>
           ) : (
-            /* Viewer row: Like | Reply input + Send | Save */
             <>
-              {/* LEFT — Like */}
               <TouchableOpacity
                 style={s.likeBtn}
                 onPress={handleLike}
@@ -606,7 +552,6 @@ const StatusViewerScreen: React.FC = () => {
                 />
               </TouchableOpacity>
 
-              {/* CENTER — Reply rounded input with send button inside */}
               <View style={s.replyWrap}>
                 <TextInput
                   ref={replyRef}
@@ -622,7 +567,6 @@ const StatusViewerScreen: React.FC = () => {
                   maxLength={500}
                   blurOnSubmit={false}
                 />
-                {/* Send button inside the input on the right */}
                 <TouchableOpacity
                   style={[s.sendBtn, (!replyText.trim() || replySending) && { opacity: 0.4 }]}
                   onPress={handleSendReply}
@@ -636,7 +580,6 @@ const StatusViewerScreen: React.FC = () => {
                 </TouchableOpacity>
               </View>
 
-              {/* RIGHT — Save */}
               <TouchableOpacity
                 style={s.saveBtn}
                 onPress={handleSave}
@@ -653,7 +596,6 @@ const StatusViewerScreen: React.FC = () => {
         </View>
       </KeyboardAvoidingView>
 
-      {/* Viewer sheet */}
       {isOwner && (
         <ViewerSheet
           statusId={current.id}
@@ -665,133 +607,42 @@ const StatusViewerScreen: React.FC = () => {
           }}
         />
       )}
-    </Animated.View>
+    </View>
   );
 };
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-
-  // Progress
+  container: { 
+    flex: 1, 
+    backgroundColor: '#000',
+  },
   progressRow: { position: 'absolute', left: 10, right: 10, flexDirection: 'row', gap: 4, zIndex: 10 },
   track:       { flex: 1, height: 2, backgroundColor: 'rgba(255,255,255,0.35)', borderRadius: 1, overflow: 'hidden' },
   trackFill:   { height: '100%', backgroundColor: '#fff', borderRadius: 1 },
-
-  // Header
   header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, zIndex: 10 },
   headerLeft:    { flexDirection: 'row', alignItems: 'center' },
   avatar:        { width: 36, height: 36, borderRadius: 18, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)' },
   avatarFallback:{ backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
-  headerName:    { 
-    color: '#fff', 
-    fontWeight: '600', 
-    fontSize: 14,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  headerTime:    { 
-    color: 'rgba(255,255,255,0.9)', 
-    fontSize: 11,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
+  headerName:    { color: '#fff', fontWeight: '600', fontSize: 14, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+  headerTime:    { color: 'rgba(255,255,255,0.9)', fontSize: 11, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   headerRight:   { flexDirection: 'row', alignItems: 'center' },
   iconBtn:       { padding: 8, marginLeft: 4 },
-  iconShadow: {
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-
-  // FIX [1]: tap zones stop at bottom bar, not full screen
+  iconShadow: { textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
   tapZones: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row' },
-
-  // FIX [2]: caption centered
-  captionWrap: {
-    position: 'absolute', left: 20, right: 20,
-    alignItems: 'center',
-  },
-  caption: {
-    color: '#fff', fontSize: 16, fontWeight: '500',
-    textAlign: 'center',                          // ← centered
-    textShadowColor: 'rgba(0,0,0,0.7)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
-    lineHeight: 22,
-  },
-
-  // Bottom bar
+  captionWrap: { position: 'absolute', left: 20, right: 20, alignItems: 'center' },
+  caption: { color: '#fff', fontSize: 16, fontWeight: '500', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6, lineHeight: 22 },
   kvWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
-  bottomBar: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    paddingHorizontal: 14,
-    paddingTop:     12,
-    // FIX [3]: evenly spaced — Like LEFT, input CENTER, Save RIGHT
-    justifyContent: 'space-between',
-  },
-
-  // Owner
-  ownerActionBtn: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    minWidth: 44 
-  },
-  ownerActionText: {
-    color: '#fff',
-    fontSize: 14,
-    marginLeft: 6,
-    fontWeight: '600',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
-  ownerLikesCenter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-
-  // FIX [3]: Like button — LEFT
+  bottomBar: { flexDirection:  'row', alignItems:     'center', paddingHorizontal: 14, paddingTop:     12, justifyContent: 'space-between' },
+  ownerActionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minWidth: 44 },
+  ownerActionText: { color: '#fff', fontSize: 14, marginLeft: 6, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  ownerLikesCenter: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   likeBtn:   { alignItems: 'center', minWidth: 36 },
-  likeCount: { color: '#fff', fontSize: 11, marginTop: 2, textAlign: 'center' },
-
-  // FIX [3] & [4]: Reply input — CENTER, rounded, send inside
-  replyWrap: {
-    flex: 1,
-    flexDirection:   'row',
-    alignItems:      'center',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius:    24,
-    marginHorizontal: 12,
-    paddingLeft:     14,
-    paddingRight:    6,
-    minHeight:       42,
-  },
-  replyInput: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 14,
-    paddingVertical: 8,
-    maxHeight: 80,
-  },
-  sendBtn: {
-    width:           32,
-    height:          32,
-    borderRadius:    16,
-    backgroundColor: '#8100D1',
-    justifyContent:  'center',
-    alignItems:      'center',
-    marginLeft:      6,
-  },
-
-  // FIX [3]: Save button — RIGHT
+  replyWrap: { flex: 1, flexDirection:   'row', alignItems:      'center', backgroundColor: 'rgba(255,255,255,0.18)', borderRadius:    24, marginHorizontal: 12, paddingLeft:     14, paddingRight:    6, minHeight:       42 },
+  replyInput: { flex: 1, color: '#fff', fontSize: 14, paddingVertical: 8, maxHeight: 80 },
+  sendBtn: { width:           32, height:          32, borderRadius:    16, backgroundColor: '#8100D1', justifyContent:  'center', alignItems:      'center', marginLeft:      6 },
   saveBtn: { alignItems: 'center', minWidth: 36 },
+  topScrim: { position: 'absolute', top: 0, left: 0, right: 0, height: 100, backgroundColor: 'rgba(0,0,0,0.3)' },
+  bottomScrim: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 120, backgroundColor: 'rgba(0,0,0,0.4)' },
 });
 
 export default StatusViewerScreen;

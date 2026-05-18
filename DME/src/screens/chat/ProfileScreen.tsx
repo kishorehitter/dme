@@ -20,6 +20,7 @@ import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
+import { StatusService, UserStatusGroup } from '../../services/StatusService';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -77,6 +78,55 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   // For friend profile - clear chat and block
   const [isBlocked, setIsBlocked] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewContent, setPreviewContent] = useState<{ url?: string; sticker?: string }>({});
+  const [userStatus, setUserStatus] = useState<UserStatusGroup | null>(null);
+
+  const hasStatus = !!userStatus && userStatus.statuses.length > 0;
+  const allSeen = hasStatus ? !userStatus!.has_unseen : true;
+  const ringStyle = hasStatus 
+    ? allSeen ? styles.statusViewedRing : styles.statusNewRing
+    : {};
+
+  const handleAvatarPress = () => {
+    if (hasStatus && userStatus) {
+      navigation.navigate('StatusViewer', { 
+        statuses: userStatus.statuses, 
+        initialIndex: 0,
+        currentUserId: user?.id,
+        isOwn: userStatus.user_id === user?.id
+      });
+    } else {
+      handleAvatarLongPress();
+    }
+  };
+
+  const handleAvatarLongPress = () => {
+    if (profile) {
+      setPreviewContent({
+        url: profile.profile_picture || undefined,
+        sticker: profile.avatar_sticker || undefined,
+      });
+      setShowPreview(true);
+    }
+  };
+
+  const loadStatus = async () => {
+    const userId = viewingOtherProfile?.id || user?.id;
+    if (!userId) return;
+    try {
+      const statuses = await StatusService.getStatuses();
+      const filtered = statuses.filter(s => s.user_id === userId);
+      if (filtered.length > 0) {
+        const groups = StatusService.groupByUser(filtered);
+        if (groups.length > 0) {
+          setUserStatus(groups[0]);
+        }
+      }
+    } catch (err) {
+      console.warn('[ProfileScreen] Error loading status:', err);
+    }
+  };
 
   const loadBlockStatus = async () => {
     if (!viewingOtherProfile?.id) return;
@@ -231,6 +281,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   useEffect(() => {
     const initializeProfile = async () => {
+      // Load status for the user (self or other)
+      loadStatus();
+
       if (viewingOtherProfile) {
         // 1. Load block status
         loadBlockStatus();
@@ -528,7 +581,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         {/* Profile Header */}
         <View style={styles.friendProfileHeader}>
           {/* Profile Picture */}
-          <View style={styles.friendAvatarContainer}>
+          <TouchableOpacity 
+            style={[styles.friendAvatarContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
+            onPress={handleAvatarPress}
+            onLongPress={handleAvatarLongPress}
+            activeOpacity={0.8}
+          >
             {profile.avatar_sticker ? (
               <View
                 style={[styles.friendAvatar, styles.friendAvatarPlaceholder]}
@@ -551,13 +609,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </Text>
               </View>
             )}
-          </View>
+          </TouchableOpacity>
 
           {/* Username */}
           <Text style={styles.friendName}>{displayName}</Text>
 
           {/* Bio */}
           <Text style={styles.friendBio}>{bio}</Text>
+
+          {/* Preview Modal */}
+          <Modal visible={showPreview} transparent animationType="fade">
+              <View style={styles.imageViewerModal}>
+                  <TouchableOpacity style={styles.imageViewerClose} onPress={() => setShowPreview(false)}>
+                      <Text style={styles.imageViewerCloseText}>✕</Text>
+                  </TouchableOpacity>
+                  {previewContent.sticker ? (
+                      <Text style={{fontSize: 150}}>{previewContent.sticker}</Text>
+                  ) : previewContent.url ? (
+                      <Image source={{uri: resolveImageUrl(previewContent.url)}} style={styles.imageViewerImage} resizeMode="contain"/>
+                  ) : null}
+              </View>
+          </Modal>
 
           {/* Action Grid */}
           <View style={styles.actionGrid}>
@@ -680,8 +752,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       <View style={styles.profilePictureSection}>
         {!isReadOnly && (
           <TouchableOpacity
-            onPress={() => setShowStickerModal(true)}
-            style={styles.profilePictureContainer}
+            onPress={handleAvatarPress}
+            onLongPress={handleAvatarLongPress}
+            style={[styles.profilePictureContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
             disabled={isUploadingImage}
           >
             {isUploadingImage ? (
@@ -724,14 +797,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </Text>
               </View>
             )}
-            <View style={styles.cameraIcon}>
+            <TouchableOpacity 
+              style={styles.cameraIcon} 
+              onPress={() => setShowStickerModal(true)}
+            >
               <Text style={styles.cameraIconText}>📷</Text>
-            </View>
+            </TouchableOpacity>
           </TouchableOpacity>
         )}
         {/* Read-only profile picture display */}
         {isReadOnly && (
-          <View style={styles.profilePictureContainer}>
+          <TouchableOpacity 
+            onPress={handleAvatarPress}
+            onLongPress={handleAvatarLongPress}
+            style={[styles.profilePictureContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
+          >
             {profile?.avatar_sticker ? (
               <View
                 style={[
@@ -762,10 +842,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </Text>
               </View>
             )}
-          </View>
+          </TouchableOpacity>
         )}
         <Text style={styles.changePhotoText}>
-          {isReadOnly ? 'Profile Picture' : 'Tap to change photo or sticker'}
+          {isReadOnly ? (hasStatus ? 'Tap to view status' : 'Profile Picture') : (hasStatus ? 'Tap for status, long press for preview' : 'Tap for status, long press to preview')}
         </Text>
       </View>
 
@@ -1227,6 +1307,18 @@ const styles = StyleSheet.create({
   },
   friendAvatarContainer: {
     marginBottom: spacing.lg,
+  },
+  avatarRingContainer: {
+    padding: 3,
+    borderRadius: 65,
+  },
+  statusNewRing: {
+    borderWidth: 3,
+    borderColor: '#8100D1', // Purple
+  },
+  statusViewedRing: {
+    borderWidth: 3,
+    borderColor: '#CCC', // Light Grey
   },
   friendAvatar: {
     width: 120,

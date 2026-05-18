@@ -96,13 +96,14 @@ const GoogleLoginScreen = () => {
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.appName}>DME</Text>
+        
         
 
          <Image
                 source={require('../assets/logo.png')}
-                style={{ width: 100, height: 100, borderRadius: 5, marginBottom: 40}}
+                style={{ width: 100, height: 100, borderRadius: 5, marginBottom: 0}}
               />
+        <Text style={styles.appName}>DME</Text>
         {/* <Text style={styles.tagline}>Secure messaging, powered by Google</Text> */}
 
         <TouchableOpacity
@@ -145,10 +146,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   appName: {
-    fontSize: 36,
+    fontSize: 46,
     fontWeight: 'bold',
     color: '#7b00c7',
-    marginBottom: 8,
+    marginBottom: 18,
   },
   tagline: {
     fontSize: 16,
@@ -157,7 +158,7 @@ const styles = StyleSheet.create({
     marginBottom: 40,
   },
   logoContainer: {
-    marginBottom: 40,
+    marginBottom: 10,
   },
   logo: {
     fontSize: 80,

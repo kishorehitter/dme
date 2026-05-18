@@ -172,14 +172,10 @@ class StatusViewSet(viewsets.ModelViewSet):
             message_type=msg_type,
         )
         if status_obj.media_file:
-            # Manually copy the file with seek(0) to ensure reliability
-            from django.core.files.base import ContentFile
-            status_obj.media_file.seek(0)
-            message.media_file.save(
-                os.path.basename(status_obj.media_file.name),
-                ContentFile(status_obj.media_file.read()),
-                save=False
-            )
+            # FIX: Do NOT call .read() or .seek() on Cloudinary files as it triggers 
+            # NotImplementedError in our storage. Instead, just copy the reference.
+            message.media_file.name = status_obj.media_file.name
+
         message.save()
         conversation.save()
 

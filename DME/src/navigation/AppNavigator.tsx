@@ -183,9 +183,17 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
       <Stack.Screen name="GroupInfo"    component={GroupInfoScreen}    options={{ title: 'Group Info' }} />
       <Stack.Screen name="Profile"      component={ProfileScreen}      options={{ title: 'Profile' }} />
       <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="StatusViewer" component={StatusViewer}       options={{ headerShown: false }} />
+      <Stack.Screen 
+        name="StatusViewer" 
+        component={StatusViewer}       
+        options={{ 
+          headerShown: false,
+          presentation: 'transparentModal',
+          animation: 'none', // We'll handle entry/exit inside the component or let the modal handle it
+        }} 
+      />
       <Stack.Screen name="StatusEditor" component={StatusEditorScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animationEnabled: false }} />
+      <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
       <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media' }} />
       </Stack.Navigator>
       );

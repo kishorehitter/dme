@@ -16,7 +16,7 @@
  *     CAMERA permission before launching.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   View,
   Image,
@@ -30,11 +30,13 @@ import {
   Platform,
   KeyboardAvoidingView,
   PermissionsAndroid,
+  NativeModules,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Video from 'react-native-video';
 import Icon from 'react-native-vector-icons/Ionicons';
+import Toast from 'react-native-toast-message';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import { StatusService } from '../services/StatusService';
 
@@ -75,9 +77,17 @@ const StatusEditorScreen: React.FC = () => {
   // FIX [1]: track video error to surface helpful message
   const [videoError, setVideoError] = useState(false);
 
-  useEffect(() => {
-    if (!params.mediaUri) showPickerOptions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setStatusBarColor('#000000', true);
+      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+    }
+    return () => {
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setStatusBarColor('#FFFFFF', false);
+        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+      }
+    };
   }, []);
 
   // ─── Permissions ──────────────────────────────────────────────────────────
@@ -198,31 +208,41 @@ const StatusEditorScreen: React.FC = () => {
     setUploading(true);
     try {
       await StatusService.saveStatus(uploadUri, caption, mediaType);
-      Alert.alert('Posted!', 'Your status was uploaded.', [
-        {
-          text: 'OK',
-          onPress: () => {
-            navigation.popToTop();
-            navigation.navigate('MainTabs', { screen: 'Status' });
-          },
-        },
-      ]);
+      
+      // Navigate first while the overlay is still visible to avoid the "shake"
+      navigation.popToTop();
+      navigation.navigate('MainTabs', { screen: 'Status' });
+
+      Toast.show({
+        type: 'success',
+        text1: 'Posted!',
+        text2: 'Your status was uploaded.',
+        position: 'bottom',
+      });
     } catch (err: any) {
-      Alert.alert('Upload failed', err?.message ?? 'Try again.');
-    } finally {
-      setUploading(false);
+      setUploading(false); // Only set false on error
+      Toast.show({
+        type: 'error',
+        text1: 'Upload failed',
+        text2: err?.message ?? 'Try again.',
+        position: 'bottom',
+      });
     }
   };
 
-  // ─── Loading state ────────────────────────────────────────────────────────
-  if (isPicking) {
+  // ─── Loading / Uploading Overlay ──────────────────────────────────────────
+  const renderLoadingOverlay = () => {
+    if (!isPicking && !uploading && !processing) return null;
     return (
-      <View style={s.center}>
-        <StatusBar hidden />
-        <ActivityIndicator size="large" color="#8100D1" />
+      <View style={s.processingOverlay}>
+        <StatusBar hidden={false} barStyle="light-content" backgroundColor="#000000" translucent={false} />
+        <ActivityIndicator size="large" color="#FFFFFF" />
+        <Text style={s.processingText}>
+          {uploading ? 'Uploading...' : processing ? 'Compressing...' : 'Opening...'}
+        </Text>
       </View>
     );
-  }
+  };
 
   if (!mediaUri) {
     return (
@@ -243,6 +263,7 @@ const StatusEditorScreen: React.FC = () => {
   // ─── Editor UI ────────────────────────────────────────────────────────────
   return (
     <View style={s.container}>
+      {renderLoadingOverlay()}
       <StatusBar hidden />
 
       {/* FIX [1] & [3]:
@@ -256,17 +277,17 @@ const StatusEditorScreen: React.FC = () => {
           key={mediaUri}
           source={{ uri: mediaUri }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"      // FIX [3]: full-screen fill
+          resizeMode="contain"
           controls={false}
           repeat
-          paused={uploading || processing}   // FIX [1]: not paused during caption editing
+          paused={uploading || processing}
           onError={() => setVideoError(true)}
         />
       ) : (
         <Image
           source={{ uri: mediaUri }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"      // FIX [3]
+          resizeMode="contain"
         />
       )}
 

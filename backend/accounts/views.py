@@ -142,24 +142,81 @@ class ProfileUpdateView(generics.UpdateAPIView):
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['request'] = self.request
+import cloudinary.uploader
+import re
+from rest_framework import status, generics, permissions
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import get_user_model
+from django.utils import timezone
+
+from .models import OTP, UserBlock
+from .serializers import (
+    UserSerializer,
+    ProfileUpdateSerializer,
+    UsernameCheckSerializer,
+    ProfileSetupSerializer
+)
+
+User = get_user_model()
+
+
+class ProfileUpdateView(generics.UpdateAPIView):
+    """
+    Update user profile details.
+    """
+    serializer_class = ProfileUpdateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
         return context
-        
+
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
+        
+        # 1. Handle explicit removal (Frontend sends JSON {'profile_picture': None})
+        if 'profile_picture' in request.data and request.data['profile_picture'] is None:
+            if instance.profile_picture:
+                try:
+                    path = instance.profile_picture.name
+                    clean_path = re.sub(r'^v\d+/', '', path)
+                    public_id = clean_path.rsplit('.', 1)[0]
+                    cloudinary.uploader.destroy(public_id, invalidate=True)
+                except Exception as e:
+                    print(f"DEBUG: Failed to delete media: {e}")
+            instance.profile_picture = None
+            
+        # 2. Handle new file upload (Frontend sends FormData)
+        new_file = request.FILES.get('profile_picture')
+        if new_file:
+            if instance.profile_picture:
+                try:
+                    path = instance.profile_picture.name
+                    clean_path = re.sub(r'^v\d+/', '', path)
+                    public_id = clean_path.rsplit('.', 1)[0]
+                    cloudinary.uploader.destroy(public_id, invalidate=True)
+                except Exception as e:
+                    print(f"DEBUG: Failed to delete old media: {e}")
+            instance.profile_picture = new_file
+
+        # 3. Handle text-only updates via serializer
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            # Extract the first error message to display to the user
+            error_msg = next(iter(serializer.errors.values()))[0]
+            return Response({'message': error_msg}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Handle profile picture upload if present in multipart/form-data
-        profile_picture = request.FILES.get('profile_picture')
-        if profile_picture:
-            serializer.save(profile_picture=profile_picture)
-        else:
-            serializer.save()
-
+        # Save both picture (if updated) and text changes together
+        serializer.save()
+        
         return Response(UserSerializer(instance, context={'request': request}).data)
-
 
 class UsernameCheckView(APIView):
     """
@@ -212,6 +269,18 @@ class UserDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'id'
     lookup_url_kwarg = 'user_id'
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Record interaction if viewing someone else's profile
+        if instance.id != request.user.id:
+            from .models import ProfileInteraction
+            ProfileInteraction.objects.get_or_create(
+                viewer=request.user,
+                profile_owner=instance
+            )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
 
 class LogoutView(APIView):

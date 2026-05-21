@@ -405,6 +405,43 @@ class Status(models.Model):
         return f"Status by {self.user.email} at {self.created_at}"
 
 
+# ─── Signals ──────────────────────────────────────────────────────────────────
+
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
+
+@receiver(post_delete, sender=Status)
+def delete_status_media(sender, instance, **kwargs):
+    """
+    Robust deletion of media from Cloudinary using path cleaning
+    matching the logic used in ChatRoom media.
+    """
+    if instance.media_file:
+        try:
+            import re
+            path = instance.media_file.name
+            
+            # 1. Remove the version prefix if present (e.g., 'v12345/')
+            clean_path = re.sub(r'^v\d+/', '', path)
+            
+            # 2. Remove extension to get public_id
+            public_id = clean_path.rsplit('.', 1)[0]
+            
+            # 3. Determine resource_type
+            resource_type = 'video' if instance.media_type == 'video' else 'image'
+            
+            print(f"DEBUG: Status Deletion - Path: {path}, Public ID: {public_id}, Type: {resource_type}")
+            
+            result = cloudinary.uploader.destroy(
+                public_id, 
+                resource_type=resource_type,
+                invalidate=True
+            )
+            print(f"DEBUG: Cloudinary deletion result: {result}")
+        except Exception as e:
+            print(f"DEBUG: Failed to delete status media from Cloudinary: {e}")
+
+
 # ─── StatusView ───────────────────────────────────────────────────────────────
 
 class StatusView(models.Model):

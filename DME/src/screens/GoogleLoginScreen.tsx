@@ -15,6 +15,7 @@ import {
   Image,
 } from 'react-native';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 
 // Configure Google Sign-In
@@ -25,6 +26,7 @@ GoogleSignin.configure({
 });
 
 const GoogleLoginScreen = () => {
+  const insets = useSafeAreaInsets();
   const { googleLogin } = useAuth();
   const [loading, setLoading] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
@@ -94,7 +96,7 @@ const GoogleLoginScreen = () => {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.content}>
         
         
@@ -146,10 +148,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   appName: {
-    fontSize: 46,
+    fontSize: 50,
     fontWeight: 'bold',
     color: '#7b00c7',
-    marginBottom: 18,
+    marginBottom: 8,
   },
   tagline: {
     fontSize: 16,
@@ -158,7 +160,7 @@ const styles = StyleSheet.create({
     marginBottom: 40,
   },
   logoContainer: {
-    marginBottom: 10,
+    marginBottom: 40,
   },
   logo: {
     fontSize: 80,
@@ -204,7 +206,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     textAlign: 'center',
-    marginTop: 40,
+    marginTop: 20,
     paddingHorizontal: 20,
   },
 });

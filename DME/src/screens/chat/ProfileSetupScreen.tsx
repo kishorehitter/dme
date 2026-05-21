@@ -12,6 +12,8 @@ import {
   FlatList,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Icon from 'react-native-vector-icons/Ionicons';
 import { launchImageLibrary } from 'react-native-image-picker'; // Import for image picking
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Assuming this is used for tokens
 // import Toast from 'react-native-toast-message'; // Assuming this is used for notifications (commented out as not used in current scope)
@@ -26,6 +28,7 @@ import { authAPI } from '../../services/api'; // Assuming this has the checkUser
 export const ProfileSetupScreen: React.FC = () => {
   const { user, refreshUser } = useAuth();
   const navigation = useNavigation(); // Add this
+  const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [bio, setBio] = useState('');
@@ -36,15 +39,28 @@ export const ProfileSetupScreen: React.FC = () => {
   const [isChecking, setIsChecking] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
   const [showStickerModal, setShowStickerModal] = useState(false); // State for sticker modal
   const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('male'); // For sticker selection
 
 
   const checkUsername = async (value: string) => {
+    // Character validation: alphanumeric and underscores only
+    const regex = /^[a-zA-Z0-9_]*$/;
+    if (value.length > 0 && !regex.test(value)) {
+      setUsernameError('Invalid characters');
+      setIsAvailable(null);
+      setIsChecking(false);
+      return;
+    }
+    
+    setUsernameError(null);
+
     if (value.length < 3) {
       setIsAvailable(null);
       return;
     }
+    
     setIsChecking(true);
     try {
       // Use the authAPI to check username availability
@@ -190,7 +206,7 @@ export const ProfileSetupScreen: React.FC = () => {
 
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <Text style={styles.title}>Complete your profile</Text>
       
       {/* Profile Picture / Sticker Selection Area */}
@@ -213,25 +229,44 @@ export const ProfileSetupScreen: React.FC = () => {
           </View>
         )}
         <TouchableOpacity style={styles.cameraIcon} onPress={() => setShowStickerModal(true)}>
-          <Text style={styles.cameraIconText}>📷</Text>
+          <Icon name="camera" size={18} color="#000" />
         </TouchableOpacity>
       </View>
       <Text style={styles.changePhotoText}>Tap to change photo or sticker</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Choose unique username"
-        value={username}
-        onChangeText={(text) => {
-          const lowerText = text.toLowerCase();
-          setUsername(lowerText);
-          checkUsername(lowerText);
-        }}
-        autoCapitalize="none"
-      />
-      {isChecking && <ActivityIndicator size="small" />}
-      {isAvailable === false && <Text style={styles.errorText}>Username taken</Text>}
-      {isAvailable === true && <Text style={styles.successText}>Username available</Text>}
+      <View style={styles.inputContainer}>
+        <TextInput
+          style={styles.inputWithValidation}
+          placeholder="Choose unique username"
+          value={username}
+          onChangeText={(text) => {
+            const lowerText = text.toLowerCase();
+            setUsername(lowerText);
+            
+            // Immediate character validation
+            const regex = /^[a-zA-Z0-9_]*$/;
+            if (lowerText.length > 0 && !regex.test(lowerText)) {
+              setUsernameError('Invalid characters');
+              setIsAvailable(null);
+            } else {
+              setUsernameError(null);
+              checkUsername(lowerText);
+            }
+          }}
+          autoCapitalize="none"
+        />
+        <View style={styles.validationFeedback}>
+          {isChecking && <ActivityIndicator size="small" />}
+          {usernameError ? (
+            <Text style={styles.errorText}>{usernameError}</Text>
+          ) : (
+            <>
+              {isAvailable === false && <Text style={styles.errorText}>Taken</Text>}
+              {isAvailable === true && <Text style={styles.successText}>Available</Text>}
+            </>
+          )}
+        </View>
+      </View>
 
       <TextInput
         style={styles.input}
@@ -347,14 +382,15 @@ const styles = StyleSheet.create({
   nextButton: { backgroundColor: '#8100D1', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
   nextButtonDisabled: { backgroundColor: '#B080D1'},
   nextButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
-  errorText: { color: 'red', fontSize: 12, marginBottom: 8, textAlign: 'center' },
-  successText: { color: 'green', fontSize: 12, marginBottom: 8, textAlign: 'center' },
+  errorText: { color: 'red', fontSize: 12 },
+  successText: { color: 'green', fontSize: 12 },
   
   // Profile Picture / Sticker Styles
   profilePictureContainer: {
     alignItems: 'center',
     marginBottom: 16,
-    position: 'relative',
+    width: 120,
+    alignSelf: 'center',
   },
   previewImage: {
     width: 120,
@@ -364,13 +400,13 @@ const styles = StyleSheet.create({
     borderColor: '#B080D1',
   },
   previewPlaceholder: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#E8DEF8',
     justifyContent: 'center',
     alignItems: 'center',
   },
   profilePictureText: {
     fontSize: 48,
-    color: '#FFF',
+    color: '#8100D1',
     fontWeight: 'bold',
   },
   stickerAvatar: {
@@ -381,16 +417,16 @@ const styles = StyleSheet.create({
   },
   cameraIcon: {
     position: 'absolute',
-    bottom: 0,
-    right: -10, // Adjust position as needed
-    backgroundColor: '#8100D1',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    bottom: 8,
+    right: 5,
+    backgroundColor: '#FFF',
+    width: 30,
+    height: 30,
+    borderRadius: 5,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#FFF',
+    borderWidth: 2,
+    borderColor: '#8100D1',
   },
   cameraIconText: {
     fontSize: 18,
@@ -400,6 +436,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 24,
     textAlign: 'center',
+  },
+  inputContainer: {
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderColor: '#DDD',
+  },
+  inputWithValidation: {
+    flex: 1,
+    padding: 8,
+    fontSize: 16,
+  },
+  validationFeedback: {
+    paddingRight: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   // Modal styles

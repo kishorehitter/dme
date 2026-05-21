@@ -182,23 +182,26 @@ export const StatusService = {
     }
   },
 
-  /** Get the viewer list for a status (owner only) */
-  async getViewers(statusId: number): Promise<{
+  /** Get the viewer list and like list for a status (owner only) */
+  async getInteractions(statusId: number): Promise<{
     viewers: StatusViewer[];
-    like_count: number;
-    liked_users: LikedUser[];
+    likes: LikedUser[];
   }> {
     try {
       const headers = await authHeaders();
-      const res = await fetch(
-        `${API_BASE_URL}/chat/statuses/${statusId}/viewers/`,
-        { headers },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
+      const [viewersRes, likesRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/chat/statuses/${statusId}/viewers/`, { headers }),
+        fetch(`${API_BASE_URL}/chat/statuses/${statusId}/likes/`, { headers })
+      ]);
+
+      if (!viewersRes.ok || !likesRes.ok) throw new Error('Failed to fetch interactions');
+
+      const viewers = await viewersRes.json();
+      const likes = await likesRes.json();
+      return { viewers, likes };
     } catch (err) {
-      console.error('[StatusService] getViewers error:', err);
-      return { viewers: [], like_count: 0, liked_users: [] };
+      console.error('[StatusService] getInteractions error:', err);
+      return { viewers: [], likes: [] };
     }
   },
 

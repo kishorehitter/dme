@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   TextInput,
   FlatList,
+  Modal,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,6 +18,27 @@ import { chatAPI } from '../../services/api';
 import { resolveImageUrl } from '../../utils/image';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useAuth } from '../../context/AuthContext';
+import Icon from 'react-native-vector-icons/Ionicons';
+
+const AvatarWithFallback = ({ uri, displayName, style }: any) => {
+  const [error, setError] = useState(false);
+  if (!uri || error) {
+    return (
+      <View style={[style, { backgroundColor: '#E8DEF8', justifyContent: 'center', alignItems: 'center' }]}>
+        <Text style={{ color: '#8100D1', fontWeight: '600', fontSize: 16 }}>
+          {(displayName || 'U').charAt(0).toUpperCase()}
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri: resolveImageUrl(uri) }}
+      style={style}
+      onError={() => setError(true)}
+    />
+  );
+};
 
 export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   const { conversationId } = route.params;
@@ -117,131 +139,226 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
       }
       const asset = response.assets?.[0];
       if (asset) {
+        setIsUploading(true);
+        setShowImageModal(false);
         try {
           const formData = new FormData();
           formData.append('profile_picture', {
             uri: asset.uri,
-            type: asset.type,
+            type: asset.type || 'image/jpeg',
             name: asset.fileName || 'profile.jpg',
-          });
+          } as any);
 
           await chatAPI.updateConversationProfile(conversationId, formData);
           loadDetails();
         } catch (error) {
+          console.error("Upload error:", error);
           Alert.alert('Error', 'Failed to update profile picture');
+        } finally {
+          setIsUploading(false);
         }
       }
     });
   };
 
+  const handleRemoveImage = async () => {
+    setShowImageModal(false);
+    setIsUploading(true);
+    try {
+      await chatAPI.removeConversationProfile(conversationId);
+      loadDetails();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to remove group image');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [previewContent, setPreviewContent] = useState<{ url?: string }>({});
+
+  const handleAvatarPress = () => {
+    // Single tap: Admin edits image, others see nothing
+    if (isAdmin) {
+      setShowImageModal(true);
+    }
+  };
+
+  const handleAvatarLongPress = () => {
+    // Long press: Everyone sees preview if image exists
+    if (conversation?.profile_picture) {
+      setPreviewContent({ url: conversation.profile_picture });
+      setShowPreview(true);
+    }
+  };
+
   return (
-    <ScrollView style={styles.container}>
-      {/* Header Info */}
-      <View style={styles.header}>
-        <View style={styles.avatarContainer}>
-          <TouchableOpacity onPress={isAdmin ? handleUpdateImage : undefined} disabled={!isAdmin}>
-            {conversation?.profile_picture ? (
-              <Image source={{ uri: resolveImageUrl(conversation.profile_picture) }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarText}>👥</Text>
-              </View>
-            )}
-            {isAdmin && <View style={styles.editBadge}><Text style={styles.editBadgeText}>Edit</Text></View>}
-          </TouchableOpacity>
-
-        </View>
-// ... rest of the file ...
-
-        {isEditing ? (
-          <View style={styles.editForm}>
-            <TextInput
-              style={styles.nameInput}
-              value={editName}
-              onChangeText={setEditName}
-              placeholder="Group Name"
-            />
-            <TextInput
-              style={styles.descInput}
-              value={editDescription}
-              onChangeText={setEditDescription}
-              placeholder="Description"
-              multiline
-            />
-            <View style={styles.editButtons}>
-              <TouchableOpacity onPress={() => setIsEditing(false)} style={styles.cancelButton}>
-                <Text>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleUpdateGroup} style={styles.saveButton}>
-                <Text style={styles.saveText}>Save</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.infoContainer}>
-            <Text style={styles.groupName}>{conversation?.name}</Text>
-            <Text style={styles.groupDesc}>{conversation?.description || 'No description'}</Text>
-            {isAdmin && (
-              <TouchableOpacity onPress={() => setIsEditing(true)}>
-                <Text style={styles.editLink}>Edit Group Info</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
-      </View>
-
-      {/* Participants List */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>{conversation?.participants.length} Participants</Text>
-          {isAdmin && (
-            <TouchableOpacity onPress={() => navigation.navigate('NewChat', { 
-              conversationId, 
-              isAdding: true,
-              existingMemberIds: conversation.participants.map((p: any) => p.user.id)
-            })}>
-              <Text style={styles.addLink}>+ Add</Text>
+    <View style={styles.container}>
+      <ScrollView>
+        {/* Header Info */}
+        <View style={styles.header}>
+          <View style={styles.avatarContainer}>
+            <TouchableOpacity 
+              onPress={handleAvatarPress}
+              onLongPress={handleAvatarLongPress}
+              activeOpacity={0.8}
+            >
+              {conversation?.profile_picture ? (
+                <Image 
+                  source={{ uri: resolveImageUrl(conversation.profile_picture) }} 
+                  style={styles.avatar} 
+                />
+              ) : (
+                <View style={[styles.avatarPlaceholder, { backgroundColor: '#E8DEF8' }]}>
+                  <Icon name="people" size={40} color={colors.primary} />
+                </View>
+              )}
+              {isAdmin && (
+                <View style={styles.editBadge}>
+                  <Icon name="camera" size={18} color="#000" />
+                </View>
+              )}
             </TouchableOpacity>
+          </View>
+
+          {/* Image Action Modal */}
+          <Modal visible={showImageModal} transparent animationType="slide">
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Group Photo</Text>
+                  <TouchableOpacity onPress={() => setShowImageModal(false)}><Text style={styles.modalClose}>✕</Text></TouchableOpacity>
+                </View>
+                
+                <View style={styles.imageActionRow}>
+                  <TouchableOpacity style={styles.actionButton} onPress={handleUpdateImage}>
+                    <Text style={styles.actionButtonText}>📸 Upload</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.actionButton, styles.removeButton]} onPress={handleRemoveImage}>
+                    <Text style={[styles.actionButtonText, styles.removeButtonText]}>🗑️ Remove</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Profile Picture Preview Modal */}
+          <Modal visible={showPreview} transparent={true} animationType="fade" onRequestClose={() => setShowPreview(false)}>
+            <TouchableOpacity style={styles.previewModalOverlay} activeOpacity={1} onPress={() => setShowPreview(false)}>
+              <View style={styles.previewModalContent}>
+                {previewContent.url ? (
+                  <Image source={{ uri: resolveImageUrl(previewContent.url) }} style={styles.previewImage} />
+                ) : (
+                  <View style={styles.previewPlaceholder}>
+                    <Icon name="people" size={80} color="#fff" />
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          </Modal>
+
+
+          {isEditing ? (
+            <View style={styles.editForm}>
+              <TextInput
+                style={styles.nameInput}
+                value={editName}
+                onChangeText={setEditName}
+                placeholder="Group Name"
+              />
+              <TextInput
+                style={styles.descInput}
+                value={editDescription}
+                onChangeText={setEditDescription}
+                placeholder="Description"
+                multiline
+              />
+              <View style={styles.editButtons}>
+                <TouchableOpacity onPress={() => setIsEditing(false)} style={styles.cancelButton}>
+                  <Text>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleUpdateGroup} style={styles.saveButton}>
+                  <Text style={styles.saveText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.infoContainer}>
+              <Text style={styles.groupName}>{conversation?.name}</Text>
+              <Text style={styles.groupDesc}>{conversation?.description || 'No description'}</Text>
+              {isAdmin && (
+                <TouchableOpacity onPress={() => setIsEditing(true)}>
+                  <Text style={styles.editLink}>Edit Group Info</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
         </View>
 
-        {conversation?.participants.map((p: any) => (
-          <View key={p.id} style={styles.participantItem}>
-            <View style={styles.participantAvatar}>
-              {p.user.avatar_sticker ? (
-                <Text style={{ fontSize: 20 }}>{p.user.avatar_sticker}</Text>
-              ) : p.user.profile_picture ? (
-                <Image 
-                  source={{ uri: resolveImageUrl(p.user.profile_picture) }} 
-                  style={{ width: 40, height: 40, borderRadius: 20 }} 
-                />
-              ) : (
-                <Text>{(p.user.display_name || p.user.username || p.user.email).charAt(0).toUpperCase()}</Text>
-              )}
-            </View>
-            <View style={styles.participantInfo}>
-              <Text style={styles.participantName}>
-                {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.username || p.user.email)}
-              </Text>
-              {p.is_admin && <View style={styles.adminBadge}><Text style={styles.adminBadgeText}>Admin</Text></View>}
-            </View>
-            
-            {isAdmin && p.user.id !== currentUser?.id && (
-              <TouchableOpacity onPress={() => handleRemoveMember(p.user.id, p.user.display_name || p.user.email)}>
-                <Text style={styles.removeText}>Remove</Text>
+        {/* Participants List */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>{conversation?.participants.length} Participants</Text>
+            {isAdmin && (
+              <TouchableOpacity onPress={() => navigation.navigate('NewChat', { 
+                conversationId, 
+                isAdding: true,
+                existingMemberIds: conversation.participants.map((p: any) => p.user.id)
+              })}>
+                <Text style={styles.addLink}>+ Add</Text>
               </TouchableOpacity>
             )}
           </View>
-        ))}
-      </View>
 
-      {/* Actions */}
-      <View style={styles.actions}>
-        <TouchableOpacity style={styles.actionItem} onPress={handleLeaveGroup}>
-          <Text style={styles.leaveText}>Leave Group</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+          {conversation?.participants.map((p: any) => (
+            <TouchableOpacity 
+              key={p.id} 
+              style={styles.participantItem}
+              onPress={() => navigation.navigate('Profile', { user: p.user, conversationId })}
+            >
+              <View style={[styles.participantAvatar, { backgroundColor: '#E8DEF8' }]}>
+                {p.user.avatar_sticker ? (
+                  <Text style={{ fontSize: 20 }}>{p.user.avatar_sticker}</Text>
+                ) : (
+                  <AvatarWithFallback
+                    uri={p.user.profile_picture}
+                    displayName={p.user.display_name || p.user.username || p.user.email}
+                    style={{ width: 40, height: 40, borderRadius: 20 }}
+                  />
+                )}
+              </View>
+              <View style={styles.participantInfo}>
+                <Text style={styles.participantName}>
+                  {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.username || p.user.email)}
+                </Text>
+                {p.is_admin && <View style={styles.adminBadge}><Text style={styles.adminBadgeText}>Admin</Text></View>}
+              </View>
+              
+              {isAdmin && p.user.id !== currentUser?.id && (
+                <TouchableOpacity onPress={() => handleRemoveMember(p.user.id, p.user.display_name || p.user.email)}>
+                  <Text style={styles.removeText}>Remove</Text>
+                </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Actions */}
+        <View style={styles.actions}>
+          <TouchableOpacity style={styles.actionItem} onPress={handleLeaveGroup}>
+            <Text style={styles.leaveText}>Leave Group</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      {isUploading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      )}
+    </View>
   );
 };
 
@@ -260,13 +377,13 @@ const styles = StyleSheet.create({
   avatarContainer: { marginBottom: spacing.md },
   avatar: { width: 100, height: 100, borderRadius: 50 },
   editBadge: {
-    position: 'absolute', bottom: 0, right: 0,
-    backgroundColor: '#000', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12
+    position: 'absolute', bottom: 8, right: 0,
+    backgroundColor: '#FFF', padding: 1, borderRadius: 2, borderColor: '#8100D1', borderWidth: 1
   },
   editBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   avatarPlaceholder: { 
     width: 100, height: 100, borderRadius: 50, 
-    backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center' 
+    backgroundColor: '#999999', justifyContent: 'center', alignItems: 'center' 
   },
   avatarText: { fontSize: 40 },
   infoContainer: { alignItems: 'center' },
@@ -301,7 +418,7 @@ const styles = StyleSheet.create({
   },
   participantAvatar: { 
     width: 40, height: 40, borderRadius: 20, 
-    backgroundColor: '#EEE', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: '#999999', justifyContent: 'center', alignItems: 'center',
     marginRight: spacing.md
   },
   participantInfo: { flex: 1, flexDirection: 'row', alignItems: 'center' },
@@ -319,6 +436,81 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#FFE5E5'
   },
   leaveText: { color: '#FF3B30', fontWeight: 'bold', fontSize: fontSize.md },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  modalTitle: { fontSize: 18, fontWeight: 'bold' },
+  modalClose: { fontSize: 18, color: '#666' },
+  imageActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  actionButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#8100D1',
+    borderRadius: 8,
+    alignItems: 'center',
+    marginHorizontal: 5,
+  },
+  removeButton: {
+    borderColor: '#FF3B30',
+  },
+  actionButtonText: {
+    fontSize: 14,
+    color: '#8100D1',
+    fontWeight: '600',
+  },
+  removeButtonText: {
+    color: '#FF3B30',
+  },
+  previewModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewModalContent: {
+    width: 250,
+    height: 250,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewImage: {
+    width: 250,
+    height: 250,
+  },
+  previewPlaceholder: {
+    width: 250,
+    height: 250,
+    backgroundColor: '#ccc',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
 });
 
 export default GroupInfoScreen;

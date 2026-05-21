@@ -149,6 +149,10 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
 
+import cloudinary.uploader
+import re
+from rest_framework import status, generics, permissions, viewsets
+# ...
 class ConversationUpdateProfileView(APIView):
     """Update group profile picture (admins only)."""
     permission_classes = [permissions.IsAuthenticated]
@@ -167,11 +171,34 @@ class ConversationUpdateProfileView(APIView):
             if not participant or not participant.is_admin:
                 return Response({'error': 'Only group admins can update profile picture'}, status=status.HTTP_403_FORBIDDEN)
             
+            # Handle removal if profile_picture is explicitly set to null/empty in JSON body
+            # or simply not in request.FILES
+            if 'profile_picture' in request.data and request.data['profile_picture'] is None:
+                if conversation.profile_picture:
+                    try:
+                        path = conversation.profile_picture.name
+                        clean_path = re.sub(r'^v\d+/', '', path)
+                        public_id = clean_path.rsplit('.', 1)[0]
+                        cloudinary.uploader.destroy(public_id, invalidate=True)
+                    except Exception as e:
+                        print(f"DEBUG: Failed to delete group media from Cloudinary: {e}")
+                conversation.profile_picture = None
+                conversation.save()
+                return Response({'message': 'Profile picture removed'})
+
             if 'profile_picture' in request.FILES:
+                if conversation.profile_picture:
+                    try:
+                        path = conversation.profile_picture.name
+                        clean_path = re.sub(r'^v\d+/', '', path)
+                        public_id = clean_path.rsplit('.', 1)[0]
+                        cloudinary.uploader.destroy(public_id, invalidate=True)
+                    except Exception as e:
+                        print(f"DEBUG: Failed to delete old group media from Cloudinary: {e}")
+
                 conversation.profile_picture = request.FILES['profile_picture']
                 conversation.save()
                 return Response({'message': 'Profile picture updated', 'url': request.build_absolute_uri(conversation.profile_picture.url)})
-            
             return Response({'error': 'No image provided'}, status=status.HTTP_400_BAD_REQUEST)
         except Conversation.DoesNotExist:
             return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -903,6 +930,12 @@ class MessageEditView(APIView):
             return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
+import cloudinary.uploader
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from .models import Message
+
 class MessageDeleteView(APIView):
     """Delete a message (soft delete for receiver, hard delete for sender)."""
     permission_classes = [permissions.IsAuthenticated]
@@ -922,16 +955,33 @@ class MessageDeleteView(APIView):
                 )
             
             if is_sender:
+                # If message has media, delete from Cloudinary
+                if message.media_file:
+                    try:
+                        # Path: v1779254828/chat_media/1000087081.jpg
+                        path = message.media_file.name
+                        
+                        # 1. Remove the version prefix if present (e.g., 'v12345/')
+                        import re
+                        clean_path = re.sub(r'^v\d+/', '', path)
+                        
+                        # 2. Remove extension
+                        public_id = clean_path.rsplit('.', 1)[0]
+                        
+                        print(f"DEBUG: Attempting to delete from Cloudinary. Original: {path}, Clean: {clean_path}, Public ID: {public_id}")
+                        result = cloudinary.uploader.destroy(public_id, invalidate=True)
+                        print(f"DEBUG: Cloudinary deletion result: {result}")
+                    except Exception as e:
+                        print(f"DEBUG: Failed to delete media from Cloudinary: {e}")
+
                 # Sender can unsend (delete for everyone)
-                # For now, we'll soft delete with is_deleted flag
-                # You can change this to message.delete() for hard delete
                 message.is_deleted = True
                 message.content = 'The message was removed'
+                message.media_file = None  # Clear the reference
                 message.save()
                 return Response({'message': 'Message unsent for everyone'})
             else:
                 # Receiver can only delete for themselves (soft delete)
-                # We'll use a custom flag or just hide it on frontend
                 # For now, mark as deleted
                 message.is_deleted = True
                 message.save()

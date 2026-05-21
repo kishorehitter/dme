@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavigationContainer, DefaultTheme, CommonActions, useNavigation } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
+import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image } from 'react-native';
 import { useAuth } from '../context/AuthContext';
@@ -26,6 +26,7 @@ import StatusViewer from '../components/StatusViewer';
 import StatusEditorScreen from '../screens/StatusEditorScreen';
 import GoogleLoginScreen from '../screens/GoogleLoginScreen';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import { colors, spacing } from '../utils/theme';
 
 const Stack = createStackNavigator();
@@ -57,6 +58,7 @@ const MainTabs = () => (
       },
       tabBarActiveTintColor: '#8100D1',
       tabBarInactiveTintColor: 'gray',
+      tabBarHideOnKeyboard: true,
     })}
   >
     <Tab.Screen name="Chats"  component={ChatListScreen}  options={{ headerShown: false }} />
@@ -72,10 +74,64 @@ interface HeaderRightIconsProps {
 const HeaderRightIcons: React.FC<HeaderRightIconsProps> = ({ logout }) => {
   const navigation = useNavigation<any>();
 
+  const handleAddStatus = () => {
+    Alert.alert('Add Status', 'Choose source', [
+      {
+        text: '📷 Camera',
+        onPress: () => {
+          Alert.alert('Camera', 'What to capture?', [
+            {
+              text: '🖼 Photo',
+              onPress: async () => {
+                const result = await launchCamera({ mediaType: 'photo', quality: 0.8 });
+                if (result.assets?.[0]?.uri) {
+                  navigation.navigate('StatusEditor', {
+                    mediaUri: result.assets[0].uri,
+                    mediaType: 'photo',
+                  });
+                }
+              },
+            },
+            {
+              text: '🎥 Video',
+              onPress: async () => {
+                const result = await launchCamera({
+                  mediaType: 'video',
+                  videoQuality: 'medium',
+                  durationLimit: 30,
+                });
+                if (result.assets?.[0]?.uri) {
+                  navigation.navigate('StatusEditor', {
+                    mediaUri: result.assets[0].uri,
+                    mediaType: 'video',
+                  });
+                }
+              },
+            },
+            { text: 'Cancel', style: 'cancel' },
+          ]);
+        },
+      },
+      {
+        text: '🖼️ Gallery',
+        onPress: async () => {
+          const result = await launchImageLibrary({ mediaType: 'mixed', quality: 0.8 });
+          if (result.assets?.[0]?.uri) {
+            navigation.navigate('StatusEditor', {
+              mediaUri: result.assets[0].uri,
+              mediaType: result.assets[0].type?.startsWith('video') ? 'video' : 'photo',
+            });
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: spacing.md }}>
       <TouchableOpacity
-        onPress={() => navigation.navigate('StatusEditor')}
+        onPress={handleAddStatus}
         style={{
           width: 26,
           height: 26,
@@ -192,7 +248,16 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
           animation: 'none', // We'll handle entry/exit inside the component or let the modal handle it
         }} 
       />
-      <Stack.Screen name="StatusEditor" component={StatusEditorScreen} options={{ headerShown: false }} />
+      <Stack.Screen 
+        name="StatusEditor" 
+        component={StatusEditorScreen} 
+        options={{ 
+          headerShown: false,
+          presentation: 'transparentModal',
+          animation: 'none',
+          statusBarHidden: true,
+        }} 
+      />
       <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
       <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media' }} />
       </Stack.Navigator>

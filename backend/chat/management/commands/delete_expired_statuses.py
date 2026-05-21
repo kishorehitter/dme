@@ -8,5 +8,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         cutoff = timezone.now() - timedelta(hours=12)
-        count, _ = Status.objects.filter(created_at__lt=cutoff).delete()
+        expired = Status.objects.filter(created_at__lt=cutoff)
+        count = 0
+        for s in expired:
+            try:
+                s.delete()
+                count += 1
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"Error deleting status {s.id}: {e}"))
         self.stdout.write(self.style.SUCCESS(f'Deleted {count} expired statuses.'))

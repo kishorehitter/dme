@@ -202,3 +202,19 @@ class FCMDevice(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.platform} ({self.device_id[:20]}...)"
+
+
+class ProfileInteraction(models.Model):
+    """Tracks when a user views another user's profile to enable status visibility."""
+    viewer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='profile_views_sent')
+    profile_owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='profile_views_received')
+    viewed_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        verbose_name = 'Profile Interaction'
+        verbose_name_plural = 'Profile Interactions'
+        unique_together = ['viewer', 'profile_owner']
+        ordering = ['-viewed_at']
+    
+    def __str__(self):
+        return f"{self.viewer.email} viewed {self.profile_owner.email}"

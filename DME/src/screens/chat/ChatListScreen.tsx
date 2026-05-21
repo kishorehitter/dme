@@ -12,8 +12,10 @@ import {
   DeviceEventEmitter,
   StatusBar,
   Platform,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
 import { useAuth } from '../../context/AuthContext';
 import { chatAPI } from '../../services/api';
@@ -21,10 +23,40 @@ import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { StatusService, Status, UserStatusGroup } from '../../services/StatusService';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { Conversation } from '../../types';
+import { resolveImageUrl } from '../../utils/image';
 
 interface ChatListScreenProps {
   navigation: any;
 }
+
+const ImageWithFallback = ({ uri, isGroup, displayName, style }: any) => {
+  const [error, setError] = useState(false);
+
+  if (!uri || error) {
+    if (isGroup) {
+      return (
+        <View style={[style, { backgroundColor: BG_COLOR, justifyContent: 'center', alignItems: 'center' }]}>
+          <Icon name="people" size={28} color="#8100D1" />
+        </View>
+      );
+    }
+    return (
+      <View style={[style, styles.avatarPlaceholder]}>
+        <Text style={styles.avatarText}>
+          {(displayName || 'U').charAt(0).toUpperCase()}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: resolveImageUrl(uri) }}
+      style={style}
+      onError={() => setError(true)}
+    />
+  );
+};
 
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
@@ -36,6 +68,20 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const { user, logout } = useAuth();
   const isLoadingRef = useRef(false);
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
+
+  const [previewData, setPreviewData] = useState<{
+    visible: boolean;
+    uri: string | null;
+    isGroup: boolean;
+    displayName: string;
+    sticker: string | null;
+  }>({
+    visible: false,
+    uri: null,
+    isGroup: false,
+    displayName: '',
+    sticker: null,
+  });
 
   const loadConversations = useCallback(async () => {
     if (isLoadingRef.current) return;
@@ -223,37 +269,54 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       ? allSeen ? styles.statusViewedRing : styles.statusNewRing
       : {};
 
+    const handleAvatarPress = () => {
+      if (hasStatus && userStatus) {
+        navigation.navigate('StatusViewer', { 
+          statuses: userStatus.statuses, 
+          initialIndex: 0,
+          currentUserId: user?.id,
+          isOwn: false
+        });
+      } else {
+        // No status, show profile/group info
+        if (item.is_group) {
+          navigation.navigate('GroupInfo', { conversationId: item.id });
+        } else if (item.other_user) {
+          navigation.navigate('Profile', { user: item.other_user, conversationId: item.id });
+        }
+      }
+    };
+
+    const handleAvatarLongPress = () => {
+      setPreviewData({
+        visible: true,
+        uri: profilePicture,
+        isGroup: item.is_group,
+        displayName: displayName,
+        sticker: avatarSticker,
+      });
+    };
+
     return (
       <View style={styles.conversationItem}>
-        {/* Avatar triggered: Status/Preview */}
+        {/* Avatar triggered: Status/Preview on tap, Square Preview on long press */}
         <TouchableOpacity
-          onPress={() => {
-            if (hasStatus && userStatus) {
-              navigation.navigate('StatusViewer', { 
-                statuses: userStatus.statuses, 
-                initialIndex: 0,
-                currentUserId: user?.id,
-                isOwn: false
-              });
-            } else {
-              // Optionally show a full-screen image preview here if no status
-              Alert.alert('Profile', 'Showing profile picture preview...');
-            }
-          }}
+          onPress={handleAvatarPress}
+          onLongPress={handleAvatarLongPress}
+          delayLongPress={300}
           style={[styles.avatarContainer, hasStatus && styles.avatarRingContainer, ringStyle]}
         >
           {avatarSticker ? (
             <View style={[styles.avatar, styles.avatarPlaceholder]}>
               <Text style={styles.stickerAvatar}>{avatarSticker}</Text>
             </View>
-          ) : profilePicture ? (
-            <Image source={{ uri: profilePicture }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
-              <Text style={styles.avatarText}>
-                {displayName.charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            <ImageWithFallback
+              uri={profilePicture}
+              isGroup={item.is_group}
+              displayName={displayName}
+              style={styles.avatar}
+            />
           )}
         </TouchableOpacity>
 
@@ -299,7 +362,114 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   });
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+      {/* Quick Preview Modal */}
+      <Modal
+        visible={previewData.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewData(prev => ({ ...prev, visible: false }))}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setPreviewData(prev => ({ ...prev, visible: false }))}
+        >
+          <View style={styles.quickPreviewContainer}>
+            <View style={styles.quickPreviewHeader}>
+              <Text style={styles.quickPreviewTitle} numberOfLines={1}>{previewData.displayName}</Text>
+            </View>
+            <View style={styles.quickPreviewImageContainer}>
+              {previewData.sticker ? (
+                <View style={[styles.quickPreviewAvatar, styles.avatarPlaceholder, { borderRadius: 0 }]}>
+                  <Text style={{ fontSize: 120 }}>{previewData.sticker}</Text>
+                </View>
+              ) : (
+                <ImageWithFallback
+                  uri={previewData.uri}
+                  isGroup={previewData.isGroup}
+                  displayName={previewData.displayName}
+                  style={[styles.quickPreviewAvatar, { borderRadius: 0 }]}
+                  largeLetter={true}
+                />
+              )}
+            </View>
+            <View style={styles.quickPreviewFooter}>
+              <TouchableOpacity
+                style={styles.quickPreviewAction}
+                onPress={() => {
+                  setPreviewData(prev => ({ ...prev, visible: false }));
+                  const conv = conversations.find(c => {
+                    const dName = c.is_group 
+                      ? c.name || 'Group Chat'
+                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
+                    return dName === previewData.displayName;
+                  });
+                  if (conv) {
+                    navigation.navigate('ChatRoom', { 
+                      conversationId: conv.id, 
+                      name: previewData.displayName 
+                    });
+                  }
+                }}
+              >
+                <Icon name="chatbubble" size={24} color={THEME_COLOR} />
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={styles.quickPreviewAction}
+                onPress={() => {
+                  setPreviewData(prev => ({ ...prev, visible: false }));
+                  const conv = conversations.find(c => {
+                    const dName = c.is_group 
+                      ? c.name || 'Group Chat'
+                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
+                    return dName === previewData.displayName;
+                  });
+                  if (conv) {
+                    navigation.navigate('Call', {
+                      callType: 'audio',
+                      conversationId: conv.id,
+                      initiating: true,
+                      isGroupCall: conv.is_group,
+                      remoteUserId: conv.other_user?.id,
+                      remoteUserName: previewData.displayName,
+                      remoteUserPic: previewData.uri
+                    });
+                  }
+                }}
+              >
+                <Icon name="call" size={24} color={THEME_COLOR} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.quickPreviewAction}
+                onPress={() => {
+                  setPreviewData(prev => ({ ...prev, visible: false }));
+                  const conv = conversations.find(c => {
+                    const dName = c.is_group 
+                      ? c.name || 'Group Chat'
+                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
+                    return dName === previewData.displayName;
+                  });
+                  if (conv) {
+                    if (conv.is_group) {
+                      navigation.navigate('GroupInfo', { conversationId: conv.id });
+                    } else if (conv.other_user) {
+                      navigation.navigate('Profile', { user: conv.other_user, conversationId: conv.id });
+                    }
+                  }
+                }}
+              >
+                <Icon name="information-circle" size={26} color={THEME_COLOR} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Tab Switcher */}
       <View style={styles.tabContainer}>
         <TouchableOpacity
@@ -362,11 +532,56 @@ const formatTime = (dateString: string) => {
 };
 
 const THEME_COLOR = '#8100D1';
+const BG_COLOR = '#E8DEF8';
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickPreviewContainer: {
+    width: 280,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 0, // Square like WhatsApp
+    overflow: 'hidden',
+  },
+  quickPreviewHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    padding: 10,
+    zIndex: 10,
+  },
+  quickPreviewTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '500',
+  },
+  quickPreviewImageContainer: {
+    width: 280,
+    height: 280,
+  },
+  quickPreviewAvatar: {
+    width: 280,
+    height: 280,
+  },
+  quickPreviewFooter: {
+    flexDirection: 'row',
+    height: 50,
+    backgroundColor: '#FFFFFF',
+  },
+  quickPreviewAction: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   tabContainer: {
     flexDirection: 'row',

@@ -14,7 +14,7 @@
  * [5] All elements respect safe area insets — nothing hidden under notch or nav bar
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react';
 import {
   View, Text, Image, StyleSheet, Dimensions,
   TouchableWithoutFeedback, TouchableOpacity,
@@ -23,6 +23,7 @@ import {
   PanResponder, TextInput, KeyboardAvoidingView,
   NativeModules,
 } from 'react-native';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Video from 'react-native-video';
@@ -43,169 +44,116 @@ interface ViewerSheetProps {
   onClose:   () => void;
 }
 
-const ViewerSheet: React.FC<ViewerSheetProps> = ({
-  statusId, viewCount, visible, onClose,
-}) => {
-  const [viewers,    setViewers]    = useState<ViewerType[]>([]);
-  const [likeCount,  setLikeCount]  = useState(0);
-  const [likedUsers, setLikedUsers] = useState<LikedUser[]>([]);
-  const [tab,        setTab]        = useState<'views' | 'likes'>('views');
-  const [loading,    setLoading]    = useState(false);
+const ViewerSheet: React.FC<{
+  statusId: number;
+  visible: boolean;
+  type: 'views' | 'likes';
+  onClose: () => void;
+}> = ({ statusId, visible, type, onClose }) => {
+  const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!visible) return;
+    let isMounted = true;
     setLoading(true);
-    StatusService.getViewers(statusId)
-      .then(data => {
-        // Ensure data exists and has the expected properties
-        setViewers(data?.viewers || []);
-        setLikeCount(data?.like_count || 0);
-        setLikedUsers(data?.liked_users || []);
+    StatusService.getInteractions(statusId)
+      .then(res => {
+        if (isMounted) setData(type === 'views' ? (res?.viewers || []) : (res?.likes || []));
       })
-      .catch(err => {
-        console.error('[StatusViewer] Error loading viewers:', err);
-        setViewers([]);
-      })
-      .finally(() => setLoading(false));
-  }, [visible, statusId]);
+      .catch(() => { if (isMounted) setData([]); })
+      .finally(() => { if (isMounted) setLoading(false); });
+    return () => { isMounted = false; };
+  }, [visible, statusId, type]);
+
+  const InteractionAvatar = ({ uri, name, style }: any) => {
+    const [error, setError] = useState(false);
+    if (!uri || error) {
+      return (
+        <View style={[style, vs.fallback]}>
+          <Text style={{ color: '#fff', fontWeight: '600' }}>
+            {(name || 'U').charAt(0).toUpperCase()}
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <Image
+        source={{ uri: resolveImageUrl(uri) }}
+        style={style}
+        onError={() => setError(true)}
+      />
+    );
+  };
+
+  const renderItem = ({ item }: { item: any }) => {
+    const isLike = type === 'likes';
+    const name = isLike ? item.username : item.viewer_username;
+    const avatar = isLike ? item.avatar : item.viewer_avatar;
+    const sticker = isLike ? item.avatar_sticker : item.viewer_avatar_sticker;
+    const time = isLike ? item.liked_at : item.viewed_at;
+
+    return (
+      <View style={vs.row}>
+        {sticker ? (
+          <View style={[vs.avatar, vs.fallback]}>
+            <Text style={{ fontSize: 24 }}>{sticker}</Text>
+          </View>
+        ) : (
+          <InteractionAvatar uri={avatar} name={name} style={vs.avatar} />
+        )}
+        <View style={{ flex: 1 }}>
+          <Text style={vs.name}>{name}</Text>
+          <Text style={vs.time}>
+            {new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+        </View>
+        {isLike && <Icon name="heart" size={16} color="#ff4d6d" />}
+      </View>
+    );
+  };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={vs.overlay} />
       </TouchableWithoutFeedback>
-
       <View style={[vs.sheet, { paddingBottom: insets.bottom + 16 }]}>
         <View style={vs.handle} />
-
-        <View style={vs.tabRow}>
-          <TouchableOpacity
-            style={[vs.tab, tab === 'views' && vs.tabActive]}
-            onPress={() => setTab('views')}
-          >
-            <Icon name="eye-outline" size={16} color={tab === 'views' ? '#8100D1' : '#888'} />
-            <Text style={[vs.tabText, tab === 'views' && vs.tabTextActive]}>
-              {viewCount} view{viewCount !== 1 ? 's' : ''}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[vs.tab, tab === 'likes' && vs.tabActive]}
-            onPress={() => setTab('likes')}
-          >
-            <Icon name="heart" size={16} color={tab === 'likes' ? '#ff4d6d' : '#888'} />
-            <Text style={[vs.tabText, tab === 'likes' && { color: '#ff4d6d' }]}>
-              {likeCount} like{likeCount !== 1 ? 's' : ''}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {loading ? (
-          <ActivityIndicator color="#8100D1" style={{ marginTop: 24 }} />
-        ) : tab === 'views' ? (
-          viewers.length === 0 ? (
-            <Text style={vs.empty}>No views yet</Text>
-          ) : (
-            <FlatList
-              data={viewers}
-              keyExtractor={v => String(v.viewer_id)}
-              renderItem={({ item }) => (
-                <View style={vs.row}>
-                  {item.viewer_avatar_sticker ? (
-                    <View style={[vs.avatar, vs.fallback]}>
-                      <Text style={{ fontSize: 24 }}>{item.viewer_avatar_sticker}</Text>
-                    </View>
-                  ) : item.viewer_avatar ? (
-                    <Image source={{ uri: item.viewer_avatar }} style={vs.avatar} />
-                  ) : (
-                    <View style={[vs.avatar, vs.fallback]}>
-                      <Text style={{ color: '#fff', fontWeight: '600' }}>
-                        {item.viewer_username.charAt(0).toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <Text style={vs.name}>{item.viewer_username}</Text>
-                    <Text style={vs.time}>
-                      {new Date(item.viewed_at).toLocaleTimeString([], {
-                        hour: '2-digit', minute: '2-digit',
-                      })}
-                    </Text>
-                  </View>
-                  {item.has_liked && <Icon name="heart" size={16} color="#ff4d6d" />}
-                </View>
-              )}
-            />
-          )
-        ) : (
-          likedUsers.length === 0 ? (
-            <Text style={vs.empty}>No likes yet</Text>
-          ) : (
-            <FlatList
-              data={likedUsers}
-              keyExtractor={u => String(u.user_id)}
-              renderItem={({ item }) => (
-                <View style={vs.row}>
-                  {item.avatar_sticker ? (
-                    <View style={[vs.avatar, vs.fallback]}>
-                      <Text style={{ fontSize: 24 }}>{item.avatar_sticker}</Text>
-                    </View>
-                  ) : item.avatar ? (
-                    <Image source={{ uri: item.avatar }} style={vs.avatar} />
-                  ) : (
-                    <View style={[vs.avatar, vs.fallback]}>
-                      <Text style={{ color: '#fff', fontWeight: '600' }}>
-                        {item.username.charAt(0).toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <Text style={vs.name}>{item.username}</Text>
-                    <Text style={vs.time}>
-                      {new Date(item.liked_at).toLocaleTimeString([], {
-                        hour: '2-digit', minute: '2-digit',
-                      })}
-                    </Text>
-                  </View>
-                  <Icon name="heart" size={16} color="#ff4d6d" />
-                </View>
-              )}
-            />
-          )
-        )}
+        <Text style={vs.title}>{type === 'views' ? 'Viewers' : 'Likers'}</Text>
+        {loading ? <ActivityIndicator color="#8100D1" style={{ marginTop: 24 }} /> : 
+         <FlatList data={data} keyExtractor={i => String(i.user_id || i.viewer_id)} renderItem={renderItem} />}
       </View>
     </Modal>
   );
 };
 
 const vs = StyleSheet.create({
-  tabRow: {
+  toggleRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
     marginBottom: 4,
   },
-  tab: {
+  toggleBtn: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
     paddingVertical: 12,
+    alignItems: 'center',
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
   },
-  tabActive: {
+  toggleActive: {
     borderBottomColor: '#8100D1',
   },
-  tabText: {
+  toggleText: {
     fontSize: 14,
     color: '#888',
     fontWeight: '500',
   },
-  tabTextActive: {
+  toggleTextActive: {
     color: '#8100D1',
+    fontWeight: '600',
   },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
   sheet: {
@@ -218,7 +166,7 @@ const vs = StyleSheet.create({
   empty:   { textAlign: 'center', color: '#aaa', marginTop: 24, fontSize: 14 },
   row:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10 },
   avatar:  { width: 42, height: 42, borderRadius: 21, marginRight: 12 },
-  fallback:{ backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
+  fallback:{ backgroundColor: '#d1c4e9', justifyContent: 'center', alignItems: 'center' },
   name:    { fontSize: 14, fontWeight: '500', color: '#111' },
   time:    { fontSize: 12, color: '#888', marginTop: 2 },
 });
@@ -235,11 +183,22 @@ const StatusViewerScreen: React.FC = () => {
   const route      = useRoute();
   const insets     = useSafeAreaInsets();
 
+  useLayoutEffect(() => {
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+      return () => {
+        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+      };
+    }
+  }, []);
+
+
   const { statuses: initialStatuses, initialIndex, isOwn } = route.params as RouteParams;
 
   const [statuses,      setStatuses]      = useState<Status[]>(initialStatuses);
   const [index,         setIndex]         = useState(initialIndex);
   const [showViewers,   setShowViewers]   = useState(false);
+  const [sheetType,     setSheetType]     = useState<'views' | 'likes'>('views'); // Track which list to show
   const [videoDuration, setVideoDuration] = useState(PHOTO_DURATION);
   const [videoPaused,   setVideoPaused]   = useState(false);
 
@@ -519,16 +478,19 @@ const StatusViewerScreen: React.FC = () => {
             <>
               <TouchableOpacity
                 style={s.ownerActionBtn}
-                onPress={() => { stopProgress(); setShowViewers(true); }}
+                onPress={() => { stopProgress(); setSheetType('views'); setShowViewers(true); }}
               >
                 <Icon name="eye-outline" size={26} color="#fff" style={s.iconShadow} />
                 <Text style={s.ownerActionText}>{current.view_count}</Text>
               </TouchableOpacity>
 
-              <View style={s.ownerLikesCenter}>
+              <TouchableOpacity
+                style={s.ownerLikesCenter}
+                onPress={() => { stopProgress(); setSheetType('likes'); setShowViewers(true); }}
+              >
                 <Icon name="heart" size={24} color="#ff4d6d" style={s.iconShadow} />
                 <Text style={s.ownerActionText}>{(current as any).like_count ?? 0}</Text>
-              </View>
+              </TouchableOpacity>
 
               <TouchableOpacity
                 style={s.ownerActionBtn}
@@ -599,7 +561,7 @@ const StatusViewerScreen: React.FC = () => {
       {isOwner && (
         <ViewerSheet
           statusId={current.id}
-          viewCount={current.view_count}
+          type={sheetType}
           visible={showViewers}
           onClose={() => {
             setShowViewers(false);
@@ -622,7 +584,7 @@ const s = StyleSheet.create({
   header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, zIndex: 10 },
   headerLeft:    { flexDirection: 'row', alignItems: 'center' },
   avatar:        { width: 36, height: 36, borderRadius: 18, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)' },
-  avatarFallback:{ backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
+  avatarFallback:{ backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
   headerName:    { color: '#fff', fontWeight: '600', fontSize: 14, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
   headerTime:    { color: 'rgba(255,255,255,0.9)', fontSize: 11, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   headerRight:   { flexDirection: 'row', alignItems: 'center' },

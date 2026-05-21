@@ -26,9 +26,9 @@ import {
   Alert,
 } from 'react-native';
 import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
-import RNFS from 'react-native-fs';
 import { chatAPI } from '../../services/api';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
@@ -50,6 +50,57 @@ const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
 
+const HeaderAvatar = ({ uri, isGroup, chatTitle, style }: any) => {
+  const [error, setError] = useState(false);
+
+  if (!uri || error) {
+    if (isGroup) {
+      return (
+        <View style={[style, { backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' }]}>
+          <Icon name="people" size={24} color="#FFF" />
+        </View>
+      );
+    }
+    return (
+      <View style={[style, styles.avatarPlaceholder]}>
+        <Text style={styles.headerAvatarText}>
+          {(chatTitle || 'U').charAt(0).toUpperCase()}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: resolveImageUrl(uri) }}
+      style={style}
+      onError={() => setError(true)}
+    />
+  );
+};
+
+const MessageAvatar = ({ uri, sName, style }: any) => {
+  const [error, setError] = useState(false);
+
+  if (!uri || error) {
+    return (
+      <View style={[style, styles.avatarPlaceholder]}>
+        <Text style={styles.avatarText}>
+          {(sName || 'U').charAt(0).toUpperCase()}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: resolveImageUrl(uri) }}
+      style={style}
+      onError={() => setError(true)}
+    />
+  );
+};
+
 // ─────────────────────────────────────────────
 // MAIN COMPONENT
 // ─────────────────────────────────────────────
@@ -65,6 +116,7 @@ interface OtherUser {
 }
 
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
+  const insets = useSafeAreaInsets();
   const { conversationId, name } = route.params;
   const { user: currentUser } = useAuth();
 
@@ -77,7 +129,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         const notifications = await notifee.getDisplayedNotifications();
         for (const notification of notifications) {
           if (
-            notification.notification.data?.conv_id === String(conversationId)
+            notification.notification.data?.conv_id === String(conversationId) &&
+            notification.id
           ) {
             await notifee.cancelNotification(notification.id);
           }
@@ -135,6 +188,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [currentResultIndex, setCurrentResultIndex] = useState(-1);
 
   // Double-tap reaction animation state
+  const [mediaErrorIds, setMediaErrorIds] = useState<number[]>([]);
   const [doubleTapReaction, setDoubleTapReaction] = useState<{
     visible: boolean;
     x: number;
@@ -149,7 +203,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const doubleTapScale = useRef(new Animated.Value(0)).current;
   const doubleTapOpacity = useRef(new Animated.Value(0)).current;
   const lastTapTimeRef = useRef<number>(0);
-  const doubleTapTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const doubleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Voice recording
   const [isRecording, setIsRecording] = useState(false);
@@ -158,15 +212,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [slideOffset, setSlideOffset] = useState(0);
 
   const flatListRef = useRef<FlatList>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout>();
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatIsActiveRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
 
   // Recording refs
-  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const micButtonScale = useRef(new Animated.Value(1)).current;
   const isRecordingRef = useRef(false);
-  const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slideX = useRef(new Animated.Value(0)).current;
   const isCancelledRef = useRef(false);
   const recordingTimeRef = useRef(0);
@@ -273,7 +327,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   useEffect(() => {
     const unsub = websocketService.onMessage(handleWebSocketMessage);
-    return () => unsub();
+    return () => {
+      unsub();
+    };
   }, [currentUser]);
 
   useEffect(() => {
@@ -512,7 +568,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const handleWebSocketMessage = (wsMsg: WebSocketMessage) => {
-    switch (wsMsg.type) {
+    const _type = (wsMsg.type as unknown) as string;
+    switch (_type) {
       case 'message': {
         const isOwn = wsMsg.data.sender?.id === currentUser?.id;
         const nm: Message = {
@@ -1378,8 +1435,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     } else {
       // First tap - wait to see if there's a second tap
       doubleTapTimeoutRef.current = setTimeout(() => {
+        // If timeout completes, it was a single tap
         lastTapTimeRef.current = 0;
         doubleTapTimeoutRef.current = null;
+        
+        // OPEN MEDIA ON SINGLE TAP
+        if (item.message_type === 'image') {
+           navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'image' });
+        } else if (item.message_type === 'video') {
+           navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'video' });
+        }
       }, DOUBLE_TAP_DELAY);
       lastTapTimeRef.current = now;
     }
@@ -1632,73 +1697,118 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 { color: '#999', fontStyle: 'italic' },
               ]}
             >
-              {item.content}
+              {item.content || 'The message was removed'}
             </Text>
           </View>
         </View>
       );
     }
-
   const renderMedia = () => {
+    if (item.is_deleted) return null;
     const rawUrl = (item as any).media_url || item.media_file;
     const url = resolveImageUrl(rawUrl);
+    
+    const isStatusReply = item.content?.startsWith('↩ Replied to status');
+    const hasMediaError = mediaErrorIds.includes(item.id);
+
+    const timeOverlay = (
+      <View style={styles.mediaTimeOverlay}>
+        <Text style={styles.mediaTimeText}>{fmtMsgTime(item.created_at)}</Text>
+      </View>
+    );
+
+    // If media failed to load and it's a status reply, show expiration placeholder
+    if ((!url || hasMediaError) && isStatusReply) {
+      return (
+        <View style={[styles.imageContainer, { backgroundColor: '#F5F5F5', borderStyle: 'dashed', borderWidth: 1, borderColor: '#DDD' }]}>
+          <Icon name="time-outline" size={40} color="#BBB" />
+          <Text style={{ color: '#999', fontSize: 13, marginTop: 8, fontWeight: '600' }}>Status expired</Text>
+          {timeOverlay}
+        </View>
+      );
+    }
+
     if (!url) return null;
 
-    // Image check: item type or file extension
     const isImage = item.message_type === 'image' || 
                     (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
 
+// Stable, fixed placeholder to prevent reflows during scroll
+const MediaPreview = ({ url, style, onPress }: any) => {
+  return (
+    <TouchableOpacity 
+      onPress={onPress} 
+      style={[
+        style, 
+        { 
+          aspectRatio: 16 / 9, // WhatsApp uses a consistent base aspect ratio for previews
+          backgroundColor: '#E8E8E8', 
+          borderRadius: borderRadius.lg,
+          overflow: 'hidden'
+        }
+      ]}
+    >
+      <Image 
+        source={{ uri: url }} 
+        style={{ width: '100%', height: '100%' }} 
+        resizeMode="cover" 
+      />
+    </TouchableOpacity>
+  );
+};
+
+// ... inside renderMedia:
+
     if (isImage)
       return (
-        <TouchableOpacity onPress={() => navigation.navigate('MediaViewer', { mediaUrl: url, mediaType: 'image' })}>
-          <Image source={{ uri: url }} style={styles.messageImage} resizeMode="cover" />
+        <TouchableOpacity 
+          style={styles.imageContainer}
+          onPress={(e) => handleMessagePress(item, e)}
+          onLongPress={() => handleMessageLongPress(item)}
+          activeOpacity={0.9}
+          delayLongPress={500}
+        >
+          <Image 
+            source={{ uri: url }} 
+            style={styles.fixedMedia} 
+            resizeMode="contain" 
+            onError={() => {
+              console.log('Media load error for message:', item.id);
+              setMediaErrorIds(prev => prev.includes(item.id) ? prev : [...prev, item.id]);
+            }}
+          />
+          {timeOverlay}
         </TouchableOpacity>
       );
 
     if (item.message_type === 'audio')
       return (
-        <AudioPlayer
-          mediaUrl={url}
-          themeColor={THEME_COLOR}
-          duration={item.audio_duration}
-          messageId={item.id}
-        />
+        <View style={styles.audioContainer}>
+          <AudioPlayer
+            mediaUrl={url}
+            themeColor={THEME_COLOR}
+            duration={item.audio_duration}
+            messageId={item.id}
+          />
+          {timeOverlay}
+        </View>
       );
 
-    if (item.message_type === 'video' || (item.message_type === 'text' && (item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov'))))
+    if (item.message_type === 'video' || (item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov')))
       return (
         <TouchableOpacity
-          style={styles.videoPreviewContainer}
-          onPress={() => navigation.navigate('MediaViewer', { mediaUrl: url, mediaType: 'video' })}
+          style={styles.videoContainer}
+          onPress={(e) => handleMessagePress(item, e)}
+          onLongPress={() => handleMessageLongPress(item)}
+          activeOpacity={0.9}
+          delayLongPress={500}
         >
-          <View style={styles.videoPlayOverlay}>
-            <Icon name="play-circle" size={56} color="rgba(255,255,255,0.9)" />
+          <View style={{ justifyContent: 'center', alignItems: 'center' }}>
+            <Icon name="play-circle" size={48} color="rgba(255,255,255,0.9)" />
           </View>
+          {timeOverlay}
         </TouchableOpacity>
-      );
-
-      if (item.message_type === 'document')
-        return (
-          <TouchableOpacity 
-            style={styles.documentMessage}
-            onPress={() => Linking.openURL(url)}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Icon
-                  name="document-text-outline"
-                  size={24}
-                  color={THEME_COLOR}
-                  style={{ marginRight: spacing.sm }}
-                />
-                <Text style={styles.documentText} numberOfLines={1}>
-                  {item.media_file ? item.media_file.split('/').pop() : 'Document'}
-                </Text>
-            </View>
-            <Icon name="download-outline" size={20} color={colors.textSecondary} style={{ marginLeft: spacing.sm }} />
-          </TouchableOpacity>
-        );
-
-      return null;
+      );      return null;
     };
 
     const renderHighlightedText = (text: string, term: string) => {
@@ -1727,20 +1837,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         ]}
       >
         {!isMe && (
-          <View style={[styles.avatar, styles.avatarPlaceholder]}>
-            {item.sender.avatar_sticker ? (
-              <Text style={{ fontSize: 20 }}>{item.sender.avatar_sticker}</Text>
-            ) : item.sender.profile_picture ? (
-              <Image
-                source={{ uri: item.sender.profile_picture }}
-                style={styles.avatar}
-              />
-            ) : (
-              <Text style={styles.avatarText}>
-                {sName.charAt(0).toUpperCase()}
-              </Text>
-            )}
-          </View>
+          <MessageAvatar
+            uri={item.sender.profile_picture}
+            sName={sName}
+            style={styles.avatar}
+          />
         )}
 
         <TouchableOpacity
@@ -1780,7 +1881,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
           {!isMe && isGroup && <Text style={styles.senderName}>{sName}</Text>}
 
-          {/* Media inside bubble */}
+          {/* Media inside bubble - no background/padding wrapper here */}
           {renderMedia()}
 
           {(item.message_type === 'text' || (!!item.content && !['image', 'video', 'voice note', 'voice message', 'document', 'media'].includes(item.content.toLowerCase()))) && (
@@ -1805,27 +1906,30 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             </View>
           )}
 
-          <View style={styles.messageFooter}>
-            <Text
-              style={[
-                styles.messageTime,
-                isMe ? styles.myMessageTime : styles.theirMessageTime,
-              ]}
-            >
-              {fmtMsgTime(item.created_at)}
-            </Text>
-            {isMe && (
-              <Text style={styles.messageStatus}>
-                {item.is_read ? (
-                  <Text style={styles.seenText}>✓✓</Text>
-                ) : item.delivered_at ? (
-                  <Text style={styles.deliveredText}>✓✓</Text>
-                ) : (
-                  <Text style={styles.sentText}>✓</Text>
+          {/* Footer only for non-media messages to avoid double time */}
+          {!['image', 'video', 'audio', 'voice note'].includes(item.message_type) && (
+            <View style={styles.messageFooter}>
+                <Text
+                style={[
+                    styles.messageTime,
+                    isMe ? styles.myMessageTime : styles.theirMessageTime,
+                ]}
+                >
+                {fmtMsgTime(item.created_at)}
+                </Text>
+                {isMe && (
+                <Text style={styles.messageStatus}>
+                    {item.is_read ? (
+                    <Text style={styles.seenText}>✓✓</Text>
+                    ) : item.delivered_at ? (
+                    <Text style={styles.deliveredText}>✓✓</Text>
+                    ) : (
+                    <Text style={styles.sentText}>✓</Text>
+                    )}
+                </Text>
                 )}
-              </Text>
-            )}
-          </View>
+            </View>
+          )}
         </TouchableOpacity>
       </View>
     );
@@ -1863,13 +1967,19 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Header */}
       {searchMode ? renderSearchBar() : (
       <View style={styles.customHeader}>
+        <TouchableOpacity 
+           style={styles.headerBackButton}
+           onPress={() => navigation.goBack()}
+        >
+          <Text><Icon name="arrow-back" size={24} color={THEME_COLOR} /></Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.headerCenter}
           onPress={() =>
@@ -1884,16 +1994,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           activeOpacity={0.7}
         >
           {isGroup ? (
-            conversation?.profile_picture ? (
-              <Image
-                source={{ uri: conversation.profile_picture }}
-                style={styles.headerAvatar}
-              />
-            ) : (
-              <View style={[styles.headerAvatar, styles.avatarPlaceholder]}>
-                <Text style={styles.headerAvatarText}>👥</Text>
-              </View>
-            )
+            <HeaderAvatar
+              uri={conversation?.profile_picture}
+              isGroup={true}
+              style={styles.headerAvatar}
+            />
           ) : (
             otherUser &&
             (otherUser.avatar_sticker ? (
@@ -1902,17 +2007,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   {otherUser.avatar_sticker}
                 </Text>
               </View>
-            ) : otherUser.profile_picture ? (
-              <Image
-                source={{ uri: otherUser.profile_picture }}
+            ) : (
+              <HeaderAvatar
+                uri={otherUser.profile_picture}
+                isGroup={false}
+                chatTitle={chatTitle}
                 style={styles.headerAvatar}
               />
-            ) : (
-              <View style={[styles.headerAvatar, styles.avatarPlaceholder]}>
-                <Text style={styles.headerAvatarText}>
-                  {chatTitle.charAt(0).toUpperCase()}
-                </Text>
-              </View>
             ))
           )}
 
@@ -2567,6 +2668,10 @@ const styles = StyleSheet.create({
   },
   headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },
   backIcon: { fontSize: 28, color: '#8100D1', fontWeight: '300' },
+  headerBackButton: {
+    marginRight: spacing.sm,
+    padding: spacing.xs,
+  },
   headerCenter: {
     flex: 1,
     flexDirection: 'row',
@@ -3086,6 +3191,58 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 100,
     transform: [{ scaleY: -1 }], // Because list is inverted
+  },
+  mediaWrapper: {
+    marginTop: spacing.xs,
+    position: 'relative',
+    alignSelf: 'flex-start',
+    borderRadius: borderRadius.lg,
+    overflow: 'hidden',
+    maxWidth: '100%',
+  },
+  imageContainer: {
+    width: 250,
+    height: 250,
+    marginTop: 2,
+    borderRadius: borderRadius.lg,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoContainer: {
+    width: 250,
+    aspectRatio: 16 / 9,
+    marginTop: 2,
+    borderRadius: borderRadius.lg,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fixedMedia: {
+    width: '100%',
+    height: '100%',
+  },
+  audioContainer: {
+    marginTop: 2,
+    width: 250,
+    backgroundColor: 'rgba(0,0,0,0.05)',
+    borderRadius: borderRadius.md,
+    padding: spacing.xs,
+  },
+  mediaTimeOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  mediaTimeText: {
+    fontSize: fontSize.xs,
+    color: '#FFF',
   },
   emptySearchText: {
     marginTop: spacing.md,

@@ -4,13 +4,14 @@ export interface User {
   first_name: string;
   last_name: string;
   display_name: string;
+  username: string;
   profile_picture: string | null;
   avatar_sticker: string | null;
   status: string;
   last_seen: string;
   is_verified: boolean;
+  last_username_change: string | null;
 }
-
 export interface Message {
   id: number;
   conversation: number;

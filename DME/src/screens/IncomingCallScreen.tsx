@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useKeepAwake } from '@sayem314/react-native-keep-awake';
 import fcmService from '../services/fcm';
 import { ACTIONS } from '../services/fcm';
@@ -22,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export default function IncomingCallScreen() {
   const route      = useRoute<any>();
   const navigation = useNavigation<any>();
+  const insets     = useSafeAreaInsets();
   const { user }   = useAuth();
 
   const p = route.params || {};
@@ -336,7 +338,7 @@ export default function IncomingCallScreen() {
   const callLabel   = `Incoming ${cleanType} call`;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 40 }]}>
       <View style={styles.callerSection}>
         <View style={styles.avatarWrapper}>
           {caller_avatar ? (

@@ -169,6 +169,13 @@ export const chatAPI = {
     return response.data;
   },
 
+  removeConversationProfile: async (id: number) => {
+    const response = await api.patch(`/chat/conversations/${id}/update-profile/`, {
+      profile_picture: null,
+    });
+    return response.data;
+  },
+
   getMessages: async (conversationId: number) => {
     const response = await api.get(
       `/chat/conversations/${conversationId}/messages/`,

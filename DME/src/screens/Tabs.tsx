@@ -554,7 +554,7 @@ const styles = StyleSheet.create({
     borderRadius: AVATAR_SIZE / 2,
   },
   avatarFallback: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#E8DEF8',
     justifyContent:  'center',
     alignItems:      'center',
   },
@@ -636,7 +636,7 @@ const styles = StyleSheet.create({
     width: 48, height: 48, borderRadius: 24,
   },
   logAvatarFallback: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#E8DEF8',
     justifyContent: 'center',
     alignItems: 'center',
   },

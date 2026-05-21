@@ -21,6 +21,7 @@ import {
 import { Track, RoomEvent } from 'livekit-client';
 import InCallManager from 'react-native-incall-manager';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useCall } from '../context/CallContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
@@ -387,6 +388,7 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
 const CallScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
+  const insets = useSafeAreaInsets();
   const params = route.params || {};
   const { 
     callState, startCall, endCall: endCallGlobal, updateDuration, 
@@ -998,7 +1000,7 @@ const CallScreen = () => {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       
-      <TouchableOpacity style={styles.backButton} onPress={handleMinimize}>
+      <TouchableOpacity style={[styles.backButton, { top: insets.top + (Platform.OS === 'ios' ? 0 : 10) }]} onPress={handleMinimize}>
         <Icon name="chevron-down" size={30} color="#fff" />
       </TouchableOpacity>
 
@@ -1051,7 +1053,7 @@ const CallScreen = () => {
         )}
       </LiveKitRoom>
 
-      <View style={styles.topBar}>
+      <View style={[styles.topBar, { top: insets.top + (Platform.OS === 'ios' ? 2 : 12) }]}>
         {partnerJoined && (
           <Text style={styles.statusText}>
             {formatDuration(localDuration)}
@@ -1063,7 +1065,7 @@ const CallScreen = () => {
       </View>
 
       {!callMissed && (
-        <View style={styles.controlsContainer}>
+        <View style={[styles.controlsContainer, { paddingBottom: insets.bottom + (Platform.OS === 'ios' ? 20 : 20) }]}>
           <TouchableOpacity
             style={[styles.controlButton, isSpeakerOn && styles.controlButtonActive]}
             onPress={() => {

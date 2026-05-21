@@ -2,7 +2,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
-from .models import Status, StatusView
+from .models import Status, StatusView, ConversationParticipant
 from .serializers import StatusSerializer, StatusViewSerializer
 from django.utils import timezone
 from datetime import timedelta
@@ -16,10 +16,32 @@ class StatusViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         cutoff = timezone.now() - timedelta(hours=12)
-        Status.objects.filter(created_at__lt=cutoff).delete()
+        
+        # Robust individual deletion to ensure Cloudinary signal fires for each
+        expired = Status.objects.filter(created_at__lt=cutoff)
+        for s in expired:
+            try:
+                s.delete()
+            except Exception as e:
+                print(f"Error during automatic status cleanup: {e}")
+
+        # Users we've chatted with
+        conversation_user_ids = ConversationParticipant.objects.filter(
+            conversation__participants__user=self.request.user
+        ).exclude(user=self.request.user).values_list('user_id', flat=True)
+
+        # Users whose profiles we've viewed
+        from accounts.models import ProfileInteraction
+        viewed_user_ids = ProfileInteraction.objects.filter(
+            viewer=self.request.user
+        ).values_list('profile_owner_id', flat=True)
+
+        allowed_user_ids = set(conversation_user_ids) | set(viewed_user_ids)
+
         return (
             Status.objects
             .filter(created_at__gte=cutoff)
+            .filter(models.Q(user=self.request.user) | models.Q(user_id__in=allowed_user_ids))
             .select_related('user')
             .prefetch_related('views__viewer', 'likes__user')
             .order_by('-created_at')
@@ -54,39 +76,33 @@ class StatusViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='viewers')
     def viewers(self, request, pk=None):
-        from .models import StatusLike
         status_obj = self.get_object()
         if status_obj.user != request.user:
             raise PermissionDenied("Only the owner can see viewers.")
         
         views = status_obj.views.select_related('viewer').order_by('-viewed_at')
-        likes = StatusLike.objects.filter(status=status_obj).select_related('user')
         
-        # Build liked user IDs set for quick lookup
-        liked_user_ids = set(likes.values_list('user_id', flat=True))
+        return Response(StatusViewSerializer(views, many=True, context={'request': request}).data)
+
+    @action(detail=True, methods=['get'], url_path='likes')
+    def likes(self, request, pk=None):
+        from .models import StatusLike
+        status_obj = self.get_object()
+        if status_obj.user != request.user:
+            raise PermissionDenied("Only the owner can see likes.")
         
-        viewers_data = StatusViewSerializer(
-            views, many=True, context={'request': request}
-        ).data
+        likes = StatusLike.objects.filter(status=status_obj).select_related('user').order_by('-created_at')
         
-        # Add has_liked flag to each viewer
-        for viewer in viewers_data:
-            viewer['has_liked'] = viewer['viewer_id'] in liked_user_ids
-        
-        return Response({
-            'viewers': viewers_data,
-            'like_count': likes.count(),
-            'liked_users': [
-                {
-                    'user_id': like.user.id,
-                    'username': like.user.username,
-                    'avatar': like.user.clean_profile_picture_url,
-                    'avatar_sticker': like.user.avatar_sticker,
-                    'liked_at': like.created_at,
-                }
-                for like in likes
-            ],
-        })
+        return Response([
+            {
+                'user_id': like.user.id,
+                'username': like.user.username,
+                'avatar': like.user.clean_profile_picture_url,
+                'avatar_sticker': like.user.avatar_sticker,
+                'liked_at': like.created_at,
+            }
+            for like in likes
+        ])
 
     @action(detail=True, methods=['post', 'delete'], url_path='like')
     def like(self, request, pk=None):

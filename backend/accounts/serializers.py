@@ -18,8 +18,8 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'email', 'username', 'profile_picture', 'avatar_sticker', 'display_name',
-                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name')
-        read_only_fields = ('id', 'email', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name')
+                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
+        read_only_fields = ('id', 'email', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
 
     def get_profile_picture(self, obj):
         """Return standardized absolute URL for profile picture."""

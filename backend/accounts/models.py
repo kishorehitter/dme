@@ -107,11 +107,9 @@ class User(AbstractUser):
 
     @property
     def computed_display_name(self):
-        """Return custom display_name or first name + last name or username or email."""
-        if self.display_name:
-            return self.display_name
-        if self.first_name or self.last_name:
-            return f"{self.first_name} {self.last_name}".strip()
+        """Return custom display_name or username or email."""
+        if self.display_name and self.display_name.strip():
+            return self.display_name.strip()
         if self.username:
             return self.username
         return self.email
@@ -218,3 +216,34 @@ class ProfileInteraction(models.Model):
     
     def __str__(self):
         return f"{self.viewer.email} viewed {self.profile_owner.email}"
+
+
+# ─── Signals ──────────────────────────────────────────────────────────────────
+
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
+import cloudinary.uploader
+import re
+
+@receiver(post_delete, sender=User)
+def delete_user_media(sender, instance, **kwargs):
+    """Delete user profile picture from Cloudinary when user is deleted."""
+    if instance.profile_picture:
+        try:
+            path = instance.profile_picture.name
+            
+            # 1. Remove the version prefix if present (e.g., 'v12345/')
+            clean_path = re.sub(r'^v\d+/', '', path)
+            
+            # 2. Remove extension to get public_id
+            public_id = clean_path.rsplit('.', 1)[0]
+            
+            print(f"DEBUG: User Deletion - Path: {path}, Public ID: {public_id}")
+            
+            result = cloudinary.uploader.destroy(
+                public_id, 
+                invalidate=True
+            )
+            print(f"DEBUG: Cloudinary deletion result: {result}")
+        except Exception as e:
+            print(f"DEBUG: Failed to delete profile picture from Cloudinary: {e}")

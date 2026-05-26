@@ -101,6 +101,11 @@ export const authAPI = {
     return response.data;
   },
 
+  deleteAccount: async (): Promise<{ message: string }> => {
+    const response = await api.delete('/accounts/delete-account/');
+    return response.data;
+  },
+
   requestOTP: async (email: string): Promise<{ message: string }> => {
     const response = await api.post('/accounts/request-otp/', { email });
     return response.data;
@@ -247,6 +252,12 @@ export const chatAPI = {
     );
     return response.data;
   },
+
+  deleteAllConversations: async () => {
+    const response = await api.post('/chat/conversations/delete_all/');
+    return response.data;
+  },
+
 
   searchUsers: async (query: string) => {
     const response = await api.get(`/chat/users/search/?q=${query}`);

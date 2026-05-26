@@ -66,22 +66,28 @@ class ConversationViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
+    @action(detail=False, methods=['post'])
+    def delete_all(self, request):
+        """Delete all conversations for the current user."""
+        self.get_queryset().delete()
+        return Response({'message': 'All conversations deleted'}, status=status.HTTP_200_OK)
+
     def list(self, request, *args, **kwargs):
         """
         Override list to mark messages as delivered when user fetches chat list.
         This handles the case when User B sees message preview in chat list.
         """
         response = super().list(request, *args, **kwargs)
-        
+
         # Mark messages as delivered when user fetches chat list
         from .models import Message
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
         from django.utils import timezone
-        
+
         conversations = self.get_queryset()
         conversation_ids = [c.id for c in conversations]
-        
+
         # Get all undelivered messages from OTHER users in these conversations
         undelivered_message_ids = list(
             Message.objects.filter(

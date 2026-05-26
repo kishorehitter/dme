@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 import {
   View,
-  Text,
+  Text as RNText,
   FlatList,
   TouchableOpacity,
   StyleSheet,
@@ -14,6 +15,18 @@ import {
   Platform,
   Modal,
 } from 'react-native';
+import { launchCamera } from 'react-native-image-picker';
+import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
+import { MediaPickerModal } from '../../components/MediaPickerModal';
+
+const SafeText = (props: any) => {
+  const children = React.Children.map(props.children, child => {
+    if (typeof child === 'string' || typeof child === 'number') return String(child);
+    return child;
+  });
+  return <RNText {...props}>{children}</RNText>;
+};
+const Text = SafeText;
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
@@ -29,78 +42,71 @@ interface ChatListScreenProps {
   navigation: any;
 }
 
-const ImageWithFallback = ({ uri, isGroup, displayName, style }: any) => {
-  const [error, setError] = useState(false);
-
-  if (!uri || error) {
-    if (isGroup) {
-      return (
-        <View style={[style, { backgroundColor: BG_COLOR, justifyContent: 'center', alignItems: 'center' }]}>
-          <Icon name="people" size={28} color="#8100D1" />
-        </View>
-      );
-    }
-    return (
-      <View style={[style, styles.avatarPlaceholder]}>
-        <Text style={styles.avatarText}>
-          {(displayName || 'U').charAt(0).toUpperCase()}
-        </Text>
-      </View>
-    );
-  }
-
+const PopoverMenu = ({ 
+  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect
+}: { 
+  visible: boolean, onClose: () => void, onNewGroup: () => void, onClearAll: () => void,
+  onProfile: () => void, onLogout: () => void, onSelect: () => void
+}) => {
   return (
-    <Image
-      source={{ uri: resolveImageUrl(uri) }}
-      style={style}
-      onError={() => setError(true)}
-    />
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
+        <View style={styles.popover}>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onProfile(); }}>
+            <Icon name="person-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Profile</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onNewGroup(); }}>
+            <Icon name="people-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>New Group</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onClearAll(); }}>
+            <Icon name="trash-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Clear all chats</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
+            <Icon name="checkbox-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Select and clear</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.popoverItem, { borderTopWidth: 1, borderColor: '#eee', marginTop: 4 }]} onPress={() => { onClose(); onLogout(); }}>
+            <Icon name="log-out-outline" size={20} color="#F44336" />
+            <Text style={[styles.popoverText, { color: '#F44336' }]}>Logout</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
   );
 };
 
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
-  const insets = useSafeAreaInsets();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
   const [activeTab, setActiveTab] = useState<'all' | 'groups'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
   const { user, logout } = useAuth();
   const isLoadingRef = useRef(false);
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
 
   const [previewData, setPreviewData] = useState<{
-    visible: boolean;
-    uri: string | null;
-    isGroup: boolean;
-    displayName: string;
-    sticker: string | null;
+    visible: boolean; uri: string | null; isGroup: boolean; displayName: string; sticker: string | null;
   }>({
-    visible: false,
-    uri: null,
-    isGroup: false,
-    displayName: '',
-    sticker: null,
+    visible: false, uri: null, isGroup: false, displayName: '', sticker: null,
   });
 
   const loadConversations = useCallback(async () => {
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     try {
-      const [convs, statuses] = await Promise.all([
-        chatAPI.getConversations(),
-        StatusService.getStatuses()
-      ]);
-      
+      const [convs, statuses] = await Promise.all([chatAPI.getConversations(), StatusService.getStatuses()]);
       let conversationsArray: Conversation[] = [];
       if (Array.isArray(convs)) conversationsArray = convs;
       else if (convs?.results) conversationsArray = convs.results;
-      
       conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
       setConversations(conversationsArray);
       setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id)));
-    } catch (error: any) {
-      console.error('Error loading data:', error);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -110,647 +116,309 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   useEffect(() => {
     loadConversations();
+    websocketService.connectToNotifications().catch(err => console.error('Notification connection failed:', err));
 
-    // Connect to WebSocket for real-time updates
-    websocketService.connectToChatList();
-
-    // Listen for WebSocket events to update the chat list immediately
-    const unsubscribe = websocketService.onMessage((wsMessage: WebSocketMessage) => {
-      if (wsMessage.type === 'message' && wsMessage.data) {
-        console.log('📋 Real-time message received, updating chat list');
-        const newMessage = wsMessage.data;
-        const conversationId = newMessage.conversation;
-
-        setConversations(prev => prev.map(conv => {
-          if (conv.id === conversationId) {
-            return {
-              ...conv,
-              last_message: newMessage,
-              unread_count: conv.unread_count + 1
-            };
-          }
-          return conv;
-        }));
-      } else if (wsMessage.type === 'read_receipt') {
-        loadConversations();
-      }
+    const unsubscribe = websocketService.onMessage((message) => {
+        if (message.type === 'new_message_summary') {
+            const newMessage = message.data;
+            setConversations(prev => {
+                const existing = prev.find(c => c.id === newMessage.conversation);
+                if (existing) {
+                    const isOwnMessage = newMessage.sender.id === user?.id;
+                    const updated = { 
+                        ...existing, 
+                        last_message: {
+                            id: newMessage.id,
+                            content: newMessage.content,
+                            message_type: newMessage.message_type,
+                            created_at: newMessage.created_at,
+                            sender_id: newMessage.sender.id
+                        },
+                        unread_count: isOwnMessage ? (existing.unread_count || 0) : (existing.unread_count || 0) + 1 
+                    };
+                    return [updated, ...prev.filter(c => c.id !== newMessage.conversation)];
+                }
+                loadConversations();
+                return prev;
+            });
+        }
     });
 
-    // Poll for new messages every 30 seconds
-    const pollInterval = setInterval(() => {
-      loadConversations();
-    }, 30000);
-
-    // Listen for local message sent (from notification)
-    const localSub = DeviceEventEmitter.addListener('local_message_sent', (data) => {
-      console.log('📋 Local message sent from notification, refreshing chat list');
-      loadConversations();
+    const readSub = DeviceEventEmitter.addListener('conversation_read', ({ conversationId }) => {
+        setConversations(prev => prev.map(c => 
+            c.id === parseInt(conversationId, 10) ? { ...c, unread_count: 0 } : c
+        ));
     });
 
-    return () => {
-      clearInterval(pollInterval);
-      unsubscribe();
-      localSub.remove();
-      websocketService.disconnect();
+    return () => { 
+        websocketService.disconnectRoom();
+        unsubscribe();
+        readSub.remove();
     };
-  }, []); // Empty array - only runs on mount
+  }, [loadConversations]);
 
-  // Refresh chat list when screen comes into focus (user navigates back from chat room)
-  useEffect(() => {
-    const focusSubscription = navigation.addListener('focus', () => {
-      console.log('📋 Chat list focused, refreshing...');
-      loadConversations();
-    });
-    return focusSubscription;
-  }, [navigation, loadConversations]);
-
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    loadConversations();
-  };
-
-  const handleLogout = () => {
+  const handleLogout = async () => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-        },
-      },
+      { text: 'Logout', style: 'destructive', onPress: async () => await logout() },
     ]);
   };
 
-  const handleLongPressConversation = (item: Conversation) => {
-    const displayName = item.is_group
-      ? item.name || 'Group Chat'
-      : item.other_user?.display_name || item.other_user?.first_name || 'Unknown';
-
+  const handleClearAll = () => {
     Alert.alert(
-      item.is_group ? 'Group Options' : 'Chat Options',
-      displayName,
+      'Clear All Chats',
+      'Are you sure you want to delete all conversations?',
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: item.is_group ? 'Leave Group' : 'Delete Chat',
-          style: 'destructive',
-          onPress: () => handleDeleteConversation(item.id, displayName),
-        },
-      ]
-    );
-  };
-
-  const handleDeleteConversation = async (conversationId: number, conversationName: string) => {
-    Alert.alert(
-      'Delete Chat',
-      `Are you sure you want to delete "${conversationName}"? This will remove the chat from your list but messages will remain for the other person.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
           onPress: async () => {
             try {
-              // Disconnect WebSocket if connected to this conversation
-              websocketService.disconnect();
-
-              // Call API to delete conversation (clears messages and removes from list)
-              await chatAPI.deleteConversation(conversationId);
-              console.log(`Conversation ${conversationId} deleted successfully`);
-              
-              // Reload conversations to reflect the deletion
+              await chatAPI.deleteAllConversations();
               loadConversations();
-              
-              Toast.show({ 
-                type: 'success', 
-                text1: 'Chat deleted', 
-                text2: 'Conversation removed from your list',
-                position: 'bottom' 
-              });
-            } catch (error: any) {
-              console.error('Error deleting conversation:', error);
-              Toast.show({ 
-                type: 'error', 
-                text1: 'Failed to delete', 
-                text2: error?.response?.data?.error || 'Please try again',
-                position: 'bottom' 
-              });
+              Toast.show({ type: 'success', text1: 'All chats cleared' });
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear chats');
             }
-          },
+          } 
         },
       ]
     );
   };
 
-  const renderConversation = ({ item }: { item: Conversation }) => {
-    const displayName = item.is_group
-      ? item.name || 'Group Chat'
-      : item.other_user?.display_name || item.other_user?.first_name || 'Unknown';
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
-    const profilePicture = item.is_group
-      ? item.profile_picture
-      : item.other_user?.profile_picture;
-
-    const avatarSticker = item.is_group
-      ? null
-      : item.other_user?.avatar_sticker;
-
-    const lastMessage = item.last_message?.content || 'No messages yet';
-    const time = item.last_message?.created_at
-      ? formatTime(item.last_message.created_at)
-      : '';
-
-    // Determine status ring style
-    const userStatus = !item.is_group && item.other_user ? statusGroups.find(g => g.user_id === item.other_user?.id) : null;
-    const hasStatus = !!userStatus;
-    const allSeen = hasStatus ? !userStatus!.has_unseen : true;
-    const ringStyle = hasStatus 
-      ? allSeen ? styles.statusViewedRing : styles.statusNewRing
-      : {};
-
-    const handleAvatarPress = () => {
-      if (hasStatus && userStatus) {
-        navigation.navigate('StatusViewer', { 
-          statuses: userStatus.statuses, 
-          initialIndex: 0,
-          currentUserId: user?.id,
-          isOwn: false
-        });
-      } else {
-        // No status, show profile/group info
-        if (item.is_group) {
-          navigation.navigate('GroupInfo', { conversationId: item.id });
-        } else if (item.other_user) {
-          navigation.navigate('Profile', { user: item.other_user, conversationId: item.id });
-        }
-      }
-    };
-
-    const handleAvatarLongPress = () => {
-      setPreviewData({
-        visible: true,
-        uri: profilePicture,
-        isGroup: item.is_group,
-        displayName: displayName,
-        sticker: avatarSticker,
-      });
-    };
-
-    return (
-      <View style={styles.conversationItem}>
-        {/* Avatar triggered: Status/Preview on tap, Square Preview on long press */}
-        <TouchableOpacity
-          onPress={handleAvatarPress}
-          onLongPress={handleAvatarLongPress}
-          delayLongPress={300}
-          style={[styles.avatarContainer, hasStatus && styles.avatarRingContainer, ringStyle]}
-        >
-          {avatarSticker ? (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
-              <Text style={styles.stickerAvatar}>{avatarSticker}</Text>
-            </View>
-          ) : (
-            <ImageWithFallback
-              uri={profilePicture}
-              isGroup={item.is_group}
-              displayName={displayName}
-              style={styles.avatar}
-            />
-          )}
-        </TouchableOpacity>
-
-        {/* Content triggered: Open Chat */}
-        <TouchableOpacity
-          style={styles.content}
-          onPress={() => navigation.navigate('ChatRoom', { conversationId: item.id, name: displayName })}
-          onLongPress={() => {
-            handleLongPressConversation(item);
-          }}
-        >
-          <View style={styles.contentHeader}>
-            <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
-            <Text style={styles.time}>{time}</Text>
-          </View>
-          <Text style={styles.lastMessage} numberOfLines={1}>{lastMessage}</Text>
-        </TouchableOpacity>
-      </View>
+  const toggleSelection = (id: number) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
 
-  const EmptyComponent = () => (
-    <View style={styles.emptyContainer}>
-      <Text style={styles.emptyIcon}>💬</Text>
-      <Text style={styles.emptyTitle}>No conversations yet</Text>
-      <Text style={styles.emptySubtitle}>
-        Start a new chat by tapping the compose button
-      </Text>
-    </View>
-  );
+  const handleBatchDelete = async () => {
+    Alert.alert('Delete Selected', `Delete ${selectedIds.length} chats?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+          try {
+            await Promise.all(selectedIds.map(id => chatAPI.deleteConversation(id)));
+            setSelectionMode(false);
+            setSelectedIds([]);
+            loadConversations();
+          } catch (error) { Alert.alert('Error', 'Failed to delete'); }
+      }}
+    ]);
+  };
 
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
+  const handleAddStatus = () => {
+    setCameraMenuVisible(true);
+  };
 
-  const filteredConversations = conversations.filter(c => {
-    if (activeTab === 'groups') return c.is_group;
-    return true; // Show all for 'all' tab
-  });
+  useEffect(() => {
+    navigation.setOptions({
+      headerShown: true,
+      headerTitleAlign: selectionMode ? 'center' : 'left',
+      headerTitle: () => (
+        !selectionMode ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Image
+                    source={require('../../assets/logo.png')}
+                    style={{ width: 35, height: 35, borderRadius: 14, marginRight: 8 }}
+                />
+                <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
+            </View>
+        ) : (
+            <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
+        )
+      ),
+      headerLeft: selectionMode ? () => (
+        <TouchableOpacity style={{marginLeft: 16}} onPress={() => { setSelectionMode(false); setSelectedIds([]); }}>
+            <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
+        </TouchableOpacity>
+      ) : undefined,
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16 }}>
+          {selectionMode ? (
+            <TouchableOpacity style={{ marginRight: 16 }} onPress={handleBatchDelete} disabled={selectedIds.length === 0}>
+                <Text style={{color: '#F44336', fontWeight: 'bold'}}>Delete</Text>
+            </TouchableOpacity>
+          ) : (
+             <>
+                <TouchableOpacity onPress={handleAddStatus} style={{ marginRight: 16 }} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Icon name="camera-outline" size={24} color="#000" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setMenuVisible(true)}>
+                    <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+                </TouchableOpacity>
+             </>
+          )}
+        </View>
+      ),
+      headerStyle: { backgroundColor: selectionMode ? '#F8F0FF' : '#fff', elevation: 2, shadowOpacity: 0.1 },
+    });
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete]);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
-
-      {/* Quick Preview Modal */}
-      <Modal
-        visible={previewData.visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPreviewData(prev => ({ ...prev, visible: false }))}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setPreviewData(prev => ({ ...prev, visible: false }))}
-        >
-          <View style={styles.quickPreviewContainer}>
-            <View style={styles.quickPreviewHeader}>
-              <Text style={styles.quickPreviewTitle} numberOfLines={1}>{previewData.displayName}</Text>
-            </View>
-            <View style={styles.quickPreviewImageContainer}>
-              {previewData.sticker ? (
-                <View style={[styles.quickPreviewAvatar, styles.avatarPlaceholder, { borderRadius: 0 }]}>
-                  <Text style={{ fontSize: 120 }}>{previewData.sticker}</Text>
-                </View>
-              ) : (
-                <ImageWithFallback
-                  uri={previewData.uri}
-                  isGroup={previewData.isGroup}
-                  displayName={previewData.displayName}
-                  style={[styles.quickPreviewAvatar, { borderRadius: 0 }]}
-                  largeLetter={true}
-                />
-              )}
-            </View>
-            <View style={styles.quickPreviewFooter}>
-              <TouchableOpacity
-                style={styles.quickPreviewAction}
-                onPress={() => {
-                  setPreviewData(prev => ({ ...prev, visible: false }));
-                  const conv = conversations.find(c => {
-                    const dName = c.is_group 
-                      ? c.name || 'Group Chat'
-                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
-                    return dName === previewData.displayName;
-                  });
-                  if (conv) {
-                    navigation.navigate('ChatRoom', { 
-                      conversationId: conv.id, 
-                      name: previewData.displayName 
-                    });
-                  }
-                }}
-              >
-                <Icon name="chatbubble" size={24} color={THEME_COLOR} />
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={styles.quickPreviewAction}
-                onPress={() => {
-                  setPreviewData(prev => ({ ...prev, visible: false }));
-                  const conv = conversations.find(c => {
-                    const dName = c.is_group 
-                      ? c.name || 'Group Chat'
-                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
-                    return dName === previewData.displayName;
-                  });
-                  if (conv) {
-                    navigation.navigate('Call', {
-                      callType: 'audio',
-                      conversationId: conv.id,
-                      initiating: true,
-                      isGroupCall: conv.is_group,
-                      remoteUserId: conv.other_user?.id,
-                      remoteUserName: previewData.displayName,
-                      remoteUserPic: previewData.uri
-                    });
-                  }
-                }}
-              >
-                <Icon name="call" size={24} color={THEME_COLOR} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.quickPreviewAction}
-                onPress={() => {
-                  setPreviewData(prev => ({ ...prev, visible: false }));
-                  const conv = conversations.find(c => {
-                    const dName = c.is_group 
-                      ? c.name || 'Group Chat'
-                      : c.other_user?.display_name || c.other_user?.first_name || 'Unknown';
-                    return dName === previewData.displayName;
-                  });
-                  if (conv) {
-                    if (conv.is_group) {
-                      navigation.navigate('GroupInfo', { conversationId: conv.id });
-                    } else if (conv.other_user) {
-                      navigation.navigate('Profile', { user: conv.other_user, conversationId: conv.id });
-                    }
-                  }
-                }}
-              >
-                <Icon name="information-circle" size={26} color={THEME_COLOR} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Tab Switcher */}
+      <PopoverMenu 
+        visible={menuVisible} 
+        onClose={() => setMenuVisible(false)}
+        onNewGroup={() => { setMenuVisible(false); navigation.navigate('CreateGroup'); }}
+        onClearAll={() => { setMenuVisible(false); handleClearAll(); }}
+        onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        onLogout={() => { setMenuVisible(false); handleLogout(); }}
+        onSelect={() => { setMenuVisible(false); setSelectionMode(true); }}
+      />
+      <MediaPickerModal 
+          visible={cameraMenuVisible} 
+          onClose={() => setCameraMenuVisible(false)}
+          top={Platform.OS === 'ios' ? 50 : 40}
+          right={16}
+          onMediaSelected={(asset, type) => {
+              navigation.navigate('StatusEditor', {
+                mediaUri: asset.uri,
+                mediaType: type === 'image' ? 'photo' : 'video',
+                source: 'camera',
+              });
+          }}
+      />
       <View style={styles.tabContainer}>
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'all' && styles.activeTabButton]}
-          onPress={() => setActiveTab('all')}
-        >
+        <TouchableOpacity style={[styles.tabButton, activeTab === 'all' && styles.activeTabButton]} onPress={() => setActiveTab('all')}>
           <Text style={[styles.tabText, activeTab === 'all' && styles.activeTabText]}>Chats</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'groups' && styles.activeTabButton]}
-          onPress={() => setActiveTab('groups')}
-        >
+        <TouchableOpacity style={[styles.tabButton, activeTab === 'groups' && styles.activeTabButton]} onPress={() => setActiveTab('groups')}>
           <Text style={[styles.tabText, activeTab === 'groups' && styles.activeTabText]}>Groups</Text>
         </TouchableOpacity>
       </View>
-
       <FlatList
-        data={filteredConversations}
-        renderItem={renderConversation}
-        keyExtractor={(item) => item.id.toString()}
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={handleRefresh}
-            tintColor={colors.primary}
-          />
-        }
-        ListEmptyComponent={EmptyComponent}
-        contentContainerStyle={
-          conversations.length === 0 ? styles.emptyList : {}
-        }
-      />
+        data={conversations.filter(c => activeTab === 'all' || c.is_group)}
+        renderItem={({ item }) => {
+          const isSelected = selectedIds.includes(item.id);
+          const userId = item.is_group ? null : item.other_user?.id;
+          const userStatuses = userId ? statusGroups.find(g => g.user_id === userId)?.statuses : [];
+          const hasStatus = userStatuses && userStatuses.length > 0;
 
-      {/* Compose Button */}
-      <TouchableOpacity
-        style={styles.composeButton}
-        onPress={() => navigation.navigate('NewChat')}
-      >
+          return (
+            <TouchableOpacity
+              style={[styles.conversationItem, isSelected && styles.logItemSelected]}
+              onPress={() => {
+                if (selectionMode) {
+                  toggleSelection(item.id);
+                } else {
+                  navigation.navigate('ChatRoom', { conversationId: item.id, name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User') });
+                }
+              }}
+              onLongPress={() => {
+                if (!selectionMode) {
+                  setSelectionMode(true);
+                  toggleSelection(item.id);
+                }
+              }}
+            >
+              {selectionMode && (
+                <View style={styles.checkboxContainer}>
+                  <Icon name={isSelected ? "checkbox" : "square-outline"} size={22} color="#8100D1" />
+                </View>
+              )}
+              <AvatarWithFallback
+                uri={item.is_group ? item.profile_picture : item.other_user?.profile_picture}
+                sticker={item.is_group ? null : item.other_user?.avatar_sticker}
+                displayName={item.is_group
+                  ? (item.name || 'Group')
+                  : (item.other_user?.display_name || item.other_user?.email || 'User')}
+                isGroup={item.is_group}
+                style={{
+                  width:        50,
+                  height:       50,
+                  borderRadius: 25,
+                  ...(hasStatus && { borderWidth: 2.5, borderColor: '#8100D1', }),
+                }}
+              />
+              <View style={styles.content}>
+                <Text style={styles.name}>{String(item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || item.other_user?.email || 'User') || '')}</Text>
+                <Text style={styles.lastMessage}>{String(item.last_message?.content || '')}</Text>
+              </View>
+              {item.unread_count > 0 && (
+                <View style={styles.unreadBadge}>
+                    <Text style={styles.unreadCount}>{item.unread_count}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        }}
+        keyExtractor={(item) => item.id.toString()}
+        extraData={conversations}
+        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadConversations} tintColor={THEME_COLOR} />}
+      />
+      <Modal visible={previewData.visible} transparent={true} animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setPreviewData(p => ({ ...p, visible: false }))}>
+            <View style={styles.previewContainer}>
+                <AvatarWithFallback
+                    uri={previewData.uri}
+                    sticker={previewData.sticker}
+                    displayName={previewData.displayName}
+                    isGroup={previewData.isGroup}
+                    style={styles.previewImage}
+                />
+                <Text style={styles.previewName}>{String(previewData.displayName || '')}</Text>
+            </View>
+        </TouchableOpacity>
+      </Modal>
+      <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
         <Text style={styles.composeButtonText}>+</Text>
       </TouchableOpacity>
     </View>
   );
 };
 
-const formatTime = (dateString: string) => {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-  if (days === 0) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } else if (days === 1) {
-    return 'Yesterday';
-  } else if (days < 7) {
-    return date.toLocaleDateString([], { weekday: 'short' });
-  } else {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  }
-};
-
 const THEME_COLOR = '#8100D1';
 const BG_COLOR = '#E8DEF8';
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
+  avatar: { width: 50, height: 50, borderRadius: 25 },
+  avatarPlaceholder: { backgroundColor: '#E8DEF8', borderWidth: 1, borderColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' },
+  avatarText: { color: THEME_COLOR, fontSize: fontSize.lg, fontWeight: 'bold' },
+  conversationItem: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: spacing.md, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  content: { flex: 1, justifyContent: 'center', marginLeft: spacing.md },
+  name: { fontSize: fontSize.lg, fontWeight: '600', color: '#000' },
+  lastMessage: { fontSize: fontSize.md, color: '#666' },
+  tabContainer: { flexDirection: 'row', padding: spacing.sm, backgroundColor: '#F8F8F8', borderBottomWidth: 1, borderBottomColor: '#EEE' },
+  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.md },
+  activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
+  tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
+  activeTabText: { color: THEME_COLOR, fontWeight: '700' },
+  logItemSelected: {
+    backgroundColor: '#F8F0FF',
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+  checkboxContainer: {
+    marginRight: 10,
+    justifyContent: 'center',
+  },
+  popover: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: '#fff', borderRadius: 8, padding: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
+  popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
+  popoverText: { fontSize: 14, color: '#333' },
+  composeButton: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl, width: 60, height: 60, borderRadius: 30, backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  composeButtonText: { color: '#FFF', fontSize: 36, fontWeight: '300', marginTop: -4 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+  previewContainer: { width: 300, backgroundColor: '#FFF', borderRadius: 16, padding: 20, alignItems: 'center' },
+  previewImage: { width: 280, height: 280, borderRadius: 140, marginBottom: 16 },
+  previewPlaceholder: { width: 200, height: 200, borderRadius: 150, backgroundColor: BG_COLOR, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  previewText: {fontSize: 180, fontWeight: 'bold', color: THEME_COLOR },
+  previewName: { fontSize: 20, fontWeight: 'bold' },
+  unreadBadge: {
+    backgroundColor: '#8100D1',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 6,
+    marginLeft: 8,
   },
-  quickPreviewContainer: {
-    width: 280,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 0, // Square like WhatsApp
-    overflow: 'hidden',
-  },
-  quickPreviewHeader: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    padding: 10,
-    zIndex: 10,
-  },
-  quickPreviewTitle: {
+  unreadCount: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  quickPreviewImageContainer: {
-    width: 280,
-    height: 280,
-  },
-  quickPreviewAvatar: {
-    width: 280,
-    height: 280,
-  },
-  quickPreviewFooter: {
-    flexDirection: 'row',
-    height: 50,
-    backgroundColor: '#FFFFFF',
-  },
-  quickPreviewAction: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    padding: spacing.sm,
-    backgroundColor: '#F8F8F8',
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
-  },
-  tabButton: {
-    flex: 1,
-    paddingVertical: spacing.sm,
-    alignItems: 'center',
-    borderRadius: borderRadius.md,
-  },
-  activeTabButton: {
-    backgroundColor: '#FFFFFF',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  tabText: {
-    fontSize: fontSize.md,
-    fontWeight: '500',
-    color: '#666',
-  },
-  activeTabText: {
-    color: THEME_COLOR,
-    fontWeight: '700',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  conversationItem: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    padding: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  avatarContainer: {
-    marginRight: spacing.md,
-  },
-  avatarRingContainer: {
-    padding: 2,
-    borderRadius: 29,
-  },
-  statusNewRing: {
-    borderWidth: 2,
-    borderColor: '#8100D1', // Purple
-  },
-  statusViewedRing: {
-    borderWidth: 2,
-    borderColor: '#CCC', // Light Grey
-  },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-  },
-  avatarPlaceholder: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: THEME_COLOR,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    color: THEME_COLOR,
-    fontSize: fontSize.xl,
+    fontSize: 12,
     fontWeight: 'bold',
-  },
-  stickerAvatar: {
-    fontSize: 36,
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  contentHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: spacing.xs,
-  },
-  name: {
-    fontSize: fontSize.lg,
-    fontWeight: '600',
-    color: '#000',
-    flex: 1,
-  },
-  time: {
-    fontSize: fontSize.xs,
-    color: '#999',
-    marginLeft: spacing.sm,
-  },
-  contentFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  lastMessage: {
-    fontSize: fontSize.md,
-    color: '#666',
-    flex: 1,
-  },
-  badge: {
-    backgroundColor: THEME_COLOR,
-    borderRadius: borderRadius.full,
-    minWidth: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xs,
-    marginLeft: spacing.sm,
-  },
-  badgeText: {
-    color: '#FFF',
-    fontSize: fontSize.xs,
-    fontWeight: 'bold',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.xxl,
-  },
-  emptyIcon: {
-    fontSize: 60,
-    marginBottom: spacing.lg,
-  },
-  emptyTitle: {
-    fontSize: fontSize.xl,
-    fontWeight: '600',
-    color: '#000',
-    marginBottom: spacing.sm,
-  },
-  emptySubtitle: {
-    fontSize: fontSize.md,
-    color: '#666',
-    textAlign: 'center',
-  },
-  emptyList: {
-    flexGrow: 1,
-  },
-  composeButton: {
-    position: 'absolute',
-    bottom: spacing.xxl,
-    right: spacing.xl,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: THEME_COLOR,
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  composeButtonText: {
-    color: '#FFF',
-    fontSize: 36,
-    fontWeight: '300',
-    marginTop: -4,
   },
 });
-
-export default ChatListScreen;

@@ -1,6 +1,7 @@
 """
 Models for chat app - Conversations and Messages.
 """
+import re
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
@@ -381,6 +382,11 @@ class Status(models.Model):
 
     caption    = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    restricted_to = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name='visible_statuses',
+        blank=True
+    )
 
     @property
     def clean_media_url(self):
@@ -418,7 +424,6 @@ def delete_status_media(sender, instance, **kwargs):
     """
     if instance.media_file:
         try:
-            import re
             path = instance.media_file.name
             
             # 1. Remove the version prefix if present (e.g., 'v12345/')
@@ -440,6 +445,53 @@ def delete_status_media(sender, instance, **kwargs):
             print(f"DEBUG: Cloudinary deletion result: {result}")
         except Exception as e:
             print(f"DEBUG: Failed to delete status media from Cloudinary: {e}")
+
+
+@receiver(post_delete, sender=Message)
+def delete_message_media(sender, instance, **kwargs):
+    """
+    Delete message media (media_file and thumbnail) from Cloudinary when message is deleted.
+    """
+    if instance.media_file:
+        try:
+            path = instance.media_file.name
+            clean_path = re.sub(r'^v\d+/', '', path)
+            public_id = clean_path.rsplit('.', 1)[0]
+            
+            # Determine resource_type based on message_type
+            resource_type = 'image'
+            if instance.message_type in ['video', 'audio']:
+                resource_type = 'video'
+            elif instance.message_type == 'document':
+                resource_type = 'raw'
+            
+            print(f"DEBUG: Message Deletion - Path: {path}, Public ID: {public_id}, Type: {resource_type}")
+            
+            result = cloudinary.uploader.destroy(
+                public_id, 
+                resource_type=resource_type, 
+                invalidate=True
+            )
+            print(f"DEBUG: Cloudinary deletion result: {result}")
+        except Exception as e:
+            print(f"DEBUG: Failed to delete message media from Cloudinary: {e}")
+
+    if instance.thumbnail:
+        try:
+            path = instance.thumbnail.name
+            clean_path = re.sub(r'^v\d+/', '', path)
+            public_id = clean_path.rsplit('.', 1)[0]
+            
+            print(f"DEBUG: Message Thumbnail Deletion - Path: {path}, Public ID: {public_id}")
+            
+            result = cloudinary.uploader.destroy(
+                public_id, 
+                resource_type='image', 
+                invalidate=True
+            )
+            print(f"DEBUG: Cloudinary deletion result: {result}")
+        except Exception as e:
+            print(f"DEBUG: Failed to delete message thumbnail from Cloudinary: {e}")
 
 
 # ─── StatusView ───────────────────────────────────────────────────────────────

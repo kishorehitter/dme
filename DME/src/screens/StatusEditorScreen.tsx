@@ -26,6 +26,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import { StatusService } from '../services/StatusService';
+import { VisibilityModal } from '../components/VisibilityModal';
 
 const { width, height } = Dimensions.get('window');
 const MAX_VIDEO_SECONDS = 30;
@@ -48,6 +49,7 @@ async function compressAndTrimVideo(uri: string): Promise<string> {
 interface RouteParams {
   mediaUri?: string;
   mediaType?: 'photo' | 'video';
+  source?: 'camera' | 'gallery';
 }
 
 const StatusEditorScreen: React.FC = () => {
@@ -58,15 +60,18 @@ const StatusEditorScreen: React.FC = () => {
 
   const [mediaUri, setMediaUri] = useState<string | null>(params.mediaUri ?? null);
   const [mediaType, setMediaType] = useState<'photo' | 'video'>(params.mediaType ?? 'photo');
+  const [source, setSource] = useState<'camera' | 'gallery'>(params.source ?? 'gallery');
   const [caption, setCaption] = useState('');
+  const [restrictedTo, setRestrictedTo] = useState<number[]>([]);
+  const [modalVisible, setModalVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [videoError, setVideoError] = useState(false);
 
   useEffect(() => {
-    // Automatically open picker if no media is provided
-    if (!mediaUri && !params.mediaUri) {
+    // Automatically open picker if no media is provided AND not from camera
+    if (!mediaUri && !params.mediaUri && source !== 'camera') {
       showPickerOptions();
     }
   }, []);
@@ -84,26 +89,9 @@ const StatusEditorScreen: React.FC = () => {
     };
   }, []);
 
-  const requestCameraPermission = async (): Promise<boolean> => {
-    if (Platform.OS !== 'android') return true;
-    try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.CAMERA,
-        {
-          title: 'Camera Permission',
-          message: 'Status needs camera access.',
-          buttonNeutral: 'Later',
-          buttonNegative: 'Cancel',
-          buttonPositive: 'OK',
-        },
-      );
-      return granted === PermissionsAndroid.RESULTS.GRANTED;
-    } catch {
-      return false;
-    }
-  };
-
   const showPickerOptions = () => {
+    if (source === 'camera') return; // Don't allow gallery if we came from camera
+    
     Keyboard.dismiss();
     Alert.alert('Add to Status', 'Choose source', [
       { text: '📷 Camera', onPress: showCameraOptions },
@@ -116,45 +104,13 @@ const StatusEditorScreen: React.FC = () => {
     ]);
   };
 
-  const showCameraOptions = () => {
-    Keyboard.dismiss();
-    Alert.alert('Camera', 'What to capture?', [
-      {
-        text: '🖼 Photo',
-        onPress: async () => {
-          if (!(await requestCameraPermission())) return;
-          setIsPicking(true);
-          try {
-            handleResult(await launchCamera({ mediaType: 'photo', quality: 1 }));
-          } finally {
-            setIsPicking(false);
-          }
-        },
-      },
-      {
-        text: '🎥 Video',
-        onPress: async () => {
-          if (!(await requestCameraPermission())) return;
-          setIsPicking(true);
-          try {
-            handleResult(
-              await launchCamera({
-                mediaType: 'video',
-                videoQuality: 'medium',
-                durationLimit: MAX_VIDEO_SECONDS,
-              }),
-            );
-          } finally {
-            setIsPicking(false);
-          }
-        },
-      },
-      {
-        text: 'Cancel',
-        style: 'cancel',
-        onPress: () => { if (!mediaUri) navigation.goBack(); },
-      },
-    ]);
+  const showCameraOptions = async () => {
+    try {
+      const result = await launchCamera({ mediaType: 'mixed', quality: 0.8 });
+      handleResult(result);
+    } catch (e) {
+      console.error('System camera failed:', e);
+    }
   };
 
   const openGallery = async () => {
@@ -177,6 +133,7 @@ const StatusEditorScreen: React.FC = () => {
       setVideoError(false);
       setMediaUri(asset.uri);
       setMediaType(asset.type?.startsWith('video') ? 'video' : 'photo');
+      setSource('gallery');
     }
   };
 
@@ -185,6 +142,7 @@ const StatusEditorScreen: React.FC = () => {
     Keyboard.dismiss();
 
     let uploadUri = mediaUri;
+    
     if (mediaType === 'video') {
       setProcessing(true);
       try {
@@ -195,7 +153,7 @@ const StatusEditorScreen: React.FC = () => {
     }
     setUploading(true);
     try {
-      await StatusService.saveStatus(uploadUri, caption, mediaType);
+      await StatusService.saveStatus(uploadUri, caption, mediaType, restrictedTo);
       navigation.goBack();
       Toast.show({
         type: 'success',
@@ -205,6 +163,7 @@ const StatusEditorScreen: React.FC = () => {
       });
     } catch (err: any) {
       setUploading(false);
+      console.error('[StatusEditor] Upload failed:', err);
       Toast.show({
         type: 'error',
         text1: 'Upload failed',
@@ -235,9 +194,11 @@ const StatusEditorScreen: React.FC = () => {
         </TouchableOpacity>
         <Icon name="image-outline" size={72} color="#555" />
         <Text style={s.noMediaText}>No media selected</Text>
-        <TouchableOpacity style={s.pickBtn} onPress={showPickerOptions}>
-          <Text style={s.pickBtnText}>Choose Media</Text>
-        </TouchableOpacity>
+        {source !== 'camera' && (
+          <TouchableOpacity style={s.pickBtn} onPress={showPickerOptions}>
+            <Text style={s.pickBtnText}>Choose Media</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -255,13 +216,19 @@ const StatusEditorScreen: React.FC = () => {
           resizeMode="contain"
           repeat
           paused={uploading || processing}
-          onError={() => setVideoError(true)}
+          onError={(e) => {
+            console.error('[StatusEditor] Video error:', e);
+            setVideoError(true);
+          }}
         />
       ) : (
         <Image
+          key={mediaUri}
           source={{ uri: mediaUri }}
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
+          onLoad={() => console.log('[StatusEditor] Image loaded successfully')}
+          onError={(e) => console.error('[StatusEditor] Image load error:', e.nativeEvent.error)}
         />
       )}
 
@@ -280,14 +247,19 @@ const StatusEditorScreen: React.FC = () => {
         <Icon name="close" size={28} color="#fff" />
       </TouchableOpacity>
 
-      <TouchableOpacity 
-        style={[s.changeBtn, { top: insets.top + (Platform.OS === 'ios' ? 8 : 18) }]} 
-        onPress={showPickerOptions}
-      >
-        <Icon name="swap-horizontal" size={22} color="#fff" />
-      </TouchableOpacity>
+      {source !== 'camera' && (
+        <TouchableOpacity 
+          style={[s.changeBtn, { top: insets.top + (Platform.OS === 'ios' ? 8 : 18) }]} 
+          onPress={showPickerOptions}
+        >
+          <Icon name="swap-horizontal" size={22} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       <View style={[s.bottomBarAbsolute, { paddingBottom: insets.bottom + 8 }]}>
+        <TouchableOpacity style={s.privacyBtn} onPress={() => setModalVisible(true)}>
+          <Icon name={restrictedTo.length > 0 ? "eye-off" : "eye"} size={22} color="#fff" />
+        </TouchableOpacity>
         <TextInput
           style={s.captionInput}
           placeholder="Add a caption…"
@@ -308,6 +280,13 @@ const StatusEditorScreen: React.FC = () => {
           }
         </TouchableOpacity>
       </View>
+      
+      <VisibilityModal 
+        visible={modalVisible} 
+        onClose={() => setModalVisible(false)} 
+        onSelect={setRestrictedTo}
+        initialSelected={restrictedTo}
+      />
     </View>
   );
 };
@@ -328,6 +307,9 @@ const s = StyleSheet.create({
   changeBtn: {
     position: 'absolute', right: 16, zIndex: 10,
     backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 20, padding: 6,
+  },
+  privacyBtn: {
+    backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 20, padding: 10, marginRight: 10,
   },
   bottomBarAbsolute: {
     position: 'absolute', bottom: 0, left: 0, right: 0,

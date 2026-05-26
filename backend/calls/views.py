@@ -598,6 +598,54 @@ class CallHistoryView(APIView):
         )
         return Response(serializer.data)
 
+    def delete(self, request):
+        """Clear all call logs or specific call logs for the current user."""
+        print(f"DEBUG: DELETE call history. Data: {request.data}")
+        
+        # Try to get call_ids from either body or query params
+        call_ids = request.data.get('call_ids')
+        if not call_ids and 'call_ids' in request.query_params:
+            call_ids = request.query_params.getlist('call_ids')
+            
+        print(f"DEBUG: call_ids identified: {call_ids}")
+        
+        queryset = Call.objects.filter(
+            models.Q(caller=request.user) | models.Q(receiver=request.user)
+        )
+        
+        # If call_ids is EXPLICITLY passed as a non-empty list, delete only those.
+        # Otherwise, if we came from "Clear all", we might have an empty list or None.
+        
+        if call_ids and isinstance(call_ids, list) and len(call_ids) > 0:
+            # Batch delete specific calls
+            deleted_count, _ = queryset.filter(id__in=call_ids).delete()
+            return Response({
+                'message': f'Successfully deleted {deleted_count} call records',
+                'deleted_count': deleted_count
+            }, status=status.HTTP_200_OK)
+        
+        # To avoid accidental "clear all" when a selection failed, 
+        # let's check if 'clear_all' was explicitly requested or if call_ids is missing.
+        # For now, I'll stick to the logic: if call_ids is empty/missing AND it's NOT a selection mode attempt.
+        
+        # Better: let's check if the frontend sent an empty list EXPLICITLY for "clear all" 
+        # or if it sent nothing.
+        
+        # If the request has 'call_ids' key but it's empty, it might be an error in frontend selection.
+        # But for "Clear all", we send [].
+        
+        # Let's check the 'clear_all' boolean if provided, or default to clear all if call_ids is missing.
+        clear_all = request.data.get('clear_all', False)
+        
+        if clear_all or not call_ids:
+            deleted_count, _ = queryset.delete()
+            return Response({
+                'message': 'Call history cleared successfully',
+                'deleted_count': deleted_count
+            }, status=status.HTTP_200_OK)
+        
+        return Response({'message': 'No calls deleted'}, status=status.HTTP_200_OK)
+
 
 class CallAcceptView(APIView):
     permission_classes = [permissions.IsAuthenticated]

@@ -25,6 +25,8 @@ import {
   DeviceEventEmitter,
   Alert,
 } from 'react-native';
+import RNFetchBlob from 'rn-fetch-blob';
+import FileViewer from 'react-native-file-viewer';
 import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -41,10 +43,12 @@ import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import fcmService from '../../services/fcm';
 import notifee from '@notifee/react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { StatusService } from '../../services/StatusService';
 
 import FullScreenMediaViewer from '../../components/FullScreenMediaViewer';
 import { API_BASE_URL, getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
+import { MediaPickerModal } from '../../components/MediaPickerModal';
 
 const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
@@ -62,10 +66,8 @@ const HeaderAvatar = ({ uri, isGroup, chatTitle, style }: any) => {
       );
     }
     return (
-      <View style={[style, styles.avatarPlaceholder]}>
-        <Text style={styles.headerAvatarText}>
-          {(chatTitle || 'U').charAt(0).toUpperCase()}
-        </Text>
+      <View style={[style, styles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Icon name="person" size={20} color={THEME_COLOR} />
       </View>
     );
   }
@@ -79,35 +81,66 @@ const HeaderAvatar = ({ uri, isGroup, chatTitle, style }: any) => {
   );
 };
 
-const MessageAvatar = ({ uri, sName, style }: any) => {
+const MessageAvatar = ({ uri, sName, userId, style, navigation, conversationId }: any) => {
   const [error, setError] = useState(false);
+  const [hasStatus, setHasStatus] = useState(false);
+
+  useEffect(() => {
+    const checkStatus = async () => {
+        const statuses = await StatusService.getStatuses();
+        setHasStatus(statuses.some(s => s.user_id === userId));
+    };
+    checkStatus();
+  }, [userId]);
+
+  const handleAvatarPress = async () => {
+    const statuses = await StatusService.getStatuses();
+    const userStatuses = statuses.filter(s => s.user_id === userId);
+    
+    if (userStatuses.length > 0) {
+      navigation.navigate('StatusViewer', { statuses: userStatuses, initialIndex: 0 });
+    } else {
+      navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
+    }
+  };
+
+  const containerStyle = [
+    style, 
+    hasStatus ? { borderWidth: 2, borderColor: '#8100D1', padding: 2 } : null
+  ];
 
   if (!uri || error) {
     return (
-      <View style={[style, styles.avatarPlaceholder]}>
-        <Text style={styles.avatarText}>
-          {(sName || 'U').charAt(0).toUpperCase()}
-        </Text>
-      </View>
+      <TouchableOpacity onPress={handleAvatarPress} style={[containerStyle, styles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Icon name="person" size={16} color={THEME_COLOR} />
+      </TouchableOpacity>
     );
   }
 
   return (
-    <Image
-      source={{ uri: resolveImageUrl(uri) }}
-      style={style}
-      onError={() => setError(true)}
-    />
+    <TouchableOpacity onPress={handleAvatarPress} style={containerStyle}>
+      <Image
+        source={{ uri: resolveImageUrl(uri) }}
+        style={{ width: '100%', height: '100%', borderRadius: (style?.borderRadius || 16) }}
+        onError={() => setError(true)}
+      />
+    </TouchableOpacity>
   );
 };
 
-// ─────────────────────────────────────────────
-// MAIN COMPONENT
-// ─────────────────────────────────────────────
+// Helper to get alphabetic initials safely
+const getInitials = (name: string) => {
+  if (typeof name !== 'string') return null;
+  const match = name.trim().match(/[a-zA-Z]/);
+  return match ? match[0].toUpperCase() : null;
+};
+
+// ... inside HeaderAvatar, MessageAvatar, and renderMessage:
+// Replace .charAt(0).toUpperCase() with getInitials(name)
+
 interface OtherUser {
   id: number;
   display_name: string;
-  first_name: string;
   email: string;
   profile_picture: string | null;
   avatar_sticker: string | null;
@@ -171,6 +204,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false); // Scroll to bottom button
   const [showMessageActions, setShowMessageActions] = useState(false); // Instagram-style long press menu
+  const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
+  const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [recentEmojis, setRecentEmojis] = useState<string[]>([
     '❤️',
     '😂',
@@ -301,9 +336,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     });
 
     return () => {
-      websocketService.disconnect();
-      focusSub();
-      blurSub();
+      websocketService.disconnectRoom();
+      if (focusSub) focusSub();
+      if (blurSub) blurSub();
       cleanupRecording();
       if (doubleTapTimeoutRef.current)
         clearTimeout(doubleTapTimeoutRef.current);
@@ -558,6 +593,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           m.sender.id !== currentUser?.id ? { ...m, is_read: true } : m,
         ),
       );
+      DeviceEventEmitter.emit('conversation_read', { conversationId });
     } catch {}
   };
 
@@ -608,12 +644,20 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         if (wsMsg.data.user_id !== currentUser?.id) {
           setTypingUsers(prev => {
             const arr = Array.isArray(prev) ? prev : [];
-            if (wsMsg.data.is_typing && !arr.includes(wsMsg.data.user_name))
-              return [...arr, wsMsg.data.user_name];
-            if (!wsMsg.data.is_typing)
-              return arr.filter((u: string) => u !== wsMsg.data.user_name);
-            return arr;
+            if (wsMsg.data.is_typing) {
+                if (!arr.includes(wsMsg.data.user_name)) return [...arr, wsMsg.data.user_name];
+                return arr;
+            } else {
+                return arr.filter((u: string) => u !== wsMsg.data.user_name);
+            }
           });
+          // Auto-clear typing indicator after 3 seconds as a safety
+          if (wsMsg.data.is_typing) {
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            typingTimeoutRef.current = setTimeout(() => {
+                setTypingUsers(prev => prev.filter(u => u !== wsMsg.data.user_name));
+            }, 3000);
+          }
         }
         break;
       case 'delivered':
@@ -882,110 +926,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }, 2000);
   };
 
-  // Functional camera handler: Launch directly with video/photo mode
+  // Replaces handleCameraCapture
+// ... inside ChatRoomScreen component ...
   const handleCameraCapture = () => {
-    Alert.alert('Camera', 'Choose mode', [
-      {
-        text: '📷 Photo',
-        onPress: async () => {
-          const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
-          const status = await check(perm);
-          
-          if (status === RESULTS.DENIED) {
-            const requested = await request(perm);
-            if (requested !== RESULTS.GRANTED) {
-              Alert.alert('Permission Denied', 'Camera access is required. Please enable it in Settings.', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Settings', onPress: () => openSettings() }
-              ]);
-              return;
-            }
-          } else if (status === RESULTS.BLOCKED) {
-            Alert.alert('Permission Blocked', 'Camera access is blocked. Please enable it in Settings.', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Settings', onPress: () => openSettings() }
-            ]);
-            return;
-          }
-
-          const result = await launchCamera({ mediaType: 'photo', quality: 0.85, saveToPhotos: true });
-          if (result.didCancel || result.errorCode) return;
-          const asset = result.assets?.[0];
-          if (asset?.uri) await sendImageMessage(asset);
-        },
-      },
-      {
-        text: '🎥 Video',
-        onPress: async () => {
-          const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
-          const status = await check(perm);
-          
-          if (status === RESULTS.DENIED) {
-            const requested = await request(perm);
-            if (requested !== RESULTS.GRANTED) {
-              Alert.alert('Permission Denied', 'Camera access is required. Please enable it in Settings.', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Settings', onPress: () => openSettings() }
-              ]);
-              return;
-            }
-          } else if (status === RESULTS.BLOCKED) {
-            Alert.alert('Permission Blocked', 'Camera access is blocked. Please enable it in Settings.', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Settings', onPress: () => openSettings() }
-            ]);
-            return;
-          }
-
-          const result = await launchCamera({ mediaType: 'video', videoQuality: 'medium', durationLimit: 30 });
-          if (result.didCancel || result.errorCode) return;
-          const asset = result.assets?.[0];
-          if (asset?.uri) await sendImageMessage(asset);
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    setCameraMenuVisible(true);
   };
 
-  const handleAttachment = async () => {
-    Alert.alert('Attach File', 'Select an option', [
-      {
-        text: '🖼️ Gallery',
-        onPress: async () => {
-          try {
-            const result = await launchImageLibrary({
-              mediaType: 'mixed',
-              quality: 0.85,
-              selectionLimit: 1,
-            });
-            if (result.didCancel || result.errorCode) return;
-            const asset = result.assets?.[0];
-            if (asset?.uri) await sendImageMessage(asset);
-          } catch (error) {
-            console.error('Gallery error:', error);
-          }
-        },
-      },
-      {
-        text: '📄 Document',
-        onPress: async () => {
-          try {
-            const [res] = await pick({
-              type: [types.allFiles],
-              allowMultiSelection: false,
-            });
-            if (res) {
-              await sendDocumentMessage(res);
-            }
-          } catch (err: any) {
-            if (err?.code !== errorCodes.OPERATION_CANCELED) {
-              console.error('DocumentPicker error:', err);
-            }
-          }
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const handleAttachment = () => {
+     setAttachmentMenuVisible(true);
   };
 
   const sendDocumentMessage = async (doc: any) => {
@@ -1429,21 +1377,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
 
     if (now - lastTapTimeRef.current < DOUBLE_TAP_DELAY) {
-      // Double tap detected!
       handleDoubleTapReaction(item);
       lastTapTimeRef.current = 0;
     } else {
-      // First tap - wait to see if there's a second tap
-      doubleTapTimeoutRef.current = setTimeout(() => {
-        // If timeout completes, it was a single tap
+      doubleTapTimeoutRef.current = setTimeout(async () => {
         lastTapTimeRef.current = 0;
         doubleTapTimeoutRef.current = null;
         
-        // OPEN MEDIA ON SINGLE TAP
+        // OPEN MEDIA (Only for media messages)
         if (item.message_type === 'image') {
-           navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'image' });
+            navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'image' });
         } else if (item.message_type === 'video') {
-           navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'video' });
+            navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'video' });
         }
       }, DOUBLE_TAP_DELAY);
       lastTapTimeRef.current = now;
@@ -1561,7 +1506,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         {searchResults.length > 0 && (
           <View style={styles.searchNav}>
             <Text style={styles.searchCount}>
-              {currentResultIndex + 1} of {searchResults.length}
+              {`${currentResultIndex + 1} of ${searchResults.length}`}
             </Text>
             <TouchableOpacity onPress={goToPrevResult} style={styles.searchNavButton}>
               <Icon name="chevron-up" size={24} color={THEME_COLOR} />
@@ -1647,11 +1592,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   // ── RENDER MESSAGE ───────────────────────────────
   const renderMessage = ({ item }: { item: Message }) => {
+    console.log('RENDER MSG:', item.id, item.message_type, item.content, item.created_at);
     const isMe = item.sender.id === currentUser?.id;
     const sName =
-      item.sender.display_name ||
-      item.sender.first_name ||
-      item.sender.email ||
+      item.sender?.display_name ||
+      item.sender?.first_name ||
+      item.sender?.email ||
       'Unknown';
     const reaction = item.reactions?.[String(currentUser?.id)];
     const allReactions = item.reactions || {};
@@ -1678,9 +1624,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   style={styles.avatar}
                 />
               ) : (
-                <Text style={styles.avatarText}>
-                  {sName.charAt(0).toUpperCase()}
-                </Text>
+                (() => {
+                  const initial = getInitials(sName);
+                  return initial ? (
+                    <Text style={styles.avatarText}>{initial}</Text>
+                  ) : (
+                    <Icon name="person" size={16} color={THEME_COLOR} />
+                  );
+                })()
               )}
             </View>
           )}
@@ -1697,14 +1648,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 { color: '#999', fontStyle: 'italic' },
               ]}
             >
-              {item.content || 'The message was removed'}
+              The message was removed
             </Text>
           </View>
         </View>
       );
     }
-  const renderMedia = () => {
+    const renderMedia = () => {
     if (item.is_deleted) return null;
+    
+    // ONLY process media messages
+    if (!['image', 'video', 'audio', 'document'].includes(item.message_type)) return null;
+
     const rawUrl = (item as any).media_url || item.media_file;
     const url = resolveImageUrl(rawUrl);
     
@@ -1713,51 +1668,87 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const timeOverlay = (
       <View style={styles.mediaTimeOverlay}>
-        <Text style={styles.mediaTimeText}>{fmtMsgTime(item.created_at)}</Text>
+        <Text style={styles.mediaTimeText}>{String(fmtMsgTime(item.created_at) || '')}</Text>
       </View>
     );
 
-    // If media failed to load and it's a status reply, show expiration placeholder
-    if ((!url || hasMediaError) && isStatusReply) {
-      return (
-        <View style={[styles.imageContainer, { backgroundColor: '#F5F5F5', borderStyle: 'dashed', borderWidth: 1, borderColor: '#DDD' }]}>
-          <Icon name="time-outline" size={40} color="#BBB" />
-          <Text style={{ color: '#999', fontSize: 13, marginTop: 8, fontWeight: '600' }}>Status expired</Text>
-          {timeOverlay}
-        </View>
-      );
+    // Unified Placeholder for deleted/unavailable media
+    if (!url || hasMediaError || (isStatusReply && !url)) {
+        let label = 'Media unavailable';
+        if (isStatusReply) label = 'Status unavailable';
+        else if (item.message_type === 'audio') label = 'Audio unavailable';
+        else if (item.message_type === 'video') label = 'Video unavailable';
+        else if (item.message_type === 'document') label = 'Document unavailable';
+
+        return (
+          <View 
+            pointerEvents="none"
+            style={[styles.imageContainer, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
+          >
+            <Icon name="alert-circle-outline" size={32} color="#999" />
+            <Text style={{ color: '#999', fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
+               {label}
+            </Text>
+            {timeOverlay}
+          </View>
+        );
+      }
+
+    const downloadAndOpenFile = async (url: string, fileName: string) => {
+        const { dirs } = RNFetchBlob.fs;
+        const path = `${dirs.DocumentDir}/${fileName}`;
+        
+        try {
+            const exists = await RNFetchBlob.fs.exists(path);
+            if (!exists) {
+                await RNFetchBlob.config({
+                    path,
+                    fileCache: true,
+                }).fetch('GET', url);
+            }
+            await FileViewer.open(path);
+        } catch (e) {
+            console.error('File view error:', e);
+            Alert.alert('Error', 'Could not open file');
+        }
+    };
+
+    if (item.message_type === 'document') {
+        const fileName = (item.media_file || 'Document').split('/').pop() || 'Document';
+        const fileExt = fileName.split('.').pop()?.toLowerCase();
+        let iconName = 'document-text-outline';
+        if (fileExt === 'pdf') iconName = 'document-outline';
+        else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
+        else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
+        
+        return (
+          <TouchableOpacity 
+            style={[styles.documentMessage, { padding: 12, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: borderRadius.md }]}
+            onPress={() => downloadAndOpenFile(url, fileName)}
+          >
+            <View style={styles.documentIconContainer}>
+              <Icon name={iconName} size={28} color={THEME_COLOR} />
+            </View>
+            <View style={{ marginLeft: 10, flex: 1, marginRight: 8 }}>
+                <Text 
+                  style={{ fontSize: 14, color: '#333', fontWeight: '500' }} 
+                  numberOfLines={1}
+                  ellipsizeMode="middle"
+                >
+                    {fileName}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+                  {`Download • ${fileExt?.toUpperCase() || 'FILE'}`}
+                </Text>
+            </View>
+            <Icon name="download-outline" size={20} color="#666" />
+            {timeOverlay}
+          </TouchableOpacity>
+        );
     }
 
-    if (!url) return null;
-
     const isImage = item.message_type === 'image' || 
-                    (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
-
-// Stable, fixed placeholder to prevent reflows during scroll
-const MediaPreview = ({ url, style, onPress }: any) => {
-  return (
-    <TouchableOpacity 
-      onPress={onPress} 
-      style={[
-        style, 
-        { 
-          aspectRatio: 16 / 9, // WhatsApp uses a consistent base aspect ratio for previews
-          backgroundColor: '#E8E8E8', 
-          borderRadius: borderRadius.lg,
-          overflow: 'hidden'
-        }
-      ]}
-    >
-      <Image 
-        source={{ uri: url }} 
-        style={{ width: '100%', height: '100%' }} 
-        resizeMode="cover" 
-      />
-    </TouchableOpacity>
-  );
-};
-
-// ... inside renderMedia:
+        (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
 
     if (isImage)
       return (
@@ -1781,7 +1772,7 @@ const MediaPreview = ({ url, style, onPress }: any) => {
         </TouchableOpacity>
       );
 
-    if (item.message_type === 'audio')
+    if (item.message_type === 'audio') {
       return (
         <View style={styles.audioContainer}>
           <AudioPlayer
@@ -1793,8 +1784,9 @@ const MediaPreview = ({ url, style, onPress }: any) => {
           {timeOverlay}
         </View>
       );
+    }
 
-    if (item.message_type === 'video' || (item.media_file?.toLowerCase().endsWith('.mp4') || item.media_file?.toLowerCase().endsWith('.mov')))
+    if (item.message_type === 'video') {
       return (
         <TouchableOpacity
           style={styles.videoContainer}
@@ -1808,25 +1800,10 @@ const MediaPreview = ({ url, style, onPress }: any) => {
           </View>
           {timeOverlay}
         </TouchableOpacity>
-      );      return null;
-    };
-
-    const renderHighlightedText = (text: string, term: string) => {
-        if (!term || !text) return <Text>{text}</Text>;
-        
-        const parts = text.split(new RegExp(`(${term})`, 'gi'));
-        return (
-            <Text>
-                {parts.map((part, i) => (
-                    <Text 
-                        key={i} 
-                        style={part.toLowerCase() === term.toLowerCase() ? styles.highlightedText : null}
-                    >
-                        {part}
-                    </Text>
-                ))}
-            </Text>
-        );
+      );
+    }
+      
+      return null;
     };
 
     return (
@@ -1836,14 +1813,6 @@ const MediaPreview = ({ url, style, onPress }: any) => {
           isMe ? styles.myMessageContainer : styles.theirMessageContainer,
         ]}
       >
-        {!isMe && (
-          <MessageAvatar
-            uri={item.sender.profile_picture}
-            sName={sName}
-            style={styles.avatar}
-          />
-        )}
-
         <TouchableOpacity
           style={[
             styles.messageBubble,
@@ -1854,7 +1823,15 @@ const MediaPreview = ({ url, style, onPress }: any) => {
               borderColor: THEME_COLOR 
             }
           ]}
-          onPress={e => handleMessagePress(item, e)}
+          onPress={(e) => {
+             // Only trigger message press if NOT media (media has its own internal handlers)
+             // and specifically ignore if it's an unavailable media
+             const isMedia = ['image', 'video', 'audio'].includes(item.message_type);
+             const isUnavailable = !resolveImageUrl((item as any).media_url || item.media_file) || mediaErrorIds.includes(item.id);
+
+             if (isMedia && isUnavailable) return;
+             handleMessagePress(item, e);
+          }}
           onLongPress={() => handleMessageLongPress(item)}
           activeOpacity={0.8}
           delayLongPress={500}
@@ -1862,52 +1839,43 @@ const MediaPreview = ({ url, style, onPress }: any) => {
           {item.reply_to && (
             <TouchableOpacity
               style={styles.replyIndicator}
-              onPress={() => jumpToMessage(item.reply_to.id)}
+              onPress={() => jumpToMessage(item.reply_to!.id)}
               activeOpacity={0.7}
             >
               <View style={styles.replyIndicatorLine} />
               <View style={styles.replyIndicatorContentWrapper}>
                 <Text style={styles.replyIndicatorText} numberOfLines={1}>
-                  {item.reply_to.sender?.id === currentUser?.id
+                  {String(item.reply_to.sender?.id === currentUser?.id
                     ? 'You'
-                    : item.reply_to.sender?.display_name || 'User'}
+                    : item.reply_to.sender?.display_name || 'User')}
                 </Text>
                 <Text style={styles.replyIndicatorContent} numberOfLines={2}>
-                  {item.reply_to.content}
+                  {String(item.reply_to.content || '')}
                 </Text>
               </View>
             </TouchableOpacity>
           )}
 
-          {!isMe && isGroup && <Text style={styles.senderName}>{sName}</Text>}
+          {!isMe && isGroup && <Text style={styles.senderName}>{String(sName || '')}</Text>}
 
           {/* Media inside bubble - no background/padding wrapper here */}
-          {renderMedia()}
+          {['image', 'video', 'audio', 'document'].includes(item.message_type) && renderMedia()}
 
-          {(item.message_type === 'text' || (!!item.content && !['image', 'video', 'voice note', 'voice message', 'document', 'media'].includes(item.content.toLowerCase()))) && (
-            <Text
-              style={[
-                styles.messageText,
-                isMe ? styles.myMessageText : styles.theirMessageText,
-                item.message_type !== 'text' && { marginTop: 6 }
-              ]}
-            >
-              {renderHighlightedText(item.content, searchText)}
+          {(item.message_type === 'text' || (!!item.content && typeof item.content === 'string' && !['image', 'video', 'voice note', 'voice message', 'document', 'media'].includes(item.content.toLowerCase()))) && (
+            <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.theirMessageText, item.message_type !== 'text' && { marginTop: 6 }]}>
+              {String(item.content || '')}
             </Text>
           )}
 
           {hasReactions && (
-            <View style={styles.reactionBadge}>
-              {Object.entries(allReactions).map(([userId, emoji]) => (
-                <Text key={userId} style={styles.reactionEmoji}>
-                  {emoji}
-                </Text>
+            <View style={styles.reactionBadge}>{Object.entries(allReactions).map(([userId, emoji]) => (
+                <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
               ))}
             </View>
           )}
 
           {/* Footer only for non-media messages to avoid double time */}
-          {!['image', 'video', 'audio', 'voice note'].includes(item.message_type) && (
+          {!['image', 'video', 'audio', 'voice note', 'document'].includes(item.message_type) && (
             <View style={styles.messageFooter}>
                 <Text
                 style={[
@@ -1918,15 +1886,11 @@ const MediaPreview = ({ url, style, onPress }: any) => {
                 {fmtMsgTime(item.created_at)}
                 </Text>
                 {isMe && (
-                <Text style={styles.messageStatus}>
-                    {item.is_read ? (
-                    <Text style={styles.seenText}>✓✓</Text>
-                    ) : item.delivered_at ? (
-                    <Text style={styles.deliveredText}>✓✓</Text>
-                    ) : (
-                    <Text style={styles.sentText}>✓</Text>
-                    )}
-                </Text>
+                  item.is_read
+                    ? <Text style={[styles.messageStatus, styles.seenText]}>✓✓</Text>
+                    : item.delivered_at
+                    ? <Text style={[styles.messageStatus, styles.deliveredText]}>✓✓</Text>
+                    : <Text style={[styles.messageStatus, styles.sentText]}>✓</Text>
                 )}
             </View>
           )}
@@ -1978,7 +1942,7 @@ const MediaPreview = ({ url, style, onPress }: any) => {
            style={styles.headerBackButton}
            onPress={() => navigation.goBack()}
         >
-          <Text><Icon name="arrow-back" size={24} color={THEME_COLOR} /></Text>
+          <Icon name="arrow-back" size={24} color={THEME_COLOR} />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.headerCenter}
@@ -2153,7 +2117,7 @@ const MediaPreview = ({ url, style, onPress }: any) => {
       {typingUsers.length > 0 && (
         <View style={styles.typingContainer}>
           <Text style={styles.typingText}>
-            {typingUsers.join(', ')} {typingUsers.length > 1 ? 'are' : 'is'} typing...
+            {`${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`}
           </Text>
         </View>
       )}
@@ -2163,10 +2127,7 @@ const MediaPreview = ({ url, style, onPress }: any) => {
         <View style={styles.replyPreview}>
           <View style={styles.replyPreviewContent}>
             <Text style={styles.replyPreviewTitle}>
-              Replying to{' '}
-              {replyToMessage.sender.id === currentUser?.id
-                ? 'yourself'
-                : replyToMessage.sender.display_name || 'User'}
+              {`Replying to ${replyToMessage.sender.id === currentUser?.id ? 'yourself' : replyToMessage.sender.display_name || 'User'}`}
             </Text>
             <Text style={styles.replyPreviewText} numberOfLines={2}>
               {replyToMessage.content}
@@ -2643,9 +2604,32 @@ const MediaPreview = ({ url, style, onPress }: any) => {
       )}
 
       <Toast />
-    </KeyboardAvoidingView>
-  );
-};
+      <MediaPickerModal 
+          visible={cameraMenuVisible} 
+          onClose={() => setCameraMenuVisible(false)}
+          mode="camera"
+          bottom={Platform.OS === 'ios' ? 70 : 60}
+          left={60}
+          onMediaSelected={async (asset, type) => {
+              await sendImageMessage(asset);
+          }}
+      />
+      <MediaPickerModal 
+          visible={attachmentMenuVisible} 
+          onClose={() => setAttachmentMenuVisible(false)}
+          mode="attachment"
+          bottom={Platform.OS === 'ios' ? 70 : 60}
+          left={20}
+          onMediaSelected={async (asset, type) => {
+              await sendImageMessage(asset);
+          }}
+          onDocumentSelected={async (doc) => {
+              await sendDocumentMessage(doc);
+          }}
+      />
+      </KeyboardAvoidingView>
+      );
+      };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
@@ -3252,5 +3236,42 @@ const styles = StyleSheet.create({
   highlightedText: {
     backgroundColor: '#FFEB3B',
     color: '#000',
+  },
+  replyIndicatorContentWrapper: {
+    flex: 1,
+  },
+  callBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#C8E6C9',
+  },
+  callBannerText: {
+    fontSize: 14,
+    color: '#2E7D32',
+    fontWeight: '500',
+  },
+  joinButton: {
+    backgroundColor: '#4CAF50',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: borderRadius.md,
+  },
+  joinButtonText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  documentIconContainer: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: 'rgba(129, 0, 209, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

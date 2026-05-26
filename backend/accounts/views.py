@@ -285,7 +285,7 @@ class UserDetailView(generics.RetrieveAPIView):
 
 class LogoutView(APIView):
     """
-    Logout user by blacklisting refresh token.
+    Logout view to blacklist the refresh token.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -296,7 +296,34 @@ class LogoutView(APIView):
             token.blacklist()
             return Response({'message': 'Logout successful'}, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({'error': 'Invalid token'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DeleteAccountView(APIView):
+    """
+    Deletes the current user's account and all associated data.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        try:
+            user = request.user
+            print(f"DEBUG: Deleting account for user: {user.email}")
+
+            # Deleting the user will trigger cascade deletion for related models:
+            # - Statuses (will trigger post_delete signal for media)
+            # - Sent Messages (will trigger post_delete signal for media)
+            # - FCM Devices
+            # - OTPS
+            # - User Blocks
+            # - Profile Interactions
+
+            user.delete()
+            return Response({'message': 'Account deleted successfully'}, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(f"DEBUG: Error deleting account: {e}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class UserBlockView(APIView):

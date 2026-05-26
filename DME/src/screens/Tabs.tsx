@@ -4,7 +4,7 @@
  * CallLogTabScreen — Call history list
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -13,14 +13,19 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  Modal,
   RefreshControl,
   Platform,
   PermissionsAndroid,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useAuth } from '../context/AuthContext';
+import { resolveImageUrl } from '../utils/image';
+import { MediaPickerModal } from '../components/MediaPickerModal';
 import {
   StatusService,
   CallService,
@@ -68,7 +73,6 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
         onPress={hasStatus ? onView : onAdd}
         activeOpacity={0.7}
       >
-        {/* Avatar with ring */}
         <View style={styles.avatarWrapper}>
           {hasStatus && (
             <View style={[
@@ -83,7 +87,7 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
             </View>
           ) : (avatar && !imgError) ? (
             <Image 
-              source={{ uri: avatar }} 
+              source={{ uri: resolveImageUrl(avatar) }} 
               style={styles.avatar} 
               onError={() => setImgError(true)}
             />
@@ -93,7 +97,6 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
             </View>
           )}
 
-          {/* Add / plus badge */}
           <TouchableOpacity style={styles.addBadge} onPress={onAdd}>
             <Icon name="add" size={14} color="#fff" />
           </TouchableOpacity>
@@ -108,8 +111,6 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
           </Text>
         </View>
       </TouchableOpacity>
-
-
     </View>
   );
 };
@@ -127,7 +128,6 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
   return (
     <TouchableOpacity style={styles.statusRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.avatarWrapper}>
-        {/* Purple glowing ring for unseen, grey for seen */}
         <View style={[
           styles.statusRing,
           group.has_unseen ? styles.ringUnseen : styles.ringViewed,
@@ -138,7 +138,7 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
           </View>
         ) : (group.user_avatar && !imgError) ? (
           <Image 
-            source={{ uri: group.user_avatar }} 
+            source={{ uri: resolveImageUrl(group.user_avatar) }} 
             style={styles.avatar} 
             onError={() => setImgError(true)}
           />
@@ -170,8 +170,7 @@ export const StatusTabScreen = () => {
   const [myStatuses,     setMyStatuses]     = useState<Status[]>([]);
   const [friendGroups,   setFriendGroups]   = useState<UserStatusGroup[]>([]);
   const [refreshing,     setRefreshing]     = useState(false);
-
-  // ── Load ──────────────────────────────────────────────────────────────────
+  const [menuVisible,    setMenuVisible]    = useState(false);
 
   const loadStatuses = useCallback(async () => {
     setRefreshing(true);
@@ -188,12 +187,8 @@ export const StatusTabScreen = () => {
 
   useFocusEffect(useCallback(() => { loadStatuses(); }, [loadStatuses]));
 
-  // ── Camera / Gallery picker ───────────────────────────────────────────────
-
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
-    // Only request READ_MEDIA_IMAGES / READ_MEDIA_VIDEO on API 33+
-    // Do NOT request CAMERA here — react-native-image-picker manages it internally
     try {
       if (Platform.Version >= 33) {
         const granted = await PermissionsAndroid.requestMultiple([
@@ -210,66 +205,26 @@ export const StatusTabScreen = () => {
         return granted === PermissionsAndroid.RESULTS.GRANTED;
       }
     } catch {
-      return true; // let the picker handle it
+      return true;
     }
   };
 
-  const openPicker = async () => {
+  const openGallery = async () => {
     await requestCameraPermission();
+    const result = await launchImageLibrary({
+      mediaType: 'mixed',
+      quality: 0.8,
+    });
+    handlePickerResult(result);
+  };
 
-    Alert.alert('Add Status', 'Choose source', [
-      {
-        text: '📷 Camera',
-        onPress: async () => {
-          // If CAMERA is in manifest, we MUST request it ourselves before launchCamera
-          if (Platform.OS === 'android') {
-            const cameraGranted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.CAMERA,
-            );
-            if (cameraGranted !== PermissionsAndroid.RESULTS.GRANTED) {
-              Alert.alert('Permission Denied', 'Camera permission is required to take photos/videos.');
-              return;
-            }
-          }
-
-          // Do NOT pass mediaType: 'mixed' with camera on Android — causes the
-          // "library does not require CAMERA permission" manifest error.
-          // Instead ask which they want first.
-          Alert.alert('Camera', 'What do you want to capture?', [
-            {
-              text: '🖼 Photo',
-              onPress: async () => {
-                const result = await launchCamera({ mediaType: 'photo', quality: 0.8 });
-                handlePickerResult(result);
-              },
-            },
-            {
-              text: '🎥 Video',
-              onPress: async () => {
-                const result = await launchCamera({
-                  mediaType:    'video',
-                  videoQuality: 'medium',
-                  durationLimit: 30,    // max 30s from camera
-                });
-                handlePickerResult(result);
-              },
-            },
-            { text: 'Cancel', style: 'cancel' },
-          ]);
-        },
-      },
-      {
-        text: '🖼️ Gallery',
-        onPress: async () => {
-          const result = await launchImageLibrary({
-            mediaType: 'mixed',
-            quality:   0.8,
-          });
-          handlePickerResult(result);
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const openCamera = async () => {
+    await requestCameraPermission();
+    const result = await launchCamera({
+      mediaType: 'mixed',
+      quality: 0.8,
+    });
+    handlePickerResult(result);
   };
 
   const handlePickerResult = (result: any) => {
@@ -278,13 +233,12 @@ export const StatusTabScreen = () => {
     navigation.navigate('StatusEditor', {
       mediaUri:  asset.uri,
       mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+      source: 'camera',
     });
   };
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-
   const viewMyStatuses = () => {
-    if (myStatuses.length === 0) { openPicker(); return; }
+    if (myStatuses.length === 0) { openGallery(); return; }
     navigation.navigate('StatusViewer', {
       statuses:      myStatuses,
       initialIndex:  0,
@@ -302,28 +256,65 @@ export const StatusTabScreen = () => {
     });
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+
+
+// ... inside Tabs component ...
+  const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: 'Status',
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity onPress={() => { console.log('Camera button pressed'); setCameraMenuVisible(true); }} style={{ marginRight: 20 }}>
+            <Icon name="camera-outline" size={24} color="#8100D1" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
+            <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation]);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
-      {/* My status */}
+        <MediaPickerModal 
+          visible={cameraMenuVisible} 
+          onClose={() => setCameraMenuVisible(false)}
+          top={50}
+          right={16}
+          onMediaSelected={(asset, type) => {
+              navigation.navigate('StatusEditor', {
+                mediaUri: asset.uri,
+                mediaType: type === 'image' ? 'photo' : 'video',
+                source: 'camera',
+              });
+          }}
+        />
+        {/* ... rest of existing code ... */}
+      <StatusPopoverMenu 
+        visible={menuVisible} 
+        onClose={() => setMenuVisible(false)}
+        onPrivacySettings={() => {
+            navigation.navigate('StatusPrivacy', { 
+                initialSelected: [],
+                onSelect: (ids: number[]) => { console.log('Privacy selected:', ids); }
+            });
+        }}
+      />
       <MyStatusRow
         statuses={myStatuses}
         username={currentUser?.username ?? 'You'}
         avatar={currentUser?.profile_picture}
         avatarSticker={currentUser?.avatar_sticker ?? null}
         onView={viewMyStatuses}
-        onAdd={openPicker}
-        onViewViewers={() => {
-           // Viewers are now handled inside StatusViewer via ViewerSheet
-        }}
+        onAdd={openGallery}
+        onViewViewers={() => {}}
       />
-      {/* Divider */}
       {friendGroups.length > 0 && (
         <Text style={styles.sectionHeader}>Recent updates</Text>
       )}
-
-      {/* Friends */}
       <FlatList
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
@@ -349,12 +340,104 @@ export const StatusTabScreen = () => {
   );
 };
 
-// ─── CallLogTabScreen ─────────────────────────────────────────────────────────
+// ─── Call log ───────────────────────────────────────────────────────────────
+
+const CallLogItemAvatar = ({ avatar, sticker, name }: { avatar: string | null, sticker: string | null, name: string }) => {
+  const [error, setError] = useState(false);
+  const resolvedUrl = resolveImageUrl(avatar);
+
+  if (sticker) {
+    return (
+      <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
+        <Text style={{ fontSize: 24 }}>{sticker}</Text>
+      </View>
+    );
+  }
+
+  if (resolvedUrl && !error) {
+    return (
+      <Image 
+        source={{ uri: resolvedUrl }} 
+        style={styles.logAvatarImg} 
+        onError={() => setError(true)}
+      />
+    );
+  }
+
+  return (
+    <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
+      <Text style={styles.logAvatarInitial}>
+        {(name || 'U').charAt(0).toUpperCase()}
+      </Text>
+    </View>
+  );
+};
+
+const StatusPopoverMenu = ({ 
+  visible, 
+  onClose, 
+  onPrivacySettings 
+}: { 
+  visible: boolean, 
+  onClose: () => void, 
+  onPrivacySettings: () => void 
+}) => {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
+        <View style={styles.popover}>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onPrivacySettings(); }}>
+            <Icon name="lock-closed-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Status Privacy</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+};
+
+const CallLogPopoverMenu = ({ 
+  visible, 
+  onClose, 
+  onClearAll, 
+  onSelect 
+}: { 
+  visible: boolean, 
+  onClose: () => void, 
+  onClearAll: () => void, 
+  onSelect: () => void 
+}) => {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
+        <View style={styles.popover}>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onClearAll(); }}>
+            <Icon name="trash-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Clear all history</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
+            <Icon name="checkbox-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Select calls</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+};
+
+const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => (
+  <TouchableOpacity onPress={onPress} style={{ marginRight: 16 }}>
+    <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+  </TouchableOpacity>
+);
 
 export const CallLogTabScreen = () => {
   const navigation  = useNavigation<any>();
   const [logs,       setLogs]       = useState<CallLog[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [menuVisible, setMenuVisible] = useState(false);
 
   const loadLogs = useCallback(async () => {
     setRefreshing(true);
@@ -363,6 +446,93 @@ export const CallLogTabScreen = () => {
   }, []);
 
   useFocusEffect(useCallback(() => { loadLogs(); }, [loadLogs]));
+
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    Alert.alert(
+      'Delete Selected',
+      `Are you sure you want to delete ${selectedIds.length} call records?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              await CallService.clearCallLogs(selectedIds);
+              setSelectionMode(false);
+              setSelectedIds([]);
+              loadLogs();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete selected logs');
+            }
+          } 
+        },
+      ]
+    );
+  }, [selectedIds, loadLogs]);
+
+  useEffect(() => {
+    const sub1 = DeviceEventEmitter.addListener('call_logs_cleared', () => {
+      loadLogs();
+      setSelectionMode(false);
+      setSelectedIds([]);
+    });
+    const sub2 = DeviceEventEmitter.addListener('toggle_call_log_selection_mode', () => {
+      setSelectionMode(prev => !prev);
+      setSelectedIds([]);
+    });
+    return () => {
+      sub1.remove();
+      sub2.remove();
+    };
+  }, [loadLogs]);
+
+  useLayoutEffect(() => {
+    if (selectionMode) {
+      navigation.setOptions({
+        headerTitle: `${selectedIds.length} Selected`,
+        headerLeft: () => (
+          <TouchableOpacity 
+            onPress={() => {
+              setSelectionMode(false);
+              setSelectedIds([]);
+            }}
+            style={{ marginLeft: 16 }}
+          >
+            <Text style={styles.selectionCancel}>Cancel</Text>
+          </TouchableOpacity>
+        ),
+        headerRight: () => (
+          <TouchableOpacity 
+            onPress={handleBatchDelete} 
+            disabled={selectedIds.length === 0}
+            style={{ marginRight: 16 }}
+          >
+            <Text style={[styles.selectionDelete, selectedIds.length === 0 && { opacity: 0.5 }]}>Delete</Text>
+          </TouchableOpacity>
+        ),
+        headerTitleAlign: 'center',
+        headerStyle: { backgroundColor: '#F8F0FF', elevation: 0, shadowOpacity: 0 },
+        headerTitleStyle: { color: '#8100D1', fontWeight: 'bold' }
+      });
+    } else {
+      navigation.setOptions({
+        headerTitle: 'Calls',
+        headerLeft: undefined,
+        headerRight: () => <CallLogMenuButton onPress={() => setMenuVisible(true)} />,
+        headerTitleAlign: 'left',
+        headerStyle: { backgroundColor: '#fff', elevation: 2, shadowOpacity: 0.1 },
+        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#8100D1' }
+      });
+    }
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete]);
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
 
   const formatDuration = (seconds: number | null): string => {
     if (!seconds) return '';
@@ -395,112 +565,153 @@ export const CallLogTabScreen = () => {
   };
 
   return (
-    <FlatList
-      data={logs}
-      keyExtractor={item => String(item.id)}
-      contentContainerStyle={{ paddingBottom: 20 }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadLogs} />}
-      ListEmptyComponent={
-        !refreshing ? (
-          <View style={styles.empty}>
-            <Icon name="call-outline" size={48} color="#ddd" />
-            <Text style={styles.emptyText}>No call history</Text>
-          </View>
-        ) : null
-      }
-      renderItem={({ item }) => {
-        const dir      = getDirection(item);
-        const dirConf  = directionConfig(dir);
-        const duration = formatDuration(item.duration);
-        const isMissed = dir === 'missed';
-        const name     = item.other_party?.name ?? 'Unknown';
-        const avatar   = item.other_party_avatar;
-        const sticker  = item.other_party_avatar_sticker;
-        const userId   = item.other_party?.id;
-
-        return (
-          <TouchableOpacity
-            style={styles.logItem}
-            activeOpacity={0.7}
-            onPress={() =>
-              Alert.alert(
-                name,
-                `${dirConf.label} ${item.call_type} call\n${formatTime(item.started_at)}${duration ? `\nDuration: ${duration}` : ''}`,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: `Call back`,
-                    onPress: () => navigation.navigate('Call', {
-                      remoteUserId: userId,      // ← CallScreen expects remoteUserId
-                      remoteUserName: name,      // ← may also need this
-                      callType: item.call_type,
-                      incomingCall: false,
-                    })
+    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+      <CallLogPopoverMenu 
+        visible={menuVisible} 
+        onClose={() => setMenuVisible(false)}
+        onClearAll={() => {
+           Alert.alert(
+            'Clear Call Log',
+            'Are you sure you want to clear all call history?',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { 
+                text: 'Clear', 
+                style: 'destructive', 
+                onPress: async () => {
+                  try {
+                    await CallService.clearCallLogs();
+                    DeviceEventEmitter.emit('call_logs_cleared');
+                  } catch (error) {
+                    Alert.alert('Error', 'Failed to clear call logs');
                   }
-                ]
-              )
-            }
-          >
-            {/* Avatar */}
-            <View>
-              {sticker ? (
-                <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
-                  <Text style={{ fontSize: 24 }}>{sticker}</Text>
-                </View>
-              ) : avatar ? (
-                <Image source={{ uri: avatar }} style={styles.logAvatarImg} />
-              ) : (
-                <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
-                  <Text style={styles.logAvatarInitial}>
-                    {name.charAt(0).toUpperCase()}
-                  </Text>
+                } 
+              },
+            ]
+          );
+        }}
+        onSelect={() => DeviceEventEmitter.emit('toggle_call_log_selection_mode')}
+      />
+      <FlatList
+        data={logs}
+        keyExtractor={item => String(item.id)}
+        contentContainerStyle={{ paddingBottom: 20 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadLogs} />}
+        ListEmptyComponent={
+          !refreshing ? (
+            <View style={styles.empty}>
+              <Icon name="call-outline" size={48} color="#ddd" />
+              <Text style={styles.emptyText}>No call history</Text>
+            </View>
+          ) : null
+        }
+        renderItem={({ item }) => {
+          const dir      = getDirection(item);
+          const dirConf  = directionConfig(dir);
+          const duration = formatDuration(item.duration);
+          const isMissed = dir === 'missed';
+          const name     = item.other_party?.name ?? 'Unknown';
+          const avatar   = item.other_party_avatar;
+          const sticker  = item.other_party_avatar_sticker;
+          const userId   = item.other_party?.id;
+          const isSelected = selectedIds.includes(item.id);
+
+          return (
+            <TouchableOpacity
+              style={[styles.logItem, isSelected && styles.logItemSelected]}
+              activeOpacity={0.7}
+              onPress={() => {
+                if (selectionMode) {
+                  toggleSelection(item.id);
+                } else {
+                  const dateObj = new Date(item.started_at);
+                  const dateStr = dateObj.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+                  const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  
+                  Alert.alert(
+                    name,
+                    `${dirConf.label} ${item.call_type} call\n${dateStr} at ${timeStr}${duration ? `\nDuration: ${duration}` : ''}`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: `Call back`,
+                        onPress: () => navigation.navigate('Call', {
+                          remoteUserId: userId,
+                          remoteUserName: name,
+                          callType: item.call_type,
+                          incomingCall: false,
+                        })
+                      }
+                    ]
+                  );
+                }
+              }}
+              onLongPress={() => {
+                if (!selectionMode) {
+                  setSelectionMode(true);
+                  toggleSelection(item.id);
+                }
+              }}
+            >
+              {selectionMode && (
+                <View style={styles.checkboxContainer}>
+                  <Icon 
+                    name={isSelected ? "checkbox" : "square-outline"} 
+                    size={22} 
+                    color="#8100D1" 
+                  />
                 </View>
               )}
-            </View>
 
-            {/* Info */}
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.logName, isMissed && { color: '#F44336' }]}>
-                {name}
-              </Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 4 }}>
-                <Icon name={dirConf.icon} size={13} color={dirConf.color} />
-                <Text style={[styles.logSub, { color: dirConf.color }]}>
-                  {dirConf.label}
+              {/* Avatar */}
+              <CallLogItemAvatar avatar={avatar} sticker={sticker} name={name} />
+
+              {/* Info */}
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.logName, isMissed && { color: '#F44336' }]}>
+                  {name}
                 </Text>
-                <Icon
-                  name={item.call_type === 'video' ? 'videocam-outline' : 'call-outline'}
-                  size={12} color="#aaa"
-                />
-                <Text style={styles.logSub}>{item.call_type}</Text>
-                {!!duration && <Text style={styles.logSub}>· {duration}</Text>}
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 4 }}>
+                  <Icon name={dirConf.icon} size={13} color={dirConf.color} />
+                  <Text style={[styles.logSub, { color: dirConf.color }]}>
+                    {dirConf.label}
+                  </Text>
+                  <Icon
+                    name={item.call_type === 'video' ? 'videocam-outline' : 'call-outline'}
+                    size={12} color="#aaa"
+                  />
+                  <Text style={styles.logSub}>{item.call_type}</Text>
+                  {!!duration && <Text style={styles.logSub}>· {duration}</Text>}
+                </View>
               </View>
-            </View>
 
-            {/* Right: time + call button */}
-            <View style={{ alignItems: 'flex-end', gap: 8 }}>
-              <Text style={styles.logTime}>{formatTime(item.started_at)}</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  navigation.navigate('Call', {
-                    remoteUserId: userId,
-                    remoteUserName: name,
-                    callType: item.call_type,
-                    incomingCall: false,
-                  });
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Icon
-                  name={item.call_type === 'video' ? 'videocam' : 'call'}
-                  size={22} color="#8100D1"
-                />
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        );
-      }}
-    />
+              {/* Right: time + call button */}
+              {!selectionMode && (
+                <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                  <Text style={styles.logTime}>{formatTime(item.started_at)}</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      navigation.navigate('Call', {
+                        remoteUserId: userId,
+                        remoteUserName: name,
+                        callType: item.call_type,
+                        incomingCall: false,
+                      });
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Icon
+                      name={item.call_type === 'video' ? 'videocam' : 'call'}
+                      size={22} color="#8100D1"
+                    />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        }}
+      />
+    </View>
   );
 };
 
@@ -559,7 +770,7 @@ const styles = StyleSheet.create({
     alignItems:      'center',
   },
   avatarInitial: {
-    color:      '#fff',
+    color:      '#8100D1',
     fontSize:   20,
     fontWeight: '600',
   },
@@ -641,7 +852,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logAvatarInitial: {
-    color: '#fff', fontSize: 18, fontWeight: '600',
+    color: '#8100D1', fontSize: 18, fontWeight: '600',
   },
   logName: {
     fontSize: 15, fontWeight: '600', color: '#111',
@@ -652,4 +863,61 @@ const styles = StyleSheet.create({
   logTime: {
     fontSize: 11, color: '#aaa',
   },
-});
+  // Selection mode
+  selectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#F8F0FF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E8DEF8',
+  },
+  selectionCancel: {
+    color: '#666',
+    fontSize: 16,
+  },
+  selectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#8100D1',
+  },
+  selectionDelete: {
+    color: '#F44336',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  logItemSelected: {
+    backgroundColor: '#F8F0FF',
+  },
+  checkboxContainer: {
+    marginRight: -4,
+  },
+  // Popover menu
+  popover: {
+    position: 'absolute',
+    top: 50,
+    right: 16,
+    width: 180,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 8,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    zIndex: 1000,
+  },
+  popoverItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 12,
+  },
+  popoverText: {
+    fontSize: 14,
+    color: '#333',
+  },
+  });

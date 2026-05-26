@@ -213,7 +213,7 @@ const GroupCallView = ({ callType }) => {
     const handleConnected = () => {
       try {
         InCallManager.start({ media: callType === 'video' ? 'video' : 'audio' });
-        InCallManager.setSpeakerphoneOn(true);
+        InCallManager.setSpeakerphoneOn(false);
       } catch (e) {}
     };
     room.on(RoomEvent.Connected, handleConnected);
@@ -245,7 +245,7 @@ const AudioParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
     const handleConnected = () => {
       try {
         InCallManager.start({ media: 'audio' });
-        InCallManager.setSpeakerphoneOn(true);
+        InCallManager.setSpeakerphoneOn(false);
       } catch (e) {}
     };
     room.on(RoomEvent.Connected, handleConnected);
@@ -315,7 +315,7 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
     const handleConnected = () => {
       try {
         InCallManager.start({ media: callType === 'video' ? 'video' : 'audio' });
-        InCallManager.setSpeakerphoneOn(true);
+        InCallManager.setSpeakerphoneOn(false);
       } catch (e) {}
     };
     room.on(RoomEvent.Connected, handleConnected);
@@ -413,7 +413,7 @@ const CallScreen = () => {
   });
   
   const [error, setError] = useState(null);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [partnerJoined, setPartnerJoined] = useState(false);
@@ -1115,68 +1115,78 @@ const CallScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#111' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' }, // Light background
   backButton: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 30, left: 16, zIndex: 40, padding: 8 },
   topBar: { position: 'absolute', top: Platform.OS === 'ios' ? 52 : 28, left: 0, right: 0, alignItems: 'center', zIndex: 30, paddingHorizontal: 20 },
-  statusText: { fontSize: 18, color: '#fff', fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 4 },
-  callTypeLabel: { fontSize: 13, color: 'rgba(255,255,255,0.7)', marginTop: 4 },
-  controlsContainer: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 16, zIndex: 30, paddingBottom: Platform.OS === 'ios' ? 40 : 30, paddingTop: 20, paddingHorizontal: 20, backgroundColor: 'rgba(0,0,0,0.55)' },
-  controlButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(80,80,90,0.85)', width: 58, height: 58, borderRadius: 29, gap: 2 },
-  controlButtonActive: { backgroundColor: '#34C759' },
-  controlButtonMuted: { backgroundColor: '#FF3B30' },
-  endCallBtn: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#FF3B30', width: 58, height: 58, borderRadius: 29, gap: 2 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
-  loadingText: { color: 'rgba(255,255,255,0.7)', fontSize: 18, fontWeight: '500' },
-  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111', paddingHorizontal: 30 },
+  statusText: { fontSize: 18, color: '#000000', fontWeight: '600' }, // Dark text
+  callTypeLabel: { fontSize: 13, color: '#666666', marginTop: 4 }, // Darker grey
+  controlsContainer: { 
+    position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', 
+    justifyContent: 'center', alignItems: 'center', gap: 16, zIndex: 30, 
+    paddingBottom: Platform.OS === 'ios' ? 40 : 30, paddingTop: 20, 
+    paddingHorizontal: 20, backgroundColor: '#FFFFFF', 
+    borderTopWidth: 1, borderColor: '#E8DEF8' 
+  },
+  controlButton: { 
+    alignItems: 'center', justifyContent: 'center', 
+    backgroundColor: '#8100D1', // Primary color for controls
+    width: 58, height: 58, borderRadius: 29, gap: 2,
+    elevation: 4, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2 
+  }, 
+  controlButtonActive: { backgroundColor: '#34C759' }, // Keep success green
+  controlButtonMuted: { backgroundColor: '#FF3B30' }, // Keep error red
+  endCallBtn: { 
+    alignItems: 'center', justifyContent: 'center', 
+    backgroundColor: '#FF3B30', width: 58, height: 58, 
+    borderRadius: 29, gap: 2,
+    elevation: 4, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2
+  },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }, // Light loading
+  loadingText: { color: '#333', fontSize: 18, fontWeight: '500' }, // Dark text
+  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 }, // Light error
   errorText: { color: '#FF3B30', fontSize: 16, marginBottom: 24, textAlign: 'center' },
-  missedContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111', paddingHorizontal: 30 },
-  missedTitle: { color: '#fff', fontSize: 28, fontWeight: '600', marginTop: 24, marginBottom: 8 },
-  missedSubtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 16, textAlign: 'center', marginBottom: 40 },
-  callAgainButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#34C759', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 40, gap: 12, marginBottom: 16 },
+  missedContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 }, // Light missed
+  missedTitle: { color: '#000000', fontSize: 28, fontWeight: '600', marginTop: 24, marginBottom: 8 }, // Dark text
+  missedSubtitle: { color: '#666666', fontSize: 16, textAlign: 'center', marginBottom: 40 }, // Dark grey
+  callAgainButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#8100D1', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 40, gap: 12, marginBottom: 16 }, // Primary
   callAgainText: { color: '#fff', fontSize: 18, fontWeight: '600' },
   goBackButton: { paddingVertical: 12 },
-  goBackText: { color: '#007AFF', fontSize: 16, fontWeight: '500' },
-  autoCloseHint: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 12,
-    marginTop: 16,
-    fontStyle: 'italic',
-  },
-  fullScreenContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#111' },
+  goBackText: { color: '#8100D1', fontSize: 16, fontWeight: '500' }, // Primary
+  autoCloseHint: { color: '#999', fontSize: 12, marginTop: 16, fontStyle: 'italic' },
+  fullScreenContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#FFFFFF' }, // Light
   fullScreenVideo: { flex: 1, width: '100%', height: '100%' },
-  fullScreenPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1C1C1E' },
+  fullScreenPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' }, // Light placeholder
   callingOverlay: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 40, left: 0, right: 0, alignItems: 'center', zIndex: 20 },
-  callingName: { color: '#fff', fontSize: 20, fontWeight: '600', textShadowRadius: 4 },
-  callingSubtext: { color: 'rgba(255,255,255,0.75)', fontSize: 14, marginTop: 2 },
-  miniVideoContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 90 : 60, right: 16, width: 100, height: 148, borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: 'rgba(255,255,255,0.5)', backgroundColor: '#000', zIndex: 25, elevation: 8 },
+  callingName: { color: '#000000', fontSize: 20, fontWeight: '600' }, // Dark text
+  callingSubtext: { color: '#666666', fontSize: 14, marginTop: 2 }, // Dark grey
+  miniVideoContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 90 : 60, right: 16, width: 100, height: 148, borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: '#E8DEF8', backgroundColor: '#EEE', zIndex: 25, elevation: 8 },
   miniVideo: { width: '100%', height: '100%' },
-  miniPlaceholder: { flex: 1, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center' },
+  miniPlaceholder: { flex: 1, backgroundColor: '#E0E0E0', justifyContent: 'center', alignItems: 'center' },
   miniSwapHint: { position: 'absolute', bottom: 5, right: 5, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 8, padding: 3 },
-  audioCallContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1C1C1E' },
+  audioCallContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' },
   audioAvatarContainer: { alignItems: 'center' },
-  largeProfilePic: { width: 140, height: 140, borderRadius: 70, marginBottom: 20, borderWidth: 3, borderColor: 'rgba(255,255,255,0.3)' },
-  avatarPlaceholder: { width: 140, height: 140, borderRadius: 70, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center', marginBottom: 20, borderWidth: 3, borderColor: 'rgba(255,255,255,0.2)' },
-  audioRemoteName: { color: '#fff', fontSize: 26, fontWeight: '700', marginBottom: 6 },
-  audioCallStatus: { color: 'rgba(255,255,255,0.6)', fontSize: 16, marginBottom: 20 },
+  largeProfilePic: { width: 140, height: 140, borderRadius: 70, marginBottom: 20, borderWidth: 3, borderColor: '#E8DEF8' },
+  avatarPlaceholder: { width: 140, height: 140, borderRadius: 70, backgroundColor: '#EEE', justifyContent: 'center', alignItems: 'center', marginBottom: 20, borderWidth: 3, borderColor: '#E8DEF8' },
+  audioRemoteName: { color: '#000000', fontSize: 26, fontWeight: '700', marginBottom: 6 },
+  audioCallStatus: { color: '#666666', fontSize: 16, marginBottom: 20 },
   audioWave: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8 },
-  audioWaveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#34C759' },
-  placeholderText: { color: 'rgba(255,255,255,0.5)', fontSize: 16, marginTop: 12 },
-  grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#111' },
-  groupTile: { width: width / 2, height: height / 3, backgroundColor: '#1C1C1E', borderWidth: 1, borderColor: '#333', position: 'relative' },
+  audioWaveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#8100D1' }, // Primary
+  placeholderText: { color: '#999', fontSize: 16, marginTop: 12 },
+  grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#FFFFFF' },
+  groupTile: { width: width / 2, height: height / 3, backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#EEE', position: 'relative' },
   video: { flex: 1, width: '100%', height: '100%' },
-  participantNameBadge: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  participantNameText: { color: '#fff', fontSize: 12, fontWeight: '500' },
-  gridPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1C1C1E' },
+  participantNameBadge: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(255,255,255,0.8)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  participantNameText: { color: '#000000', fontSize: 12, fontWeight: '500' },
+  gridPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' },
   groupAudioContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 20 },
-  groupAudioCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 12, marginVertical: 8, width: '80%' },
-  groupAudioAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#6C63FF', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  groupAudioName: { color: '#fff', fontSize: 18, fontWeight: '500' },
-  groupAudioAvatarLocal: { backgroundColor: '#8100D1' },
-  groupAudioStatus: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 2 },
+  groupAudioCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8F0FF', borderRadius: 12, padding: 12, marginVertical: 8, width: '80%' },
+  groupAudioAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  groupAudioName: { color: '#000000', fontSize: 18, fontWeight: '500' },
+  groupAudioStatus: { color: '#666666', fontSize: 12, marginTop: 2 },
   activeSpeakerBorder: { borderWidth: 2, borderColor: '#34C759', borderRadius: 12 },
   speakingStatus: { color: '#34C759', fontSize: 11, fontWeight: 'bold' },
   groupAudioWaiting: { alignItems: 'center', paddingVertical: 40, gap: 12 },
-  groupAudioWaitingText: { color: 'rgba(255,255,255,0.5)', fontSize: 16, textAlign: 'center' },
+  groupAudioWaitingText: { color: '#999', fontSize: 16, textAlign: 'center' },
 });
 
 export default CallScreen;

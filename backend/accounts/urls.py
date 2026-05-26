@@ -11,6 +11,7 @@ from .views import (
     ProfileSetupView,
     UserDetailView,
     LogoutView,
+    DeleteAccountView,
     UserBlockView,
     UserBlockStatusView,
     UserBlockedByStatusView,
@@ -20,6 +21,7 @@ urlpatterns = [
     # Authentication
     path('google/', GoogleLoginView.as_view(), name='google_login'),
     path('logout/', LogoutView.as_view(), name='logout'),
+    path('delete-account/', DeleteAccountView.as_view(), name='delete_account'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
     # Profile

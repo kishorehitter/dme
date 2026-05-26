@@ -2,6 +2,7 @@
 export { LoginScreen } from './auth/LoginScreen';
 export { RegisterScreen } from './auth/RegisterScreen';
 export { OTPVerifyScreen } from './auth/OTPVerifyScreen';
+export { default as GoogleLoginScreen } from './GoogleLoginScreen';
 
 // Chat Screens
 export { ChatListScreen } from './chat/ChatListScreen';
@@ -14,6 +15,9 @@ export { ProfileScreen } from './chat/ProfileScreen';
 export { ProfileSetupScreen } from './chat/ProfileSetupScreen';
 export { default as MediaViewerScreen } from './MediaViewerScreen';
 export { default as SharedMediaScreen } from './chat/SharedMediaScreen';
+export { default as StatusViewer } from '../components/StatusViewer';
+export { default as StatusEditorScreen } from './StatusEditorScreen';
+export { StatusPrivacyScreen } from './chat/StatusPrivacyScreen';
 
 // Call Screens
 export { default as CallScreen } from './CallScreen';

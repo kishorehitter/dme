@@ -14,6 +14,7 @@ interface AuthContextType {
   register: (data: RegisterData) => Promise<{ message: string; email: string }>;
   verifyOTP: (data: OTPVerify) => Promise<void>;
   logout: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
   requestOTP: (email: string) => Promise<{ message: string }>;
   updateProfile: (data: Partial<RegisterData>) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -125,6 +126,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const deleteAccount = async () => {
+    try {
+      await authAPI.deleteAccount();
+    } finally {
+      // Clean up local session regardless of backend success
+      await fcmService.unregisterDevice();
+      websocketService.disconnectPermanently();
+      await AsyncStorage.multiRemove(['access_token', 'refresh_token', 'user']);
+      setUser(null);
+    }
+  };
+
   const requestOTP = async (email: string): Promise<{ message: string }> => {
     try {
       const response = await authAPI.requestOTP(email);
@@ -165,6 +178,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         register,
         verifyOTP,
         logout,
+        deleteAccount,
         requestOTP,
         updateProfile,
         refreshUser,

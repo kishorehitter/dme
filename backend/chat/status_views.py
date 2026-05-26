@@ -41,7 +41,13 @@ class StatusViewSet(viewsets.ModelViewSet):
         return (
             Status.objects
             .filter(created_at__gte=cutoff)
-            .filter(models.Q(user=self.request.user) | models.Q(user_id__in=allowed_user_ids))
+            .filter(
+                models.Q(user=self.request.user) |  # Owner
+                models.Q(restricted_to__isnull=True) |  # Public
+                models.Q(restricted_to=self.request.user) | # Explicitly allowed
+                models.Q(user_id__in=allowed_user_ids) # Contacts/Viewed
+            )
+            .distinct()
             .select_related('user')
             .prefetch_related('views__viewer', 'likes__user')
             .order_by('-created_at')

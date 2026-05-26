@@ -59,7 +59,14 @@ const FEMALE_STICKERS = [
   { id: 'f6', emoji: '👩‍🚀', label: 'Astronaut' },
 ];
 
-const AvatarWithFallback = ({ uri, displayName, style }: any) => {
+// Helper to get alphabetic initials safely
+const getInitials = (name: string) => {
+  if (typeof name !== 'string') return null;
+  const match = name.trim().match(/[a-zA-Z]/);
+  return match ? match[0].toUpperCase() : null;
+};
+
+const AvatarWithFallback = ({ uri, displayName, sticker, style }: any) => {
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -67,11 +74,26 @@ const AvatarWithFallback = ({ uri, displayName, style }: any) => {
   }, [uri]);
 
   if (!uri || error) {
+    if (sticker) {
+      return (
+        <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
+            <Text style={{ fontSize: style.width * 0.5 }}>{sticker}</Text>
+        </View>
+      );
+    }
+    
+    const initial = getInitials(displayName);
+    if (initial) {
+        return (
+          <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center', backgroundColor: colors.primary + '20' }]}>
+            <Text style={{ fontSize: style.width * 0.4, color: colors.primary, fontWeight: 'bold' }}>{initial}</Text>
+          </View>
+        );
+    }
+
     return (
-      <View style={[style, styles.friendAvatarPlaceholder]}>
-        <Text style={styles.friendAvatarText}>
-          {(displayName || 'U').charAt(0).toUpperCase()}
-        </Text>
+      <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Icon name="person" size={style.width / 2} color={colors.primary} />
       </View>
     );
   }
@@ -90,7 +112,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   navigation,
   route,
 }) => {
-  const { user, logout, refreshUser } = useAuth();
+  const { user, logout, deleteAccount, refreshUser } = useAuth();
   const viewingOtherProfile = route?.params?.user;
   const isReadOnly = !!viewingOtherProfile;
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -567,7 +589,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           username: data.username || '',
           bio: data.bio || '',
         });
-        Alert.alert('Success', 'Profile updated successfully');
+        Toast.show({
+          type: 'success',
+          text1: 'Profile updated successfully',
+          position: 'bottom',
+        });
+        navigation.navigate('MainTabs', { screen: 'Chats' });
       } else {
         const errorData = await response.json().catch(() => ({}));
         // Use the specific 'message' from our backend update
@@ -588,6 +615,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     ]);
   };
 
+  const handleDeleteAccount = async () => {
+    Alert.alert(
+      'Delete Account',
+      'Are you sure you want to delete your account? This action is permanent and will delete all your data including messages and media.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              await deleteAccount();
+              Toast.show({
+                type: 'success',
+                text1: 'Account deleted',
+                text2: 'Your account has been permanently removed.'
+              });
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete account. Please try again.');
+            }
+          } 
+        },
+      ]
+    );
+  };
+
   const renderStickerItem = ({ item }: { item: { id: string; emoji: string; label: string } }) => (
     <TouchableOpacity
       style={styles.stickerItem}
@@ -599,7 +652,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   );
 
   if (isReadOnly && profile) {
-    const displayName = profile.display_name || profile.username || profile.first_name || profile.email || 'User';
+    const displayName = profile.display_name || profile.username || profile.email || 'User';
     const bio = profile.bio || 'No bio available'; 
 
     return (
@@ -616,8 +669,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
               </View>
             ) : (
-              <AvatarWithFallback uri={profile.profile_picture} displayName={displayName} style={styles.friendAvatar} />
-            )}
+              <AvatarWithFallback 
+                uri={profile.profile_picture} 
+                displayName={displayName} 
+                sticker={profile.avatar_sticker} 
+                style={styles.friendAvatar} 
+              />            )}
           </TouchableOpacity>
 
           <Text style={styles.friendName}>{displayName}</Text>
@@ -693,7 +750,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
               </View>
             ) : (
-              <AvatarWithFallback uri={profile?.profile_picture} displayName={formData.display_name || formData.username} style={styles.profilePicture} />
+              <AvatarWithFallback 
+                uri={profile?.profile_picture} 
+                displayName={formData.display_name || formData.username} 
+                sticker={profile?.avatar_sticker}
+                style={styles.profilePicture} 
+             />
             )}
             <TouchableOpacity style={styles.cameraIcon} onPress={() => setShowStickerModal(true)}>
               <Text style={styles.cameraIconText}><Icon name="camera" size={18} color="#000" /></Text>
@@ -711,7 +773,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
               </View>
             ) : (
-              <AvatarWithFallback uri={profile?.profile_picture} displayName={formData.display_name || formData.username} style={styles.profilePicture} />
+              <AvatarWithFallback 
+                uri={profile?.profile_picture} 
+                displayName={formData.display_name || formData.username} 
+                sticker={profile?.avatar_sticker}
+                style={styles.profilePicture} 
+             />
             )}
           </TouchableOpacity>
         )}
@@ -805,10 +872,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       {!isReadOnly && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
-          <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
-            <Text style={styles.menuItemText}>Logout</Text>
-            <Text style={styles.menuItemIcon}>→</Text>
-          </TouchableOpacity>
+          <View style={styles.accountButtonsRow}>
+            <TouchableOpacity style={[styles.accountButton, styles.logoutButtonBorder]} onPress={handleLogout}>
+              <Text style={styles.logoutButtonText}>Logout</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.accountButton, styles.deleteButtonBorder]} onPress={handleDeleteAccount}>
+              <Text style={styles.deleteButtonText}>Delete Account</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -868,22 +939,22 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  profilePictureSection: { alignItems: 'center', paddingVertical: spacing.xxl, backgroundColor: colors.surface },
+  profilePictureSection: { alignItems: 'center', paddingVertical: spacing.lg, backgroundColor: colors.surface },
   profilePictureContainer: { position: 'relative' },
   profilePicture: { width: 120, height: 120, borderRadius: 60 },
   profilePicturePlaceholder: { backgroundColor: '#E8DEF8', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primaryLight },
   stickerAvatar: { fontSize: 72 },
   cameraIcon: { position: 'absolute', bottom: 10, right: 8, backgroundColor: colors.surface, width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.primary },
   cameraIconText: { fontSize: 18 },
-  changePhotoText: { marginTop: spacing.md, fontSize: fontSize.md, color: colors.primary, fontWeight: '600' },
-  section: { backgroundColor: colors.surface, marginTop: spacing.lg, padding: spacing.lg },
+  changePhotoText: { marginTop: spacing.sm, fontSize: fontSize.md, color: colors.primary, fontWeight: '600' },
+  section: { backgroundColor: colors.surface, marginTop: spacing.sm, padding: spacing.lg },
   sectionTitle: { fontSize: fontSize.lg, fontWeight: 'bold', color: colors.textPrimary, marginBottom: spacing.lg },
   inputContainer: { marginBottom: spacing.lg },
   label: { fontSize: fontSize.sm, color: colors.textSecondary, marginBottom: spacing.xs },
   input: { backgroundColor: colors.background, padding: spacing.md, borderRadius: borderRadius.md, color: colors.textPrimary, fontSize: fontSize.md },
   inputError: { borderColor: 'red', borderWidth: 1 },
   inputDisabled: { opacity: 0.6 },
-  multilineInput: { height: 100, textAlignVertical: 'top' },
+  multilineInput: { height: 80, textAlignVertical: 'top' },
   hint: { fontSize: fontSize.xs, color: colors.textSecondary, marginTop: spacing.xs },
   saveButton: { backgroundColor: colors.primary, padding: spacing.md, borderRadius: borderRadius.md, alignItems: 'center', marginTop: spacing.md },
   saveButtonText: { color: colors.textLight, fontWeight: 'bold' },
@@ -891,6 +962,33 @@ const styles = StyleSheet.create({
   menuItem: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.md },
   menuItemText: { fontSize: fontSize.md, color: colors.textPrimary },
   menuItemIcon: { fontSize: fontSize.md, color: colors.textSecondary },
+  accountButtonsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.sm },
+  accountButton: { 
+    flex: 1, 
+    paddingVertical: spacing.sm, 
+    borderRadius: borderRadius.md, 
+    alignItems: 'center', 
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  logoutButtonBorder: { 
+    borderColor: '#7e788a', 
+    marginRight: spacing.sm 
+  },
+  deleteButtonBorder: { 
+    borderColor: '#F44336', 
+    marginLeft: spacing.sm 
+  },
+  logoutButtonText: { 
+    color: '#7e788a', 
+    fontWeight: '900',
+    fontSize: fontSize.md 
+  },
+  deleteButtonText: { 
+    color: '#F44336', 
+    fontWeight: '800',
+    fontSize: fontSize.md 
+  },
   footer: { alignItems: 'center', padding: spacing.xl },
   footerText: { fontSize: fontSize.sm, color: colors.textSecondary },
   friendProfileHeader: { alignItems: 'center', padding: spacing.lg, backgroundColor: colors.surface },

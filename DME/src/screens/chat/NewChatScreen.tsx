@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 import {
   View,
   Text,
@@ -15,6 +16,7 @@ import { chatAPI, callsAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
 import { getApiUrl } from '../../config/network';
+import { resolveImageUrl } from '../../utils/image';
 
 interface NewChatScreenProps {
   navigation: any;
@@ -105,8 +107,7 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
   const startChat = async (user: User) => {
     try {
       const conversation = await chatAPI.getOrCreateDirectChat(user.id);
-      const displayName =
-        user.display_name || user.first_name || user.email || 'Unknown';
+      const displayName = user.display_name || user.email || 'Unknown';
       navigation.navigate('ChatRoom', {
         conversationId: conversation.id,
         name: displayName,
@@ -163,7 +164,7 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
     const isSelected = selectedUserIds.includes(item.id);
     const isAlreadyMember = existingMemberIds.includes(item.id);
     const displayName =
-      item.display_name || item.first_name || item.email || 'Unknown';
+      item.display_name || item.email || 'Unknown';
     const avatarSticker = item.avatar_sticker;
 
     return (
@@ -202,11 +203,12 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
               style={styles.avatar}
             />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
-              <Text style={styles.avatarText}>
-                {displayName.charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            <AvatarWithFallback 
+              uri={item.profile_picture} 
+              displayName={displayName} 
+              sticker={item.avatar_sticker} 
+              style={styles.avatar} 
+            />
           )}
         </View>
 

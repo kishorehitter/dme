@@ -152,18 +152,14 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
                   style={styles.selectedUser}
                   onPress={() => toggleUserSelection(user)}
                 >
-                  <View style={styles.selectedAvatar}>
-                    <Text style={styles.selectedAvatarText}>
-                      {(user.display_name || user.email)
-                        .charAt(0)
-                        .toUpperCase()}
-                    </Text>
+                  <View style={[styles.selectedAvatar, { justifyContent: 'center', alignItems: 'center' }]}>
+                    <Icon name="person" size={20} color="#8100D1" />
                     <View style={styles.removeBadge}>
                       <Text style={styles.removeBadgeText}>×</Text>
                     </View>
                   </View>
                   <Text style={styles.selectedName} numberOfLines={1}>
-                    {user.display_name || user.first_name || 'User'}
+                    {user.display_name || user.email || 'User'}
                   </Text>
                 </TouchableOpacity>
               ))}

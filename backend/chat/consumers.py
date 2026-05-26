@@ -17,6 +17,80 @@ User = get_user_model()
 user_active_conversations = {}
 
 
+class NotificationConsumer(AsyncWebsocketConsumer):
+    """
+    WebSocket consumer for global notifications.
+    """
+
+    async def connect(self):
+        self.user = await self.get_user_from_token()
+        if not self.user or not self.user.is_authenticated:
+            await self.close(code=4001)
+            return
+        
+        self.user_group_name = f'user_updates_{self.user.id}'
+        await self.channel_layer.group_add(
+            self.user_group_name,
+            self.channel_name
+        )
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'user_group_name'):
+            await self.channel_layer.group_discard(
+                self.user_group_name,
+                self.channel_name
+            )
+
+    async def new_message_summary(self, event):
+        """Send message update to WebSocket."""
+        print(f"   📨 NotificationConsumer: Broadcasting new_message_summary to user_updates_{self.user.id}")
+        await self.send(text_data=json.dumps({
+            'type': 'new_message_summary',
+            'data': event['data']
+        }))
+        
+    async def delivered(self, event):
+        """Handle delivery receipt notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'delivered',
+            'data': event['data']
+        }))
+
+    async def read_receipt(self, event):
+        """Handle read receipt notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'read_receipt',
+            'data': event['data']
+        }))
+
+    async def get_user_from_token(self):
+        """Get user from JWT token in query params."""
+        from rest_framework_simplejwt.tokens import AccessToken
+        try:
+            query_params = self.scope.get('query_string', b'').decode()
+            params = dict(param.split('=') for param in query_params.split('&') if '=' in param)
+            token = params.get('token', '')
+
+            if not token:
+                return None
+
+            access_token = AccessToken(token)
+            user_id = access_token['user_id']
+            return await self.get_user(user_id)
+        except Exception as e:
+            print(f"Error authenticating WebSocket token: {e}")
+            return None
+
+    @database_sync_to_async
+    def get_user(self, user_id):
+        from accounts.models import User
+        try:
+            return User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return None
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
     """
     WebSocket consumer for real-time chat.
@@ -52,6 +126,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Join room group
         await self.channel_layer.group_add(
             self.room_group_name,
+            self.channel_name
+        )
+        
+        # Join user-specific update group
+        self.user_group_name = f'user_updates_{self.user.id}'
+        await self.channel_layer.group_add(
+            self.user_group_name,
             self.channel_name
         )
 
@@ -93,10 +174,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 print(f"   ✅ Marked {count} undelivered message(s) as delivered for user {self.user.id}")
         await _mark_delivered()
     async def disconnect(self, close_code):
-        """Update last_seen when user disconnects."""
+        """Update last_seen and notify room when user disconnects."""
+        # Broadcast that user stopped typing
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'typing_indicator',
+                'user_id': self.user.id,
+                'user_name': self.user.display_name,
+                'is_typing': False
+            }
+        )
+
         # Leave room group
         await self.channel_layer.group_discard(
             self.room_group_name,
+            self.channel_name
+        )
+        
+        # Leave user-specific update group
+        await self.channel_layer.group_discard(
+            self.user_group_name,
             self.channel_name
         )
         
@@ -179,6 +277,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+            # Notify participants of a new message update
+            participants = await self.get_conversation_participants_async()
+            for p_id in participants:
+                await self.channel_layer.group_send(
+                    f'user_updates_{p_id}',
+                    {
+                        'type': 'new_message_summary',
+                        'data': message
+                    }
+                )
+
             # Send FCM push notification to offline recipients
             await self.send_fcm_notification(
                 message,
@@ -202,6 +311,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return False
     
     def get_conversation_participants(self):
+        """Get list of participant user IDs in the conversation."""
+        from chat.models import ConversationParticipant
+        participants = ConversationParticipant.objects.filter(conversation_id=self.conversation_id)
+        return [p.user_id for p in participants]
+    
+    @database_sync_to_async
+    def get_conversation_participants_async(self):
         """Get list of participant user IDs in the conversation."""
         from chat.models import ConversationParticipant
         participants = ConversationParticipant.objects.filter(conversation_id=self.conversation_id)
@@ -231,7 +347,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Mark messages as read
         await self.mark_messages_read(message_ids)
 
-        # Send read receipt to room
+        # Broadcast to room
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -240,6 +356,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'user_id': self.user.id
             }
         )
+        
+        # Broadcast to notification stream of original message senders
+        from chat.models import Message
+        for m_id in message_ids:
+            try:
+                msg = await sync_to_async(Message.objects.get)(id=m_id)
+                await self.channel_layer.group_send(
+                    f'user_updates_{msg.sender_id}',
+                    {
+                        'type': 'read_receipt',
+                        'data': {
+                            'message_ids': [m_id],
+                            'user_id': self.user.id
+                        }
+                    }
+                )
+            except: pass
 
     async def handle_reaction(self, data):
         """Handle message reaction."""
@@ -307,25 +440,41 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
         print(f"   ✅ Reaction sent to user {self.user.id}")
 
+    async def new_message_summary(self, event):
+        """Handle new message summary notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'new_message_summary',
+            'data': event['data']
+        }))
+
+    async def delivery_update(self, event):
+        """Handle delivery receipt notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'delivered',
+            'data': {
+                'message_ids': event['message_ids'],
+                'user_id': event['user_id']
+            }
+        }))
+
+    async def read_receipt(self, event):
+        """Handle read receipt notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'read_receipt',
+            'data': {
+                'message_ids': event['message_ids'],
+                'user_id': event['user_id']
+            }
+        }))
+
     async def chat_message(self, event):
         """Send chat message to WebSocket and mark as delivered (if recipient)."""
         message = event['message']
         message_sender_id = message.get('sender', {}).get('id')
         
-        # DEBUG: Log the message details
-        print(f"   📨 chat_message: message_id={message.get('id')}, sender_id={message_sender_id}, current_user={self.user.id}")
-
-        # BUG 2 FIX: Only mark as delivered if the current user is NOT the sender
-        # This ensures delivered_at is set only when the message reaches the recipient
         if message_sender_id and message_sender_id != self.user.id:
-            # Mark as delivered when recipient receives it via WebSocket
-            print(f"   ✅ Marking message {message.get('id')} as delivered (recipient={self.user.id})")
             await self.mark_message_delivered(message.get('id'))
-            
-            # Notify sender that message was delivered (real-time update)
             await self.notify_sender_delivered(message.get('id'), message_sender_id)
-        else:
-            print(f"   ⏭️ Skipping delivered mark (sender={message_sender_id}, current={self.user.id})")
 
         await self.send(text_data=json.dumps({
             'type': 'message',

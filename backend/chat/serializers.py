@@ -52,7 +52,6 @@ class StatusViewSerializer(serializers.ModelSerializer):
             return obj.viewer.clean_profile_picture_url
         return None
  
- 
 class StatusSerializer(serializers.ModelSerializer):
     username    = serializers.CharField(source='user.username', read_only=True)
     user_avatar = serializers.SerializerMethodField()
@@ -62,14 +61,28 @@ class StatusSerializer(serializers.ModelSerializer):
     is_viewed   = serializers.SerializerMethodField()
     like_count  = serializers.SerializerMethodField()
     is_liked    = serializers.SerializerMethodField()
+    restricted_to = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=get_user_model().objects.all(), required=False
+    )
+
+    def to_internal_value(self, data):
+        # Handle the case where restricted_to is a JSON string from FormData
+        if 'restricted_to' in data and isinstance(data['restricted_to'], str):
+            try:
+                import json
+                data = data.copy()
+                data['restricted_to'] = json.loads(data['restricted_to'])
+            except:
+                pass
+        return super().to_internal_value(data)
 
     class Meta:
         model  = Status
         fields = [
             'id', 'user_id', 'username', 'user_avatar', 'user_avatar_sticker',
             'media_file', 'media_url', 'media_type',
-            'caption', 'created_at', 'view_count',
-            'is_viewed', 'like_count', 'is_liked',
+            'caption', 'created_at', 'view_count', 'is_viewed',
+            'like_count', 'is_liked', 'restricted_to'
         ]
 
     def get_user_avatar(self, obj):

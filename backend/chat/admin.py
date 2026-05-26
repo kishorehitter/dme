@@ -2,7 +2,7 @@
 Admin configuration for chat app.
 """
 from django.contrib import admin
-from .models import Conversation, ConversationParticipant, Message, MessageReaction
+from .models import Conversation, ConversationParticipant, Message, MessageReaction, Status, StatusView, StatusLike
 
 
 @admin.register(Conversation)
@@ -37,3 +37,25 @@ class MessageReactionAdmin(admin.ModelAdmin):
     list_display = ('id', 'message', 'user', 'emoji', 'created_at')
     list_filter = ('emoji', 'created_at')
     search_fields = ('message__content', 'user__email')
+
+
+@admin.register(Status)
+class StatusAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'media_type', 'created_at', 'caption')
+    list_filter = ('media_type', 'created_at')
+    search_fields = ('user__email', 'caption')
+    readonly_fields = ('created_at',)
+
+
+@admin.register(StatusView)
+class StatusViewAdmin(admin.ModelAdmin):
+    list_display = ('id', 'status', 'viewer', 'viewed_at')
+    list_filter = ('viewed_at',)
+    search_fields = ('status__user__email', 'viewer__email')
+
+
+@admin.register(StatusLike)
+class StatusLikeAdmin(admin.ModelAdmin):
+    list_display = ('id', 'status', 'user', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('status__user__email', 'user__email')

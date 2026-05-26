@@ -4,17 +4,10 @@
 
 import 'react-native-get-random-values';
 import 'react-native-url-polyfill/auto';
-import 'event-target-polyfill';
 import { decode, encode } from 'base64-arraybuffer';
 
-// Polyfill for AbortController
-if (typeof global.AbortController === 'undefined') {
-  const { AbortController, AbortSignal } = require('abort-controller');
-  global.AbortController = AbortController;
-  global.AbortSignal = AbortSignal;
-}
-
 // Polyfill for ReadableStream, WritableStream, and TransformStream
+// LiveKit requires these to be present
 if (
   typeof global.ReadableStream === 'undefined' ||
   typeof global.WritableStream === 'undefined' ||
@@ -30,20 +23,6 @@ if (
   if (typeof global.TransformStream === 'undefined') {
     global.TransformStream = streams.TransformStream;
   }
-}
-
-// Polyfill for Event and others if missing
-if (typeof global.Event === 'undefined') {
-  const { Event, CustomEvent } = require('event-target-polyfill');
-  global.Event = Event;
-  global.CustomEvent = CustomEvent;
-}
-
-// Polyfill for TextEncoder / TextDecoder
-if (typeof global.TextEncoder === 'undefined') {
-  const { TextEncoder, TextDecoder } = require('text-encoding');
-  global.TextEncoder = TextEncoder;
-  global.TextDecoder = TextDecoder;
 }
 
 // Polyfill for navigator.userAgent

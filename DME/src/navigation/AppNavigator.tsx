@@ -1,54 +1,45 @@
 import React from 'react';
-import { NavigationContainer, DefaultTheme, CommonActions, useNavigation } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import {
   LoginScreen,
   RegisterScreen,
   OTPVerifyScreen,
-  ChatListScreen,
+  GoogleLoginScreen,
+  CallScreen,
+  IncomingCallScreen,
   ChatRoomScreen,
   NewChatScreen,
   CreateGroupScreen,
   GroupInfoScreen,
   ProfileScreen,
   ProfileSetupScreen,
-  CallScreen,
-  IncomingCallScreen,
-  StatusTabScreen,
-  CallLogTabScreen,
+  StatusViewer,
+  StatusEditorScreen,
   MediaViewerScreen,
   SharedMediaScreen,
-} from '../screens/index';
-import StatusViewer from '../components/StatusViewer';
-import StatusEditorScreen from '../screens/StatusEditorScreen';
-import GoogleLoginScreen from '../screens/GoogleLoginScreen';
-import Icon from 'react-native-vector-icons/Ionicons';
-import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
+  ChatListScreen,
+  StatusTabScreen,
+  CallLogTabScreen,
+  StatusPrivacyScreen,
+} from '../screens';
 import { colors, spacing } from '../utils/theme';
+import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
+import Icon from 'react-native-vector-icons/Ionicons';
+import { useState } from 'react';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
-const MyTheme = {
-  ...DefaultTheme,
-  dark: false,
-  colors: {
-    ...DefaultTheme.colors,
-    primary: '#8100D1',
-    background: '#FFFFFF',
-    card: '#FFFFFF',
-    text: '#000000',
-    border: '#E0E0E0',
-    notification: '#8100D1',
-  },
-};
+// HeaderRightIcons component removed
 
 const MainTabs = () => (
   <Tab.Navigator
     screenOptions={({ route }) => ({
+      headerShown: true, // Disabling tab header to let screens define their own
       tabBarIcon: ({ color, size }) => {
         let iconName = 'chatbubble';
         if (route.name === 'Chats')  iconName = 'chatbubble';
@@ -61,133 +52,16 @@ const MainTabs = () => (
       tabBarHideOnKeyboard: true,
     })}
   >
-    <Tab.Screen name="Chats"  component={ChatListScreen}  options={{ headerShown: false }} />
+    <Tab.Screen name="Chats"  component={ChatListScreen} />
     <Tab.Screen name="Status" component={StatusTabScreen} />
-    <Tab.Screen name="Calls"  component={CallLogTabScreen} />
+    <Tab.Screen 
+      name="Calls"  
+      component={CallLogTabScreen} 
+    />
   </Tab.Navigator>
 );
 
-interface HeaderRightIconsProps {
-  logout: () => void;
-}
-
-const HeaderRightIcons: React.FC<HeaderRightIconsProps> = ({ logout }) => {
-  const navigation = useNavigation<any>();
-
-  const handleAddStatus = () => {
-    Alert.alert('Add Status', 'Choose source', [
-      {
-        text: '📷 Camera',
-        onPress: () => {
-          Alert.alert('Camera', 'What to capture?', [
-            {
-              text: '🖼 Photo',
-              onPress: async () => {
-                const result = await launchCamera({ mediaType: 'photo', quality: 0.8 });
-                if (result.assets?.[0]?.uri) {
-                  navigation.navigate('StatusEditor', {
-                    mediaUri: result.assets[0].uri,
-                    mediaType: 'photo',
-                  });
-                }
-              },
-            },
-            {
-              text: '🎥 Video',
-              onPress: async () => {
-                const result = await launchCamera({
-                  mediaType: 'video',
-                  videoQuality: 'medium',
-                  durationLimit: 30,
-                });
-                if (result.assets?.[0]?.uri) {
-                  navigation.navigate('StatusEditor', {
-                    mediaUri: result.assets[0].uri,
-                    mediaType: 'video',
-                  });
-                }
-              },
-            },
-            { text: 'Cancel', style: 'cancel' },
-          ]);
-        },
-      },
-      {
-        text: '🖼️ Gallery',
-        onPress: async () => {
-          const result = await launchImageLibrary({ mediaType: 'mixed', quality: 0.8 });
-          if (result.assets?.[0]?.uri) {
-            navigation.navigate('StatusEditor', {
-              mediaUri: result.assets[0].uri,
-              mediaType: result.assets[0].type?.startsWith('video') ? 'video' : 'photo',
-            });
-          }
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  };
-
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: spacing.md }}>
-      <TouchableOpacity
-        onPress={handleAddStatus}
-        style={{
-          width: 26,
-          height: 26,
-          borderRadius: 13,
-          backgroundColor: '#fff',
-          borderWidth: 2,
-          borderColor: '#8100D1',
-          justifyContent: 'center',
-          alignItems: 'center',
-          marginRight: 15,
-          elevation: 2,
-          shadowColor: '#8100D1',
-          shadowOffset: { width: 0, height: 1 },
-          shadowOpacity: 0.2,
-          shadowRadius: 3,
-        }}
-      >
-        <Icon name="add" size={18} color="#8100D1" />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        onPress={() => {
-          Alert.alert('Options', undefined, [
-            {
-              text: 'Profile',
-              onPress: () => navigation.navigate('Profile'),
-            },
-            {
-              text: 'Logout',
-              style: 'destructive',
-              onPress: () => logout(),
-            },
-            { text: 'Cancel', style: 'cancel' },
-          ]);
-        }}
-      >
-        <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
-      </TouchableOpacity>
-    </View>
-  );
-};
-
-const AuthStack = () => (
-  <Stack.Navigator screenOptions={{ headerShown: false }}>
-    <Stack.Screen name="Login"       component={LoginScreen} />
-    <Stack.Screen name="Register"    component={RegisterScreen} />
-    <Stack.Screen name="OTPVerify"   component={OTPVerifyScreen} />
-    <Stack.Screen name="GoogleLogin" component={GoogleLoginScreen} />
-  </Stack.Navigator>
-);
-
-interface ChatStackProps {
-  logout: () => void;
-}
-
-const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
+const ChatStack: React.FC<any> = ({ logout }) => {
   const handleLogout = () => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
       { text: 'Cancel', style: 'cancel' },
@@ -202,6 +76,7 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
   return (
     <Stack.Navigator
       screenOptions={{
+        cardStyle: { backgroundColor: '#FFFFFF' },
         headerStyle: {
           backgroundColor: '#FFFFFF',
           elevation: 0,
@@ -218,18 +93,7 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
       <Stack.Screen
         name="MainTabs"
         component={MainTabs}
-        options={{
-          headerTitle: () => (
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Image
-                source={require('../assets/logo.png')}
-                style={{ width: 40, height: 40, borderRadius: 16, marginRight: 2}}
-              />
-              <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
-            </View>
-          ),
-          headerRight: () => <HeaderRightIcons logout={handleLogout} />,
-        }}
+        options={{ headerShown: false }}
       />
       <Stack.Screen name="ChatRoom"     component={ChatRoomScreen}     options={{ headerShown: false }} />
       <Stack.Screen name="Call"         component={CallScreen}         options={{ headerShown: false }} />
@@ -239,82 +103,61 @@ const ChatStack: React.FC<ChatStackProps> = ({ logout }) => {
       <Stack.Screen name="GroupInfo"    component={GroupInfoScreen}    options={{ title: 'Group Info' }} />
       <Stack.Screen name="Profile"      component={ProfileScreen}      options={{ title: 'Profile' }} />
       <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} options={{ headerShown: false }} />
-      <Stack.Screen 
-        name="StatusViewer" 
-        component={StatusViewer}       
-        options={{ 
+      <Stack.Screen
+        name="StatusViewer"
+        component={StatusViewer}
+        options={{
           headerShown: false,
           presentation: 'transparentModal',
-          animation: 'none', // We'll handle entry/exit inside the component or let the modal handle it
-        }} 
+          animation: 'none',
+        }}
       />
-      <Stack.Screen 
-        name="StatusEditor" 
-        component={StatusEditorScreen} 
-        options={{ 
+      <Stack.Screen
+        name="StatusEditor"
+        component={StatusEditorScreen}
+        options={{
           headerShown: false,
           presentation: 'transparentModal',
           animation: 'none',
           statusBarHidden: true,
-        }} 
+        }}
       />
       <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
       <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media' }} />
-      </Stack.Navigator>
-      );
-      };interface AppNavigatorProps {
-  setNavigationRef: (ref: any) => void;
-  onNavigatorReady?: () => void;
-}
+      <Stack.Screen name="StatusPrivacy" component={StatusPrivacyScreen} options={{ headerShown: false }} />
+    </Stack.Navigator>
+  );
+};
 
-const AppNavigator: React.FC<AppNavigatorProps> = ({
-  setNavigationRef,
-  onNavigatorReady,
-}) => {
-  const { isAuthenticated, isLoading, logout, user } = useAuth();
-
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  const navKey = isAuthenticated
-    ? user?.is_profile_complete ? 'chat-stack' : 'profile-setup-stack'
-    : 'auth-stack';
-
+const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => {
+  const { isAuthenticated, isLoading } = useAuth();
+  if (isLoading) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color={colors.primary} /></View>;
   return (
-    <NavigationContainer
-      key={navKey}
-      ref={setNavigationRef}
-      onReady={onNavigatorReady}
-      independent={true}
-      theme={MyTheme}
-    >
-      {isAuthenticated ? (
-        user && !user.is_profile_complete ? (
-          <Stack.Navigator screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} />
-          </Stack.Navigator>
-        ) : (
-          <ChatStack logout={logout} />
-        )
-      ) : (
-        <AuthStack />
-      )}
+    <NavigationContainer ref={setNavigationRef} onReady={onNavigatorReady}>
+      {isAuthenticated ? <ChatStack logout={() => {}} /> : <Stack.Navigator screenOptions={{ headerShown: false }}><Stack.Screen name="Login" component={LoginScreen} /><Stack.Screen name="Register" component={RegisterScreen} /><Stack.Screen name="OTP" component={OTPVerifyScreen} /><Stack.Screen name="GoogleLogin" component={GoogleLoginScreen} /></Stack.Navigator>}
     </NavigationContainer>
   );
 };
 
 const styles = StyleSheet.create({
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' },
+  popover: {
+    position: 'absolute',
+    top: 50,
+    right: 16,
+    width: 180,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 8,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    zIndex: 1000,
   },
+  popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
+  popoverText: { fontSize: 14, color: '#333' },
 });
 
 export default AppNavigator;

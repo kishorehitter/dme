@@ -1,4 +1,4 @@
-# WhatsApp
+# DME
 
 A full-stack DME application with React Native frontend and Django REST Framework + Django Channels backend.
 
@@ -10,10 +10,13 @@ A full-stack DME application with React Native frontend and Django REST Framewor
 - ✅ JWT token authentication
 - ✅ Secure password handling
 - ✅ Auto-login with token persistence
+- ✅ Delete account functionality
 
-### Messaging
+### Messaging & Calls
 
 - ✅ Real-time messaging with WebSocket (Django Channels)
+- ✅ One-on-one and Group calling functionality
+- ✅ Call history with clear/delete options
 - ✅ One-on-one conversations
 - ✅ Group chat support
 - ✅ Message status (sent, delivered, read)
@@ -22,11 +25,12 @@ A full-stack DME application with React Native frontend and Django REST Framewor
 
 ### UI/UX
 
-- ✅ WhatsApp-like green theme
+- ✅ Modern UI with clean color scheme
 - ✅ Message bubbles with timestamps
 - ✅ Unread message badges
 - ✅ Conversation list with last message preview
 - ✅ User search for new conversations
+- ✅ Modern popover menus for options
 
 ## Tech Stack
 
@@ -41,7 +45,7 @@ A full-stack DME application with React Native frontend and Django REST Framewor
 
 ### Frontend (React Native)
 
-- React Native 0.84
+- React Native 0.74 (DME)
 - TypeScript
 - React Navigation
 - Axios
@@ -51,15 +55,16 @@ A full-stack DME application with React Native frontend and Django REST Framewor
 ## Project Structure
 
 ```
-C:\Agent\Qwen\
+C:\Dev\Androidapp\
 ├── backend/              # Django backend
 │   ├── accounts/         # User authentication app
 │   ├── chat/             # Chat and messaging app
+│   ├── calls/            # Calls app
 │   ├── myproject/        # Django project settings
 │   ├── manage.py
 │   └── requirements.txt
 │
-├── frontend/             # React Native app
+├── DME/                  # React Native app
 │   ├── src/
 │   │   ├── components/   # Reusable components
 │   │   ├── context/      # React Context
@@ -80,43 +85,30 @@ C:\Agent\Qwen\
 
 ```bash
 # Activate virtual environment
-cd C:\Agent\Qwen\.venv\Scripts
-activate.bat
+.venv\Scripts\activate
 
 # Navigate to backend
-cd C:\Agent\Qwen\backend
+cd backend
 
 # Run Django server
 python manage.py runserver
 ```
 
-Backend will be available at: `http://localhost:8000`
-WebSocket endpoint: `ws://localhost:8000/ws/chat/{conversation_id}/`
-
 ### 2. Start Frontend
 
 ```bash
 # Navigate to frontend
-cd C:\Agent\Qwen\frontend
+cd DME
 
-# Install dependencies (first time only)
+# Install dependencies
 npm install
 
 # Start Metro bundler
 npm start
 
-# Run on Android (in new terminal)
+# Run on Android
 npm run android
 ```
-
-### 3. Create Admin User (Optional)
-
-```bash
-cd C:\Agent\Qwen\backend
-python manage.py createsuperuser
-```
-
-Access admin panel at: `http://localhost:8000/admin/`
 
 ## API Endpoints
 
@@ -127,6 +119,7 @@ Access admin panel at: `http://localhost:8000/admin/`
 | POST   | `/api/accounts/register/`       | Register new user |
 | POST   | `/api/accounts/login/`          | Login             |
 | POST   | `/api/accounts/logout/`         | Logout            |
+| DELETE | `/api/accounts/delete-account/` | Delete account    |
 | POST   | `/api/accounts/request-otp/`    | Request OTP       |
 | POST   | `/api/accounts/verify-otp/`     | Verify OTP        |
 | GET    | `/api/accounts/profile/`        | Get profile       |

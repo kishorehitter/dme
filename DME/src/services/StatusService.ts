@@ -3,10 +3,10 @@
  * All API calls for the WhatsApp/Instagram-style status system.
  */
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE_URL } from '../config/network';
+import api from './api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+// ... (rest of the types) ...
 
 export interface LikedUser {
   user_id:   number;
@@ -64,15 +64,6 @@ export interface CallLog {
   is_caller:          boolean;
 }
 
-// ─── Auth header helper ───────────────────────────────────────────────────────
-
-async function authHeaders(): Promise<Record<string, string>> {
-  const token = await AsyncStorage.getItem('access_token');
-  return {
-    Authorization: `Bearer ${token}`,
-  };
-}
-
 // ─── StatusService ────────────────────────────────────────────────────────────
 
 export const StatusService = {
@@ -80,10 +71,8 @@ export const StatusService = {
   /** Fetch all active statuses (own + others) */
   async getStatuses(): Promise<Status[]> {
     try {
-      const headers = await authHeaders();
-      const res = await fetch(`${API_BASE_URL}/chat/statuses/`, { headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const res = await api.get('/chat/statuses/');
+      const data = res.data;
       return Array.isArray(data) ? data : (data.results ?? []);
     } catch (err) {
       console.error('[StatusService] getStatuses error:', err);
@@ -91,19 +80,21 @@ export const StatusService = {
     }
   },
 
-  /**
-   * Upload a new status.
-   * @param mediaUri   Local file URI
-   * @param caption    Optional caption text
-   * @param mediaType  'photo' | 'video'
-   */
+  async getViewers(statusId: number): Promise<StatusViewer[]> {
+    try {
+      const res = await api.get(`/chat/statuses/${statusId}/viewers/`);
+      return res.data;
+    } catch {
+      return [];
+    }
+  },
+
   async saveStatus(
     mediaUri:  string,
     caption:   string,
     mediaType: 'photo' | 'video',
+    restrictedTo?: number[], // Array of user IDs
   ): Promise<Status> {
-    const token = await AsyncStorage.getItem('access_token');
-
     const form = new FormData();
     const filename  = mediaUri.split('/').pop() ?? 'upload';
     const mimeType  = mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
@@ -116,48 +107,29 @@ export const StatusService = {
 
     form.append('media_type', mediaType);
     if (caption?.trim()) form.append('caption', caption.trim());
-
-    const res = await fetch(`${API_BASE_URL}/chat/statuses/`, {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${token}`,
-        'Content-Type': 'multipart/form-data',
-      },
-      body: form,
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Upload failed (${res.status}): ${err}`);
+    
+    // Add restricted users as JSON string
+    if (restrictedTo && restrictedTo.length > 0) {
+      form.append('restricted_to', JSON.stringify(restrictedTo));
     }
 
-    return res.json();
+    const res = await api.post('/chat/statuses/', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
   },
 
   /** Delete own status */
   async deleteStatus(statusId: number): Promise<void> {
-    const headers = await authHeaders();
-    const res = await fetch(`${API_BASE_URL}/chat/statuses/${statusId}/`, {
-      method: 'DELETE',
-      headers,
-    });
-    if (!res.ok && res.status !== 204) {
-      throw new Error(`Delete failed (${res.status})`);
-    }
+    await api.delete(`/chat/statuses/${statusId}/`);
   },
 
   /**
    * Mark a status as viewed by the current user.
-   * YOUR EXISTING METHOD — aliased as recordView() below so new screens
-   * can call either name without breaking anything.
    */
   async markViewed(statusId: number): Promise<void> {
     try {
-      const headers = await authHeaders();
-      await fetch(`${API_BASE_URL}/chat/statuses/${statusId}/view/`, {
-        method: 'POST',
-        headers,
-      });
+      await api.post(`/chat/statuses/${statusId}/view/`);
     } catch (err) {
       console.warn('[StatusService] markViewed error:', err);
     }
@@ -165,7 +137,6 @@ export const StatusService = {
 
   /**
    * Alias for markViewed — used by StatusViewerScreen.
-   * Keeps new screens consistent without renaming your existing method.
    */
   async recordView(statusId: number): Promise<void> {
     return StatusService.markViewed(statusId);
@@ -188,58 +159,30 @@ export const StatusService = {
     likes: LikedUser[];
   }> {
     try {
-      const headers = await authHeaders();
       const [viewersRes, likesRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/chat/statuses/${statusId}/viewers/`, { headers }),
-        fetch(`${API_BASE_URL}/chat/statuses/${statusId}/likes/`, { headers })
+        api.get(`/chat/statuses/${statusId}/viewers/`),
+        api.get(`/chat/statuses/${statusId}/likes/`)
       ]);
 
-      if (!viewersRes.ok || !likesRes.ok) throw new Error('Failed to fetch interactions');
-
-      const viewers = await viewersRes.json();
-      const likes = await likesRes.json();
-      return { viewers, likes };
+      return { viewers: viewersRes.data, likes: likesRes.data };
     } catch (err) {
       console.error('[StatusService] getInteractions error:', err);
       return { viewers: [], likes: [] };
     }
   },
 
-  // ─── NEW: Like / Unlike ────────────────────────────────────────────────────
-  // Backend endpoints needed:
-  //   POST   /chat/statuses/<id>/like/    → 204
-  //   DELETE /chat/statuses/<id>/like/    → 204
-  //   GET    /chat/statuses/<id>/liked/   → { liked: boolean }
-  //   GET    /chat/statuses/<id>/like-count/ → { count: number }
-
   async likeStatus(statusId: number): Promise<void> {
-    const headers = await authHeaders();
-    const res = await fetch(`${API_BASE_URL}/chat/statuses/${statusId}/like/`, {
-      method: 'POST',
-      headers,
-    });
-    if (!res.ok) throw new Error(`Like failed (${res.status})`);
+    await api.post(`/chat/statuses/${statusId}/like/`);
   },
 
   async unlikeStatus(statusId: number): Promise<void> {
-    const headers = await authHeaders();
-    const res = await fetch(`${API_BASE_URL}/chat/statuses/${statusId}/like/`, {
-      method: 'DELETE',
-      headers,
-    });
-    if (!res.ok) throw new Error(`Unlike failed (${res.status})`);
+    await api.delete(`/chat/statuses/${statusId}/like/`);
   },
 
   async hasLiked(statusId: number): Promise<boolean> {
     try {
-      const headers = await authHeaders();
-      const res = await fetch(
-        `${API_BASE_URL}/chat/statuses/${statusId}/liked/`,
-        { headers },
-      );
-      if (!res.ok) return false;
-      const data = await res.json();
-      return data.liked ?? false;
+      const res = await api.get(`/chat/statuses/${statusId}/liked/`);
+      return res.data.liked ?? false;
     } catch {
       return false;
     }
@@ -247,39 +190,17 @@ export const StatusService = {
 
   async getLikeCount(statusId: number): Promise<number> {
     try {
-      const headers = await authHeaders();
-      const res = await fetch(
-        `${API_BASE_URL}/chat/statuses/${statusId}/like-count/`,
-        { headers },
-      );
-      if (!res.ok) return 0;
-      const data = await res.json();
-      return data.count ?? 0;
+      const res = await api.get(`/chat/statuses/${statusId}/like-count/`);
+      return res.data.count ?? 0;
     } catch {
       return 0;
     }
   },
 
-  // ─── NEW: Reply ────────────────────────────────────────────────────────────
-  // Backend endpoint needed:
-  //   POST /chat/statuses/<id>/reply/   body: { message: string } → 204
-  // Route the message into your existing DM / Message model.
-
   async replyToStatus(statusId: number, message: string): Promise<void> {
-    const headers = await authHeaders();
-    const res = await fetch(
-      `${API_BASE_URL}/chat/statuses/${statusId}/reply/`,
-      {
-        method:  'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message }),
-      },
-    );
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err?.detail ?? `Reply failed (${res.status})`);
-    }
+    await api.post(`/chat/statuses/${statusId}/reply/`, { message });
   },
+
 
   /**
    * Group a flat status array by user for the tab screen.
@@ -318,16 +239,23 @@ export const StatusService = {
 export const CallService = {
   async getCallLogs(): Promise<CallLog[]> {
     try {
-      const headers = await authHeaders();
-      const res = await fetch(`${API_BASE_URL}/calls/history/`, { headers });
-      console.log('[CallService] getCallLogs raw response:', res);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      console.log('[CallService] getCallLogs parsed data:', data);
+      const res = await api.get('/calls/history/');
+      const data = res.data;
       return Array.isArray(data) ? data : (data.results ?? []);
     } catch (err) {
       console.error('[CallService] getCallLogs error:', err);
       return [];
     }
+  },
+
+  async clearCallLogs(callIds: string[] = []): Promise<void> {
+    const isBatchDelete = callIds.length > 0;
+    
+    await api.delete('/calls/history/', {
+      data: {
+        call_ids: callIds,
+        clear_all: !isBatchDelete 
+      }
+    });
   },
 };

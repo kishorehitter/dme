@@ -11,6 +11,7 @@ export type WebSocketMessage = {
     | 'read_receipt'
     | 'delivered'
     | 'reaction'
+    | 'new_message_summary'
     | 'connection_established';
   data: any;
 };
@@ -19,23 +20,59 @@ export type WebSocketCallback = (message: WebSocketMessage) => void;
 
 class WebSocketService {
   private ws: WebSocket | null = null;
+  private notificationWs: WebSocket | null = null; // Independent global stream
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 3;
-  private reconnectDelay = 5000; // 5 seconds base delay
+  private reconnectDelay = 5000;
   private messageQueue: any[] = [];
   private callbacks: Set<WebSocketCallback> = new Set();
-  private isConnected = false;
+  private isConnected = false; // Only for room WS
+  private isNotifConnected = false; // For notification WS
   private isLoggedOut = false;
   private currentConversationId: number | string | null = null;
   private reconnectTimeoutId: any = null;
+
+  /**
+   * Connect to global notification stream (persistent)
+   */
+  async connectToNotifications(): Promise<void> {
+    if (this.isNotifConnected) return; // Already connected
+    
+    return new Promise(async (resolve, reject) => {
+      try {
+        const token = await AsyncStorage.getItem('access_token');
+        if (!token) throw new Error('No token');
+        
+        const url = getWebSocketUrl('notifications', token);
+        console.log('Connecting to Notification WS:', url);
+        
+        this.notificationWs = new WebSocket(url);
+        this.isNotifConnected = true;
+        
+        this.notificationWs.onmessage = event => {
+          try {
+            console.log('Notification WS message:', event.data);
+            const message: WebSocketMessage = JSON.parse(event.data);
+            this.callbacks.forEach(callback => callback(message));
+          } catch (e) { console.error('WS parsing error:', e); }
+        };
+
+        this.notificationWs.onerror = e => console.error('Notification WS error:', e);
+        this.notificationWs.onclose = () => {
+             console.log('Notification WS closed, attempting reconnect...');
+             this.isNotifConnected = false;
+             setTimeout(() => this.connectToNotifications(), 5000);
+        };
+        
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  }
 
   // Update this IP to match your API_BASE_URL
   private async getWebSocketURL(
     conversationId: number | string,
   ): Promise<string> {
-    // For Android emulator: ws://10.0.2.2:8000/ws/chat/{id}/
-    // For iOS simulator: ws://localhost:8000/ws/chat/{id}/
-    // Token is passed in query param for authentication
     try {
       const token = await AsyncStorage.getItem('access_token');
       if (!token) {
@@ -55,7 +92,7 @@ class WebSocketService {
       try {
         this.isLoggedOut = false;
         this.currentConversationId = conversationId;
-        this.disconnect();
+        this.disconnectRoom();
 
         const url = await this.getWebSocketURL(conversationId);
         if (!url) {
@@ -98,15 +135,12 @@ class WebSocketService {
 
         this.ws.onerror = error => {
           console.error('WebSocket error:', error);
-          // Don't reject immediately - wait for onclose to determine actual state
-          // WebSocket can fire errors for transient issues but still connect
         };
 
         this.ws.onclose = event => {
           console.log('WebSocket closed:', event.code, event.reason);
           this.isConnected = false;
 
-          // If we never resolved/rejected, do so now
           if (!hasResolved && !hasRejected) {
             hasRejected = true;
             reject(
@@ -115,7 +149,6 @@ class WebSocketService {
               ),
             );
           } else {
-            // Only attempt reconnect if we were previously connected
             this.attemptReconnect(conversationId);
           }
         };
@@ -130,14 +163,10 @@ class WebSocketService {
    * This is used to listen for read_receipt events globally
    */
   connectToChatList(): void {
-    // For chat list, we don't connect to a specific conversation
-    // Instead, we rely on the chat room connections to broadcast events
-    // This method is a placeholder for future global WebSocket connection
     console.log('📋 Chat list WebSocket listener active');
   }
 
   private attemptReconnect(conversationId: number | string) {
-    // Don't reconnect if logged out
     if (this.isLoggedOut) {
       console.log('WebSocket reconnection skipped - user logged out');
       return;
@@ -145,14 +174,12 @@ class WebSocketService {
 
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      // Exponential backoff: 5s, 10s, 15s
       const delay = this.reconnectDelay * this.reconnectAttempts;
       console.log(
         `Reconnecting in ${delay}ms... Attempt ${this.reconnectAttempts}`,
       );
 
       this.reconnectTimeoutId = setTimeout(async () => {
-        // Check if still logged in before reconnecting
         const token = await AsyncStorage.getItem('access_token');
         if (!token) {
           this.isLoggedOut = true;
@@ -166,7 +193,10 @@ class WebSocketService {
     }
   }
 
-  disconnect() {
+  /**
+   * Disconnect the current ROOM connection only
+   */
+  disconnectRoom() {
     if (this.reconnectTimeoutId) {
       clearTimeout(this.reconnectTimeoutId);
       this.reconnectTimeoutId = null;
@@ -180,19 +210,24 @@ class WebSocketService {
   }
 
   /**
-   * Permanently disconnect WebSocket (e.g., on logout)
+   * Permanently disconnect BOTH WebSockets (e.g., on logout)
    */
   disconnectPermanently() {
     this.isLoggedOut = true;
-    this.maxReconnectAttempts = 0; // Prevent any reconnection
-    this.disconnect();
+    this.maxReconnectAttempts = 0; 
+    
+    this.disconnectRoom();
+    
+    if (this.notificationWs) {
+        this.notificationWs.close();
+        this.notificationWs = null;
+        this.isNotifConnected = false;
+    }
+    
     this.callbacks.clear();
     this.messageQueue = [];
   }
 
-  /**
-   * Reset logout state for new login
-   */
   reset() {
     this.isLoggedOut = false;
     this.reconnectAttempts = 0;
@@ -243,10 +278,6 @@ class WebSocketService {
     }
   }
 
-  /**
-   * Note: delivered events are sent by backend when receiver fetches messages
-   * This is just for type completeness
-   */
   sendDelivered(messageIds: number[]) {
     const message = {
       type: 'delivered',

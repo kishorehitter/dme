@@ -22,17 +22,16 @@ User   = get_user_model()
 # ─── Redis client with Django cache fallback ──────────────────────────────────
 try:
     import redis as _redis
-    redis_client = _redis.StrictRedis(
-        host=getattr(settings, 'REDIS_HOST', 'localhost'),
-        port=getattr(settings, 'REDIS_PORT', 6379),
-        db=getattr(settings, 'REDIS_DB', 0),
+    _redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379')
+    redis_client = _redis.from_url(
+        _redis_url,
         decode_responses=True,
         socket_connect_timeout=5,
         socket_timeout=5,
     )
     redis_client.ping()
     USE_REDIS = True
-    logger.info('✅ Redis connected successfully')
+    logger.info(f'✅ Redis connected successfully via URL')
 except Exception as e:
     logger.warning(f'⚠️  Redis unavailable: {e} — falling back to Django cache')
     redis_client = None

@@ -9,6 +9,12 @@ const projectRoot = __dirname;
 const config = {
   projectRoot: projectRoot,
   watchFolders: [projectRoot],
+  resolver: {
+    blockList: [
+      /node_modules\/.*\/android\/\.cxx\/.*/,
+      /android\/.*\/\.cxx\/.*/,
+    ],
+  },
 };
 
 module.exports = mergeConfig(getDefaultConfig(projectRoot), config);

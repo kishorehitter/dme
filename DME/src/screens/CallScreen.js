@@ -1,11 +1,18 @@
 /**
  * CallScreen - Using LiveKit for both 1-to-1 and group calls
- * 
+ *
  * ✅ FIXED:
  * - Shows "Calling..." while waiting, "Connected" after answer
  * - Caller's callback screen stays open for 30s after timeout
  * - Receiver screen closes immediately on missed call
  * - Timer increments correctly
+ * - Ghost LiveKit reconnection after call end prevented
+ * - call_end WS message handled only once (dedup guard)
+ * - Toast import added
+ * - handleEndCall declaration order fixed (no stale closure in useEffect)
+ * - connect={false} passed to LiveKitRoom when no config (no dummy URL connection)
+ * - onDisconnected only fires cleanup when truly intentional disconnect is NOT in progress
+ * - setPartnerJoinedWithRef / setCallMissedWithRef stabilized via useCallback
  */
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
@@ -14,6 +21,7 @@ import {
   Alert, Image, StatusBar, ScrollView, BackHandler,
   DeviceEventEmitter,
 } from 'react-native';
+import Toast from 'react-native-toast-message'; // ✅ FIX 1: Added missing import
 import {
   LiveKitRoom, useTracks, VideoTrack, useRoomContext,
   useParticipants,
@@ -93,7 +101,6 @@ const RoomCapture = ({ onRoom }) => {
 const AvatarView = ({ participant }) => {
   const [avatar, setAvatar] = useState(null);
   useEffect(() => {
-    // Identity is often the user ID
     fetchUserProfile(participant.identity).then(setAvatar);
   }, [participant.identity]);
 
@@ -107,8 +114,7 @@ const AvatarView = ({ participant }) => {
 const GroupAudioView = () => {
   const participants = useParticipants();
   const room = useRoomContext();
-  
-  // Sort participants: Active speakers first
+
   const sortedParticipants = [...participants].sort((a, b) => {
     if (a.isSpeaking && !b.isSpeaking) return -1;
     if (!a.isSpeaking && b.isSpeaking) return 1;
@@ -129,7 +135,7 @@ const GroupAudioView = () => {
             ? p.sid === room.localParticipant.sid
             : p.isLocal;
           const name = p.name || p.identity || 'User';
-          
+
           return (
             <View key={key} style={[styles.groupAudioCard, p.isSpeaking && styles.activeSpeakerBorder]}>
               <AvatarView participant={p} />
@@ -169,13 +175,11 @@ const GroupVideoGrid = () => {
     );
   }
 
-  // Identify the speaker: Active speaker or first track if none
   const activeSpeaker = validTracks.find(t => t.participant?.isSpeaking) || validTracks[0];
   const others = validTracks.filter(t => t !== activeSpeaker);
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Primary Speaker Focus */}
       <View style={{ flex: 1 }}>
         <VideoTrack trackRef={activeSpeaker} style={styles.video} />
         <View style={styles.participantNameBadge}>
@@ -184,11 +188,9 @@ const GroupVideoGrid = () => {
           </Text>
         </View>
       </View>
-
-      {/* Scrollable Gallery for others */}
       {others.length > 0 && (
-        <ScrollView 
-          horizontal 
+        <ScrollView
+          horizontal
           style={{ height: 150, paddingHorizontal: 10, marginTop: 10 }}
           contentContainerStyle={{ alignItems: 'center' }}
         >
@@ -226,7 +228,7 @@ const AudioParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
   const tracks = useTracks([{ source: Track.Source.Microphone, withPlaceholder: false }]);
   const room = useRoomContext();
   const hasNotifiedRef = useRef(false);
-  
+
   const remoteTracks = useMemo(
     () => tracks.filter(t => t.participant && !t.participant.isLocal),
     [tracks]
@@ -390,8 +392,8 @@ const CallScreen = () => {
   const route = useRoute();
   const insets = useSafeAreaInsets();
   const params = route.params || {};
-  const { 
-    callState, startCall, endCall: endCallGlobal, updateDuration, 
+  const {
+    callState, startCall, endCall: endCallGlobal, updateDuration,
     minimizeCall, maximizeCall, startTimer, stopTimer, setLiveKitConfig: setLiveKitConfigGlobal,
     updateCallParams
   } = useCall();
@@ -401,40 +403,48 @@ const CallScreen = () => {
   const conversationId = params.conversationId || params.conversation_id || (isGroupCall ? null : undefined);
   const receiverId = params.receiverId || params.remoteUserId || params.caller_id;
   const remoteUserName = params.remoteUserName || params.caller_name || 'User';
-  
+
   const [remoteUserPic, setRemoteUserPic] = useState(params.remoteUserPic || null);
-  
-  // ✅ Initialize config from params immediately to avoid 'Connecting' screen and redundant updates
+
   const [liveKitConfig, setLiveKitConfig] = useState(() => {
     if (params.token && params.serverUrl) {
       return { token: params.token, serverUrl: params.serverUrl };
     }
     return null;
   });
-  
+
+  // ✅ FIX 2: Track whether LiveKit should be connected at all.
+  // Setting this to false prevents ANY reconnection attempt after intentional disconnect.
+  const [shouldLiveKitConnect, setShouldLiveKitConnect] = useState(
+    !!(params.token && params.serverUrl)
+  );
+
   const [error, setError] = useState(null);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [partnerJoined, setPartnerJoined] = useState(false);
   const partnerJoinedRef = useRef(false);
-  const setPartnerJoinedWithRef = (val) => {
+
+  // ✅ FIX 3: Stabilize these setters with useCallback so refs are updated correctly
+  // and closures in useEffect / onDisconnected always see the latest value.
+  const setPartnerJoinedWithRef = useCallback((val) => {
     partnerJoinedRef.current = val;
     setPartnerJoined(val);
-  };
+  }, []);
 
   const [callMissed, setCallMissed] = useState(false);
   const callMissedRef = useRef(false);
-  const setCallMissedWithRef = (val) => {
+  const setCallMissedWithRef = useCallback((val) => {
     callMissedRef.current = val;
     setCallMissed(val);
-  };
+  }, []);
+
   const [isCallingState, setIsCallingState] = useState(false);
   const [isFocused, setIsFocused] = useState(true);
 
   const currentCallIdRef = useRef(params.callId || params.call_id || null);
 
-  // ✅ Keep ref synced with params
   useEffect(() => {
     if (params.callId || params.call_id) {
       currentCallIdRef.current = String(params.callId || params.call_id);
@@ -442,13 +452,21 @@ const CallScreen = () => {
   }, [params.callId, params.call_id]);
 
   const isEndingRef = useRef(false);
+
+  // ✅ FIX 4: Dedicated ref to distinguish intentional disconnect from unexpected drop.
+  // Set to true BEFORE calling room.disconnect() so onDisconnected does not re-trigger handleEndCall.
+  const isIntentionalDisconnectRef = useRef(false);
+
+  // ✅ FIX 5: Dedup guard - prevent handling call_end / call_rejected WS messages more than once.
+  const callEndHandledRef = useRef(false);
+
   const wsRef = useRef(null);
   const roomRef = useRef(null);
   const timeoutRef = useRef(null);
   const callerMissedTimeoutRef = useRef(null);
   const hasAnsweredRef = useRef(false);
   const isCallerRef = useRef(!params.callId && !params.call_id);
-  
+
   const durationRef = useRef(0);
   useEffect(() => {
     const safeDuration = typeof callState.duration === 'number' ? callState.duration : 0;
@@ -460,20 +478,78 @@ const CallScreen = () => {
     return () => setIsFocused(false);
   }, []);
 
+  // ✅ FIX 6: Declare handleEndCall with useCallback BEFORE any useEffect that references it,
+  // so the dependency array always receives a stable, non-stale reference.
+  const handleEndCall = useCallback(async (navigateBack = true) => {
+    if (isEndingRef.current) return;
+    isEndingRef.current = true;
+
+    // ✅ Signal intentional disconnect BEFORE any LiveKit teardown.
+    // This prevents onDisconnected from firing handleEndCall again.
+    isIntentionalDisconnectRef.current = true;
+
+    // ✅ Immediately stop LiveKit from reconnecting.
+    setShouldLiveKitConnect(false);
+
+    const callId = currentCallIdRef.current || params.callId || params.call_id;
+    console.log('[Call] Ending call, recovered call_id:', callId);
+
+    // 1. WebSocket signal (before local teardown so peer receives it)
+    if (wsRef.current && callId) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          const endMessage = {
+            type: 'call_end',
+            call_id: String(callId),
+            ended_by: 'local',
+            timestamp: new Date().toISOString(),
+          };
+          console.log('[Call] Sending call_end signal to peer');
+          wsRef.current.send(JSON.stringify(endMessage));
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      } catch (e) {
+        console.warn('[Call] Failed to send WS signal:', e);
+      }
+    }
+
+    // 2. Notify Backend
+    if (callId) {
+      try {
+        await api.post('/calls/end/', { call_id: parseInt(callId, 10) });
+        console.log('[Call] Backend notified of call end');
+      } catch (e) {
+        console.warn('[Call] Backend end notification failed:', e);
+      }
+    }
+
+    cleanup();
+    fcmService.setIsInCall(false);
+    if (callId) fcmService.markCallHandled(String(callId), 'incoming_call');
+    endCallGlobal();
+
+    if (navigateBack && isFocused) {
+      setImmediate(() => {
+        if (navigation.isFocused()) {
+          if (navigation.canGoBack()) navigation.goBack();
+          else navigation.reset({ index: 0, routes: [{ name: 'MainTabs', params: { screen: 'Chats' } }] });
+        }
+      });
+    }
+  }, [isFocused, endCallGlobal, navigation, params.callId, params.call_id]);
+
   useEffect(() => {
     const onBackPress = () => {
-      // ✅ Block hardware back button if call is still connecting or ongoing
-      // Only allow minimize if already fully joined and no error
       if (partnerJoinedRef.current && !callMissedRef.current && !error) {
         handleMinimize();
         return true;
       }
       console.log('[Call] Back button pressed - blocked (connecting/other state)');
-      return true; // Block default back action
+      return true;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backHandler.remove();
-  }, [error]);
+  }, [error, handleEndCall]);
 
   const handleMinimize = () => {
     minimizeCall();
@@ -500,6 +576,7 @@ const CallScreen = () => {
     }
   }, []);
 
+  // ✅ FIX 6 continued: handleEndCall is now declared above, so these useEffects are safe.
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('call_ended_globally', () => {
       if (!isEndingRef.current) handleEndCall(false);
@@ -510,11 +587,9 @@ const CallScreen = () => {
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('incoming_call', () => {
       console.log('[Call] New incoming call detected, checking if current UI should close');
-      // If we are showing the "No answer" (missed) UI, close it automatically
-      // so the user can see the new incoming call screen.
       if (callMissedRef.current && !isEndingRef.current) {
         console.log('[Call] Closing missed call UI to make way for new incoming call');
-        handleEndCall(true); 
+        handleEndCall(true);
       }
     });
     return () => sub.remove();
@@ -523,52 +598,47 @@ const CallScreen = () => {
   useEffect(() => {
     if (params.isFromOverlay) {
       console.log('[Call] Returning from overlay, restoring state');
-      
-      const config = (params.token && params.serverUrl) 
-        ? { token: params.token, serverUrl: params.serverUrl } 
+
+      const config = (params.token && params.serverUrl)
+        ? { token: params.token, serverUrl: params.serverUrl }
         : (callState.liveKitConfig || null);
 
       if (config) {
         setLiveKitConfig(config);
+        setShouldLiveKitConnect(true); // ✅ Re-enable connection when restoring from overlay
       }
-      
+
       if (params.callId) currentCallIdRef.current = String(params.callId);
       if (params.call_id) currentCallIdRef.current = String(params.call_id);
-      
-      // ✅ Force partnerJoined to be true so the UI skips 'Connecting...'
+
       setPartnerJoinedWithRef(true);
-      
-      // ✅ Explicitly set state to ensure 'Active' view is rendered immediately
       hasAnsweredRef.current = true;
       setRemoteUserPic(params.remoteUserPic || null);
-      
+
       console.log('[Call] UI forced to Active state from overlay');
-      
-      // Use requestAnimationFrame to ensure the UI has registered the state change
+
       requestAnimationFrame(() => {
         const safeDuration = typeof callState.duration === 'number' ? callState.duration : 0;
         if (safeDuration >= 0) {
           setLocalDuration(safeDuration);
           startTimer();
         }
-        
         if (currentCallIdRef.current && (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN)) {
           setupSignaling(currentCallIdRef.current);
         }
       });
-      
+
       return;
     }
 
     console.log('[Call] Initializing call with params:', { callType, isGroupCall, conversationId, receiverId, callId: currentCallIdRef.current });
     fcmService.setIsInCall(true);
-    
-    // Sync context with initial params
+
     startCall(params, liveKitConfig);
-    
+
     if (liveKitConfig) {
       console.log('[Call] Already have token, skipping full initializeCall');
-      // Still ensure signaling is up and context is aware
+      setShouldLiveKitConnect(true);
       if (currentCallIdRef.current) {
         setupSignaling(currentCallIdRef.current);
         updateCallParams({ ...params, callId: currentCallIdRef.current, ...liveKitConfig });
@@ -576,7 +646,7 @@ const CallScreen = () => {
     } else {
       initializeCall();
     }
-    
+
     return () => {
       if (!callState.isMinimized && !callMissed) {
         cleanup();
@@ -592,42 +662,46 @@ const CallScreen = () => {
     try {
       const token = await AsyncStorage.getItem('access_token');
       if (!token) return;
-      
+
       const endpoint = `call/${callId}`;
       const wsUrl = getWebSocketUrl(endpoint, token);
-      
+
       console.log('[Call] Connecting signaling WS:', wsUrl);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-      
+
       ws.onopen = () => {
         console.log('[Call] Signaling WS connected');
         if (callId) {
           ws.send(JSON.stringify({ type: 'call_joined', call_id: callId }));
         }
       };
-      
+
       ws.onmessage = e => {
         try {
           const data = JSON.parse(e.data);
           console.log('[Call] WS message received:', data.type);
-          
+
           if (data.type === 'call_end') {
             const activeId = currentCallIdRef.current ? String(currentCallIdRef.current) : '';
             const msgId = data.call_id ? String(data.call_id) : '';
-            
+
             console.log('[Call] WS message received: call_end', { msgId, activeId });
-            
-            if (msgId === activeId && !isEndingRef.current && !callMissedRef.current) {
+
+            // ✅ FIX 5: Only handle call_end once, ignore duplicates
+            if (msgId === activeId && !isEndingRef.current && !callMissedRef.current && !callEndHandledRef.current) {
+              callEndHandledRef.current = true;
               handleEndCall(true);
             }
           }
-          
+
           if (data.type === 'call_rejected') {
             const activeId = currentCallIdRef.current ? String(currentCallIdRef.current) : '';
             const msgId = data.call_id ? String(data.call_id) : '';
-            
-            if (msgId && msgId === activeId && !isEndingRef.current) {
+
+            // ✅ FIX 5: Only handle call_rejected once
+            if (msgId && msgId === activeId && !isEndingRef.current && !callEndHandledRef.current) {
+              callEndHandledRef.current = true;
               console.log('[Call] Call rejected by peer');
               if (isCallerRef.current) {
                 handleCallerMissed();
@@ -636,7 +710,7 @@ const CallScreen = () => {
               }
             }
           }
-          
+
           if (data.type === 'call_accepted' && isCallerRef.current) {
             console.log('[Call] Call accepted by peer');
             hasAnsweredRef.current = true;
@@ -646,76 +720,22 @@ const CallScreen = () => {
           console.warn('[Call] WS message parse error:', err);
         }
       };
-      
+
       ws.onclose = () => {
         console.log('[Call] Signaling WS closed');
         wsRef.current = null;
       };
-      
+
       ws.onerror = err => {
         console.error('[Call] WS error:', err);
       };
     } catch (err) {
       console.error('[Call] Error setting up signaling:', err);
     }
-  }, []);
-
-  const handleEndCall = async (navigateBack = true) => {
-    if (isEndingRef.current) return;
-    isEndingRef.current = true;
-    
-    // ✅ Robustly recover call_id
-    const callId = currentCallIdRef.current || params.callId || params.call_id;
-    console.log('[Call] Ending call, recovered call_id:', callId);
-    
-    // 1. WebSocket signal cleanup (Must happen BEFORE local cleanup/tear-down)
-    if (wsRef.current && callId) {
-      try {
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          const endMessage = {
-            type: 'call_end',
-            call_id: String(callId),
-            ended_by: 'local',
-            timestamp: new Date().toISOString(),
-          };
-          console.log('[Call] Sending call_end signal to peer');
-          wsRef.current.send(JSON.stringify(endMessage));
-          // Wait briefly to allow the signal to flush
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-      } catch (e) {
-        console.warn('[Call] Failed to send WS signal:', e);
-      }
-    }
-
-    // 2. Notify Backend API (Source of Truth)
-    if (callId) {
-      try {
-        await api.post('/calls/end/', { call_id: parseInt(callId, 10) });
-        console.log('[Call] Backend notified of call end');
-      } catch (e) {
-        console.warn('[Call] Backend end notification failed:', e);
-      }
-    }
-    
-    cleanup();
-    fcmService.setIsInCall(false);
-    if (callId) fcmService.markCallHandled(String(callId), 'incoming_call');
-    endCallGlobal();
-    
-    if (navigateBack && isFocused) {
-      // Use setImmediate to ensure navigation happens after all state updates
-      setImmediate(() => {
-        if (navigation.isFocused()) {
-          if (navigation.canGoBack()) navigation.goBack();
-          else navigation.reset({ index: 0, routes: [{ name: 'MainTabs', params: { screen: 'Chats' } }] });
-        }
-      });
-    }
-  };
+  }, [handleEndCall]);
 
   const [localDuration, setLocalDuration] = useState(0);
-  
+
   useEffect(() => {
     if (callState.duration !== localDuration) {
       setLocalDuration(callState.duration);
@@ -740,9 +760,9 @@ const CallScreen = () => {
       startTimer();
       setPartnerJoinedWithRef(true);
     }
-  }, [startTimer]);
+  }, [startTimer, setPartnerJoinedWithRef]);
 
-  const cleanup = () => {
+  const cleanup = useCallback(() => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -756,12 +776,17 @@ const CallScreen = () => {
       roomRef.current = null;
     }
     try { InCallManager.stop(); } catch (_) {}
-  };
+  }, []);
 
   const handleCallerMissed = useCallback(async () => {
     console.log('[Call] Caller timeout: showing missed state');
     setCallMissedWithRef(true);
     setIsCallingState(false);
+
+    // ✅ Mark intentional disconnect so onDisconnected does not re-trigger handleEndCall
+    isIntentionalDisconnectRef.current = true;
+    setShouldLiveKitConnect(false);
+
     fcmService.setIsInCall(false);
 
     if (currentCallIdRef.current && isCallerRef.current) {
@@ -775,36 +800,32 @@ const CallScreen = () => {
         console.warn('[Call] Failed to notify backend of timeout:', e);
       }
     }
+
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    
     if (roomRef.current) {
       try { roomRef.current.disconnect(); } catch (_) {}
       roomRef.current = null;
     }
-    
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (_) {}
       wsRef.current = null;
     }
-    
     try { InCallManager.stop(); } catch (_) {}
-    
+
     if (callerMissedTimeoutRef.current) {
       clearTimeout(callerMissedTimeoutRef.current);
     }
-    
-    // ✅ Keep screen open for 30 seconds for "Call again" option
+
     callerMissedTimeoutRef.current = setTimeout(() => {
       console.log('[Call] Callback screen auto-closing after 30s');
-      // Only close if we haven't already started a new call or closed manually
       if (isFocused && !isEndingRef.current && callMissedRef.current) {
         handleEndCall(true);
       }
     }, 30_000);
-  }, [isFocused, handleEndCall]);
+  }, [isFocused, handleEndCall, setCallMissedWithRef]);
 
   const initializeCall = async () => {
     fcmService.setIsInCall(true);
@@ -815,6 +836,8 @@ const CallScreen = () => {
     updateDuration(0);
     setIsCallingState(false);
     hasAnsweredRef.current = false;
+    callEndHandledRef.current = false; // ✅ Reset dedup guard on new call
+    isIntentionalDisconnectRef.current = false; // ✅ Reset intentional disconnect flag
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     if (callerMissedTimeoutRef.current) clearTimeout(callerMissedTimeoutRef.current);
     isEndingRef.current = false;
@@ -827,6 +850,7 @@ const CallScreen = () => {
       const config = { token: params.token, serverUrl: params.serverUrl };
       setLiveKitConfig(config);
       setLiveKitConfigGlobal(config);
+      setShouldLiveKitConnect(true); // ✅ Enable connection only now
       await setupSignaling(currentCallIdRef.current);
       return;
     }
@@ -834,8 +858,11 @@ const CallScreen = () => {
     try {
       const hasPermission = await ensureCallPermissions(callType);
       if (!hasPermission) {
-        Alert.alert('Permission Required', callType === 'video' ? 'Microphone and Camera are required' : 'Microphone is required', 
-          [{ text: 'OK', onPress: () => handleEndCall() }]);
+        Alert.alert(
+          'Permission Required',
+          callType === 'video' ? 'Microphone and Camera are required' : 'Microphone is required',
+          [{ text: 'OK', onPress: () => handleEndCall() }]
+        );
         return;
       }
 
@@ -893,6 +920,7 @@ const CallScreen = () => {
       const config = { token, serverUrl };
       setLiveKitConfig(config);
       setLiveKitConfigGlobal(config);
+      setShouldLiveKitConnect(true); // ✅ Enable connection only after we have a real token
       updateCallParams({ ...params, callId: currentCallIdRef.current, ...config });
       await setupSignaling(currentCallIdRef.current);
     } catch (err) {
@@ -912,28 +940,29 @@ const CallScreen = () => {
       clearTimeout(callerMissedTimeoutRef.current);
       callerMissedTimeoutRef.current = null;
     }
-    
+
     cleanup();
-    
-    // ✅ Reset all critical state flags for a fresh start
+
     isEndingRef.current = false;
     hasAnsweredRef.current = false;
+    callEndHandledRef.current = false; // ✅ Reset dedup guard
+    isIntentionalDisconnectRef.current = false; // ✅ Reset intentional disconnect flag
     currentCallIdRef.current = null;
     isCallerRef.current = true;
-    
+
     partnerJoinedRef.current = false;
     callMissedRef.current = false;
-    
+
     setLiveKitConfig(null);
     setLiveKitConfigGlobal(null);
+    setShouldLiveKitConnect(false); // ✅ Will be set back to true inside initializeCall
     setCallMissed(false);
     setError(null);
     setPartnerJoined(false);
     setLocalDuration(0);
     updateDuration(0);
     setIsCallingState(true);
-    
-    // Defer the actual call initialization to allow state to settle
+
     setImmediate(() => {
       initializeCall();
     });
@@ -942,7 +971,7 @@ const CallScreen = () => {
   const onRoomConnected = useCallback((room) => {
     roomRef.current = room;
     console.log('[Call] Room captured, setting up initial state');
-    
+
     try {
       room.localParticipant.setMicrophoneEnabled(true);
       if (callType === 'video') room.localParticipant.setCameraEnabled(true);
@@ -953,12 +982,14 @@ const CallScreen = () => {
       startTimer();
       setPartnerJoined(true);
     }
-    
+
     if (!isGroupCall && partnerJoined && !callState.isTimerRunning) {
       console.log('[Call] Restoring 1-to-1 timer after overlay, duration:', localDuration);
       startTimer();
     }
   }, [isGroupCall, partnerJoined, callType, localDuration, callState.isTimerRunning, startTimer]);
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   if (callMissed && isCallerRef.current) {
     return (
@@ -975,9 +1006,7 @@ const CallScreen = () => {
         <TouchableOpacity style={styles.goBackButton} onPress={() => handleEndCall(true)}>
           <Text style={styles.goBackText}>Close</Text>
         </TouchableOpacity>
-        <Text style={styles.autoCloseHint}>
-          Screen will close in 30s
-        </Text>
+        <Text style={styles.autoCloseHint}>Screen will close in 30s</Text>
       </View>
     );
   }
@@ -993,65 +1022,76 @@ const CallScreen = () => {
     );
   }
 
-  // ✅ Removed conditional 'Restoring/Connecting' screen to force active UI
-  // The UI will now immediately render the container with the LiveKitRoom.
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-      
+
       <TouchableOpacity style={[styles.backButton, { top: insets.top + (Platform.OS === 'ios' ? 0 : 10) }]} onPress={handleMinimize}>
         <Icon name="chevron-down" size={30} color="#fff" />
       </TouchableOpacity>
 
-      <LiveKitRoom
-        serverUrl={liveKitConfig?.serverUrl || 'https://dummy.url'}
-        token={liveKitConfig?.token || 'dummy_token'}
-        connect={!!liveKitConfig}
-        audio={true}
-        video={callType === 'video'}
-        onDisconnected={() => {
-          console.log('[Call] LiveKitRoom onDisconnected');
-          // ✅ Use Refs to ensure we have the latest state in this long-lived callback
-          if (!isEndingRef.current && partnerJoinedRef.current && !callMissedRef.current) {
+      {/* ✅ FIX 7: Only render LiveKitRoom when we have a real config.
+          Using connect={shouldLiveKitConnect} prevents ghost reconnections.
+          No more dummy URL / dummy token — avoids spurious connection attempts. */}
+      {liveKitConfig && (
+        <LiveKitRoom
+          serverUrl={liveKitConfig.serverUrl}
+          token={liveKitConfig.token}
+          connect={shouldLiveKitConnect}
+          audio={true}
+          video={callType === 'video'}
+          onDisconnected={() => {
+            console.log('[Call] LiveKitRoom onDisconnected');
+            // ✅ FIX 2+4: Only trigger cleanup on unexpected disconnects.
+            // If isIntentionalDisconnectRef is true we already ran handleEndCall,
+            // so we must NOT call it again here — that was the ghost-reconnect root cause.
+            if (
+              !isEndingRef.current &&
+              !isIntentionalDisconnectRef.current &&
+              partnerJoinedRef.current &&
+              !callMissedRef.current
+            ) {
+              console.log('[Call] Unexpected disconnect detected, ending call');
+              handleEndCall();
+            }
+          }}
+          onError={err => {
+            const msg = err?.message || '';
+            if (msg.includes('Client initiated disconnect')) return;
+            if (msg.includes('NegotiationError')) return;
+            if (msg.includes('cancelled')) return;
+            if (isIntentionalDisconnectRef.current) return; // ✅ Ignore errors after intentional end
+
+            Toast.show({
+              type: 'error',
+              text1: 'Connection lost',
+              position: 'bottom',
+            });
             handleEndCall();
-          }
-        }}
-        onError={err => {
-          const msg = err?.message || '';
-          if (msg.includes('Client initiated disconnect')) return;
-          if (msg.includes('NegotiationError')) return;
-          if (msg.includes('cancelled')) return;
-          
-          Toast.show({
-            type: 'error',
-            text1: 'Connection lost',
-            position: 'bottom',
-          });
-          handleEndCall();
-        }}
-      >
-        <RoomCapture onRoom={onRoomConnected} />
-        {isGroupCall ? (
-          <GroupCallView callType={callType} />
-        ) : callType === 'video' ? (
-          <VideoParticipantView
-            onPartnerJoined={handlePartnerJoined}
-            remoteUserName={remoteUserName}
-            remoteUserPic={remoteUserPic}
-            callType={callType}
-            isCallingState={isCallingState}
-          />
-        ) : (
-          <AudioParticipantView
-            onPartnerJoined={handlePartnerJoined}
-            remoteUserName={remoteUserName}
-            remoteUserPic={remoteUserPic}
-            partnerJoined={partnerJoined}
-            isCallingState={isCallingState}
-          />
-        )}
-      </LiveKitRoom>
+          }}
+        >
+          <RoomCapture onRoom={onRoomConnected} />
+          {isGroupCall ? (
+            <GroupCallView callType={callType} />
+          ) : callType === 'video' ? (
+            <VideoParticipantView
+              onPartnerJoined={handlePartnerJoined}
+              remoteUserName={remoteUserName}
+              remoteUserPic={remoteUserPic}
+              callType={callType}
+              isCallingState={isCallingState}
+            />
+          ) : (
+            <AudioParticipantView
+              onPartnerJoined={handlePartnerJoined}
+              remoteUserName={remoteUserName}
+              remoteUserPic={remoteUserPic}
+              partnerJoined={partnerJoined}
+              isCallingState={isCallingState}
+            />
+          )}
+        </LiveKitRoom>
+      )}
 
       <View style={[styles.topBar, { top: insets.top + (Platform.OS === 'ios' ? 2 : 12) }]}>
         {partnerJoined && (
@@ -1090,13 +1130,12 @@ const CallScreen = () => {
             </TouchableOpacity>
           )}
 
-          {/* Add Participant Button */}
-          <TouchableOpacity 
-            style={styles.controlButton} 
-            onPress={() => navigation.navigate('NewChat', { 
-              conversationId: conversationId, 
+          <TouchableOpacity
+            style={styles.controlButton}
+            onPress={() => navigation.navigate('NewChat', {
+              conversationId: conversationId,
               receiverId: receiverId,
-              isAdding: true, 
+              isAdding: true,
               isInvitingToCall: true,
               roomName: roomRef.current?.name || params.room_id || params.roomName,
               callId: currentCallIdRef.current,
@@ -1115,50 +1154,51 @@ const CallScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' }, // Light background
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   backButton: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 30, left: 16, zIndex: 40, padding: 8 },
   topBar: { position: 'absolute', top: Platform.OS === 'ios' ? 52 : 28, left: 0, right: 0, alignItems: 'center', zIndex: 30, paddingHorizontal: 20 },
-  statusText: { fontSize: 18, color: '#000000', fontWeight: '600' }, // Dark text
-  callTypeLabel: { fontSize: 13, color: '#666666', marginTop: 4 }, // Darker grey
-  controlsContainer: { 
-    position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', 
-    justifyContent: 'center', alignItems: 'center', gap: 16, zIndex: 30, 
-    paddingBottom: Platform.OS === 'ios' ? 40 : 30, paddingTop: 20, 
-    paddingHorizontal: 20, backgroundColor: '#FFFFFF', 
-    borderTopWidth: 1, borderColor: '#E8DEF8' 
+  statusText: { fontSize: 18, color: '#000000', fontWeight: '600' },
+  callTypeLabel: { fontSize: 13, color: '#666666', marginTop: 4 },
+  controlsContainer: {
+    position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row',
+    justifyContent: 'center', alignItems: 'center', gap: 16, zIndex: 30,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 30, paddingTop: 20,
+    paddingHorizontal: 20, backgroundColor: '#FFFFFF',
+    borderTopWidth: 1, borderColor: '#E8DEF8'
   },
-  controlButton: { 
-    alignItems: 'center', justifyContent: 'center', 
-    backgroundColor: '#8100D1', // Primary color for controls
+  controlButton: {
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#8100D1',
     width: 58, height: 58, borderRadius: 29, gap: 2,
-    elevation: 4, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2 
-  }, 
-  controlButtonActive: { backgroundColor: '#34C759' }, // Keep success green
-  controlButtonMuted: { backgroundColor: '#FF3B30' }, // Keep error red
-  endCallBtn: { 
-    alignItems: 'center', justifyContent: 'center', 
-    backgroundColor: '#FF3B30', width: 58, height: 58, 
-    borderRadius: 29, gap: 2,
-    elevation: 4, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2
+    elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2
   },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }, // Light loading
-  loadingText: { color: '#333', fontSize: 18, fontWeight: '500' }, // Dark text
-  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 }, // Light error
+  controlButtonActive: { backgroundColor: '#34C759' },
+  controlButtonMuted: { backgroundColor: '#FF3B30' },
+  endCallBtn: {
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#FF3B30', width: 58, height: 58,
+    borderRadius: 29, gap: 2,
+    elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2
+  },
+  endCallBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' },
+  loadingText: { color: '#333', fontSize: 18, fontWeight: '500' },
+  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 },
   errorText: { color: '#FF3B30', fontSize: 16, marginBottom: 24, textAlign: 'center' },
-  missedContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 }, // Light missed
-  missedTitle: { color: '#000000', fontSize: 28, fontWeight: '600', marginTop: 24, marginBottom: 8 }, // Dark text
-  missedSubtitle: { color: '#666666', fontSize: 16, textAlign: 'center', marginBottom: 40 }, // Dark grey
-  callAgainButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#8100D1', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 40, gap: 12, marginBottom: 16 }, // Primary
+  missedContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 30 },
+  missedTitle: { color: '#000000', fontSize: 28, fontWeight: '600', marginTop: 24, marginBottom: 8 },
+  missedSubtitle: { color: '#666666', fontSize: 16, textAlign: 'center', marginBottom: 40 },
+  callAgainButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#8100D1', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 40, gap: 12, marginBottom: 16 },
   callAgainText: { color: '#fff', fontSize: 18, fontWeight: '600' },
   goBackButton: { paddingVertical: 12 },
-  goBackText: { color: '#8100D1', fontSize: 16, fontWeight: '500' }, // Primary
+  goBackText: { color: '#8100D1', fontSize: 16, fontWeight: '500' },
   autoCloseHint: { color: '#999', fontSize: 12, marginTop: 16, fontStyle: 'italic' },
-  fullScreenContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#FFFFFF' }, // Light
+  fullScreenContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#FFFFFF' },
   fullScreenVideo: { flex: 1, width: '100%', height: '100%' },
-  fullScreenPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' }, // Light placeholder
+  fullScreenPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' },
   callingOverlay: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 40, left: 0, right: 0, alignItems: 'center', zIndex: 20 },
-  callingName: { color: '#000000', fontSize: 20, fontWeight: '600' }, // Dark text
-  callingSubtext: { color: '#666666', fontSize: 14, marginTop: 2 }, // Dark grey
+  callingName: { color: '#000000', fontSize: 20, fontWeight: '600' },
+  callingSubtext: { color: '#666666', fontSize: 14, marginTop: 2 },
   miniVideoContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 90 : 60, right: 16, width: 100, height: 148, borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: '#E8DEF8', backgroundColor: '#EEE', zIndex: 25, elevation: 8 },
   miniVideo: { width: '100%', height: '100%' },
   miniPlaceholder: { flex: 1, backgroundColor: '#E0E0E0', justifyContent: 'center', alignItems: 'center' },
@@ -1170,7 +1210,7 @@ const styles = StyleSheet.create({
   audioRemoteName: { color: '#000000', fontSize: 26, fontWeight: '700', marginBottom: 6 },
   audioCallStatus: { color: '#666666', fontSize: 16, marginBottom: 20 },
   audioWave: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8 },
-  audioWaveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#8100D1' }, // Primary
+  audioWaveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#8100D1' },
   placeholderText: { color: '#999', fontSize: 16, marginTop: 12 },
   grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#FFFFFF' },
   groupTile: { width: width / 2, height: height / 3, backgroundColor: '#F5F5F5', borderWidth: 1, borderColor: '#EEE', position: 'relative' },

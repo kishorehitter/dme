@@ -35,8 +35,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
     try {
         const options: CameraOptions = mode === 'image' 
-            ? { mediaType: 'photo', quality: 0.8, saveToPhotos: true } 
-            : { mediaType: 'video', videoQuality: 'high', durationLimit: 60, saveToPhotos: true };
+            ? { mediaType: 'photo', quality: 0.8, saveToPhotos: false } 
+            : { mediaType: 'video', videoQuality: 'high', durationLimit: 60, saveToPhotos: false };
 
         const result = await launchCamera(options);
         if (result.didCancel || result.errorCode || !result.assets?.[0]?.uri) return;

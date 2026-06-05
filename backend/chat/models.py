@@ -45,15 +45,12 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
         return name
 
     def _save(self, name, content):
-        print(f"DEBUG: UniversalCloudinaryStorage._save called for name: {name}")
         resource_type = self._get_resource_type(name)
         public_id     = self._get_public_id(name)
         
         # FIX: Normalize backslashes to forward slashes for Cloudinary
         public_id = public_id.replace('\\', '/')
         
-        print(f"DEBUG: Uploading to Cloudinary - resource_type: {resource_type}, public_id: {public_id}")
-
         try:
             response = cloudinary.uploader.upload(
                 content,
@@ -62,7 +59,6 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
                 overwrite=True,
                 invalidate=True,
             )
-            print(f"DEBUG: Cloudinary upload successful: {response.get('public_id')}")
             
             stored_public_id = response.get('public_id', public_id)
             version          = response.get('version')
@@ -87,7 +83,6 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
             return stored_public_id
 
         except Exception as e:
-            print(f"DEBUG: Cloudinary upload FAILED: {e}")
             raise IOError(f"[UniversalCloudinaryStorage] Upload failed for '{name}': {e}") from e
 
     def _open(self, name, mode='rb'):
@@ -381,6 +376,10 @@ class Status(models.Model):
     )
 
     caption    = models.CharField(max_length=255, blank=True, null=True)
+    caption_x = models.FloatField(default=0.0)
+    caption_y = models.FloatField(default=0.0)
+    caption_scale = models.FloatField(default=1.0)
+    caption_rotation = models.FloatField(default=0.0)
     created_at = models.DateTimeField(auto_now_add=True)
     restricted_to = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
@@ -492,6 +491,31 @@ def delete_message_media(sender, instance, **kwargs):
             print(f"DEBUG: Cloudinary deletion result: {result}")
         except Exception as e:
             print(f"DEBUG: Failed to delete message thumbnail from Cloudinary: {e}")
+
+
+# ─── StatusPrivacy ────────────────────────────────────────────────────────────
+
+class StatusPrivacy(models.Model):
+    """Stores global default status privacy settings for a user."""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='status_privacy_settings'
+    )
+    # If restricted_to is empty, status is public to all contacts by default.
+    # If not empty, only these users can see the status by default.
+    restricted_to = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name='included_in_status_privacies',
+        blank=True
+    )
+
+    class Meta:
+        verbose_name = 'Status Privacy'
+        verbose_name_plural = 'Status Privacies'
+
+    def __str__(self):
+        return f"Privacy for {self.user.email}"
 
 
 # ─── StatusView ───────────────────────────────────────────────────────────────

@@ -26,7 +26,10 @@ const AvatarWithFallback = ({
 }: AvatarProps) => {
   const [error, setError] = useState(false);
 
-  useEffect(() => { setError(false); }, [uri]);
+  useEffect(() => { 
+    if (uri) console.log('AvatarWithFallback: Loading URI:', resolveImageUrl(uri));
+    setError(false); 
+  }, [uri]);
 
   // FIX: Extract size from style reliably
   // The outer container (TouchableOpacity/View) uses `style` for sizing.

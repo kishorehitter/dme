@@ -2,6 +2,7 @@
 Firebase Cloud Messaging service for sending push notifications.
 """
 import logging
+import datetime
 from firebase_admin import messaging
 from firebase_admin.exceptions import FirebaseError
 from django.utils import timezone
@@ -45,6 +46,7 @@ class FCMService:
                     # High priority for Android to wake up device
                     android=messaging.AndroidConfig(
                         priority='high',
+                        ttl=datetime.timedelta(seconds=30),
                     ),
                     # High priority for iOS to wake up device
                     apns=messaging.APNSConfig(
@@ -61,6 +63,7 @@ class FCMService:
                     # High priority for Android to wake up device
                     android=messaging.AndroidConfig(
                         priority='high',
+                        ttl=datetime.timedelta(seconds=30),
                     ),
                     # High priority for iOS to wake up device
                     apns=messaging.APNSConfig(
@@ -116,6 +119,7 @@ class FCMService:
                     # High priority for Android to wake up device
                     android=messaging.AndroidConfig(
                         priority='high',
+                        ttl=datetime.timedelta(seconds=30),
                     ),
                     # High priority for iOS to wake up device
                     apns=messaging.APNSConfig(
@@ -132,6 +136,7 @@ class FCMService:
                     # High priority for Android to wake up device
                     android=messaging.AndroidConfig(
                         priority='high',
+                        ttl=datetime.timedelta(seconds=30),
                     ),
                     # High priority for iOS to wake up device
                     apns=messaging.APNSConfig(
@@ -141,6 +146,8 @@ class FCMService:
                     ),
                 )
             
+            # send_multicast is deprecated/removed in firebase-admin 7.x
+            # use send_each_for_multicast instead
             response = messaging.send_each_for_multicast(message)
             logger.info(f"FCM batch send: {response.success_count}/{len(tokens)} successful")
 
@@ -220,7 +227,8 @@ class FCMService:
         message_content,
         conversation_id,
         message_id=None,
-        message_type='text'
+        message_type='text',
+        sender_avatar=None
     ):
         """
         Send a chat message notification to a user.
@@ -248,6 +256,8 @@ class FCMService:
 
         if message_id:
             data['msg_id'] = str(message_id)
+        if sender_avatar:
+            data['sender_avatar'] = sender_avatar
 
         logger.info(f"Sending data-only FCM notification: sender={sender_name}, msg={message_content[:20]}...")
 

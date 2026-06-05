@@ -4,7 +4,10 @@ Serializers for chat app.
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.conf import settings
-from .models import Conversation, ConversationParticipant, Message, MessageReaction, Status, StatusView
+from .models import (
+    Conversation, ConversationParticipant, Message, MessageReaction, 
+    Status, StatusView, StatusPrivacy
+)
 
 User = get_user_model()
 
@@ -37,6 +40,13 @@ class UserMinimalSerializer(serializers.ModelSerializer):
         return None
 
 
+class StatusPrivacySerializer(serializers.ModelSerializer):
+    """Serializer for user global status privacy settings."""
+    class Meta:
+        model = StatusPrivacy
+        fields = ['restricted_to']
+
+
 class StatusViewSerializer(serializers.ModelSerializer):
     viewer_id       = serializers.IntegerField(source='viewer.id',       read_only=True)
     viewer_username = serializers.CharField(source='viewer.username',    read_only=True)
@@ -53,6 +63,7 @@ class StatusViewSerializer(serializers.ModelSerializer):
         return None
  
 class StatusSerializer(serializers.ModelSerializer):
+    user_id     = serializers.IntegerField(source='user.id', read_only=True)
     username    = serializers.CharField(source='user.username', read_only=True)
     user_avatar = serializers.SerializerMethodField()
     user_avatar_sticker = serializers.CharField(source='user.avatar_sticker', read_only=True)
@@ -66,24 +77,39 @@ class StatusSerializer(serializers.ModelSerializer):
     )
 
     def to_internal_value(self, data):
+        # Create a mutable copy if it's a QueryDict or dict-like
+        if hasattr(data, 'dict'):
+            input_data = data.dict()
+        else:
+            input_data = data.copy() if hasattr(data, 'copy') else dict(data)
+
         # Handle the case where restricted_to is a JSON string from FormData
-        if 'restricted_to' in data and isinstance(data['restricted_to'], str):
-            try:
-                import json
-                data = data.copy()
-                data['restricted_to'] = json.loads(data['restricted_to'])
-            except:
-                pass
-        return super().to_internal_value(data)
+        if 'restricted_to' in input_data:
+            val = input_data.get('restricted_to')
+            
+            if isinstance(val, str):
+                try:
+                    import json
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        input_data['restricted_to'] = parsed
+                    else:
+                        input_data['restricted_to'] = [parsed]
+                except Exception:
+                    pass
+            
+        return super().to_internal_value(input_data)
 
     class Meta:
         model  = Status
         fields = [
             'id', 'user_id', 'username', 'user_avatar', 'user_avatar_sticker',
             'media_file', 'media_url', 'media_type',
-            'caption', 'created_at', 'view_count', 'is_viewed',
+            'caption', 'caption_x', 'caption_y', 'caption_scale', 'caption_rotation',
+            'created_at', 'view_count', 'is_viewed',
             'like_count', 'is_liked', 'restricted_to'
         ]
+        read_only_fields = ('id', 'user_id', 'created_at')
 
     def get_user_avatar(self, obj):
         if obj.user:
@@ -110,6 +136,9 @@ class StatusSerializer(serializers.ModelSerializer):
         return obj.likes.filter(user=request.user).exists()
 
     def create(self, validated_data):
+        # Extract restricted_to before creating instance (DRF usually handles this but we'll be explicit)
+        restricted_to = validated_data.pop('restricted_to', [])
+        
         # Handle media file upload
         request = self.context.get('request')
         if request and request.FILES.get('media_file'):
@@ -128,7 +157,14 @@ class StatusSerializer(serializers.ModelSerializer):
             file_obj.name = clean_name
             validated_data['media_file'] = file_obj
             
-        return super().create(validated_data)
+        # Create instance
+        instance = super().create(validated_data)
+        
+        # Set restricted_to after creation (required for ManyToMany)
+        if restricted_to:
+            instance.restricted_to.set(restricted_to)
+            
+        return instance
 
 
 class MessageSerializer(serializers.ModelSerializer):

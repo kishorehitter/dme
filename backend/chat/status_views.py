@@ -17,7 +17,7 @@ class StatusViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         cutoff = timezone.now() - timedelta(hours=12)
         
-        # Robust individual deletion to ensure Cloudinary signal fires for each
+        # Automatic cleanup of expired statuses
         expired = Status.objects.filter(created_at__lt=cutoff)
         for s in expired:
             try:
@@ -25,33 +25,47 @@ class StatusViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 print(f"Error during automatic status cleanup: {e}")
 
+        user = self.request.user
+
+        # 1. Contacts/Interacted users who can see "Public" statuses
         # Users we've chatted with
         conversation_user_ids = ConversationParticipant.objects.filter(
-            conversation__participants__user=self.request.user
-        ).exclude(user=self.request.user).values_list('user_id', flat=True)
+            conversation__participants__user=user
+        ).exclude(user=user).values_list('user_id', flat=True)
 
         # Users whose profiles we've viewed
         from accounts.models import ProfileInteraction
         viewed_user_ids = ProfileInteraction.objects.filter(
-            viewer=self.request.user
+            viewer=user
         ).values_list('profile_owner_id', flat=True)
 
-        allowed_user_ids = set(conversation_user_ids) | set(viewed_user_ids)
+        allowed_contact_ids = set(conversation_user_ids) | set(viewed_user_ids)
 
+        # 2. Filter logic:
+        # - Always show own statuses
+        # - Show status if user is in restricted_to list
+        # - Show status if restricted_to is empty AND the status owner is a contact
         return (
             Status.objects
             .filter(created_at__gte=cutoff)
             .filter(
-                models.Q(user=self.request.user) |  # Owner
-                models.Q(restricted_to__isnull=True) |  # Public
-                models.Q(restricted_to=self.request.user) | # Explicitly allowed
-                models.Q(user_id__in=allowed_user_ids) # Contacts/Viewed
+                models.Q(user=user) |  # 1. I am the owner
+                models.Q(restricted_to=user) |  # 2. I am explicitly allowed
+                (models.Q(restricted_to__isnull=True) & models.Q(user_id__in=allowed_contact_ids)) # 3. Public to my contacts
             )
             .distinct()
             .select_related('user')
-            .prefetch_related('views__viewer', 'likes__user')
+            .prefetch_related('views__viewer', 'likes__user', 'restricted_to')
             .order_by('-created_at')
         )
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -224,7 +238,8 @@ class StatusViewSet(viewsets.ModelViewSet):
                 message_content=full_content,
                 conversation_id=conversation.id,
                 message_id=message.id,
-                message_type=msg_type
+                message_type=msg_type,
+                sender_avatar=sender.clean_profile_picture_url
             )
         except Exception as e:
             print(f"Error broadcasting status reply: {e}")

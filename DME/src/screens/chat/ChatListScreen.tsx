@@ -78,6 +78,49 @@ const PopoverMenu = ({
   );
 };
 
+const formatMessageTime = (dateString: string | undefined | null) => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  const now = new Date();
+  
+  const isToday = date.toDateString() === now.toDateString();
+  
+  const yesterday = new Date();
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday = date.toDateString() === yesterday.toDateString();
+  
+  if (isToday) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } else if (isYesterday) {
+    return 'Yesterday';
+  } else {
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear().toString().slice(-2);
+    return `${day}/${month}/${year}`;
+  }
+};
+
+const renderLastMessage = (lastMessage: Conversation['last_message']) => {
+  if (!lastMessage) return 'No messages yet';
+  
+  const { message_type, content } = lastMessage;
+  
+  switch (message_type) {
+    case 'image':
+      return '📷 Photo';
+    case 'video':
+      return '🎥 Video';
+    case 'audio':
+      return '🎵 Audio';
+    case 'document':
+      return '📄 Document';
+    case 'text':
+    default:
+      return content || '';
+  }
+};
+
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
@@ -244,7 +287,14 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </TouchableOpacity>
           ) : (
              <>
-                <TouchableOpacity onPress={handleAddStatus} style={{ marginRight: 16 }} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                <TouchableOpacity
+                  onPress={() => {
+                    navigation.navigate('YouTubeDiscovery', {});
+                  }}
+                >
+                  <Icon name="logo-youtube" size={24} color="#d10000" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleAddStatus} style={{ marginRight: 16, marginLeft: 16 }} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
                     <Icon name="camera-outline" size={24} color="#000" />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setMenuVisible(true)}>
@@ -297,6 +347,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           const userId = item.is_group ? null : item.other_user?.id;
           const userStatuses = userId ? statusGroups.find(g => g.user_id === userId)?.statuses : [];
           const hasStatus = userStatuses && userStatuses.length > 0;
+          
+          let isOnline = false;
+          if (!item.is_group && item.other_user) {
+            const lastSeen = new Date(item.other_user.last_seen).getTime();
+            const now = Date.now();
+            isOnline = (now - lastSeen) < 120000;
+          }
 
           return (
             <TouchableOpacity
@@ -320,29 +377,53 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                   <Icon name={isSelected ? "checkbox" : "square-outline"} size={22} color="#8100D1" />
                 </View>
               )}
-              <AvatarWithFallback
-                uri={item.is_group ? item.profile_picture : item.other_user?.profile_picture}
-                sticker={item.is_group ? null : item.other_user?.avatar_sticker}
-                displayName={item.is_group
-                  ? (item.name || 'Group')
-                  : (item.other_user?.display_name || item.other_user?.email || 'User')}
-                isGroup={item.is_group}
-                style={{
-                  width:        50,
-                  height:       50,
-                  borderRadius: 25,
-                  ...(hasStatus && { borderWidth: 2.5, borderColor: '#8100D1', }),
-                }}
-              />
+              <View style={{ position: 'relative' }}>
+                <AvatarWithFallback
+                  uri={item.is_group ? item.profile_picture : item.other_user?.profile_picture}
+                  sticker={item.is_group ? null : item.other_user?.avatar_sticker}
+                  displayName={item.is_group
+                    ? (item.name || 'Group')
+                    : (item.other_user?.display_name || item.other_user?.email || 'User')}
+                  isGroup={item.is_group}
+                  style={{
+                    width:        50,
+                    height:       50,
+                    borderRadius: 25,
+                    ...(hasStatus && { borderWidth: 2.5, borderColor: '#8100D1', }),
+                  }}
+                  onPress={() => {
+                    if (hasStatus) {
+                      navigation.navigate('StatusViewer', {
+                        statuses: userStatuses,
+                        initialIndex: 0,
+                      });
+                    } else {
+                      setPreviewData({
+                        visible: true,
+                        uri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
+                        isGroup: item.is_group,
+                        displayName: item.is_group 
+                          ? (item.name || 'Group') 
+                          : (item.other_user?.display_name || item.other_user?.email || 'User'),
+                        sticker: item.is_group ? null : item.other_user?.avatar_sticker,
+                      });
+                    }
+                  }}
+                />
+                {!item.is_group && isOnline && <View style={styles.onlineDot} />}
+              </View>
               <View style={styles.content}>
                 <Text style={styles.name}>{String(item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || item.other_user?.email || 'User') || '')}</Text>
-                <Text style={styles.lastMessage}>{String(item.last_message?.content || '')}</Text>
+                <Text style={styles.lastMessage} numberOfLines={1}>{renderLastMessage(item.last_message)}</Text>
               </View>
-              {item.unread_count > 0 && (
-                <View style={styles.unreadBadge}>
-                    <Text style={styles.unreadCount}>{item.unread_count}</Text>
-                </View>
-              )}
+              <View style={styles.rightContent}>
+                <Text style={styles.time}>{formatMessageTime(item.last_message?.created_at)}</Text>
+                {item.unread_count > 0 && (
+                  <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadCount}>{item.unread_count}</Text>
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
           );
         }}
@@ -350,8 +431,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         extraData={conversations}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadConversations} tintColor={THEME_COLOR} />}
       />
-      <Modal visible={previewData.visible} transparent={true} animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setPreviewData(p => ({ ...p, visible: false }))}>
+      <Modal visible={previewData.visible} transparent={true} animationType="none">
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          onPress={() => setPreviewData(p => ({ ...p, visible: false }))}
+          activeOpacity={1}
+        >
             <View style={styles.previewContainer}>
                 <AvatarWithFallback
                     uri={previewData.uri}
@@ -365,7 +450,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         </TouchableOpacity>
       </Modal>
       <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
-        <Text style={styles.composeButtonText}>+</Text>
+        <Icon name="person-add-outline" size={25} color="#FFF" />
       </TouchableOpacity>
     </View>
   );
@@ -398,8 +483,18 @@ const styles = StyleSheet.create({
   popover: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: '#fff', borderRadius: 8, padding: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
   popoverText: { fontSize: 14, color: '#333' },
-  composeButton: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl, width: 60, height: 60, borderRadius: 30, backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
-  composeButtonText: { color: '#FFF', fontSize: 36, fontWeight: '300', marginTop: -4 },
+  composeButton: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl, width: 60, height: 50,  borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10,  backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  onlineDot: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#25D366',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   previewContainer: { width: 300, backgroundColor: '#FFF', borderRadius: 16, padding: 20, alignItems: 'center' },
   previewImage: { width: 280, height: 280, borderRadius: 140, marginBottom: 16 },
@@ -420,5 +515,15 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  rightContent: {
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  time: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
   },
 });

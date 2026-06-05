@@ -193,7 +193,8 @@ const StatusViewerScreen: React.FC = () => {
   }, []);
 
 
-  const { statuses: initialStatuses, initialIndex, isOwn } = route.params as RouteParams;
+  const params = (route.params as RouteParams) || {};
+  const { statuses: initialStatuses = [], initialIndex = 0, isOwn = false } = params;
 
   const [statuses,      setStatuses]      = useState<Status[]>(initialStatuses);
   const [index,         setIndex]         = useState(initialIndex);
@@ -238,6 +239,14 @@ const StatusViewerScreen: React.FC = () => {
     }),
   ).current;
 
+  const closeViewer = useCallback(() => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('MainTabs');
+    }
+  }, [navigation]);
+
   const startProgress = useCallback((duration: number) => {
     progress.setValue(0);
     animation.current?.stop();
@@ -246,11 +255,11 @@ const StatusViewerScreen: React.FC = () => {
       if (!finished) return;
       setIndex(i => {
         if (i < statuses.length - 1) return i + 1;
-        navigation.goBack();
+        setTimeout(closeViewer, 0);
         return i;
       });
     });
-  }, [statuses.length, navigation, progress]);
+  }, [statuses.length, closeViewer, progress]);
 
   const stopProgress = useCallback(() => animation.current?.stop(), []);
 
@@ -290,7 +299,7 @@ const StatusViewerScreen: React.FC = () => {
     } else {
       setIndex(i => {
         if (i < statuses.length - 1) return i + 1;
-        navigation.goBack();
+        setTimeout(closeViewer, 0);
         return i;
       });
     }
@@ -393,7 +402,7 @@ const StatusViewerScreen: React.FC = () => {
           }}
           onEnd={() => setIndex(i => {
             if (i < statuses.length - 1) return i + 1;
-            navigation.goBack();
+            setTimeout(closeViewer, 0);
             return i;
           })}
         />
@@ -405,10 +414,6 @@ const StatusViewerScreen: React.FC = () => {
           resizeMethod={Platform.OS === 'android' ? 'resize' : 'auto'}
         />
       )}
-
-      {/* ── Scrims ── */}
-      <View style={s.topScrim}    pointerEvents="none" />
-      <View style={s.bottomScrim} pointerEvents="none" />
 
       {/* ── Progress bars ── */}
       <View style={[s.progressRow, { top: insets.top + 6 }]} pointerEvents="none">
@@ -464,7 +469,20 @@ const StatusViewerScreen: React.FC = () => {
       </View>
 
       {!!current.caption && !replyFocused && (
-        <View style={[s.captionWrap, { bottom: bottomBarH + 12 }]} pointerEvents="none">
+        <View 
+          style={[
+            s.captionWrap, 
+            { 
+              transform: [
+                { translateX: current.caption_x || 0 },
+                { translateY: current.caption_y || 0 },
+                { scale: current.caption_scale || 1 },
+                { rotate: `${((current.caption_rotation || 0) * 180) / Math.PI}deg` }
+              ] 
+            }
+          ]} 
+          pointerEvents="none"
+        >
           <Text style={s.caption}>{current.caption}</Text>
         </View>
       )}
@@ -581,7 +599,7 @@ const s = StyleSheet.create({
   progressRow: { position: 'absolute', left: 10, right: 10, flexDirection: 'row', gap: 4, zIndex: 10 },
   track:       { flex: 1, height: 2, backgroundColor: 'rgba(255,255,255,0.35)', borderRadius: 1, overflow: 'hidden' },
   trackFill:   { height: '100%', backgroundColor: '#fff', borderRadius: 1 },
-  header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, zIndex: 10 },
+  header:        { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, zIndex: 10 },
   headerLeft:    { flexDirection: 'row', alignItems: 'center' },
   avatar:        { width: 36, height: 36, borderRadius: 18, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)' },
   avatarFallback:{ backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
@@ -591,8 +609,18 @@ const s = StyleSheet.create({
   iconBtn:       { padding: 8, marginLeft: 4 },
   iconShadow: { textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
   tapZones: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row' },
-  captionWrap: { position: 'absolute', left: 20, right: 20, alignItems: 'center' },
-  caption: { color: '#fff', fontSize: 16, fontWeight: '500', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6, lineHeight: 22 },
+  captionWrap: { 
+    position: 'absolute', 
+    top: 0, 
+    left: 0,
+    zIndex: 100, 
+    padding: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 120,
+    minHeight: 120,
+  },
+  caption: { color: '#fff', fontSize: 24, fontWeight: 'bold', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6 },
   kvWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
   bottomBar: { flexDirection:  'row', alignItems:     'center', paddingHorizontal: 14, paddingTop:     12, justifyContent: 'space-between' },
   ownerActionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minWidth: 44 },
@@ -603,8 +631,6 @@ const s = StyleSheet.create({
   replyInput: { flex: 1, color: '#fff', fontSize: 14, paddingVertical: 8, maxHeight: 80 },
   sendBtn: { width:           32, height:          32, borderRadius:    16, backgroundColor: '#8100D1', justifyContent:  'center', alignItems:      'center', marginLeft:      6 },
   saveBtn: { alignItems: 'center', minWidth: 36 },
-  topScrim: { position: 'absolute', top: 0, left: 0, right: 0, height: 100, backgroundColor: 'rgba(0,0,0,0.3)' },
-  bottomScrim: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 120, backgroundColor: 'rgba(0,0,0,0.4)' },
 });
 
 export default StatusViewerScreen;

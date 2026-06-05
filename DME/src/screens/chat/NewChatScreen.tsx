@@ -16,6 +16,7 @@ import { chatAPI, callsAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
 import { getApiUrl } from '../../config/network';
+import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../../utils/image';
 
 interface NewChatScreenProps {
@@ -60,6 +61,13 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
     fetchConversationId();
   }, [conversationId, receiverId, isInvitingToCall]);
 
+  // Fetch initial list of users only when adding members (group/call)
+  useEffect(() => {
+    if (isAdding || isInvitingToCall) {
+      searchUsers('');
+    }
+  }, [isAdding, isInvitingToCall]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedQuery(searchQuery);
@@ -69,12 +77,13 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
   }, [searchQuery]);
 
   useEffect(() => {
-    if (debouncedQuery) {
+    // Only search if there is a query OR if we are in 'adding' mode (to refresh/load list)
+    if (debouncedQuery || isAdding || isInvitingToCall) {
       searchUsers(debouncedQuery);
     } else {
       setUsers([]);
     }
-  }, [debouncedQuery]);
+  }, [debouncedQuery, isAdding, isInvitingToCall]);
 
   const searchUsers = async (query: string) => {
     setIsLoading(true);
@@ -233,7 +242,7 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
         onPress={() => navigation.navigate('CreateGroup')}
       >
         <View style={styles.newGroupIconContainer}>
-          <Text style={styles.newGroupIcon}>👥</Text>
+          <Icon name="people" size={24} color="#fff" />
         </View>
         <Text style={styles.newGroupText}>New Group</Text>
       </TouchableOpacity>

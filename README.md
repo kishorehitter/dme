@@ -55,7 +55,7 @@ A full-stack DME application with React Native frontend and Django REST Framewor
 ## Project Structure
 
 ```
-C:\Dev\Androidapp\
+C:\Dev\AndroidApp\
 ├── backend/              # Django backend
 │   ├── accounts/         # User authentication app
 │   ├── chat/             # Chat and messaging app

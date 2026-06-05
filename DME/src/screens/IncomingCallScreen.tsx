@@ -45,15 +45,26 @@ export default function IncomingCallScreen() {
   
   const isHandled       = useRef(false);
   const autoRejectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFocusedRef    = useRef(false);
   const vibrationRef    = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (call_id) {
-      setIsCallMissed(false);
+      setIsCallMissed(_action === 'missed_call');
       isHandled.current = false;
+
+      // ✅ Auto-answer if requested via notification button
+      if (autoAccept && !isHandled.current && _action === ACTIONS.ANSWER) {
+        console.log('[IncomingCallScreen] autoAccept detected, answering call...');
+        // Small delay to ensure everything is mounted
+        const t = setTimeout(() => {
+          handleAnswer();
+        }, 500);
+        return () => clearTimeout(t);
+      }
     }
-  }, [call_id]);
+  }, [call_id, _action, autoAccept, handleAnswer]);
 
   useKeepAwake();
 
@@ -65,7 +76,8 @@ export default function IncomingCallScreen() {
   );
 
   useEffect(() => {
-    if (!isCallMissed && !isHandled.current) {
+    // Don't vibrate if we are auto-answering
+    if (!isCallMissed && !isHandled.current && !autoAccept) {
       if (Platform.OS === 'android') {
         Vibration.vibrate([1000, 1000, 1000], true);
       }
@@ -73,17 +85,74 @@ export default function IncomingCallScreen() {
     return () => {
       Vibration.cancel();
     };
-  }, [isCallMissed]);
+  }, [isCallMissed, autoAccept]);
+
+  const handleDismiss = useCallback(() => {
+    if (isHandled.current) return;
+    isHandled.current = true;
+    Vibration.cancel();
+    if (autoRejectTimer.current) clearTimeout(autoRejectTimer.current);
+    if (autoDismissTimer.current) clearTimeout(autoDismissTimer.current);
+
+    if (isFocusedRef.current) {
+      if (navigation.canGoBack()) navigation.goBack();
+      else navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+    }
+  }, [navigation]);
+
+  useEffect(() => {
+    const unsubCancel = DeviceEventEmitter.addListener('call_cancelled_externally', (data) => {
+      if (String(data.call_id) === String(call_id)) {
+        console.log('[IncomingCallScreen] Call cancelled externally');
+        handleDismiss();
+      }
+    });
+
+    const unsubMissed = DeviceEventEmitter.addListener('call_missed_externally', (data) => {
+      if (String(data.call_id) === String(call_id)) {
+        console.log('[IncomingCallScreen] Call marked as missed externally');
+        setIsCallMissed(true);
+        Vibration.cancel();
+        
+        // Auto-dismiss after 2 seconds
+        autoDismissTimer.current = setTimeout(() => {
+          handleDismiss();
+        }, 2000);
+      }
+    });
+
+    // Local safety timeout (35s)
+    autoRejectTimer.current = setTimeout(() => {
+      if (!isHandled.current && !isCallMissed) {
+        console.log('[IncomingCallScreen] Local timeout reached');
+        handleDismiss();
+      }
+    }, 35000);
+
+    return () => {
+      unsubCancel.remove();
+      unsubMissed.remove();
+      if (autoRejectTimer.current) clearTimeout(autoRejectTimer.current);
+      if (autoDismissTimer.current) clearTimeout(autoDismissTimer.current);
+    };
+  }, [call_id, handleDismiss, isCallMissed]);
 
   const handleReject = useCallback(async () => {
     if (isHandled.current) return;
-    isHandled.current = true;
     
+    // If already missed, just dismiss locally
+    if (isCallMissed) {
+      handleDismiss();
+      return;
+    }
+
+    isHandled.current = true;
     if (autoRejectTimer.current) clearTimeout(autoRejectTimer.current);
     Vibration.cancel();
 
     fcmService.cancelIncomingCallNotification(String(call_id)).catch(() => {});
     if (call_id) fcmService.markCallHandled(String(call_id), 'incoming_call');
+    
     if (!isGroupCall && callIdNum) {
       api.post('/calls/reject/', { call_id: callIdNum }).catch((e) => {});
     }
@@ -92,7 +161,7 @@ export default function IncomingCallScreen() {
       if (navigation.canGoBack()) navigation.goBack();
       else navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
     }
-  }, [call_id, callIdNum, isGroupCall, navigation]);
+  }, [call_id, callIdNum, isGroupCall, navigation, isCallMissed, handleDismiss]);
 
   const handleAnswer = useCallback(async () => {
     if (isHandled.current || isCallMissed) return;
@@ -168,10 +237,19 @@ export default function IncomingCallScreen() {
       </View>
 
       <View style={styles.buttonRow}>
-        <TouchableOpacity style={styles.rejectBtn} onPress={handleReject}>
+        <TouchableOpacity 
+          style={styles.rejectBtn} 
+          onPress={handleReject}
+          activeOpacity={0.7}
+        >
           <Text style={styles.btnLabel}>{isCallMissed ? 'Close' : 'Reject'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.answerBtn} onPress={handleAnswer}>
+        <TouchableOpacity 
+          style={[styles.answerBtn, isCallMissed && styles.disabledBtn]} 
+          onPress={handleAnswer}
+          disabled={isCallMissed}
+          activeOpacity={isCallMissed ? 1 : 0.7}
+        >
           <Text style={styles.btnLabel}>{isCallMissed ? 'Ended' : 'Answer'}</Text>
         </TouchableOpacity>
       </View>
@@ -228,6 +306,10 @@ const styles = StyleSheet.create({
     minWidth: 130, alignItems: 'center',
     borderWidth: 2,
     borderColor: '#E8DEF8',
+  },
+  disabledBtn: {
+    backgroundColor: '#ccc',
+    borderColor: '#ccc',
   },
   btnLabel: { color: '#fff', fontSize: 16, fontWeight: '600', letterSpacing: 0.2 },
 });

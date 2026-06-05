@@ -335,6 +335,18 @@ export const fcmAPI = {
   },
 };
 
+// Music API
+export const musicAPI = {
+  searchYouTube: async (query: string, maxResults: number = 15) => {
+    const response = await api.post('/music/youtube/search/', { query, maxResults });
+    return response.data;
+  },
+  getRelatedVideos: async (videoId: string) => {
+    const response = await api.post('/music/youtube/related/', { videoId });
+    return response.data;
+  },
+};
+
 // Calls API
 export const callsAPI = {
   initiateCall: async (receiverId: number, callType: 'audio' | 'video' = 'audio', offerSdp?: string) => {

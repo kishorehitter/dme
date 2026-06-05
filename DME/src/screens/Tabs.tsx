@@ -223,6 +223,7 @@ export const StatusTabScreen = () => {
     const result = await launchCamera({
       mediaType: 'mixed',
       quality: 0.8,
+      saveToPhotos: false,
     });
     handlePickerResult(result);
   };
@@ -267,7 +268,7 @@ export const StatusTabScreen = () => {
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity onPress={() => { console.log('Camera button pressed'); setCameraMenuVisible(true); }} style={{ marginRight: 20 }}>
-            <Icon name="camera-outline" size={24} color="#8100D1" />
+            <Icon name="camera-outline" size={24} color="#333" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
             <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
@@ -297,12 +298,8 @@ export const StatusTabScreen = () => {
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
         onPrivacySettings={() => {
-            navigation.navigate('StatusPrivacy', { 
-                initialSelected: [],
-                onSelect: (ids: number[]) => { console.log('Privacy selected:', ids); }
-            });
-        }}
-      />
+            navigation.navigate('StatusPrivacy');
+        }}      />
       <MyStatusRow
         statuses={myStatuses}
         username={currentUser?.username ?? 'You'}

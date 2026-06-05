@@ -15,8 +15,10 @@ class HealthCheckView(APIView):
 
     def get(self, request):
         return Response({'status': 'ok'}, status=status.HTTP_200_OK)
-
-from .models import Conversation, ConversationParticipant, Message, MessageReaction, Status
+from .models import (
+    Conversation, ConversationParticipant, Message, MessageReaction, 
+    Status, StatusView, StatusPrivacy
+)
 from .serializers import (
     ConversationSerializer,
     ConversationListSerializer,
@@ -24,7 +26,64 @@ from .serializers import (
     MessageSerializer,
     MessageReactionSerializer,
     UserMinimalSerializer,
+    StatusPrivacySerializer,
 )
+
+class ContactsListView(APIView):
+    """Retrieve all users the current user has interacted with."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # 1. Users from conversations
+        conv_user_ids = ConversationParticipant.objects.filter(
+            conversation__participants__user=user
+        ).exclude(user=user).values_list('user_id', flat=True)
+        
+        # 2. Users whose profiles were viewed
+        from accounts.models import ProfileInteraction
+        viewed_user_ids = ProfileInteraction.objects.filter(
+            viewer=user
+        ).values_list('profile_owner_id', flat=True)
+        
+        all_contact_ids = set(conv_user_ids) | set(viewed_user_ids)
+        
+        # Fetch actual User objects
+        contacts = get_user_model().objects.filter(id__in=all_contact_ids)
+        
+        serializer = UserMinimalSerializer(contacts, many=True, context={'request': request})
+        return Response(serializer.data)
+
+class StatusPrivacyView(APIView):
+    """Fetch or update global default status privacy settings."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        privacy, created = StatusPrivacy.objects.get_or_create(user=request.user)
+        # Return a list of IDs for restricted_to
+        return Response({
+            'restricted_to': list(privacy.restricted_to.values_list('id', flat=True))
+        })
+
+    def post(self, request):
+        privacy, created = StatusPrivacy.objects.get_or_create(user=request.user)
+
+        # Handle the case where restricted_to is a JSON string or a list
+        restricted_to = request.data.get('restricted_to', [])
+        if isinstance(restricted_to, str):
+            import json
+            try:
+                restricted_to = json.loads(restricted_to)
+            except:
+                restricted_to = []
+
+        if not isinstance(restricted_to, list):
+            restricted_to = []
+
+        privacy.restricted_to.set(restricted_to)
+        return Response({'status': 'success'})
+
 
 from rest_framework.exceptions import PermissionDenied
  
@@ -479,7 +538,8 @@ class MessageViewSet(viewsets.ModelViewSet):
                     message_content=message.content,
                     conversation_id=message.conversation_id,
                     message_id=message.id,
-                    message_type=message.message_type
+                    message_type=message.message_type,
+                    sender_avatar=message.sender.clean_profile_picture_url
                 )
         except Exception as e:
             # Log the error but don't re-raise - message is already saved
@@ -800,22 +860,54 @@ class RemoveParticipantView(APIView):
         except ConversationParticipant.DoesNotExist:
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 class SearchUsersView(APIView):
-    """Search users to start conversation with by exact username match."""
+    """Search users to start conversation with by partial username, display name or email match."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        query = request.query_params.get('q', '')
-        if not query:
-            return Response([])
-            
+        query = request.query_params.get('q', '').strip()
         User = get_user_model()
 
-        # Strict exact match for username
-        users = User.objects.filter(
-            username=query
-        ).exclude(id=request.user.id)[:20]
+        if not query:
+            # If no query, return users the current user has recently interacted with
+            # Or fallback to a reasonable limit of all users if no interactions
+            from .models import ConversationParticipant
 
-        serializer = UserMinimalSerializer(users, many=True, context={'request': request})
+            # Get IDs of users the current user has interacted with
+            recent_user_ids = ConversationParticipant.objects.filter(
+                conversation__participants__user=request.user
+            ).exclude(
+                user=request.user
+            ).values_list('user_id', flat=True).distinct()[:20]
+
+            # Fetch those users
+            users = User.objects.filter(id__in=recent_user_ids)
+
+            # If fewer than 20, fetch more users until 20
+            if users.count() < 20:
+                more_users = User.objects.exclude(
+                    id=request.user.id
+                ).exclude(
+                    id__in=recent_user_ids
+                )[:20 - users.count()]
+                users = (users | more_users).distinct()
+        else:
+            # 1. Always check for strict username match (case-insensitive)
+            strict_username_match = User.objects.filter(username__iexact=query).exclude(id=request.user.id)
+
+            # 2. Only allow partial matching on display_name/email if query is >= 3 characters
+            if len(query) >= 3:
+                partial_matches = User.objects.filter(
+                    Q(display_name__icontains=query) |
+                    Q(email__icontains=query)
+                ).exclude(id=request.user.id)
+
+                # Combine strict username matches with partial matches
+                users = (strict_username_match | partial_matches).distinct()
+            else:
+                # For queries < 3 chars, ONLY allow strict username match
+                users = strict_username_match
+
+        serializer = UserMinimalSerializer(users[:20], many=True, context={'request': request})
         return Response(serializer.data)
 
 

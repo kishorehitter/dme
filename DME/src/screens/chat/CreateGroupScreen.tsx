@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,8 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import { chatAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
+import AvatarWithFallback from '../../components/AvatarWithFallback';
+import Icon from 'react-native-vector-icons/Ionicons';
 import { getApiUrl } from '../../config/network';
 
 interface CreateGroupScreenProps {
@@ -34,6 +36,31 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   const [groupImage, setGroupImage] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => (
+        <TouchableOpacity
+          onPress={() => {
+            if (step === 2) {
+              setStep(1);
+            } else {
+              navigation.goBack();
+            }
+          }}
+          style={{ marginLeft: 15 }}
+        >
+          <Icon name="arrow-back" size={24} color="#000" />
+        </TouchableOpacity>
+      ),
+      headerTitle: step === 1 ? 'Add Participants' : 'New Group',
+    });
+  }, [navigation, step]);
+
+  useEffect(() => {
+    // Fetch initial list of users
+    searchUsers('');
+  }, []);
 
   useEffect(() => {
     if (step === 1 && searchQuery) {
@@ -152,8 +179,13 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
                   style={styles.selectedUser}
                   onPress={() => toggleUserSelection(user)}
                 >
-                  <View style={[styles.selectedAvatar, { justifyContent: 'center', alignItems: 'center' }]}>
-                    <Icon name="person" size={20} color="#8100D1" />
+                  <View style={{position: 'relative'}}>
+                    <AvatarWithFallback 
+                      uri={user.profile_picture} 
+                      displayName={user.display_name || user.email || 'User'} 
+                      sticker={user.avatar_sticker} 
+                      style={{ width: 50, height: 50, borderRadius: 25 }}
+                    />
                     <View style={styles.removeBadge}>
                       <Text style={styles.removeBadgeText}>×</Text>
                     </View>
@@ -186,6 +218,12 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
                   <Text style={styles.checkmark}>✓</Text>
                 )}
               </View>
+              <AvatarWithFallback 
+                uri={item.profile_picture} 
+                displayName={item.display_name || item.email || 'User'} 
+                sticker={item.avatar_sticker} 
+                style={styles.avatar} 
+              />
               <View style={styles.userInfo}>
                 <Text style={styles.userName}>
                   {item.display_name || item.email}
@@ -217,21 +255,17 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
 
   return (
     <ScrollView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>New Group</Text>
-        <TouchableOpacity onPress={() => setStep(1)}>
-          <Text style={styles.backLink}>Back to participants</Text>
-        </TouchableOpacity>
-      </View>
-
       <View style={styles.form}>
         <View style={styles.avatarPicker}>
           <TouchableOpacity onPress={handlePickImage} style={styles.avatarLarge}>
             {groupImage ? (
               <Image source={{ uri: groupImage.uri }} style={styles.avatarLarge} />
             ) : (
-              <Text style={styles.avatarLargeText}>👥</Text>
+              <Icon name="camera" size={40} color="#888" />
             )}
+            <View style={styles.plusIconContainer}>
+              <Icon name="add" size={20} color="#FFF" />
+            </View>
           </TouchableOpacity>
           <Text style={styles.pickerLabel}>
             {groupImage ? 'Change Image' : 'Add Group Image'}
@@ -440,8 +474,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: spacing.sm,
   },
-  avatarLargeText: {
-    fontSize: 50,
+  plusIconContainer: {
+    position: 'absolute',
+    bottom: 5,
+    right: 5,
+    backgroundColor: THEME_COLOR,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#FFF',
   },
   pickerLabel: {
     color: THEME_COLOR,

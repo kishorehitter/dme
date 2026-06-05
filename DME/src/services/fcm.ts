@@ -90,6 +90,18 @@ class FCMService {
     return this._isInCall;
   }
 
+  private async isHandledCheck(callId: string, type: string): Promise<boolean> {
+    if (!callId) return false;
+    try {
+      const key = 'fcm_handled_call_ids';
+      const handledJson = await AsyncStorage.getItem(key);
+      const handled: string[] = handledJson ? JSON.parse(handledJson) : [];
+      return handled.includes(`${type}_${callId}`);
+    } catch (e) {
+      return false;
+    }
+  }
+
   private async isStaleOrDuplicate(remoteMessage: FirebaseMessagingTypes.RemoteMessage): Promise<boolean> {
     const data = (remoteMessage.data ?? {}) as FCMData;
     const callId = data.call_id;
@@ -108,24 +120,13 @@ class FCMService {
     }
 
     // 2. Persistent deduplication
-    try {
-      const key = 'fcm_handled_call_ids';
-      const handledJson = await AsyncStorage.getItem(key);
-      let handled: string[] = handledJson ? JSON.parse(handledJson) : [];
-      
-      const uniqueKey = `${type}_${callId}`;
-      if (handled.includes(uniqueKey)) {
-        console.log(`[FCMService] Persistent deduplication hit for ${uniqueKey}`);
-        return true;
-      }
-
-      // Add to handled list, keep last 50 entries
-      handled.push(uniqueKey);
-      if (handled.length > 50) handled = handled.slice(-50);
-      await AsyncStorage.setItem(key, JSON.stringify(handled));
-    } catch (e) {
-      console.warn('[FCMService] Deduplication storage error:', e);
+    if (type && await this.isHandledCheck(callId, type)) {
+      console.log(`[FCMService] Persistent deduplication hit for ${type}_${callId}`);
+      return true;
     }
+
+    // Add to handled list
+    if (type) await this.markCallHandled(callId, type);
 
     return false;
   }
@@ -142,7 +143,9 @@ class FCMService {
         if (handled.length > 50) handled = handled.slice(-50);
         await AsyncStorage.setItem(key, JSON.stringify(handled));
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[FCMService] markCallHandled error:', e);
+    }
   }
 
   setOnNotificationPress(cb: PressCallback) {
@@ -313,8 +316,8 @@ class FCMService {
     });
     if (messages.length > 10) messages = messages.slice(-10);
 
-    const largeIcon = (data.caller_avatar && typeof data.caller_avatar === 'string' && data.caller_avatar.startsWith('http')) 
-      ? data.caller_avatar 
+    const largeIcon = (data.sender_avatar && typeof data.sender_avatar === 'string' && data.sender_avatar.startsWith('http')) 
+      ? data.sender_avatar 
       : null;
 
     const notificationPayload: any = {
@@ -422,16 +425,9 @@ class FCMService {
 
         case 'missed_call': {
           await this.displayMissedCallNotification(data);
-
           DeviceEventEmitter.emit('call_missed_externally', data);
-
-          if (this._onNotificationPress && data.call_id) {
-            console.log('[FCMService] Missed call: navigating to close screen');
-            this._onNotificationPress({
-              ...data,
-              _action: 'missed_call',
-            });
-          }
+          // Removed auto-navigation for missed_call to prevent unwanted screen jumps.
+          // Navigation will only happen if the user actually taps the notification.
           break;
         }
 
@@ -483,23 +479,19 @@ class FCMService {
       appState: currentAppState,
     });
 
-    await AsyncStorage.setItem(
-      'pending_call_answer',
-      JSON.stringify({
-        ...data,
-        _action: ACTIONS.ANSWER,
-        timestamp: Date.now(),
-        fromBackground: isFromBackground,
-      })
-    );
+    const enrichedData = {
+      ...data,
+      type: 'incoming_call', // Ensure type is present for navigation routing
+      _action: ACTIONS.ANSWER,
+      autoAccept: true,
+      timestamp: Date.now(),
+      fromBackground: isFromBackground,
+    };
+
+    await AsyncStorage.setItem('pending_call_answer', JSON.stringify(enrichedData));
 
     if (this._onNotificationPress) {
-      this._onNotificationPress({
-        ...data,
-        isFromOverlay: false,
-        autoAccept: true,
-        _action: ACTIONS.ANSWER,
-      });
+      this._onNotificationPress(enrichedData);
     }
   }
 
@@ -561,12 +553,14 @@ class FCMService {
 
       if (pressAction?.id === ACTIONS.ANSWER) {
         await notifee.cancelNotification(notification?.id || '');
-        await this.handleAnswerAction(data, true);
-        DeviceEventEmitter.emit('fcm_action_answer', {
+        const enrichedData = {
           ...data,
+          type: 'incoming_call',
           _action: ACTIONS.ANSWER,
           autoAccept: true,
-        });
+        };
+        await this.handleAnswerAction(enrichedData, true);
+        DeviceEventEmitter.emit('fcm_action_answer', enrichedData);
       } else if (pressAction?.id === ACTIONS.REJECT) {
         await notifee.cancelNotification(notification?.id || '');
         if (data.call_id) await this.rejectCallAPI(data.call_id);
@@ -648,9 +642,14 @@ class FCMService {
 
         if (actionId === ACTIONS.ANSWER) {
           await notifee.cancelNotification(notification?.id || '');
-          await this.handleAnswerAction(data, false);
+          await this.handleAnswerAction({
+            ...data,
+            type: 'incoming_call', // Ensure type is present
+            autoAccept: true,
+          }, false);
           DeviceEventEmitter.emit('fcm_action_answer', {
             ...data,
+            type: 'incoming_call',
             _action: ACTIONS.ANSWER,
             autoAccept: true,
           });
@@ -700,9 +699,12 @@ class FCMService {
 
       if (d._action === ACTIONS.ANSWER) {
         d.autoAccept = true;
+        d.type = 'incoming_call'; // Force type for routing
+        // Dismiss it immediately
+        await notifee.cancelNotification(n.notification.id || '');
       }
 
-      console.log('[FCMService] Initial notification (Notifee):', d.type);
+      console.log('[FCMService] Initial notification (Notifee):', d.type, 'Action:', d._action);
       return d;
     }
 
@@ -711,8 +713,10 @@ class FCMService {
       const d = (f.data ?? {}) as FCMData;
       if (d._action === ACTIONS.ANSWER) {
         d.autoAccept = true;
+        d.type = 'incoming_call';
       }
-      console.log('[FCMService] Initial notification (Firebase):', d.type);
+
+      console.log('[FCMService] Initial notification (Firebase):', d.type, 'Action:', d._action);
       return d;
     }
 

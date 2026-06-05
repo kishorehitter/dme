@@ -1,25 +1,11 @@
 """
 Django settings for DME backend.
-
-Environments:
-  - Local dev  : ENVIRONMENT=development  → SQLite, in-memory channels, local media
-  - Production : ENVIRONMENT=production   → PostgreSQL, Redis channels, Cloudinary media
-
-Required environment variables (production):
-  SECRET_KEY, DATABASE_URL, REDIS_URL, FIREBASE_CREDENTIALS
-  LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
-  CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
-  ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, CORS_ALLOWED_ORIGINS
-
-Install:
-  pip install django-environ whitenoise channels channels-redis psycopg2-binary
-  pip install firebase-admin djangorestframework djangorestframework-simplejwt
-  pip install django-cors-headers cloudinary django-cloudinary-storage dj-database-url
 """
 
 from pathlib import Path
 from datetime import timedelta
 import environ
+import urllib.parse
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -51,8 +37,6 @@ ALLOWED_HOSTS        = env.list('ALLOWED_HOSTS')
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 
 # ─── Installed Apps ───────────────────────────────────────────────────────────
-# ORDER MATTERS for cloudinary_storage:
-#   cloudinary_storage must come BEFORE django.contrib.staticfiles
 
 INSTALLED_APPS = [
     'myproject',
@@ -79,6 +63,7 @@ INSTALLED_APPS = [
     'chat',
     'notifications',
     'calls',
+    'music',
     
 ]
 
@@ -86,9 +71,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',   # serve static files
+    'whitenoise.middleware.WhiteNoiseMiddleware',  
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',        # before CommonMiddleware
+    'corsheaders.middleware.CorsMiddleware',        
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -135,8 +120,8 @@ else:
         'default': dj_database_url.config(
             default=env('DATABASE_URL'),
             conn_max_age=600,
-            conn_health_checks=True,   # auto-reconnect dropped Neon connections
-            ssl_require=True,          # Neon requires SSL
+            conn_health_checks=True,   
+            ssl_require=True,          
         )
     }
 
@@ -286,6 +271,16 @@ FIREBASE_CREDENTIALS = env.json('FIREBASE_CREDENTIALS')
 LIVEKIT_URL        = env('LIVEKIT_URL',        default='wss://dme-chat-yanapy2q.livekit.cloud')
 LIVEKIT_API_KEY    = env('LIVEKIT_API_KEY')
 LIVEKIT_API_SECRET = env('LIVEKIT_API_SECRET')
+
+YOUTUBE_API_KEY = env('YOUTUBE_API_KEY')
+
+
+_redis_url = env('REDIS_URL', default='redis://localhost:6379')
+_parsed    = urllib.parse.urlparse(_redis_url)
+
+REDIS_HOST = _parsed.hostname or 'localhost'
+REDIS_PORT = _parsed.port    or 6379
+REDIS_DB   = 0
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 

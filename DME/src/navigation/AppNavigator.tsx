@@ -29,6 +29,8 @@ import {
 import { colors, spacing } from '../utils/theme';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MusicRoomScreen from '../screens/MusicRoomScreen';
+import YouTubeDiscoveryScreen from '../screens/YouTubeDiscoveryScreen';
 import { useState } from 'react';
 
 const Stack = createStackNavigator();
@@ -124,6 +126,8 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       />
       <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
       <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media' }} />
+      <Stack.Screen name="MusicRoom" component={MusicRoomScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="YouTubeDiscovery" component={YouTubeDiscoveryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusPrivacy" component={StatusPrivacyScreen} options={{ headerShown: false }} />
     </Stack.Navigator>
   );

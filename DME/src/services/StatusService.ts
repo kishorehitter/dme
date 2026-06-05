@@ -26,6 +26,10 @@ export interface Status {
   media_file: string;
   media_type: 'photo' | 'video';
   caption:    string | null;
+  caption_x:  number;
+  caption_y:  number;
+  caption_scale: number;
+  caption_rotation: number;
   created_at: string;
   view_count: number;
   is_viewed:  boolean;
@@ -94,6 +98,10 @@ export const StatusService = {
     caption:   string,
     mediaType: 'photo' | 'video',
     restrictedTo?: number[], // Array of user IDs
+    captionX: number = 0,
+    captionY: number = 0,
+    captionScale: number = 1,
+    captionRotation: number = 0,
   ): Promise<Status> {
     const form = new FormData();
     const filename  = mediaUri.split('/').pop() ?? 'upload';
@@ -108,6 +116,11 @@ export const StatusService = {
     form.append('media_type', mediaType);
     if (caption?.trim()) form.append('caption', caption.trim());
     
+    form.append('caption_x', captionX.toString());
+    form.append('caption_y', captionY.toString());
+    form.append('caption_scale', captionScale.toString());
+    form.append('caption_rotation', captionRotation.toString());
+
     // Add restricted users as JSON string
     if (restrictedTo && restrictedTo.length > 0) {
       form.append('restricted_to', JSON.stringify(restrictedTo));

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, Modal, TouchableOpacity, FlatList, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, Modal, TouchableOpacity, FlatList, StyleSheet, ActivityIndicator, TextInput } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import api from '../services/api';
 import AvatarWithFallback from './AvatarWithFallback';
+import { useAuth } from '../context/AuthContext';
 
 interface Props {
   visible: boolean;
@@ -12,45 +13,53 @@ interface Props {
 }
 
 export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, initialSelected }) => {
+  const { user: currentUser } = useAuth();
   const [contacts, setContacts] = useState<any[]>([]);
   const [selected, setSelected] = useState<number[]>(initialSelected);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  useEffect(() => {
-    if (visible) fetchContacts();
-  }, [visible]);
-
-  const fetchContacts = async () => {
+  const fetchContacts = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/chat/conversations/');
-      // Extract unique contact user IDs from conversations
-      const users: any[] = [];
-      res.data.forEach((conv: any) => {
-        conv.participants?.forEach((p: any) => {
-          if (!users.find(u => u.id === p.user.id)) {
-            users.push(p.user);
-          }
-        });
-      });
-      setContacts(users.filter(u => u.id !== 0)); // Replace with current user ID check if needed
+      // Always fetch the full list of contacts
+      const res = await api.get('/chat/contacts/');
+      setContacts(res.data || []);
     } catch (e) {
-      console.error(e);
+      console.error('[VisibilityModal] fetchContacts error:', e);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      fetchContacts();
+    }
+  }, [visible, fetchContacts]);
+
+  // Filter contacts locally based on search query
+  const filteredContacts = contacts.filter(u => 
+    (u.display_name?.toLowerCase() || u.username.toLowerCase()).includes(searchQuery.toLowerCase())
+  );
 
   const toggleSelect = (id: number) => {
     setSelected(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
+  const selectAll = () => {
+    if (selected.length === contacts.length && contacts.length > 0) {
+      setSelected([]); 
+    } else {
+      setSelected(contacts.map(u => u.id));
+    }
+  };
+
+  const allSelected = contacts.length > 0 && selected.length === contacts.length;
+
   const handleDone = () => {
-    console.log('[PrivacyModal] Saving selection:', selected);
     if (typeof onSelect === 'function') {
       onSelect(selected);
-    } else {
-      console.error('[PrivacyModal] onSelect is not a function');
     }
     onClose();
   };
@@ -63,14 +72,56 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
           <Text style={styles.title}>Status Privacy</Text>
           <TouchableOpacity onPress={handleDone}><Text style={styles.done}>Done</Text></TouchableOpacity>
         </View>
-        {loading ? <ActivityIndicator /> : (
+
+        <View style={styles.searchContainer}>
+          <Icon name="search" size={20} color="#999" />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search contacts..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+          />
+          {searchQuery !== '' && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Icon name="close-circle" size={18} color="#999" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {contacts.length > 0 && (
+          <TouchableOpacity style={styles.selectAllBtn} onPress={selectAll}>
+            <Icon 
+              name={allSelected ? "checkbox" : "square-outline"} 
+              size={22} 
+              color="#8100D1" 
+            />
+            <Text style={styles.selectAllText}>{allSelected ? ' Deselect All' : ' Select All'}</Text>
+          </TouchableOpacity>
+        )}
+
+        {loading ? (
+          <ActivityIndicator style={{ marginTop: 20 }} color="#8100D1" />
+        ) : (
           <FlatList
-            data={contacts}
+            data={filteredContacts}
             keyExtractor={item => item.id.toString()}
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>No contacts found.</Text>
+              </View>
+            }
             renderItem={({ item }) => (
               <TouchableOpacity style={styles.item} onPress={() => toggleSelect(item.id)}>
-                <AvatarWithFallback uri={item.profile_picture} size={40} />
-                <Text style={styles.name}>{item.username}</Text>
+                <AvatarWithFallback 
+                  uri={item.profile_picture} 
+                  displayName={item.display_name || item.username} 
+                  size={40} 
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.name}>{item.display_name || item.username}</Text>
+                  <Text style={styles.username}>@{item.username}</Text>
+                </View>
                 <Icon name={selected.includes(item.id) ? "checkbox" : "square-outline"} size={24} color="#8100D1" />
               </TouchableOpacity>
             )}
@@ -86,6 +137,22 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, alignItems: 'center' },
   title: { fontSize: 18, fontWeight: 'bold' },
   done: { color: '#8100D1', fontWeight: 'bold' },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f0f0f0',
+    marginHorizontal: 15,
+    marginBottom: 10,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    height: 40,
+  },
+  searchInput: { flex: 1, marginLeft: 10, fontSize: 15 },
+  selectAllBtn: { paddingHorizontal: 20, marginBottom: 10 },
+  selectAllText: { color: '#8100D1', fontWeight: '600' },
   item: { flexDirection: 'row', alignItems: 'center', padding: 15, gap: 15 },
-  name: { flex: 1, fontSize: 16 }
+  name: { fontSize: 16, fontWeight: '500' },
+  username: { fontSize: 12, color: '#666' },
+  emptyContainer: { padding: 40, alignItems: 'center' },
+  emptyText: { textAlign: 'center', color: '#999', lineHeight: 20 }
 });

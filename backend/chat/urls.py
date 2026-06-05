@@ -21,6 +21,8 @@ from .views import (
     StatusViewersListView,
     ConversationUpdateProfileView,
     HealthCheckView,
+    StatusPrivacyView,
+    ContactsListView,
 )
 from .status_views import StatusViewSet
 
@@ -29,6 +31,11 @@ router.register(r'conversations', ConversationViewSet, basename='conversation')
 router.register(r'statuses', StatusViewSet, basename='status')
 
 urlpatterns = [
+    # Status privacy settings
+    path('privacy/status/', StatusPrivacyView.as_view(), name='status-privacy'),
+    # Contacts list
+    path('contacts/', ContactsListView.as_view(), name='contacts-list'),
+
     # Health Check
     path('health/', HealthCheckView.as_view(), name='health-check'),
     

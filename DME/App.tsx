@@ -20,6 +20,7 @@ import HeartbeatSplash from './src/components/HeartbeatSplash';
 import { CommonActions, NavigationContainerRef } from '@react-navigation/native';
 import fcmService, { FCMData, ACTIONS } from './src/services/fcm';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import websocketService from './src/services/websocket';
 
 export let navigationRef: NavigationContainerRef<any> | null = null;
 
@@ -126,6 +127,16 @@ export function handleNotificationNavigation(data: FCMData) {
       }),
     );
   }
+
+  if (type === 'music_invite') {
+    navigationRef.dispatch(
+      CommonActions.navigate('MusicRoom', {
+        roomCode: data.room_code,
+        isDJMode: false,
+        initialVideoId: data.video_id,
+      }),
+    );
+  }
 }
 
 export default function App() {
@@ -151,6 +162,7 @@ export default function App() {
         const parsed = JSON.parse(pendingAnswer);
         if (parsed._action === ACTIONS.ANSWER) {
           console.log('[App] Found pending answer on resume:', parsed);
+          await AsyncStorage.removeItem('pending_call_answer');
           handleNotificationNavigation(parsed);
         }
       }
@@ -202,20 +214,60 @@ export default function App() {
     fcmService.getInitialNotification().then(async data => {
       let finalData = data;
       try {
-        const pendingCallback = await AsyncStorage.getItem('pending_callback_call');
-        if (pendingCallback) {
-          const parsed = JSON.parse(pendingCallback);
-          console.log('[App] Found pending callback from background:', parsed);
-          finalData = parsed;
-          await AsyncStorage.removeItem('pending_callback_call');
+        // Priority 1: Check Answer Action
+        const pendingAnswer = await AsyncStorage.getItem('pending_call_answer');
+        if (pendingAnswer) {
+          const parsed = JSON.parse(pendingAnswer);
+          if (parsed._action === ACTIONS.ANSWER && (Date.now() - parsed.timestamp < 60000)) {
+            console.log('[App] Found fresh pending answer from background:', parsed);
+            finalData = { ...parsed, autoAccept: true, type: 'incoming_call' };
+            await AsyncStorage.removeItem('pending_call_answer');
+          } else {
+            await AsyncStorage.removeItem('pending_call_answer'); // Stale
+          }
+        }
+
+        // Priority 2: Check Callback Action
+        if (!finalData) {
+          const pendingCallback = await AsyncStorage.getItem('pending_callback_call');
+          if (pendingCallback && (Date.now() - JSON.parse(pendingCallback).timestamp < 60000)) {
+            const parsed = JSON.parse(pendingCallback);
+            console.log('[App] Found fresh pending callback from background:', parsed);
+            finalData = parsed;
+            await AsyncStorage.removeItem('pending_callback_call');
+          } else if (pendingCallback) {
+            await AsyncStorage.removeItem('pending_callback_call'); // Stale
+          }
         }
       } catch (e) {
-        console.warn('[App] Error checking pending callback:', e);
+        console.warn('[App] Error checking pending storage actions:', e);
       }
 
       if (finalData) {
         console.log('[App] Cold start notification (resolved):', finalData);
-        pendingNavigation.current = finalData;
+        if (navigationReadyRef.current) {
+          handleNotificationNavigation(finalData);
+        } else {
+          pendingNavigation.current = finalData;
+        }
+      }
+    });
+
+    // ✅ WebSocket global call events listener
+    const unsubWs = websocketService.onMessage((msg: any) => {
+      switch (msg.type) {
+        case 'call_end':
+          console.log('[App] WS call_end:', msg.call_id);
+          DeviceEventEmitter.emit('call_cancelled_externally', { call_id: msg.call_id });
+          break;
+        case 'call_rejected':
+          console.log('[App] WS call_rejected:', msg.call_id);
+          DeviceEventEmitter.emit('call_rejected_externally', { call_id: msg.call_id });
+          break;
+        case 'call_accepted':
+          console.log('[App] WS call_accepted:', msg.call_id);
+          DeviceEventEmitter.emit('call_accepted_externally', { call_id: msg.call_id });
+          break;
       }
     });
 
@@ -226,6 +278,7 @@ export default function App() {
 
     return () => {
       unsubscribeFCM?.();
+      unsubWs();
       if (deviceEventSub && typeof deviceEventSub.remove === 'function') {
         deviceEventSub.remove();
       } else if (DeviceEventEmitter.removeSubscription) {

@@ -709,7 +709,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     message_content=message_content,
                     conversation_id=conversation_id,
                     message_id=message_id,
-                    message_type=message_type
+                    message_type=message_type,
+                    sender_avatar=self.user.clean_profile_picture_url
                 )
 
                 if result > 0:

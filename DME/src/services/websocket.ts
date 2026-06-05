@@ -35,12 +35,19 @@ class WebSocketService {
   /**
    * Connect to global notification stream (persistent)
    */
-  async connectToNotifications(): Promise<void> {
+  async connectToNotifications(retries = 3): Promise<void> {
     if (this.isNotifConnected) return; // Already connected
     
     return new Promise(async (resolve, reject) => {
       try {
         const token = await AsyncStorage.getItem('access_token');
+        
+        // Retry logic if token is temporarily missing
+        if (!token && retries > 0) {
+            setTimeout(() => this.connectToNotifications(retries - 1).then(resolve).catch(reject), 500);
+            return;
+        }
+
         if (!token) throw new Error('No token');
         
         const url = getWebSocketUrl('notifications', token);

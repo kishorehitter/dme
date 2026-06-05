@@ -544,24 +544,8 @@ class CallRejectView(APIView):
             return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
 
         if call.status in ['ringing', 'initiated']:
-            call.mark_missed()
-            # ✅ Send missed call notification IMMEDIATELY on reject-while-ringing/initiated
-            try:
-                caller_name = call.caller.display_name or call.caller.email
-                conversation_id = get_conversation_id_for_call(call.caller, call.receiver)
-                caller_avatar = get_profile_picture_url(call.caller, request)
-
-                FCMService.send_missed_call_notification(
-                    recipient=call.receiver,
-                    caller_name=caller_name,
-                    caller_id=call.caller.id,
-                    call_id=call.id,
-                    call_type=call.call_type,
-                    conversation_id=conversation_id,
-                    caller_avatar=caller_avatar,
-                )
-            except Exception as e:
-                print(f"   ❌ Missed call notification error in reject: {e}")
+            call.reject_call()
+            # No missed call notification needed when receiver explicitly rejects
         else:
             call.reject_call()
             # ✅ Still send cancel_call if it wasn't ringing (e.g. accepted elsewhere)

@@ -12,6 +12,8 @@ urlpatterns = [
     path('api/chat/', include('chat.urls')),
     path('api/fcm/', include('notifications.urls')),
     path('api/calls/', include('calls.urls')),
+    path('api/youtube/', include('youtube_search.urls')),
+    path('api/music/', include('music.urls')),
 ]
 
 if settings.DEBUG:

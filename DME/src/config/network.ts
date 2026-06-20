@@ -1,7 +1,7 @@
 import Config from 'react-native-config';
 
-const PRODUCTION_HOST = Config.PRODUCTION_HOST ?? '';
-const PRODUCTION_PORT = Config.PRODUCTION_PORT ?? ''; // read from .env; empty = no port in URL
+const PRODUCTION_HOST = 'dme-19zq.onrender.com'; // not a secret → hardcode fine
+const PRODUCTION_PORT = '';
 
 const DEVELOPMENT_HOST = Config.DEVELOPMENT_HOST ?? '';
 const DEVELOPMENT_PORT = Config.DEVELOPMENT_PORT ?? '8000'; // fallback to 8000 if missing

@@ -287,7 +287,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                   }}
                   style={{ marginRight: 16 }}
                 >
-                  <MaterialCommunityIcon name="party-popper" size={24} color="#8100D1" />
+                  <MaterialCommunityIcon name="party-popper" size={28} color="#d10000" />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setMenuVisible(true)}>
                     <Icon name="ellipsis-vertical" size={24} color="#8100D1" />

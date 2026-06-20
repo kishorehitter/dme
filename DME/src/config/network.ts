@@ -1,74 +1,51 @@
-/**
- * Network Configuration for the app
- *
- * IMPORTANT: Update this file when your backend IP changes
- *
- * Common scenarios:
- * - Android Emulator: Use '10.0.2.2' (special alias to host loopback)
- * - iOS Simulator: Use 'localhost'
- * - Physical device on same WiFi: Use your PC's IP (e.g., '10.113.164.240')
- * - Production: Use your domain (e.g., 'dme-19zq.onrender.com')
- */
+import Config from 'react-native-config';
 
-// ═══════════════════════════════════════════════════════════
-// BACKEND SERVER CONFIGURATION
-// ═══════════════════════════════════════════════════════════
+const PRODUCTION_HOST = Config.PRODUCTION_HOST ?? '';
+const PRODUCTION_PORT = Config.PRODUCTION_PORT ?? ''; // read from .env; empty = no port in URL
 
-// Production (your Render backend)
-const PRODUCTION_HOST = 'dme-19zq.onrender.com';
-const PRODUCTION_PORT = ''; // HTTPS default port 443 – leave empty
+const DEVELOPMENT_HOST = Config.DEVELOPMENT_HOST ?? '';
+const DEVELOPMENT_PORT = Config.DEVELOPMENT_PORT ?? '8000'; // fallback to 8000 if missing
 
-// Development (local machine)
-const DEVELOPMENT_HOST = '172.22.134.180';
-const DEVELOPMENT_PORT = '8000';
-
-// Auto‑switch based on environment
-// __DEV__ is true only in development mode (Metro bundler)
-// It is false in release/production builds
 const IS_DEV = __DEV__;
 
 export const BACKEND_HOST = IS_DEV ? DEVELOPMENT_HOST : PRODUCTION_HOST;
 export const BACKEND_PORT = IS_DEV ? DEVELOPMENT_PORT : PRODUCTION_PORT;
 
-// Use HTTP/WS for development, HTTPS/WSS for production
 const PROTOCOL = IS_DEV ? 'http' : 'https';
 const WS_PROTOCOL = IS_DEV ? 'ws' : 'wss';
 
+// Helpers: only append :port if port is non-empty
+function withPort(host: string, port: string): string {
+  return port ? `${host}:${port}` : host;
+}
+
 export const API_BASE_URL = IS_DEV
-  ? `${PROTOCOL}://${BACKEND_HOST}:${BACKEND_PORT}/api`
-  : `${PROTOCOL}://${BACKEND_HOST}/api`;
+  ? `${PROTOCOL}://${withPort(DEVELOPMENT_HOST, DEVELOPMENT_PORT)}/api`
+  : `${PROTOCOL}://${withPort(PRODUCTION_HOST, PRODUCTION_PORT)}/api`;
 
 export const WS_BASE_URL = IS_DEV
-  ? `${WS_PROTOCOL}://${BACKEND_HOST}:${BACKEND_PORT}/ws`
-  : `${WS_PROTOCOL}://${BACKEND_HOST}/ws`;
+  ? `${WS_PROTOCOL}://${withPort(DEVELOPMENT_HOST, DEVELOPMENT_PORT)}/ws`
+  : `${WS_PROTOCOL}://${withPort(PRODUCTION_HOST, PRODUCTION_PORT)}/ws`;
 
-// ═══════════════════════════════════════════════════════════
-// Helper functions
-// ═══════════════════════════════════════════════════════════
-
-/**
- * Get the full WebSocket URL for a specific endpoint
- * @param {string} endpoint - WebSocket endpoint (e.g., 'chat/123', 'call')
- * @param {string} token - JWT token for authentication
- * @returns {string} Complete WebSocket URL
- */
 export function getWebSocketUrl(endpoint: string, token: string): string {
   return `${WS_BASE_URL}/${endpoint}/?token=${token}`;
 }
 
-/**
- * Get the full API URL for a specific endpoint
- * @param {string} endpoint - API endpoint (e.g., 'calls/initiate')
- * @returns {string} Complete API URL
- */
 export function getApiUrl(endpoint: string): string {
   return `${API_BASE_URL}/${endpoint}`;
 }
 
-// Log current configuration (useful for debugging)
 if (__DEV__) {
   console.log('🔧 Network Config:');
   console.log(`   Mode: ${IS_DEV ? 'Development' : 'Production'}`);
   console.log(`   API: ${API_BASE_URL}`);
   console.log(`   WS:  ${WS_BASE_URL}`);
+
+  // Warn if critical .env values are missing
+  if (!DEVELOPMENT_HOST) {
+    console.warn('⚠️  [network.ts] DEVELOPMENT_HOST is not set in .env — API calls will fail!');
+  }
+  if (!DEVELOPMENT_PORT) {
+    console.warn('⚠️  [network.ts] DEVELOPMENT_PORT is not set in .env — using fallback 8000');
+  }
 }

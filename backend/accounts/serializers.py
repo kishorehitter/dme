@@ -17,7 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'username', 'profile_picture', 'avatar_sticker', 'display_name',
+        fields = ('id', 'email', 'username', 'profile_picture', 'avatar_sticker', 'quick_reaction', 'display_name',
                   'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
         read_only_fields = ('id', 'email', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
 
@@ -48,7 +48,7 @@ class ProfileSetupSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ('username', 'display_name', 'bio', 'avatar_sticker', 'profile_picture')
+        fields = ('username', 'display_name', 'bio', 'avatar_sticker', 'quick_reaction', 'profile_picture')
         extra_kwargs = {
             'username': {'required': True},
             'display_name': {'required': True},
@@ -83,7 +83,7 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'display_name', 'bio', 'profile_picture', 'avatar_sticker')
+        fields = ('username', 'display_name', 'bio', 'profile_picture', 'avatar_sticker', 'quick_reaction')
 
     def validate_username(self, value):
         value = value.lower()

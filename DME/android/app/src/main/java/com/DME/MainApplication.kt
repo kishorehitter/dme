@@ -23,6 +23,7 @@ class MainApplication : Application(), ReactApplication {
           }
           add(AudioRecorderPackage())
           add(SystemBarPackage())
+          add(RichTextInputPackage())
         },
     )
   }

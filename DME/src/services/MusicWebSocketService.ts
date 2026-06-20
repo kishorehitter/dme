@@ -12,6 +12,10 @@ export type MusicWSMessage = {
     | 'aux_passed'
     | 'participant_update'
     | 'chat_message'
+    | 'reaction'
+    | 'room_name_update'
+    | 'dj_background'
+    | 'typing'
     | 'connection_established';
   data: any;
 };
@@ -104,8 +108,8 @@ class MusicWebSocketService {
     thumbnail: string;
     channelTitle: string;
     duration?: number;
-  }) {
-    this.send({ type: 'watch_load', video });
+  }, room_name?: string) {
+    this.send({ type: 'watch_load', video, room_name });
   }
 
   syncPlayback(position: number, isPlaying: boolean) {
@@ -114,6 +118,14 @@ class MusicWebSocketService {
       position,
       is_playing: isPlaying,
       host_timestamp: Date.now()
+    });
+  }
+
+  sendBackgroundState(isBackground: boolean, position: number) {
+    this.send({ 
+      type: 'dj_background', 
+      is_background: isBackground,
+      position // last known position
     });
   }
 
@@ -131,8 +143,20 @@ class MusicWebSocketService {
     this.send({ type: 'pass_aux' });
   }
 
-  sendChatMessage(text: string) {
-    this.send({ type: 'chat_message', text });
+  sendTyping(isTyping: boolean) {
+    this.send({ type: 'typing', is_typing: isTyping });
+  }
+
+  sendChatMessage(text: string, replyTo?: any, mediaUrl?: string, messageType: 'text' | 'image' | 'gif' = 'text') {
+    this.send({ type: 'chat_message', text, reply_to: replyTo, media_url: mediaUrl, message_type: messageType });
+  }
+
+  sendReaction(messageId: string, reaction: string) {
+    this.send({ type: 'reaction', messageId, reaction });
+  }
+
+  updateRoomName(room_name: string) {
+    this.send({ type: 'room_name_update', room_name });
   }
 
   // ── Core ─────────────────────────────────────────

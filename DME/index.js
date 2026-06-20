@@ -31,11 +31,17 @@ if (typeof navigator !== 'undefined' && !navigator.userAgent) {
 }
 
 import { AppRegistry, DeviceEventEmitter } from 'react-native';
+import TrackPlayer from '@rntp/player';
+import { PlaybackService } from './src/services/playback-service';
 import { registerGlobals } from '@livekit/react-native-webrtc';
 import App from './App';
 
 // Register LiveKit WebRTC globals
 registerGlobals();
+
+// Register TrackPlayer background event handler (v5 API)
+// PlaybackService sets up remote-control event listeners (play/pause/stop/next/prev)
+TrackPlayer.registerBackgroundEventHandler(PlaybackService);
 
 import messaging from '@react-native-firebase/messaging';
 import notifee, {
@@ -236,6 +242,43 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
   // 4. Handle New Message (WhatsApp Style Grouping)
   else if (data.type === 'new_message') {
     await displayGroupedNotification(data);
+  }
+
+  // 5. Handle Music Invite
+  else if (data.type === 'music_invite') {
+    const notifId = data.notif_id || data.room_code;
+    
+    // Deduplication check
+    try {
+        const key = 'fcm_handled_notif_ids';
+        const handledJson = await AsyncStorage.getItem(key);
+        let handled = handledJson ? JSON.parse(handledJson) : [];
+        if (handled.includes(notifId)) return;
+        handled.push(notifId);
+        if (handled.length > 50) handled = handled.slice(-50);
+        await AsyncStorage.setItem(key, JSON.stringify(handled));
+    } catch (e) {}
+
+    await notifee.createChannel({
+      id: CHANNELS.DEFAULT,
+      name: 'Invitations',
+      importance: AndroidImportance.HIGH,
+    });
+
+    await notifee.displayNotification({
+      id: `music_invite_${data.room_code}`,
+      title: data.notif_title || 'Watch Together Invitation',
+      body: data.notif_body || 'Join the music room!',
+      data: data,
+      android: {
+        channelId: CHANNELS.DEFAULT,
+        importance: AndroidImportance.HIGH,
+        pressAction: {
+          id: 'default',
+          launchActivity: 'default',
+        },
+      },
+    });
   }
 });
 
@@ -448,53 +491,54 @@ async function handleRejectCall(callId) {
  */
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   const { notification, pressAction } = detail;
+  const callData = notification?.data || {}; // ✅ extract it here
+
   console.log(`[Notifee Background] Event Type: ${type}, Action: ${pressAction?.id}`);
 
   if (type === EventType.ACTION_PRESS) {
-    const callData = notification?.data || {};
-    
+
     if (pressAction.id === ACTIONS.ANSWER) {
       console.log('[Notifee Background] Answer call pressed - storing pending answer');
-      const enrichedData = { 
-        ...callData, 
+      const enrichedData = {
+        ...callData,
         _action: ACTIONS.ANSWER,
         timestamp: Date.now(),
-        fromBackground: true 
+        fromBackground: true,
       };
       await AsyncStorage.setItem('pending_call_answer', JSON.stringify(enrichedData));
-      const notifId = callData.call_id ? `incoming_call_${callData.call_id}` : 'incoming_call_notification';
+      const notifId = callData.call_id
+        ? `incoming_call_${callData.call_id}`
+        : 'incoming_call_notification';
       await notifee.cancelNotification(notifId);
+
     } else if (pressAction.id === ACTIONS.REJECT) {
       console.log('[Notifee Background] Reject call pressed');
       const callId = callData.call_id;
       const notifId = callId ? `incoming_call_${callId}` : 'incoming_call_notification';
       await notifee.cancelNotification(notifId);
       if (callId) await handleRejectCall(callId);
+
     } else if (pressAction.id === ACTIONS.CALLBACK) {
       console.log('[Notifee Background] Call back pressed');
-      const enrichedData = { 
-        ...callData, 
+      const enrichedData = {
+        ...callData,
         _action: ACTIONS.CALLBACK,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       };
       await AsyncStorage.setItem('pending_callback_call', JSON.stringify(enrichedData));
       await notifee.cancelNotification(notification.id);
+
     } else if (pressAction.id === ACTIONS.REPLY) {
       const text = detail.input;
       const convId = callData.conv_id || callData.conversation_id;
       console.log(`[Notifee Background] REPLY action, convId: ${convId}, text: ${text}`);
-      
+
       if (convId && text) {
         await notifee.cancelNotification(notification.id);
-        
         try {
           const token = await AsyncStorage.getItem('access_token');
-          console.log(`[Notifee Background] Token found: ${!!token}`);
-          
           if (token) {
             const url = `${API_BASE_URL}/chat/conversations/${convId}/messages/`;
-            console.log(`[Notifee Background] Fetching: ${url}`);
-            
             const response = await fetch(url, {
               method: 'POST',
               headers: {
@@ -503,7 +547,6 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
               },
               body: JSON.stringify({ content: text, message_type: 'text' }),
             });
-            
             if (response.ok) {
               console.log('[Notifee Background] Reply sent successfully');
             } else {
@@ -514,8 +557,6 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
         } catch (err) {
           console.error('[Notifee Background] Reply API error:', err);
         }
-      } else {
-        console.warn('[Notifee Background] Missing convId or text');
       }
     }
   }

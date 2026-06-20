@@ -270,10 +270,14 @@ class FCMService {
       id: `missed_call_${data.call_id || Date.now()}`,
       title: data.notif_title || 'Missed Call',
       body: data.notif_body || `You missed a call from ${data.caller_name || 'Someone'}`,
-      data: {
+      data: Object.entries({
         ...data,
-        type: 'missed_call', // Ensure type is explicitly set
-      } as { [key: string]: string },
+        type: 'missed_call',
+      }).reduce((acc, [key, value]) => {
+        // Convert everything (booleans, numbers) cleanly to a string
+        acc[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+        return acc;
+      }, {} as Record<string, string>),
       android: {
         channelId: CHANNELS.CALL,
         importance: AndroidImportance.HIGH,
@@ -308,7 +312,7 @@ class FCMService {
     const displayed = await notifee.getDisplayedNotifications();
     const existing = displayed.find((n) => n.id === notifId);
 
-    let messages: any[] = existing?.notification?.android?.style?.messages ?? [];
+    let messages: any[] = (existing?.notification?.android?.style as any)?.messages ?? [];
     messages.push({
       text: data.notif_body || '',
       timestamp: Date.now(),
@@ -361,6 +365,28 @@ class FCMService {
     await notifee.displayNotification(notificationPayload);
   }
 
+  async displayMusicInviteNotification(data: FCMData): Promise<void> {
+    const channelId = await notifee.createChannel({
+      id: 'music_invites',
+      name: 'Music Invitations',
+      importance: AndroidImportance.HIGH,
+    });
+
+    await notifee.displayNotification({
+      id: `music_invite_${data.room_code}`,
+      title: data.notif_title || 'Watch Together Invitation',
+      body: data.notif_body || 'Join the music room!',
+      data: data,
+      android: {
+        channelId,
+        importance: AndroidImportance.HIGH,
+        pressAction: {
+          id: 'default',
+        },
+      },
+    });
+  }
+
   async displayDefaultNotification(
     title?: string,
     body?: string,
@@ -395,6 +421,18 @@ class FCMService {
 
   async routeMessage(remoteMessage: FirebaseMessagingTypes.RemoteMessage): Promise<void> {
     const data = (remoteMessage.data ?? {}) as FCMData;
+    
+    // ✅ NEW: Deduplicate using notif_id (sent from backend)
+    const notifId = data.notif_id;
+    if (notifId) {
+      if (this._processedEventIds.has(notifId)) {
+        console.log(`[FCMService] Deduplicating message: ${notifId}`);
+        return;
+      }
+      this._processedEventIds.add(notifId);
+      setTimeout(() => this._processedEventIds.delete(notifId), 5000); // 5s window
+    }
+
     const title = remoteMessage.notification?.title ?? data.notif_title;
     const body = remoteMessage.notification?.body ?? data.notif_body;
 
@@ -417,7 +455,7 @@ class FCMService {
             console.log('[FCMService] Foreground call: navigating directly');
             this._onNotificationPress({
               ...data,
-              _action: data._action ?? null,
+              _action: data._action ?? undefined,
             });
           }
           break;
@@ -452,6 +490,11 @@ class FCMService {
           break;
         }
 
+        case 'music_invite': {
+          await this.displayMusicInviteNotification(data);
+          break;
+        }
+
         default:
           await this.displayDefaultNotification(title, body, data);
           break;
@@ -460,7 +503,7 @@ class FCMService {
       if (!remoteMessage.notification) {
         if (data.type === 'incoming_call' && !this._isInCall) {
           await this.displayIncomingCallNotification(data);
-          this._onNotificationPress?.({ ...data, _action: data._action ?? null });
+          this._onNotificationPress?.({ ...data, _action: data._action ?? undefined });
         } else if (data.type === 'new_message') {
           const convId = data.conv_id || data.conversation_id;
           if (convId && this._activeConversationId === String(convId)) return;
@@ -615,7 +658,7 @@ class FCMService {
         onNotificationPress?.({
           ...data,
           autoAccept: false,
-          _action: data._action || null,
+          _action: data._action || undefined,
         });
       } else {
         onNotificationPress?.(data);

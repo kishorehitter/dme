@@ -38,8 +38,15 @@ interface UserProfile {
   username: string;
   profile_picture: string | null;
   avatar_sticker: string | null;
+  quick_reaction: string;
   bio: string;
+  last_username_change: string | null;
 }
+
+const QUICK_REACTIONS = [
+  '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', 
+  '😂', '😍', '😮', '😢', '😡', '👍', '👎', '🎉', '🔥', '✨', '💯', '🙏', '👏', '😎', '🤔'
+];
 
 const MALE_STICKERS = [
   { id: 'm1', emoji: '👨', label: 'Man' },
@@ -122,6 +129,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     display_name: '',
     username: '',
     bio: '',
+    quick_reaction: '❤️',
   });
   const [showStickerModal, setShowStickerModal] = useState(false);
   const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('male');
@@ -349,6 +357,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               display_name: fullProfile.display_name || '',
               username: fullProfile.username || '',
               bio: fullProfile.bio || '',
+              quick_reaction: fullProfile.quick_reaction || '❤️',
             });
           } else {
             setProfile(viewingOtherProfile);
@@ -356,6 +365,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               display_name: viewingOtherProfile.display_name || '',
               username: viewingOtherProfile.username || '',
               bio: viewingOtherProfile.bio || '',
+              quick_reaction: viewingOtherProfile.quick_reaction || '❤️',
             });
           }
         } catch (err) {
@@ -388,6 +398,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           display_name: data.display_name || '',
           username: data.username || '',
           bio: data.bio || '',
+          quick_reaction: data.quick_reaction || '❤️',
         });
       } else if (user) {
         setProfile(user as any);
@@ -395,6 +406,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           display_name: user.display_name || '',
           username: user.username || '',
           bio: user.bio || '',
+          quick_reaction: user.quick_reaction || '❤️',
         });
       }
     } catch (error) {
@@ -405,6 +417,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           display_name: user.display_name || '',
           username: user.username || '',
           bio: user.bio || '',
+          quick_reaction: user.quick_reaction || '❤️',
         });
       }
     }
@@ -564,6 +577,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       const updateData: any = {
         username: formData.username.trim(),
         bio: formData.bio.trim(),
+        quick_reaction: formData.quick_reaction,
       };
       if (formData.display_name && formData.display_name.trim() !== '') {
         updateData.display_name = formData.display_name.trim();
@@ -588,7 +602,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           display_name: data.display_name || '',
           username: data.username || '',
           bio: data.bio || '',
+          quick_reaction: data.quick_reaction || '❤️',
         });
+        await refreshUser();
         Toast.show({
           type: 'success',
           text1: 'Profile updated successfully',
@@ -855,6 +871,30 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           />
           {!isReadOnly && <Text style={styles.hint}>{(formData.bio || '').length}/139 characters</Text>}
         </View>
+
+        {!isReadOnly && (
+          <View style={styles.inputContainer}>
+            <Text style={styles.label}>Double-Tap Reaction</Text>
+            <View style={styles.emojiSelectionRow}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {QUICK_REACTIONS.map(emoji => (
+                  <TouchableOpacity
+                    key={emoji}
+                    style={[
+                      styles.emojiSelectItem,
+                      formData.quick_reaction === emoji && styles.emojiSelectItemActive,
+                    ]}
+                    onPress={() => setFormData({ ...formData, quick_reaction: emoji })}
+                  >
+                    <Text style={styles.emojiSelectText}>{emoji}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+            <Text style={styles.hint}>Choose the emoji that appears when you double-tap a message.</Text>
+          </View>
+        )}
+
         {!isReadOnly && (
           <TouchableOpacity
             style={[
@@ -1070,5 +1110,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statusViewedRing: { borderWidth: 3, borderColor: '#ccc' },
- 
+  emojiSelectionRow: {
+    flexDirection: 'row',
+    marginTop: spacing.xs,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    padding: spacing.xs,
+  },
+  emojiSelectItem: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 4,
+    borderRadius: 22,
+  },
+  emojiSelectItemActive: {
+    backgroundColor: colors.primary + '20',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  emojiSelectText: {
+    fontSize: 24,
+  },
 });

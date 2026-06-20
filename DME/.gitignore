@@ -78,6 +78,8 @@ android/app/google-services.json
 firebase-service-account.json
 
 .env
+.env.*
+!.env.example
 *.sqlite3
 
 backend/media/

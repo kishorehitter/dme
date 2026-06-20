@@ -1,0 +1,51 @@
+diff --git a/node_modules/@terrylinla/react-native-sketch-canvas/index.js b/node_modules/@terrylinla/react-native-sketch-canvas/index.js
+index 7935842..114ab02 100644
+--- a/node_modules/@terrylinla/react-native-sketch-canvas/index.js
++++ b/node_modules/@terrylinla/react-native-sketch-canvas/index.js
+@@ -5,8 +5,8 @@ import ReactNative, {
+   Text,
+   TouchableOpacity,
+   FlatList,
+-  ViewPropTypes,
+ } from 'react-native'
++import { ViewPropTypes } from 'deprecated-react-native-prop-types'
+ import SketchCanvas from './src/SketchCanvas'
+ import { requestPermissions } from './src/handlePermissions';
+ 
+diff --git a/node_modules/@terrylinla/react-native-sketch-canvas/src/SketchCanvas.js b/node_modules/@terrylinla/react-native-sketch-canvas/src/SketchCanvas.js
+index 8f4fe48..dc43b41 100644
+--- a/node_modules/@terrylinla/react-native-sketch-canvas/src/SketchCanvas.js
++++ b/node_modules/@terrylinla/react-native-sketch-canvas/src/SketchCanvas.js
+@@ -9,17 +9,11 @@ import ReactNative, {
+   PanResponder,
+   PixelRatio,
+   Platform,
+-  ViewPropTypes,
+   processColor
+ } from 'react-native'
++import { ViewPropTypes } from 'deprecated-react-native-prop-types'
+ import { requestPermissions } from './handlePermissions';
+ 
+-const RNSketchCanvas = requireNativeComponent('RNSketchCanvas', SketchCanvas, {
+-  nativeOnly: {
+-    nativeID: true,
+-    onChange: true
+-  }
+-});
+ const SketchCanvasManager = NativeModules.RNSketchCanvasManager || {};
+ 
+ class SketchCanvas extends React.Component {
+@@ -255,6 +249,13 @@ class SketchCanvas extends React.Component {
+   }
+ }
+ 
++const RNSketchCanvas = requireNativeComponent('RNSketchCanvas', SketchCanvas, {
++  nativeOnly: {
++    nativeID: true,
++    onChange: true
++  }
++});
++
+ SketchCanvas.MAIN_BUNDLE = Platform.OS === 'ios' ? UIManager.RNSketchCanvas.Constants.MainBundlePath : '';
+ SketchCanvas.DOCUMENT = Platform.OS === 'ios' ? UIManager.RNSketchCanvas.Constants.NSDocumentDirectory : '';
+ SketchCanvas.LIBRARY = Platform.OS === 'ios' ? UIManager.RNSketchCanvas.Constants.NSLibraryDirectory : '';

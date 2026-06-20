@@ -6,10 +6,12 @@
  * 2. AUDIO: WhatsApp-style audio player with smooth progress
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import FastImage from 'react-native-fast-image';
 import {
   View,
   Text,
+  Image,
   FlatList,
   TextInput,
   TouchableOpacity,
@@ -17,7 +19,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Image,
   Modal,
   Animated,
   PanResponder,
@@ -44,11 +45,14 @@ import fcmService from '../../services/fcm';
 import notifee from '@notifee/react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { StatusService } from '../../services/StatusService';
+import RichTextInput from '../../components/RichTextInput';
+import ChatInputArea from '../../components/ChatInputArea';
 
 import FullScreenMediaViewer from '../../components/FullScreenMediaViewer';
 import { API_BASE_URL, getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
+import StickerPreviewModal from '../../components/StickerPreviewModal';
 
 const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
@@ -148,6 +152,79 @@ interface OtherUser {
   last_seen: string;
 }
 
+const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    if (url) {
+      Image.getSize(url, (width, height) => {
+        if (width && height) {
+          // Max bounds (smaller for stickers, larger for images)
+          const MAX_W = isSticker ? 100 : 200;
+          const MAX_H = isSticker ? 150 : 300;
+
+          let dW = width;
+          let dH = height;
+
+          const aspectRatio = width / height;
+
+          if (dW > MAX_W) {
+            dW = MAX_W;
+            dH = MAX_W / aspectRatio;
+          }
+
+          if (dH > MAX_H) {
+            dH = MAX_H;
+            dW = MAX_H * aspectRatio;
+          }
+
+          setDimensions({ width: dW, height: dH });
+        }
+      }, () => {
+        setDimensions({ width: 150, height: 150 });
+      });
+    }
+  }, [url, isSticker]);
+
+  if (!dimensions) {
+    return (
+        <View style={[styles.imageContainer, { alignSelf: isMe ? 'flex-end' : 'flex-start', width: 100, height: 100, justifyContent: 'center', alignItems: 'center' }]}>
+            <ActivityIndicator size="small" color={THEME_COLOR} />
+        </View>
+    );
+  }
+
+  return (
+    <TouchableOpacity 
+      style={[
+        styles.imageContainer, 
+        { 
+            alignSelf: isMe ? 'flex-end' : 'flex-start',
+            width: dimensions.width,
+            height: dimensions.height,
+            backgroundColor: 'transparent',
+            padding: 0,
+            marginTop: 4,
+        }
+      ]}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      activeOpacity={0.9}
+    >
+      <FastImage 
+        source={{ uri: url }} 
+        style={{ 
+          height: dimensions.height, 
+          width: dimensions.width,
+          borderRadius: isSticker ? 0 : 12,
+        }} 
+        resizeMode={FastImage.resizeMode.contain}
+      />
+      {!isSticker && timeOverlay}
+    </TouchableOpacity>
+  );
+};
+
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
   const { conversationId, name } = route.params;
@@ -179,13 +256,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     };
   }, [conversationId]);
 
-  // FIX 1: Store messages in REVERSED order for inverted FlatList
   // inverted FlatList shows last item first (bottom) without any scrollToEnd
   const [messages, setMessages] = useState<Message[]>([]);
-  const [conversation, setConversation] = useState<any>(null); // Added
-  const [isGroup, setIsGroup] = useState(false); // Added
-  const [groupDescription, setGroupDescription] = useState(''); // Added
-  const [activeGroupCall, setActiveGroupCall] = useState<any>(null); // Restore this
+  const [conversation, setConversation] = useState<any>(null); 
+  const [isGroup, setIsGroup] = useState(false); 
+  const [groupDescription, setGroupDescription] = useState(''); 
+  const [activeGroupCall, setActiveGroupCall] = useState<any>(null); 
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -203,7 +279,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [shouldSkipLoad, setShouldSkipLoad] = useState(false); // Skip loading messages
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false); // Scroll to bottom button
-  const [showMessageActions, setShowMessageActions] = useState(false); // Instagram-style long press menu
+  const [showMessageActions, setShowMessageActions] = useState(false); 
   const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [recentEmojis, setRecentEmojis] = useState<string[]>([
@@ -216,6 +292,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [showFullEmojiPicker, setShowFullEmojiPicker] = useState(false); // Full emoji picker overlay
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null); // Message being edited
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
+  const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<number | null>(null); // Message to highlight
   const [searchMode, setSearchMode] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -263,6 +340,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const isHoldingRef = useRef(false);
   const currentScrollOffset = useRef(0);
   const contentHeightRef = useRef(0);
+  const [inputClearKey, setInputClearKey] = useState(0);
+  const clearInputRef = useRef<() => void>(null);
 
   const EMOJIS = ['❤️', '😂', '😮', '😢', '😡', '👍', '👎', '🎉'];
 
@@ -732,7 +811,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             m.id === editingMessageId ? { ...m, content: text } : m,
           ),
         );
-        setInputText('');
+        setInputText(''); 
+        clearInputRef.current?.();
+        setInputClearKey(k => k + 1);
         setEditingMessageId(null);
         Toast.show({
           type: 'success',
@@ -751,6 +832,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     setIsSending(true);
     setInputText('');
+    clearInputRef.current?.();
+    setInputClearKey(k => k + 1);
     setHighlightMessageId(null); // Clear any active highlight when sending a new message
 
     if (websocketService.getConnectionState()) {
@@ -784,6 +867,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       websocketService.sendMessage(text, replyToMessage?.id);
       setReplyToMessage(null);
       setIsSending(false);
+      setInputText('');
+      clearInputRef.current?.();
 
       // Auto-scroll to bottom after sending reply
       setTimeout(() => {
@@ -809,6 +894,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           const nm = await res.json();
           setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
           setReplyToMessage(null);
+          setInputText('');
+          clearInputRef.current?.();  
           // Auto-scroll to bottom after sending reply
           setTimeout(() => {
             flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
@@ -915,19 +1002,53 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
-  const handleTyping = (text: string) => {
-    setInputText(text);
-    if (websocketService.getConnectionState())
-      websocketService.sendTyping(!!text);
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      if (websocketService.getConnectionState())
+  const typingIndicatorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const lastTypingState = useRef<boolean | null>(null);
+
+  const handleTyping = useCallback((text: string) => {
+    setInputText(text); // ✅ back to normal, no setTimeout needed
+
+    const isTyping = text.length > 0;
+    if (lastTypingState.current === isTyping) return;
+
+    if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
+
+    if (isTyping) {
+      typingIndicatorTimeout.current = setTimeout(() => {
+        if (websocketService.getConnectionState()) {
+          websocketService.sendTyping(true);
+          lastTypingState.current = true;
+        }
+      }, 400);
+    } else {
+      lastTypingState.current = false;
+      if (websocketService.getConnectionState()) {
         websocketService.sendTyping(false);
-    }, 2000);
-  };
+      }
+    }
+  }, []);
+
+  const handleAttachmentStable = useCallback(() => {
+    setAttachmentMenuVisible(true);
+  }, []);
+
+  const handleCameraCaptureStable = useCallback(() => {
+    setCameraMenuVisible(true);
+  }, []);
+
+  const setStickerPreviewStable = useCallback((val: any) => {
+    setStickerPreview(val);
+  }, []);
+
+  const sendMessageStable = useCallback(() => {
+    sendMessage();
+  }, [sendMessage]);
+
+
 
   // Replaces handleCameraCapture
-// ... inside ChatRoomScreen component ...
+
   const handleCameraCapture = () => {
     setCameraMenuVisible(true);
   };
@@ -977,6 +1098,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const sendImageMessage = async (asset: any) => {
     setIsSending(true);
+    
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
@@ -1009,6 +1131,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       if (res.ok) {
         const nm = await res.json();
         setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
+        setInputClearKey(k => k + 1);
       } else {
         const errorText = await res.text();
         console.error('[Chat] Upload failed:', res.status, errorText);
@@ -1370,6 +1493,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const handleMessagePress = (item: Message, event: any) => {
     const now = Date.now();
     const DOUBLE_TAP_DELAY = 300;
+    const { pageX, pageY } = event.nativeEvent;
 
     if (doubleTapTimeoutRef.current) {
       clearTimeout(doubleTapTimeoutRef.current);
@@ -1377,7 +1501,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
 
     if (now - lastTapTimeRef.current < DOUBLE_TAP_DELAY) {
-      handleDoubleTapReaction(item);
+      handleDoubleTapReaction(item, pageX, pageY);
       lastTapTimeRef.current = 0;
     } else {
       doubleTapTimeoutRef.current = setTimeout(async () => {
@@ -1395,9 +1519,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
-  const handleDoubleTapReaction = (item: Message) => {
-    // Show the heart animation in center of screen
-    setDoubleTapReaction({ visible: true, x: 0, y: 0, messageId: item.id });
+  const handleDoubleTapReaction = (item: Message, x: number = 0, y: number = 0) => {
+    // Show the heart animation at tap location
+    setDoubleTapReaction({ visible: true, x, y, messageId: item.id });
 
     // Run the pop animation
     Animated.sequence([
@@ -1431,8 +1555,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       doubleTapOpacity.setValue(0);
     });
 
-    // Toggle the heart reaction (add if not present, remove if present)
-    toggleReaction(item.id, '❤️');
+    // Toggle the user's quick reaction (add if not present, remove if present)
+    const reactionEmoji = currentUser?.quick_reaction || '❤️';
+    toggleReaction(item.id, reactionEmoji);
   };
 
   const handleSearchTextChange = (text: string) => {
@@ -1591,7 +1716,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   // ── RENDER MESSAGE ───────────────────────────────
-  const renderMessage = ({ item }: { item: Message }) => {
+  const renderMessage = useCallback(({ item }: { item: Message }) => {
     console.log('RENDER MSG:', item.id, item.message_type, item.content, item.created_at);
     const isMe = item.sender.id === currentUser?.id;
     const sName =
@@ -1601,7 +1726,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       'Unknown';
     const reaction = item.reactions?.[String(currentUser?.id)];
     const allReactions = item.reactions || {};
-    const hasReactions = Object.keys(allReactions).length > 0;
+    // Only count reactions that actually have an emoji string
+    const validReactions = Object.entries(allReactions).filter(([_, emoji]) => !!emoji && String(emoji).trim() !== '');
+    const hasReactions = validReactions.length > 0;
 
     // Handle deleted messages
     if (item.is_deleted) {
@@ -1660,17 +1787,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     // ONLY process media messages
     if (!['image', 'video', 'audio', 'document'].includes(item.message_type)) return null;
 
+    const isMe = item.sender.id === currentUser?.id;
     const rawUrl = (item as any).media_url || item.media_file;
     const url = resolveImageUrl(rawUrl);
     
     const isStatusReply = item.content?.startsWith('↩ Replied to status');
     const hasMediaError = mediaErrorIds.includes(item.id);
 
-    const timeOverlay = (
-      <View style={styles.mediaTimeOverlay}>
-        <Text style={styles.mediaTimeText}>{String(fmtMsgTime(item.created_at) || '')}</Text>
-      </View>
-    );
+    const alignmentStyle = { alignSelf: isMe ? 'flex-end' : 'flex-start' };
 
     // Unified Placeholder for deleted/unavailable media
     if (!url || hasMediaError || (isStatusReply && !url)) {
@@ -1683,13 +1807,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         return (
           <View 
             pointerEvents="none"
-            style={[styles.imageContainer, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
+            style={[styles.imageContainer, alignmentStyle, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
           >
             <Icon name="alert-circle-outline" size={32} color="#999" />
             <Text style={{ color: '#999', fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
                {label}
             </Text>
-            {timeOverlay}
           </View>
         );
       }
@@ -1723,7 +1846,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         
         return (
           <TouchableOpacity 
-            style={[styles.documentMessage, { padding: 12, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: borderRadius.md }]}
+            style={[styles.documentMessage, alignmentStyle, { padding: 12, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: borderRadius.md }]}
             onPress={() => downloadAndOpenFile(url, fileName)}
           >
             <View style={styles.documentIconContainer}>
@@ -1742,7 +1865,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 </Text>
             </View>
             <Icon name="download-outline" size={20} color="#666" />
-            {timeOverlay}
           </TouchableOpacity>
         );
     }
@@ -1750,38 +1872,28 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     const isImage = item.message_type === 'image' || 
         (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
 
+    const isSticker = item.media_file?.toLowerCase().endsWith('.webp');
+
     if (isImage)
       return (
-        <TouchableOpacity 
-          style={styles.imageContainer}
-          onPress={(e) => handleMessagePress(item, e)}
+        <ChatImage 
+          url={url}
+          isMe={isMe}
+          onPress={(e: any) => handleMessagePress(item, e)}
           onLongPress={() => handleMessageLongPress(item)}
-          activeOpacity={0.9}
-          delayLongPress={500}
-        >
-          <Image 
-            source={{ uri: url }} 
-            style={styles.fixedMedia} 
-            resizeMode="contain" 
-            onError={() => {
-              console.log('Media load error for message:', item.id);
-              setMediaErrorIds(prev => prev.includes(item.id) ? prev : [...prev, item.id]);
-            }}
-          />
-          {timeOverlay}
-        </TouchableOpacity>
+          isSticker={isSticker}
+        />
       );
 
     if (item.message_type === 'audio') {
       return (
-        <View style={styles.audioContainer}>
+        <View style={[styles.audioContainer, alignmentStyle]}>
           <AudioPlayer
             mediaUrl={url}
             themeColor={THEME_COLOR}
             duration={item.audio_duration}
             messageId={item.id}
           />
-          {timeOverlay}
         </View>
       );
     }
@@ -1789,22 +1901,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     if (item.message_type === 'video') {
       return (
         <TouchableOpacity
-          style={styles.videoContainer}
+          style={[styles.videoContainer, alignmentStyle, { alignItems: isMe ? 'flex-end' : 'flex-start' }]}
           onPress={(e) => handleMessagePress(item, e)}
           onLongPress={() => handleMessageLongPress(item)}
           activeOpacity={0.9}
           delayLongPress={500}
         >
-          <View style={{ justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ justifyContent: 'center', alignItems: 'center', flex: 1, width: '100%' }}>
             <Icon name="play-circle" size={48} color="rgba(255,255,255,0.9)" />
           </View>
-          {timeOverlay}
         </TouchableOpacity>
       );
     }
       
       return null;
     };
+
+    const isMediaMessage = ['image', 'video'].includes(item.message_type);
 
     return (
       <View
@@ -1817,6 +1930,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           style={[
             styles.messageBubble,
             isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+            { alignItems: isMe ? 'flex-end' : 'flex-start' },
+            isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
+            !isMediaMessage && { minWidth: 115 },
             highlightMessageId === item.id && { 
               backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
               borderWidth: 2,
@@ -1831,7 +1947,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
              if (isMedia && isUnavailable) return;
              handleMessagePress(item, e);
-          }}
+             }}
           onLongPress={() => handleMessageLongPress(item)}
           activeOpacity={0.8}
           delayLongPress={500}
@@ -1858,46 +1974,80 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
           {!isMe && isGroup && <Text style={styles.senderName}>{String(sName || '')}</Text>}
 
-          {/* Media inside bubble - no background/padding wrapper here */}
-          {['image', 'video', 'audio', 'document'].includes(item.message_type) && renderMedia()}
-
-          {(item.message_type === 'text' || (!!item.content && typeof item.content === 'string' && !['image', 'video', 'voice note', 'voice message', 'document', 'media'].includes(item.content.toLowerCase()))) && (
-            <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.theirMessageText, item.message_type !== 'text' && { marginTop: 6 }]}>
-              {String(item.content || '')}
-            </Text>
-          )}
-
-          {hasReactions && (
-            <View style={styles.reactionBadge}>{Object.entries(allReactions).map(([userId, emoji]) => (
-                <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
-              ))}
+          {['image', 'video', 'audio', 'document'].includes(item.message_type) ? (
+            <View>
+              <View style={{ position: 'relative' }}>
+                {renderMedia()}
+                <View style={[styles.messageFooter, { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }]}>
+                  <Text style={[styles.messageTime, { color: '#FFF' }]}>{fmtMsgTime(item.created_at)}</Text>
+                  {isMe && (
+                    <Text style={[styles.messageStatus, { color: '#FFF', marginLeft: 4 }]}>{item.is_read ? '✓✓' : item.delivered_at ? '✓✓' : '✓'}</Text>
+                  )}
+                </View>
+              </View>
+              {hasReactions && (
+                <View style={[
+                  styles.reactionBadge,
+                  {
+                    position: 'relative',
+                    alignSelf: isMe ? 'flex-end' : 'flex-start',
+                    marginTop: -4,
+                    marginLeft: isMe ? 0 : 4,
+                    marginRight: isMe ? 4 : 0,
+                    zIndex: 1,
+                  }
+                ]}>
+                  {validReactions.map(([userId, emoji]) => (
+                    <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
+                  ))}
+                </View>
+              )}
             </View>
-          )}
+          ) : (
+            <>
+              {(item.message_type === 'text' || (!!item.content && typeof item.content === 'string' && !['image', 'video', 'voice note', 'voice message', 'document', 'media', '[sticker]'].includes(item.content.toLowerCase()))) && (
+                <View style={{ position: 'relative', alignSelf: 'stretch' }}>
+                  <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.theirMessageText, item.message_type !== 'text' && { marginTop: 6 }]}>
+                    {String(item.content || '')}
+                    <Text style={{ color: 'transparent' }}>
+                      {isMe ? "\u00A0\u2003\u2003\u2003\u2003\u200D" : "\u00A0\u2003\u2003\u2003\u200D"}
+                    </Text>
+                  </Text>
+                  <View style={styles.inlineTimestampContainer}>
+                    <Text style={[styles.inlineTimestampText, isMe ? styles.myMessageTime : styles.theirMessageTime]}>
+                      {fmtMsgTime(item.created_at)}
+                    </Text>
+                    {isMe && (
+                      item.is_read
+                        ? <Text style={[styles.inlineMessageStatus, styles.seenText]}> ✓✓</Text>
+                        : item.delivered_at
+                        ? <Text style={[styles.inlineMessageStatus, styles.deliveredText]}> ✓✓</Text>
+                        : <Text style={[styles.inlineMessageStatus, styles.sentText]}> ✓</Text>
+                    )}
+                  </View>
+                </View>
+              )}
 
-          {/* Footer only for non-media messages to avoid double time */}
-          {!['image', 'video', 'audio', 'voice note', 'document'].includes(item.message_type) && (
-            <View style={styles.messageFooter}>
-                <Text
-                style={[
-                    styles.messageTime,
-                    isMe ? styles.myMessageTime : styles.theirMessageTime,
-                ]}
-                >
-                {fmtMsgTime(item.created_at)}
-                </Text>
-                {isMe && (
-                  item.is_read
-                    ? <Text style={[styles.messageStatus, styles.seenText]}>✓✓</Text>
-                    : item.delivered_at
-                    ? <Text style={[styles.messageStatus, styles.deliveredText]}>✓✓</Text>
-                    : <Text style={[styles.messageStatus, styles.sentText]}>✓</Text>
-                )}
-            </View>
+              {hasReactions && (
+                <View style={[
+                  styles.reactionBadge,
+                  {
+                    alignSelf: isMe ? 'flex-end' : 'flex-start',
+                    marginLeft: isMe ? 0 : 4,
+                    marginRight: isMe ? 4 : 0,
+                  }
+                ]}>{validReactions.map(([userId, emoji]) => (
+                    <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
+                  ))}
+                </View>
+              )}
+            </>
           )}
         </TouchableOpacity>
       </View>
     );
-  };
+   }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId]);  // ← replace the single }; with this
+  
 
   if (isLoading) {
     return (
@@ -2210,13 +2360,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             style={[
               styles.doubleTapReaction,
               {
+                top: doubleTapReaction.y,
+                left: doubleTapReaction.x,
                 transform: [{ scale: doubleTapScale }],
                 opacity: doubleTapOpacity,
               },
             ]}
             pointerEvents="none"
           >
-            <Text style={styles.doubleTapHeart}>❤️</Text>
+            <Text style={styles.doubleTapHeart}>{currentUser?.quick_reaction || '❤️'}</Text>
           </Animated.View>
         </View>
       )}
@@ -2503,36 +2655,22 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         </View>
       ) : (
         <View style={styles.inputContainer}>
-          {!isRecording && (
-            <>
-              <TouchableOpacity
-                style={styles.attachmentButton}
-                onPress={handleAttachment}
-              >
-                <Icon name="add-outline" size={28} color="#666" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.attachmentButton}
-                onPress={handleCameraCapture}
-              >
-                <Icon name="camera" size={28} color="#666" />
-              </TouchableOpacity>
-            </>
-          )}
-
-          {!isRecording && (
-            <TextInput
-              style={styles.input}
-              placeholder={
-                editingMessageId ? 'Edit your message...' : 'Message'
-              }
-              placeholderTextColor="#999"
-              value={inputText}
-              onChangeText={handleTyping}
-              multiline
-              maxLength={2000}
-            />
-          )}
+          <ChatInputArea
+            isRecording={isRecording}
+            editingMessageId={editingMessageId}
+            inputText={inputText}
+            isSending={isSending}
+            handleAttachment={handleAttachmentStable}       
+            handleCameraCapture={handleCameraCaptureStable} // ✅ stable
+            handleTyping={handleTyping}                     // ✅ stable (useCallback)
+            sendMessage={sendMessageStable}                 // ✅ stable
+            setStickerPreview={setStickerPreviewStable}     // ✅ stable
+            micPanResponder={micPanResponder}
+            micButtonScale={micButtonScale}
+            THEME_COLOR={THEME_COLOR}
+            inputClearKey={inputClearKey}
+            onRegisterClear={(fn) => { clearInputRef.current = fn; }}
+          />
 
           {isRecording && (
             <Animated.View
@@ -2562,50 +2700,22 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               </Text>
             </Animated.View>
           )}
-
-          <Animated.View
-            style={[
-              styles.micButton,
-              isRecording && styles.micButtonRecording,
-              { transform: [{ scale: isRecording ? 1 : micButtonScale }] },
-            ]}
-            {...micPanResponder.panHandlers}
-            collapsable={false}
-          >
-            <Icon
-              name={isRecording ? 'mic' : 'mic'}
-              size={24}
-              color={isRecording ? '#FFF' : '#666'}
-            />
-          </Animated.View>
-
-          {!isRecording && (
-            <TouchableOpacity
-              style={[
-                styles.sendButton,
-                { backgroundColor: editingMessageId ? '#FF9800' : THEME_COLOR },
-              ]}
-              onPress={() => sendMessage()}
-              disabled={isSending}
-            >
-              {isSending ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <Icon
-                  name={editingMessageId ? 'checkmark' : 'send'}
-                  size={20}
-                  color="#FFF"
-                  style={!editingMessageId ? { marginLeft: 2 } : {}}
-                />
-              )}
-            </TouchableOpacity>
-          )}
         </View>
       )}
 
       <Toast />
-      <MediaPickerModal 
-          visible={cameraMenuVisible} 
+      <StickerPreviewModal
+        visible={!!stickerPreview}
+        mediaUri={stickerPreview?.uri ?? ''}
+        mimeType={stickerPreview?.mimeType ?? ''}
+        onClose={() => setStickerPreview(null)}
+        onSend={async (uri, mimeType, caption) => {
+          setStickerPreview(null);
+          await sendImageMessage({ uri, type: mimeType });
+        }}
+      />
+      <MediaPickerModal
+          visible={cameraMenuVisible}
           onClose={() => setCameraMenuVisible(false)}
           mode="camera"
           bottom={Platform.OS === 'ios' ? 70 : 60}
@@ -2621,7 +2731,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           bottom={Platform.OS === 'ios' ? 70 : 60}
           left={20}
           onMediaSelected={async (asset, type) => {
-              await sendImageMessage(asset);
+              if (type === 'image') {
+                  setStickerPreview({ uri: asset.uri, mimeType: asset.type || 'image/jpeg' });
+              } else {
+                  await sendImageMessage(asset);
+              }
           }}
           onDocumentSelected={async (doc) => {
               await sendDocumentMessage(doc);
@@ -2728,19 +2842,19 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: THEME_COLOR, fontSize: fontSize.sm, fontWeight: 'bold' },
   messageBubble: {
-    maxWidth: '75%',
+    maxWidth: '85%',
     padding: spacing.md,
     borderRadius: borderRadius.lg,
   },
-  myMessageBubble: { backgroundColor: '#E8DEF8', borderTopRightRadius: 4 },
-  theirMessageBubble: { backgroundColor: '#F0F0F0', borderTopLeftRadius: 4 },
+  myMessageBubble: { backgroundColor: 'transparent', borderTopRightRadius: 4 },
+  theirMessageBubble: { backgroundColor: 'transparent', borderTopLeftRadius: 4 },
   senderName: {
     fontSize: fontSize.xs,
     color: THEME_COLOR,
     fontWeight: '600',
     marginBottom: spacing.xs,
   },
-  messageText: { fontSize: fontSize.md, lineHeight: 20 },
+  messageText: { fontSize: 16, lineHeight: 22 },
   myMessageText: { color: '#000' },
   theirMessageText: { color: '#000' },
   messageFooter: {
@@ -2754,7 +2868,6 @@ const styles = StyleSheet.create({
   theirMessageTime: { color: '#666' },
   messageStatus: {
     fontSize: fontSize.xs,
-    marginLeft: spacing.xs,
     fontWeight: '700',
   },
   seenText: { color: THEME_COLOR },
@@ -2817,19 +2930,39 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   reactionBadge: {
-    position: 'absolute',
-    bottom: -8,
-    right: 8,
+    alignSelf: 'flex-end',
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    borderRadius: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 0,
     borderWidth: 1,
     borderColor: '#E0E0E0',
     flexDirection: 'row',
     gap: 2,
+    marginTop: 2,
+    marginRight: 4,
+    marginBottom: 4,
   },
-  reactionEmoji: { fontSize: 14 },
+  reactionEmoji: { fontSize: 16 },
+  inlineTimestampContainer: {
+    position: 'absolute',
+    bottom: -2,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    zIndex: 10,
+  },
+  inlineTimestampText: {
+    fontSize: fontSize.xs,
+  },
+  inlineMessageStatus: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+  },
   typingContainer: { paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
   typingText: { fontSize: fontSize.xs, color: '#666', fontStyle: 'italic' },
   replyPreview: {
@@ -2860,7 +2993,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: spacing.md,
     backgroundColor: '#FFFFFF',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     borderTopWidth: 1,
     borderTopColor: '#EEE',
     minHeight: 56,
@@ -2902,13 +3035,13 @@ const styles = StyleSheet.create({
   slideHint: { fontSize: fontSize.sm, color: '#999' },
   slideHintCancel: { color: '#FF4444', fontWeight: '600' },
   attachmentButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: spacing.sm,
+    marginRight: 4,
   },
   attachmentButtonText: { fontSize: fontSize.xl },
   input: {
@@ -2923,23 +3056,23 @@ const styles = StyleSheet.create({
     minHeight: 40,
   },
   micButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: spacing.sm,
+    marginLeft: 4,
   },
   micButtonRecording: { backgroundColor: '#FF4444' },
   micButtonText: { fontSize: fontSize.xl },
   sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: spacing.sm,
+    marginLeft: 4,
   },
   sendButtonText: { color: '#FFF', fontSize: fontSize.lg, marginTop: -2 },
   modalOverlay: {
@@ -3126,17 +3259,20 @@ const styles = StyleSheet.create({
   // Double-tap reaction animation
   doubleTapOverlay: {
     ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
     zIndex: 9999,
-    pointerEvents: 'box-none',
+    pointerEvents: 'none',
   },
   doubleTapReaction: {
+    position: 'absolute',
+    width: 50,
+    height: 50,
+    marginLeft: -25,
+    marginTop: -25,
     justifyContent: 'center',
     alignItems: 'center',
   },
   doubleTapHeart: {
-    fontSize: 80,
+    fontSize: 40,
     textAlign: 'center',
   },
   // Search bar styles

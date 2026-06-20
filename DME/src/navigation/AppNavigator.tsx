@@ -2,7 +2,7 @@ import React from 'react';
 import { NavigationContainer, DefaultTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal, TouchableWithoutFeedback } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import {
   LoginScreen,
@@ -40,12 +40,19 @@ const Tab = createBottomTabNavigator();
 
 const MainTabs = () => (
   <Tab.Navigator
+    detachPreviousScreen={false}
     screenOptions={({ route }) => ({
-      headerShown: true, // Disabling tab header to let screens define their own
+      headerShown: true,
+      animation: 'none',
+      lazy: false,
+      tabBarRippleColor: 'transparent',
+      tabBarActiveBackgroundColor: '#F8F0FF',
+      tabBarInactiveBackgroundColor: 'transparent',
+      // tabBarButton removed to restore default behavior
       tabBarIcon: ({ color, size }) => {
         let iconName = 'chatbubble';
         if (route.name === 'Chats')  iconName = 'chatbubble';
-        else if (route.name === 'Status') iconName = 'ellipse-outline';
+        else if (route.name === 'Status') iconName = 'person-circle-outline';
         else if (route.name === 'Calls')  iconName = 'call';
         return <Icon name={iconName} size={size} color={color} />;
       },
@@ -135,7 +142,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
 
 const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => {
   const { isAuthenticated, isLoading } = useAuth();
-  if (isLoading) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color={colors.primary} /></View>;
+  if (isLoading) return <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} />;
   return (
     <NavigationContainer ref={setNavigationRef} onReady={onNavigatorReady}>
       {isAuthenticated ? <ChatStack logout={() => {}} /> : <Stack.Navigator screenOptions={{ headerShown: false }}><Stack.Screen name="Login" component={LoginScreen} /><Stack.Screen name="Register" component={RegisterScreen} /><Stack.Screen name="OTP" component={OTPVerifyScreen} /><Stack.Screen name="GoogleLogin" component={GoogleLoginScreen} /></Stack.Navigator>}

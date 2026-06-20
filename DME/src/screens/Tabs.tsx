@@ -15,6 +15,7 @@ import {
   Alert,
   Modal,
   RefreshControl,
+  ActivityIndicator,
   Platform,
   PermissionsAndroid,
   DeviceEventEmitter,
@@ -303,7 +304,7 @@ export const StatusTabScreen = () => {
       <MyStatusRow
         statuses={myStatuses}
         username={currentUser?.username ?? 'You'}
-        avatar={currentUser?.profile_picture}
+        avatar={currentUser?.profile_picture ?? null}
         avatarSticker={currentUser?.avatar_sticker ?? null}
         onView={viewMyStatuses}
         onAdd={openGallery}
@@ -315,16 +316,18 @@ export const StatusTabScreen = () => {
       <FlatList
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={loadStatuses} />
-        }
+        contentContainerStyle={{ flexGrow: 1 }}
         ListEmptyComponent={
-          !refreshing ? (
+          refreshing ? (
+            <View style={styles.centerLoading}>
+              <ActivityIndicator size="large" color="#8100D1" />
+            </View>
+          ) : (
             <View style={styles.empty}>
               <Icon name="ellipse-outline" size={48} color="#ddd" />
               <Text style={styles.emptyText}>No recent updates</Text>
             </View>
-          ) : null
+          )
         }
         renderItem={({ item }) => (
           <FriendStatusRow
@@ -592,15 +595,18 @@ export const CallLogTabScreen = () => {
       <FlatList
         data={logs}
         keyExtractor={item => String(item.id)}
-        contentContainerStyle={{ paddingBottom: 20 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadLogs} />}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 20 }}
         ListEmptyComponent={
-          !refreshing ? (
+          refreshing ? (
+            <View style={styles.centerLoading}>
+              <ActivityIndicator size="large" color="#8100D1" />
+            </View>
+          ) : (
             <View style={styles.empty}>
               <Icon name="call-outline" size={48} color="#ddd" />
               <Text style={styles.emptyText}>No call history</Text>
             </View>
-          ) : null
+          )
         }
         renderItem={({ item }) => {
           const dir      = getDirection(item);
@@ -608,8 +614,8 @@ export const CallLogTabScreen = () => {
           const duration = formatDuration(item.duration);
           const isMissed = dir === 'missed';
           const name     = item.other_party?.name ?? 'Unknown';
-          const avatar   = item.other_party_avatar;
-          const sticker  = item.other_party_avatar_sticker;
+          const avatar   = item.other_party_avatar ?? null;
+          const sticker  = item.other_party_avatar_sticker ?? null;
           const userId   = item.other_party?.id;
           const isSelected = selectedIds.includes(item.id);
 
@@ -822,6 +828,11 @@ const styles = StyleSheet.create({
     alignItems:     'center',
     justifyContent: 'center',
     paddingTop:     60,
+  },
+  centerLoading: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   emptyText: {
     marginTop: 12,

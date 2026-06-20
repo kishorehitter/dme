@@ -8,6 +8,7 @@ export interface Participant {
   name: string;
   is_dj: boolean;
   avatar?: string;
+  avatar_sticker?: string;
 }
 
 export interface Song {
@@ -16,10 +17,13 @@ export interface Song {
   thumbnail: string;
   channelTitle: string;
   addedBy: string;
+  duration?: number;
+  source?: 'youtube' | 'drive'; 
 }
 
 export interface RoomState {
   roomCode: string;
+  roomName?: string; // ✅ Made optional
   isDJ: boolean;
   currentSong: Song | null;
   position: number;
@@ -28,9 +32,17 @@ export interface RoomState {
   participants: Participant[];
 }
 
-export const useMusicRoom = (roomCode: string, userId: number) => {
+export const useMusicRoom = (
+  roomCode: string, 
+  userId: number,
+  isPlayerReadyRef?: React.MutableRefObject<boolean>,
+  playerReadyTimeRef?: React.MutableRefObject<number>,
+  isAdPlayingRef?: React.MutableRefObject<boolean>,
+  isDJBackgroundedRef?: React.MutableRefObject<boolean>
+) => {
   const [roomState, setRoomState] = useState<RoomState>({
     roomCode,
+    roomName: '', // ✅ Initialized as empty string
     isDJ: false,
     currentSong: null,
     position: 0,
@@ -52,6 +64,7 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
 
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [joinSnapshot, setJoinSnapshot] = useState<{position: number, isPlaying: boolean, receivedAt: number} | null>(null);
   const playerRef = useRef<any>(null);
 
   // Connect to music room
@@ -81,32 +94,50 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
           setRoomState(prev => ({
             ...prev,
             isDJ: message.data.is_dj,
+            roomName: message.data.room_name || message.data.name || '',
             currentSong: message.data.current_video,
             position: message.data.position,
             isPlaying: message.data.is_playing,
             queue: message.data.queue,
             participants: message.data.participants
           }));
-          // Seek to current position if song playing
-          if (message.data.current_video && message.data.position > 0) {
-            playerRef.current?.seekTo(message.data.position, true);
-          }
+          
+          // ✅ Save snapshot for the screen to consume on player ready
+          setJoinSnapshot({
+            position: message.data.position,
+            isPlaying: message.data.is_playing,
+            receivedAt: Date.now(), // ✅ timestamp for drift compensation
+          });
           break;
 
         case 'watch_load':
           setRoomState(prev => ({
             ...prev,
             currentSong: message.data.video,
+            roomName: message.data.room_name || message.data.name || prev.roomName,
             position: 0,
             isPlaying: true
           }));
           break;
 
         case 'watch_sync':
-          const { position, is_playing, host_timestamp } = message.data;
+          // ✅ KEY FIX: ignore syncs while DJ is backgrounded
+          if (isDJBackgroundedRef?.current) {
+            console.log('📱 [HOOK] Ignoring sync — DJ is backgrounded');
+            break;
+          }
+
+          const { position, is_playing, host_timestamp, is_dj_background } = message.data;
           // Compensate network delay
           const delay = host_timestamp ? (Date.now() - host_timestamp) / 1000 : 0;
           const syncPos = position + Math.max(0, delay);
+
+          // ✅ If DJ is backgrounded and sync says pause — ignore the pause
+          // TrackPlayer keeps playing, WebView keeps playing
+          if (!is_playing && is_dj_background) {
+            console.log('📱 [PARTICIPANT] Ignoring pause sync — DJ is backgrounded');
+            break;
+          }
 
           setRoomState(prev => ({
             ...prev,
@@ -116,10 +147,42 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
 
           // Only seek/play if listener (not DJ) and position diff > 2s
           if (!currentState.isDJ && playerRef.current) {
+            // ✅ Expert Fix: Guard every sync seek
+            if (!isPlayerReadyRef?.current) return;
+            
+            // ✅ 100% Solution: Block sync seeks if an ad is playing!
+            if (isAdPlayingRef?.current) {
+               console.log('🚫 [SYNC] Blocked: Ad is playing');
+               return;
+            }
+            
+            // ✅ Expert Fix: 3-second cooldown after ready
+            if (playerReadyTimeRef && (Date.now() - playerReadyTimeRef.current < 3000)) {
+               console.log('⏳ [SYNC] Skipping: In post-ready cooldown');
+               return;
+            }
+
             const currentTime = await playerRef.current.getCurrentTime();
-            if (Math.abs(currentTime - syncPos) > 2.5) {
+            if (Math.abs(currentTime - syncPos) > 1.2) {
                 playerRef.current.seekTo(syncPos, true);
             }
+          }
+          break;
+
+        case 'dj_background':
+          if (message.data.is_background) {
+            // DJ went background — participants keep playing, ignore future pause syncs
+            console.log('📱 [PARTICIPANT] DJ went background — continuing playback');
+            setRoomState(prev => ({ 
+              ...prev, 
+              // Keep isPlaying as-is — don't stop participant playback
+              // Just update position to DJ's last known position
+              position: message.data.position 
+            }));
+          } else {
+            // DJ came back — resume normal sync
+            console.log('📱 [PARTICIPANT] DJ returned to foreground');
+            setRoomState(prev => ({ ...prev, position: message.data.position }));
           }
           break;
 
@@ -134,6 +197,7 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
           setRoomState(prev => ({
             ...prev,
             currentSong: message.data.next_song,
+            roomName: message.data.room_name || prev.roomName,
             position: 0,
             isPlaying: true
           }));
@@ -150,6 +214,13 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
             isDJ: myParticipant?.is_dj ?? prev.isDJ
           }));
           break;
+
+        case 'room_name_update':
+          setRoomState(prev => ({
+            ...prev,
+            roomName: message.data.room_name
+          }));
+          break;
       }
     });
 
@@ -160,22 +231,30 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
   }, [roomCode]);
 
   // DJ Controls
-  const loadSong = useCallback((song: Song) => {
+  const loadSong = useCallback((song: Song, customRoomName?: string) => { // ✅ Added param
     setRoomState(prev => ({
       ...prev,
       currentSong: song,
+      roomName: customRoomName || prev.roomName, // ✅ Local update
       position: 0,
       isPlaying: false
     }));
-    musicWebSocketService.loadVideo(song);
+    musicWebSocketService.loadVideo(song, customRoomName); // ✅ Pass to service
   }, []);
 
   const syncPlay = useCallback((position: number) => {
+    // ✅ 100% Solution: Stop DJ from broadcasting syncs if they are in an ad!
+    if (isAdPlayingRef?.current) {
+      console.log('🚫 [SYNC BROADCAST] Blocked: Ad is playing');
+      return;
+    }
     setRoomState(prev => ({ ...prev, isPlaying: true, position }));
     musicWebSocketService.syncPlayback(position, true);
   }, []);
 
   const syncPause = useCallback((position: number) => {
+    // ✅ Also block pause syncs during ads
+    if (isAdPlayingRef?.current) return;
     setRoomState(prev => ({ ...prev, isPlaying: false, position }));
     musicWebSocketService.syncPlayback(position, false);
   }, []);
@@ -197,6 +276,11 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
     musicWebSocketService.passAux();
   }, []);
 
+  const updateRoomName = useCallback((newName: string) => {
+    setRoomState(prev => ({ ...prev, roomName: newName }));
+    musicWebSocketService.updateRoomName(newName);
+  }, []);
+
   const updateCurrentSongMetadata = useCallback((enrichedSong: Song) => {
     setRoomState(prev => ({
       ...prev,
@@ -207,10 +291,12 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
 
   return {
     roomState,
+    joinSnapshot,
     isConnected,
     isLoading,
     playerRef,
     updateCurrentSongMetadata,
+    updateRoomName,
     loadSong,
     syncPlay,
     syncPause,
@@ -218,6 +304,5 @@ export const useMusicRoom = (roomCode: string, userId: number) => {
     updateLocalPosition,
     addToQueue,
     passAux,
-    
   };
 };

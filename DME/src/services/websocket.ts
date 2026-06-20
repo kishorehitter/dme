@@ -31,6 +31,7 @@ class WebSocketService {
   private isLoggedOut = false;
   private currentConversationId: number | string | null = null;
   private reconnectTimeoutId: any = null;
+  private lastTypingState: boolean | null = null;
 
   /**
    * Connect to global notification stream (persistent)
@@ -204,6 +205,8 @@ class WebSocketService {
    * Disconnect the current ROOM connection only
    */
   disconnectRoom() {
+    this.lastTypingState = null; // ← reset so next session starts fresh
+
     if (this.reconnectTimeoutId) {
       clearTimeout(this.reconnectTimeoutId);
       this.reconnectTimeoutId = null;
@@ -264,13 +267,11 @@ class WebSocketService {
   }
 
   sendTyping(isTyping: boolean) {
-    const message = {
-      type: 'typing',
-      is_typing: isTyping,
-    };
+    if (this.lastTypingState === isTyping) return; // ← skip if unchanged
+    this.lastTypingState = isTyping;
 
     if (this.isConnected && this.ws) {
-      this.ws.send(JSON.stringify(message));
+      this.ws.send(JSON.stringify({ type: 'typing', is_typing: isTyping }));
     }
   }
 

@@ -7,6 +7,7 @@ export interface User {
   username: string;
   profile_picture: string | null;
   avatar_sticker: string | null;
+  quick_reaction: string;
   status: string;
   last_seen: string;
   is_verified: boolean;

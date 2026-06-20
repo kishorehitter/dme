@@ -42,6 +42,7 @@ class User(AbstractUser):
     # phone_number = models.CharField(max_length=20, blank=True, null=True)
     profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True, storage=MediaCloudinaryStorage())
     avatar_sticker = models.CharField(max_length=10, blank=True, null=True, help_text="Emoji avatar sticker")
+    quick_reaction = models.CharField(max_length=10, default='❤️', help_text="Default emoji for double-tap reaction")
     display_name = models.CharField(max_length=100, blank=True, null=True, help_text="Public profile name (can include emojis)")
     bio = models.CharField(max_length=255, blank=True, default='Hey there! I am using DME')
     is_verified = models.BooleanField(default=False)

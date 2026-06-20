@@ -10,6 +10,7 @@ import {
   Image,
   Modal,
   FlatList,
+  ScrollView,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,6 +26,11 @@ import { authAPI } from '../../services/api'; // Assuming this has the checkUser
 // --- Revised pickImage to prepare image info (base64 URL, name, type) directly ---
 // --- for FormData, avoiding fetch/blob/File conversion. ---
 
+const QUICK_REACTIONS = [
+  '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', 
+  '😂', '😍', '😮', '😢', '😡', '👍', '👎', '🎉', '🔥', '✨', '💯', '🙏', '👏', '😎', '🤔'
+];
+
 export const ProfileSetupScreen: React.FC = () => {
   const { user, refreshUser } = useAuth();
   const navigation = useNavigation(); // Add this
@@ -32,6 +38,7 @@ export const ProfileSetupScreen: React.FC = () => {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [bio, setBio] = useState('');
+  const [quickReaction, setQuickReaction] = useState('❤️');
   const [avatarSticker, setAvatarSticker] = useState(''); // Initially empty
   // State to hold image info (base64 URL, name, type) for FormData upload
   const [selectedImageInfo, setSelectedImageInfo] = useState<{ uri: string, name: string, type: string } | null>(null);
@@ -140,6 +147,7 @@ export const ProfileSetupScreen: React.FC = () => {
       formData.append('username', username);
       formData.append('display_name', displayName);
       formData.append('bio', bio);
+      formData.append('quick_reaction', quickReaction);
       formData.append('avatar_sticker', avatarSticker); // Send sticker or empty string
 
       // Append profile_picture if image info is available
@@ -206,7 +214,10 @@ export const ProfileSetupScreen: React.FC = () => {
 
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+    <ScrollView 
+      style={{ backgroundColor: '#FFF' }}
+      contentContainerStyle={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + 20 }]}
+    >
       <Text style={styles.title}>Complete your profile</Text>
       
       {/* Profile Picture / Sticker Selection Area */}
@@ -282,6 +293,25 @@ export const ProfileSetupScreen: React.FC = () => {
         onChangeText={setBio}
         multiline
       />
+
+      <View style={styles.reactionSection}>
+        <Text style={styles.sectionLabel}>Double-Tap Reaction</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionScroll}>
+          {QUICK_REACTIONS.map(emoji => (
+            <TouchableOpacity
+              key={emoji}
+              style={[
+                styles.reactionItem,
+                quickReaction === emoji && styles.reactionItemActive,
+              ]}
+              onPress={() => setQuickReaction(emoji)}
+            >
+              <Text style={styles.reactionText}>{emoji}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+        <Text style={styles.hint}>Choose your default double-tap reaction</Text>
+      </View>
 
       <TouchableOpacity
         style={[
@@ -371,12 +401,12 @@ export const ProfileSetupScreen: React.FC = () => {
         </View>
       </Modal>
 
-    </View>
+    </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 24, justifyContent: 'center', backgroundColor: '#FFF' },
+  container: { padding: 24, backgroundColor: '#FFF' },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 24, textAlign: 'center' },
   input: { borderBottomWidth: 1, borderColor: '#DDD', marginBottom: 16, padding: 8, fontSize: 16 },
   nextButton: { backgroundColor: '#8100D1', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
@@ -538,5 +568,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#8100D1',
     fontWeight: '600',
+  },
+  reactionSection: {
+    marginVertical: 16,
+  },
+  sectionLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 8,
+  },
+  reactionScroll: {
+    paddingVertical: 4,
+  },
+  reactionItem: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+    borderRadius: 22,
+    backgroundColor: '#F5F5F5',
+  },
+  reactionItemActive: {
+    backgroundColor: '#E8DEF8',
+    borderWidth: 1,
+    borderColor: '#8100D1',
+  },
+  reactionText: {
+    fontSize: 24,
+  },
+  hint: {
+    fontSize: 11,
+    color: '#999',
+    marginTop: 4,
   },
 });

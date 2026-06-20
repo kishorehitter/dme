@@ -15,9 +15,7 @@ import {
   Platform,
   Modal,
 } from 'react-native';
-import { launchCamera } from 'react-native-image-picker';
-import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
-import { MediaPickerModal } from '../../components/MediaPickerModal';
+import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 const SafeText = (props: any) => {
   const children = React.Children.map(props.children, child => {
@@ -128,8 +126,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
   const { user, logout } = useAuth();
+  const insets = useSafeAreaInsets();
   const isLoadingRef = useRef(false);
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
 
@@ -253,10 +251,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     ]);
   };
 
-  const handleAddStatus = () => {
-    setCameraMenuVisible(true);
-  };
-
   useEffect(() => {
     navigation.setOptions({
       headerShown: true,
@@ -291,11 +285,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                   onPress={() => {
                     navigation.navigate('YouTubeDiscovery', {});
                   }}
+                  style={{ marginRight: 16 }}
                 >
-                  <Icon name="logo-youtube" size={24} color="#d10000" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleAddStatus} style={{ marginRight: 16, marginLeft: 16 }} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
-                    <Icon name="camera-outline" size={24} color="#000" />
+                  <MaterialCommunityIcon name="party-popper" size={24} color="#8100D1" />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setMenuVisible(true)}>
                     <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
@@ -310,7 +302,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -318,19 +309,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         onClearAll={() => { setMenuVisible(false); handleClearAll(); }}
         onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        onLogout={() => { setMenuVisible(false); handleLogout(); }}
         onSelect={() => { setMenuVisible(false); setSelectionMode(true); }}
-      />
-      <MediaPickerModal 
-          visible={cameraMenuVisible} 
-          onClose={() => setCameraMenuVisible(false)}
-          top={Platform.OS === 'ios' ? 50 : 40}
-          right={16}
-          onMediaSelected={(asset, type) => {
-              navigation.navigate('StatusEditor', {
-                mediaUri: asset.uri,
-                mediaType: type === 'image' ? 'photo' : 'video',
-                source: 'camera',
-              });
-          }}
       />
       <View style={styles.tabContainer}>
         <TouchableOpacity style={[styles.tabButton, activeTab === 'all' && styles.activeTabButton]} onPress={() => setActiveTab('all')}>

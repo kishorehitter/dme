@@ -119,9 +119,6 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   placeholder: {
-    backgroundColor: '#F0F0F0',
-    borderWidth:     1,
-    borderColor:     '#E0E0E0',
     justifyContent:  'center',
     alignItems:      'center',
   },

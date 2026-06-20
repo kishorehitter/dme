@@ -2,15 +2,18 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList } from 'react-native';
 import { Song } from '../hooks/useMusicRoom';
 
+import Icon from 'react-native-vector-icons/Ionicons';
+
 const { width } = Dimensions.get('window');
 const ITEM_WIDTH = (width - 40) / 2;
 
 interface Props {
   videos: Song[];
   onSelect: (song: Song) => void;
+  onReplay: () => void;
 }
 
-const RelatedVideosGrid: React.FC<Props> = ({ videos, onSelect }) => {
+const RelatedVideosGrid: React.FC<Props> = ({ videos, onSelect, onReplay }) => {
   // Split into 3 pages of 4 videos each (2x2)
   const pages = [
     videos.slice(0, 4),
@@ -45,6 +48,24 @@ const RelatedVideosGrid: React.FC<Props> = ({ videos, onSelect }) => {
 
 const styles = StyleSheet.create({
   container: { padding: 0 },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 10,
+  },
+  headerTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  replayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  replayText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   page: { width: width },
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', gap: 0 },
   videoItem: { width: ITEM_WIDTH, gap: 0 },

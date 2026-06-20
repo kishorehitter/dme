@@ -31,6 +31,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
@@ -39,7 +40,7 @@
       android:icon="@mipmap/ic_launcher"
       android:allowBackup="false"
       android:theme="@style/AppTheme"
-      android:usesCleartextTraffic="${usesCleartextTraffic}"
+      android:usesCleartextTraffic="true"
       android:supportsRtl="true">
 
       <!-- FCM Default Notification Channel -->
@@ -54,6 +55,12 @@
           android:name="com.google.firebase.messaging.default_notification_color"
           android:resource="@color/notification_icon_color"
           tools:replace="android:resource" />
+
+      <service 
+        android:name="com.doublesymmetry.trackplayer.TrackPlayerPlaybackService"
+        android:foregroundServiceType="mediaPlayback"
+        android:exported="false" 
+        tools:replace="android:exported"/>
 
       <!--
         ✅ Single MainActivity — added showWhenLocked + turnScreenOn.

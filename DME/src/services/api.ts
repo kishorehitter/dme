@@ -17,17 +17,24 @@ const api = axios.create({
   },
 });
 
-// Request interceptor to add auth token
+console.log('DEBUG: api instance initialized:', !!api);
+
+// Request interceptor...
 api.interceptors.request.use(
   async config => {
+    console.log('DEBUG: api request config:', config.url);
     const token = await AsyncStorage.getItem('access_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
   },
-  error => Promise.reject(error),
+  error => {
+    console.error('DEBUG: api request error:', error);
+    return Promise.reject(error);
+  },
 );
+
 
 // Response interceptor to handle token refresh
 api.interceptors.response.use(
@@ -343,6 +350,34 @@ export const musicAPI = {
   },
   getRelatedVideos: async (videoId: string) => {
     const response = await api.post('/music/youtube/related/', { videoId });
+    return response.data;
+  },
+  recordWatchHistory: async (video: { video_id: string; title: string; thumbnail?: string; channel_title?: string; source?: string }) => {
+    const response = await api.post('/music/history/', video);
+    return response.data;
+  },
+  getWatchHistory: async () => {
+    const response = await api.get('/music/history/');
+    return response.data;
+  },
+  deleteHistoryItem: async (videoId: string, source: string = 'youtube') => {
+    const response = await api.delete(`/music/history/?video_id=${videoId}&source=${source}`);
+    return response.data;
+  },
+  clearHistory: async () => {
+    const response = await api.delete('/music/history/');
+    return response.data;
+  },
+  getLikes: async () => {
+    const response = await api.get('/music/likes/');
+    return response.data;
+  },
+  toggleLike: async (video: { video_id: string; title: string; thumbnail?: string; channel_title?: string; source?: string }) => {
+    const response = await api.post('/music/likes/toggle/', video);
+    return response.data;
+  },
+  removeLike: async (videoId: string, source: string = 'youtube') => {
+    const response = await api.delete(`/music/likes/?video_id=${videoId}&source=${source}`);
     return response.data;
   },
 };

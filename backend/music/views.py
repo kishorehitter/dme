@@ -6,15 +6,19 @@ import logging
 import urllib.parse
 import yt_dlp
 import requests
+from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core.cache import cache
 from notifications.fcm_service import FCMService
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from .models import MusicWatchHistory, MusicLike
+from .serializers import MusicWatchHistorySerializer, MusicLikeSerializer
 
 logger = logging.getLogger(__name__)
 User   = get_user_model()
@@ -55,7 +59,7 @@ PIPED_INSTANCES = [
 # Shared normalizer — ALL sources produce this exact same shape
 # React Native code never needs to change regardless of which source responds
 # ─────────────────────────────────────────────────────────────────────────────
-def _normalize(video_id: str, title: str, channel: str, thumbnail: str = '') -> dict:
+def _normalize(video_id: str, title: str, channel: str, thumbnail: str = '', duration: int = 0) -> dict:
     if not thumbnail:
         thumbnail = f'https://i.ytimg.com/vi/{video_id}/mqdefault.jpg'
     return {
@@ -64,8 +68,29 @@ def _normalize(video_id: str, title: str, channel: str, thumbnail: str = '') -> 
             'title':        title        or 'Unknown',
             'channelTitle': channel      or 'Unknown',
             'thumbnails':   {'medium': {'url': thumbnail}},
+        },
+        'contentDetails': {
+            'duration': duration  # duration in seconds
         }
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ISO 8601 Duration Parser (for YouTube API fallback)
+# Converts "PT5M30S" to 330
+# ─────────────────────────────────────────────────────────────────────────────
+def _parse_iso_duration(duration_str: str) -> int:
+    import re
+    if not duration_str:
+        return 0
+    pattern = re.compile(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?')
+    match = pattern.match(duration_str)
+    if not match:
+        return 0
+    hours   = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +144,11 @@ def _search_ytdlp(query: str, max_res: int) -> dict | None:
             'extract_flat':  True,   # metadata only — no download, very fast
             'skip_download': True,
             'socket_timeout': 10,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'ytsearch{max_res}:{query}', download=False)
@@ -137,6 +167,7 @@ def _search_ytdlp(query: str, max_res: int) -> dict | None:
                 video_id = video_id,
                 title    = entry.get('title', ''),
                 channel  = entry.get('channel') or entry.get('uploader', ''),
+                duration = int(entry.get('duration') or 0),
             ))
 
         if not items:
@@ -179,6 +210,7 @@ def _search_piped(query: str, max_res: int) -> dict | None:
                     title     = item.get('title', ''),
                     channel   = item.get('uploaderName', ''),
                     thumbnail = item.get('thumbnail', ''),
+                    duration  = int(item.get('duration') or 0),
                 ))
                 if len(items) >= max_res:
                     break
@@ -245,7 +277,8 @@ def _search_youtube_api(query: str, max_res: int) -> dict | None:
         return None
 
     try:
-        response = requests.get(
+        # Search for IDs and Snippets
+        search_response = requests.get(
             'https://www.googleapis.com/youtube/v3/search',
             params={
                 'q':          query,
@@ -257,27 +290,43 @@ def _search_youtube_api(query: str, max_res: int) -> dict | None:
             timeout=10
         )
 
-        if response.status_code == 429:
-            logger.warning('⚠️  YouTube API quota exceeded')
+        if search_response.status_code != 200:
             return None
 
-        if response.status_code != 200:
-            logger.warning(f'⚠️  YouTube API returned {response.status_code}')
+        search_data = search_response.json()
+        video_ids = [item['id']['videoId'] for item in search_data.get('items', []) if 'videoId' in item.get('id', {})]
+        
+        if not video_ids:
             return None
 
-        data  = response.json()
+        # Fetch ContentDetails for durations
+        details_response = requests.get(
+            'https://www.googleapis.com/youtube/v3/videos',
+            params={
+                'id':   ','.join(video_ids),
+                'part': 'contentDetails,snippet',
+                'key':  api_key,
+            },
+            timeout=10
+        )
+
+        if details_response.status_code != 200:
+            return None
+
+        details_data = details_response.json()
         items = []
 
-        for item in data.get('items', []):
-            video_id = item.get('id', {}).get('videoId', '').strip()
+        for item in details_data.get('items', []):
+            video_id = item.get('id', '')
             snippet  = item.get('snippet', {})
-            if not video_id:
-                continue
+            details  = item.get('contentDetails', {})
+            
             items.append(_normalize(
                 video_id  = video_id,
                 title     = snippet.get('title', ''),
                 channel   = snippet.get('channelTitle', ''),
                 thumbnail = snippet.get('thumbnails', {}).get('medium', {}).get('url', ''),
+                duration  = _parse_iso_duration(details.get('duration', '')),
             ))
 
         if not items:
@@ -361,9 +410,22 @@ class InviteToMusicRoomView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        user_ids  = request.data.get('user_ids', [])
+        raw_user_ids = request.data.get('user_ids', [])
+        # Deduplicate user IDs to prevent multiple invites to the same user
+        user_ids = list(set(raw_user_ids))
         room_code = request.data.get('room_code')
         video_id  = request.data.get('video_id')
+        idempotency_key = request.data.get('idempotency_key')
+
+        if idempotency_key:
+            cache_key = f'invite_key_{idempotency_key}'
+            if cache.get(cache_key):
+                logger.info(f'⚠️ Duplicate invite request blocked. Key: {idempotency_key}')
+                return Response({'message': 'Invitations already sent'}, status=status.HTTP_200_OK)
+            cache.set(cache_key, True, 60)
+
+        # Log received request for debugging
+        logger.info(f'📩 Processing invites. Room: {room_code}, Users: {len(user_ids)}, User IDs: {user_ids}')
 
         if not room_code:
             return Response(
@@ -378,8 +440,11 @@ class InviteToMusicRoomView(APIView):
 
         inviter_name = request.user.display_name or request.user.email
 
+        import uuid
+        notif_id = str(uuid.uuid4())
         notification_data = {
             'type':         'music_invite',
+            'notif_id':     notif_id,
             'room_code':    str(room_code),
             'video_id':     str(video_id) if video_id else '',
             'inviter_name': inviter_name,
@@ -394,6 +459,7 @@ class InviteToMusicRoomView(APIView):
         for user_id in user_ids:
             try:
                 recipient = User.objects.get(id=user_id)
+                # Send data-only notification (notification=None)
                 FCMService.send_to_user(recipient, None, notification_data)
                 success_count += 1
                 logger.info(f'✅ Invite sent to {recipient.email}')
@@ -410,3 +476,132 @@ class InviteToMusicRoomView(APIView):
             'failed_count':    len(failed_users),
             'failed_user_ids': failed_users,
         }, status=status.HTTP_200_OK)
+
+
+class MusicRoomMediaUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file_obj = request.FILES.get('media_file')
+        room_code = request.data.get('room_code')
+        if not file_obj or not room_code:
+            return Response({'error': 'No file or room_code provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import cloudinary.uploader
+        try:
+            # Upload to a room-specific folder in Cloudinary
+            folder_path = f"music_chat_media/room_{room_code}"
+            upload_result = cloudinary.uploader.upload(
+                file_obj,
+                folder=folder_path,
+                resource_type="auto"
+            )
+            
+            secure_url = upload_result.get('secure_url')
+            # Fix: Ensure URL has an extension so mobile clients (Fresco) handle it correctly
+            file_format = upload_result.get('format')
+            if file_format and not secure_url.lower().endswith(f".{file_format.lower()}"):
+                secure_url = f"{secure_url}.{file_format}"
+
+            return Response({'url': secure_url}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"Cloudinary upload error: {e}")
+            return Response({'error': 'Upload failed'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class MusicWatchHistoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        history = MusicWatchHistory.objects.filter(user=request.user)
+        serializer = MusicWatchHistorySerializer(history, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        video_id = request.data.get('video_id')
+        source = request.data.get('source', 'youtube')
+        title = request.data.get('title')
+        thumbnail = request.data.get('thumbnail')
+        channel_title = request.data.get('channel_title')
+
+        if not video_id or not title:
+            return Response({'error': 'video_id and title are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update or create history entry
+        history, created = MusicWatchHistory.objects.update_or_create(
+            user=request.user,
+            video_id=video_id,
+            source=source,
+            defaults={
+                'title': title,
+                'thumbnail': thumbnail,
+                'channel_title': channel_title,
+            }
+        )
+        
+        # If not created, save to update the auto_now 'watched_at' timestamp
+        if not created:
+            history.save()
+
+        return Response(MusicWatchHistorySerializer(history).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        video_id = request.query_params.get('video_id')
+        source = request.query_params.get('source', 'youtube')
+        
+        if video_id:
+            MusicWatchHistory.objects.filter(user=request.user, video_id=video_id, source=source).delete()
+        else:
+            MusicWatchHistory.objects.filter(user=request.user).delete()
+            
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class MusicLikeToggleView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        video_id = request.data.get('video_id')
+        source = request.data.get('source', 'youtube')
+        title = request.data.get('title')
+        thumbnail = request.data.get('thumbnail')
+        channel_title = request.data.get('channel_title')
+
+        if not video_id:
+            return Response({'error': 'video_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        like_qs = MusicLike.objects.filter(user=request.user, video_id=video_id, source=source)
+        
+        if like_qs.exists():
+            like_qs.delete()
+            return Response({'liked': False}, status=status.HTTP_200_OK)
+        else:
+            if not title:
+                return Response({'error': 'title is required to like a video'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            MusicLike.objects.create(
+                user=request.user,
+                video_id=video_id,
+                source=source,
+                title=title,
+                thumbnail=thumbnail,
+                channel_title=channel_title
+            )
+            return Response({'liked': True}, status=status.HTTP_201_CREATED)
+
+class MusicLikesListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        likes = MusicLike.objects.filter(user=request.user)
+        serializer = MusicLikeSerializer(likes, many=True)
+        return Response(serializer.data)
+
+    def delete(self, request):
+        video_id = request.query_params.get('video_id')
+        source = request.query_params.get('source', 'youtube')
+        
+        if not video_id:
+            return Response({'error': 'video_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        MusicLike.objects.filter(user=request.user, video_id=video_id, source=source).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

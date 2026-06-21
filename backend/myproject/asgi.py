@@ -21,9 +21,7 @@ websocket_urlpatterns = chat_urlpatterns + call_urlpatterns + music_urlpatterns
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        AuthMiddlewareStack(
-            URLRouter(websocket_urlpatterns)
-        )
+    "websocket": AuthMiddlewareStack(
+        URLRouter(websocket_urlpatterns)
     ),
 })

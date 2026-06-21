@@ -71,11 +71,11 @@ def _get_cookie_file() -> str | None:
     try:
         cookie_bytes = base64.b64decode(b64)
         # Write to a temp file that persists for the process lifetime
+        # Omit prefix='/tmp/' to be cross-platform (works on Windows & Linux)
         tmp = tempfile.NamedTemporaryFile(
             mode='wb',
             suffix='_yt_cookies.txt',
-            delete=False,
-            prefix='/tmp/'
+            delete=False
         )
         tmp.write(cookie_bytes)
         tmp.flush()
@@ -86,6 +86,13 @@ def _get_cookie_file() -> str | None:
     except Exception as e:
         logger.error(f'❌ Failed to decode YOUTUBE_COOKIES_B64: {e}')
         return None
+
+
+def get_youtube_cookie_file() -> str | None:
+    """
+    Public accessor for decoded YouTube cookies temp file.
+    """
+    return _get_cookie_file()
 
 
 # ─── Piped instances (public — may change; only fast/reliable ones) ───────────
@@ -132,6 +139,29 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
 
     # ── Cookie + impersonation (most reliable on blocked IPs) ─────────────────
     if cookie_file:
+        # 1. Standard web client with cookies (does NOT require impersonation dependencies)
+        strategies.append((
+            'cookies+web',
+            {
+                **base,
+                'cookiefile': cookie_file,
+                'extractor_args': {
+                    'youtube': {'player_client': ['web']},
+                },
+            }
+        ))
+        # 2. Mobile web client with cookies (does NOT require impersonation dependencies)
+        strategies.append((
+            'cookies+mweb',
+            {
+                **base,
+                'cookiefile': cookie_file,
+                'extractor_args': {
+                    'youtube': {'player_client': ['mweb']},
+                },
+            }
+        ))
+        # 3. Web client with cookies + chrome impersonation
         strategies.append((
             'cookies+impersonate_chrome',
             {
@@ -143,6 +173,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                 },
             }
         ))
+        # 4. Android testsuite client with cookies
         strategies.append((
             'cookies+android_testsuite',
             {
@@ -156,6 +187,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                 },
             }
         ))
+        # 5. iOS client with cookies
         strategies.append((
             'cookies+ios',
             {
@@ -168,6 +200,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                 },
             }
         ))
+        # 6. TV Embedded client with cookies
         strategies.append((
             'cookies+tv_embedded',
             {
@@ -197,6 +230,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
         strategies.append((f'client={client}', opts))
 
     return strategies
+
 
 
 @method_decorator(csrf_exempt, name='dispatch')

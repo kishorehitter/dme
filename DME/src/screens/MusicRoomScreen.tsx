@@ -1063,7 +1063,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     const sub = DeviceEventEmitter.addListener('VIDEO_SELECTED', async (data) => {
       if (data.roomCode !== roomCode) return;
 
-      // Wait for WebSocket to be connected (max 5s)
+      // Wait for WebSocket to be connected (max 15s)
       const waitForConnection = () => new Promise<void>((resolve, reject) => {
         if (isConnected) { resolve(); return; }
         let elapsed = 0;
@@ -1072,7 +1072,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           if (isConnected) {
             clearInterval(interval);
             resolve();
-          } else if (elapsed >= 5000) {
+          } else if (elapsed >= 15000) {
             clearInterval(interval);
             reject(new Error('WS timeout'));
           }

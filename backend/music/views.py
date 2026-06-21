@@ -6,6 +6,7 @@ import logging
 import urllib.parse
 import yt_dlp
 import requests
+from youtube_search.views import get_youtube_cookie_file
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -150,6 +151,7 @@ def _set_cached(query: str, result: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 def _search_ytdlp(query: str, max_res: int) -> dict | None:
     try:
+        cookie_file = get_youtube_cookie_file()
         ydl_opts = {
             'quiet':         True,
             'no_warnings':   True,
@@ -162,6 +164,9 @@ def _search_ytdlp(query: str, max_res: int) -> dict | None:
                 'Accept-Language': 'en-US,en;q=0.9',
             },
         }
+        if cookie_file:
+            ydl_opts['cookiefile'] = cookie_file
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'ytsearch{max_res}:{query}', download=False)
 
@@ -243,6 +248,7 @@ def _get_video_title_ytdlp(video_id: str) -> str | None:
     Fetch a video's title using yt-dlp with multiple player clients.
     android_testsuite / tv_embedded bypass the bot-check on datacenter IPs.
     """
+    cookie_file = get_youtube_cookie_file()
     url = f'https://www.youtube.com/watch?v={video_id}'
     for clients in YTDLP_PLAYER_CLIENTS:
         try:
@@ -258,6 +264,9 @@ def _get_video_title_ytdlp(video_id: str) -> str | None:
                     }
                 },
             }
+            if cookie_file:
+                ydl_opts['cookiefile'] = cookie_file
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             if info and info.get('title'):

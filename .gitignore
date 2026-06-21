@@ -48,3 +48,7 @@ backend/status_media/
 
 staticfiles/*
 !staticfiles/.gitkeep
+# YouTube cookies (sensitive — never commit)
+cookies.txt
+*_cookies.txt
+*_yt_cookies.txt

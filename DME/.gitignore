@@ -90,3 +90,8 @@ node_modules/
 
 staticfiles/*
 !staticfiles/.gitkeep
+
+# YouTube cookies (sensitive � never commit)
+cookies.txt
+*_cookies.txt
+*_yt_cookies.txt

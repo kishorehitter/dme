@@ -46,12 +46,24 @@ CACHE_TTL       = 86400          # 24 hours for search results
 CACHE_TTL_EMPTY = 1800           # 30 min for empty results
 MAX_RESULTS_CAP = 20             # hard cap — never request more than 20
 
+# ─── Only keep instances reliably reachable from Render (datacenter IPs) ──────
+# Removed: piped-api.garudalinux.org  — DNS fails on Render
+#          pipedapi.in                — DNS fails on Render
+#          piped.adminforge.de/api    — DNS resolution broken on Render
 PIPED_INSTANCES = [
     'https://pipedapi.kavin.rocks',
-    'https://piped-api.garudalinux.org',
     'https://api.piped.projectsegfau.lt',
-    'https://pipedapi.in',                   # 4th instance added
-    'https://piped.adminforge.de/api',       # 5th instance added
+    'https://piped.video/api',
+    'https://piped-api.privacy.com.de',
+    'https://pipedapi.reallyaweso.me',
+]
+
+# ─── yt-dlp player clients to try in order (bypasses bot-check on server IPs) ─
+YTDLP_PLAYER_CLIENTS = [
+    ['android_testsuite'],
+    ['tv_embedded'],
+    ['android_vr'],
+    ['mweb'],
 ]
 
 
@@ -226,22 +238,54 @@ def _search_piped(query: str, max_res: int) -> dict | None:
     logger.warning(f'⚠️  All Piped instances failed for "{query}"')
     return None
 
+def _get_video_title_ytdlp(video_id: str) -> str | None:
+    """
+    Fetch a video's title using yt-dlp with multiple player clients.
+    android_testsuite / tv_embedded bypass the bot-check on datacenter IPs.
+    """
+    url = f'https://www.youtube.com/watch?v={video_id}'
+    for clients in YTDLP_PLAYER_CLIENTS:
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'extract_flat': True,
+                'socket_timeout': 10,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': clients,
+                    }
+                },
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info and info.get('title'):
+                return info['title']
+        except Exception as e:
+            logger.warning(f'⚠️ Title fetch client={clients} failed for {video_id}: {e}')
+            continue
+    return None
+
+
 def _get_related_fallback(videoId: str) -> dict | None:
-    # 1. First, get the title of the current video so we can search related content
+    """
+    Fetch related videos by searching yt-dlp.
+    Uses multiple player clients to bypass bot-check on Render's datacenter IPs.
+    """
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f'https://www.youtube.com/watch?v={videoId}', download=False)
-        
-        if not info or 'title' not in info:
-            return None
-        
-        # 2. Search for related videos using the title
-        search_query = f"{info['title']} related"
+        title = _get_video_title_ytdlp(videoId)
+
+        if not title:
+            # If we can't get the title either, just search by video ID keyword
+            logger.warning(f'⚠️ Could not fetch title for {videoId}, using ID as query')
+            search_query = videoId
+        else:
+            search_query = f'{title} related'
+
         logger.info(f'🔍 Searching for related: "{search_query}"')
-        
         return _search_ytdlp(search_query, 12)
-        
+
     except Exception as e:
         logger.error(f'❌ Related fetch exception for "{videoId}": {e}')
         return None

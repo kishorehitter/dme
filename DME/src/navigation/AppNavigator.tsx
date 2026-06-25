@@ -142,10 +142,22 @@ const ChatStack: React.FC<any> = ({ logout }) => {
 
 const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => {
   const { isAuthenticated, isLoading } = useAuth();
-  if (isLoading) return <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} />;
+
+  // ✅ No early return — render inside JSX instead
   return (
     <NavigationContainer ref={setNavigationRef} onReady={onNavigatorReady}>
-      {isAuthenticated ? <ChatStack logout={() => {}} /> : <Stack.Navigator screenOptions={{ headerShown: false }}><Stack.Screen name="Login" component={LoginScreen} /><Stack.Screen name="Register" component={RegisterScreen} /><Stack.Screen name="OTP" component={OTPVerifyScreen} /><Stack.Screen name="GoogleLogin" component={GoogleLoginScreen} /></Stack.Navigator>}
+      {isLoading ? (
+        <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} />
+      ) : isAuthenticated ? (
+        <ChatStack logout={() => {}} />
+      ) : (
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Login" component={LoginScreen} />
+          <Stack.Screen name="Register" component={RegisterScreen} />
+          <Stack.Screen name="OTP" component={OTPVerifyScreen} />
+          <Stack.Screen name="GoogleLogin" component={GoogleLoginScreen} />
+        </Stack.Navigator>
+      )}
     </NavigationContainer>
   );
 };

@@ -30,6 +30,8 @@ interface Props {
   mimeType: string;
   onClose: () => void;
   onSend: (uri: string, mimeType: string, caption: string, isSticker?: boolean) => void;
+  /** Nav bar color to restore on close. Defaults to '#FFFFFF' (light screens). */
+  restoreNavBarColor?: string;
 }
 
 const TEXT_COLORS = ['#ffffff', '#000000', '#ff3b30', '#ffcc00', '#34c759', '#007aff', '#af52de'];
@@ -133,7 +135,7 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
 // ─────────────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
-const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onClose, onSend }) => {
+const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onClose, onSend, restoreNavBarColor = '#FFFFFF' }) => {
   // 'view' | 'draw' | 'text'
   const [mode,       setMode]       = useState<'view' | 'text' | 'draw'>('view');
   const [textColor,  setTextColor]  = useState('#ffffff');
@@ -159,7 +161,13 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
     if (visible && Platform.OS === 'android') {
       try { changeNavigationBarColor('#111111', false); } catch {}
     }
-    if (!visible) resetState();
+    if (!visible) {
+      if (Platform.OS === 'android') {
+        const isLight = restoreNavBarColor.toUpperCase() !== '#000000' && restoreNavBarColor.toUpperCase() !== '#111111';
+        try { changeNavigationBarColor(restoreNavBarColor, isLight); } catch {}
+      }
+      resetState();
+    }
   }, [visible]);
 
   // Resolve natural image dimensions as soon as mediaUri is known

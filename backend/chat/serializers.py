@@ -194,6 +194,8 @@ class MessageSerializer(serializers.ModelSerializer):
             return {
                 'id': obj.reply_to.id,
                 'content': obj.reply_to.content,
+                'message_type': obj.reply_to.message_type,
+                'media_file': obj.reply_to.media_file.url if obj.reply_to.media_file else None,
                 'sender': {
                     'id': obj.reply_to.sender.id,
                     'display_name': obj.reply_to.sender.display_name or obj.reply_to.sender.first_name or obj.reply_to.sender.email,

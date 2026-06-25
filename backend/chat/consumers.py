@@ -649,6 +649,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'reply_to': {
                     'id': message.reply_to.id,
                     'content': message.reply_to.content,
+                    'message_type': message.reply_to.message_type,
+                    'media_file': message.reply_to.media_file.url if message.reply_to.media_file else None,
                     'sender': {
                         'id': message.reply_to.sender.id,
                         'display_name': message.reply_to.sender.display_name or message.reply_to.sender.first_name or message.reply_to.sender.email,

@@ -21,18 +21,97 @@ interface Props {
   onStateChange?: (state: string) => void;
   onProgress?: (currentTime: number, duration: number) => void;
   onError?: (e: any) => void;
+  onStreamResolved?: (cdnUrl: string, cdnHeaders: Record<string, string>) => void;
 }
 
 const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
-  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError } = props;
+  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved } = props;
   const webViewRef = useRef<WebView>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
   const isReadyRef = useRef(false);
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
 
   const inject = (js: string) => {
     webViewRef.current?.injectJavaScript(js + '; true;');
   };
+
+  const resolveDriveUrl = async (id: string): Promise<string> => {
+    const urls = [
+      `https://drive.google.com/uc?export=download&confirm=t&id=${id}`,
+      `https://drive.google.com/uc?export=download&confirm=t&id=${id}&authuser=0`,
+    ];
+
+    for (let i = 0; i < urls.length; i++) {
+      try {
+        console.log(`🎬 [DRIVE RESOLVER] Native fetch attempt ${i + 1} for ${id}`);
+        const response = await fetch(urls[i], {
+          method: 'GET',
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        const finalUrl = response.url;
+
+        console.log(`🎬 [DRIVE RESOLVER] Native response: status=${response.status}, contentType=${contentType}, finalUrl=${finalUrl}`);
+
+        if (contentType.includes('video') || contentType.includes('octet-stream')) {
+          console.log(`🎬 [DRIVE RESOLVER] SUCCESS: Direct stream resolved: ${finalUrl}`);
+          return finalUrl;
+        }
+
+        if (contentType.includes('html')) {
+          const text = await response.text();
+          
+          // Check for virus scan warning page
+          if (text.includes('virus') || text.includes('download_warning') || text.includes('confirm')) {
+            const confirmMatch = text.match(/confirm=([^&"]+)/);
+            if (confirmMatch) {
+              const confirmToken = confirmMatch[1];
+              const confirmUrl = `https://drive.google.com/uc?export=download&confirm=${confirmToken}&id=${id}`;
+              console.log(`🎬 [DRIVE RESOLVER] Found confirm token. Fetching confirm URL: ${confirmUrl}`);
+              
+              const confirmResponse = await fetch(confirmUrl);
+              const confirmContentType = confirmResponse.headers.get('content-type') || '';
+              if (confirmContentType.includes('video') || confirmContentType.includes('octet-stream')) {
+                console.log(`🎬 [DRIVE RESOLVER] SUCCESS via confirm token: ${confirmResponse.url}`);
+                return confirmResponse.url;
+              }
+            }
+          }
+
+          // Fallback regex matching in HTML (double-escaped since it's defined inside a standard template literal)
+          const mp4Match = text.match(/https?:\/\/[\w.-]+(?:\.[\w.-]+)+[\w\-._~:/?#[\]@!$&'()*+,;=]+\.mp4[^\s"']*/);
+          if (mp4Match) {
+            console.log(`🎬 [DRIVE RESOLVER] Found mp4 URL in HTML: ${mp4Match[0]}`);
+            return mp4Match[0];
+          }
+
+          const googleVideoMatch = text.match(/https?:\/\/[^"' ]*googlevideo[^"' ]*/);
+          if (googleVideoMatch) {
+            console.log(`🎬 [DRIVE RESOLVER] Found googlevideo URL in HTML: ${googleVideoMatch[0]}`);
+            return googleVideoMatch[0];
+          }
+        }
+      } catch (e: any) {
+        console.warn(`🎬 [DRIVE RESOLVER] Native fetch attempt ${i} failed:`, e.message);
+      }
+    }
+
+    // Last resort fallback
+    console.log(`🎬 [DRIVE RESOLVER] Native resolution failed. Returning direct link fallback.`);
+    return `https://drive.google.com/uc?export=download&confirm=t&id=${id}`;
+  };
+
+  React.useEffect(() => {
+    if (!fileId) return;
+    isReadyRef.current = false;
+    setResolvedUrl(null);
+    resolveDriveUrl(fileId).then((url) => {
+      console.log('🎬 [DRIVE PLAYER] Stream resolved via native resolver:', url);
+      setResolvedUrl(url);
+      onStreamResolved?.(url, {});
+    });
+  }, [fileId]);
 
   const html = `
 <!DOCTYPE html>
@@ -45,7 +124,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
   #dmevideo {
     width:100%; height:100%;
     object-fit:contain; background:#000;
-    display:none;
+    display: ${resolvedUrl ? 'block' : 'none'};
   }
   #status {
     position:fixed; top:50%; left:50%;
@@ -58,12 +137,13 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 </style>
 </head>
 <body>
-<div id="status">Connecting to Google Drive...</div>
+<div id="status">${resolvedUrl ? 'Loading video...' : 'Resolving Google Drive stream...'}</div>
 <video
   id="dmevideo"
   playsinline
   webkit-playsinline
   preload="auto"
+  src="${resolvedUrl || ''}"
   ${muted ? 'muted' : ''}
 ></video>
 
@@ -74,11 +154,6 @@ var ready = false;
 
 function toRN(obj) {
   try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
-}
-
-function setStatus(msg) {
-  statusEl.textContent = msg;
-  toRN({ type: 'log', msg: msg });
 }
 
 function showPlayer() {
@@ -120,145 +195,28 @@ function attachEvents() {
   });
 }
 
-async function resolveAndPlay() {
-  var urls = [
-    'https://drive.google.com/uc?export=download&confirm=t&id=${fileId}',
-    'https://drive.google.com/uc?export=download&confirm=t&id=${fileId}&authuser=0',
-  ];
+attachEvents();
 
-  for (var i = 0; i < urls.length; i++) {
-    try {
-      setStatus('Trying stream ' + (i + 1) + ' of ' + urls.length + '...');
-
-      var resp = await fetch(urls[i], {
-        method: 'GET',
-        credentials: 'include',
-        redirect: 'follow',
-      });
-
-      var ct = resp.headers.get('content-type') || 'none';
-      var finalUrl = resp.url;
-
-      // Log all headers for diagnosis
-      var allHeaders = {};
-      resp.headers.forEach(function(val, key) { allHeaders[key] = val; });
-
-      toRN({
-        type: 'log',
-        msg: 'Attempt ' + i + ': status=' + resp.status +
-             ' ct=' + ct +
-             ' finalUrl=' + finalUrl.substring(0, 120)
-      });
-      toRN({
-        type: 'log',
-        msg: 'Headers: ' + JSON.stringify(allHeaders).substring(0, 300)
-      });
-
-      // ✅ Got a real video stream
-      if (ct.indexOf('video') !== -1 || ct.indexOf('octet-stream') !== -1) {
-        toRN({ type: 'log', msg: 'SUCCESS — video stream found, playing: ' + finalUrl.substring(0, 120) });
-        attachEvents();
-        v.src = finalUrl;
-        v.load();
-        if (${play ? 'true' : 'false'}) {
-          v.play().catch(function(e) {
-            toRN({ type: 'log', msg: 'play() error: ' + e.message });
-          });
-        }
-        return;
-      }
-
-      // Got HTML — log body for diagnosis
-      if (ct.indexOf('html') !== -1) {
-        var text = await resp.text();
-        toRN({ type: 'log', msg: 'HTML response (first 400 chars): ' + text.substring(0, 400) });
-
-        // Check if it's a login/auth page
-        if (text.indexOf('accounts.google.com') !== -1 ||
-            text.indexOf('signin') !== -1 ||
-            text.indexOf('ServiceLogin') !== -1) {
-          toRN({ type: 'log', msg: 'DIAGNOSIS: Got Google login page — cookies not shared' });
-          setStatus('Authentication required');
-          continue;
-        }
-
-        // Check if it's a virus scan warning page
-        if (text.indexOf('virus') !== -1 ||
-            text.indexOf('download_warning') !== -1 ||
-            text.indexOf('confirm') !== -1) {
-          toRN({ type: 'log', msg: 'DIAGNOSIS: Got virus warning page — extracting confirm token' });
-
-          // Try to extract confirm token and retry
-          var confirmMatch = text.match(/confirm=([^&"]+)/);
-          if (confirmMatch) {
-            var confirmToken = confirmMatch[1];
-            toRN({ type: 'log', msg: 'Found confirm token: ' + confirmToken });
-
-            var confirmUrl = 'https://drive.google.com/uc?export=download&confirm=' +
-                             confirmToken + '&id=${fileId}';
-            try {
-              var confirmResp = await fetch(confirmUrl, {
-                credentials: 'include',
-                redirect: 'follow',
-              });
-              var confirmCt = confirmResp.headers.get('content-type') || 'none';
-              toRN({ type: 'log', msg: 'Confirm attempt: ct=' + confirmCt + ' url=' + confirmResp.url.substring(0,120) });
-
-              if (confirmCt.indexOf('video') !== -1 || confirmCt.indexOf('octet-stream') !== -1) {
-                toRN({ type: 'log', msg: 'SUCCESS via confirm token!' });
-                attachEvents();
-                v.src = confirmResp.url;
-                v.load();
-                if (${play ? 'true' : 'false'}) v.play().catch(function(){});
-                return;
-              }
-            } catch(ce) {
-              toRN({ type: 'log', msg: 'Confirm fetch failed: ' + ce.message });
-            }
-          }
-        }
-
-        // Try to find any video URL in the HTML
-        var mp4Match = text.match(/https?:\/\/[^"' ]+\.mp4[^"' ]*/);
-        if (mp4Match) {
-          toRN({ type: 'log', msg: 'Found mp4 URL in HTML: ' + mp4Match[0].substring(0, 120) });
-          attachEvents();
-          v.src = mp4Match[0];
-          v.load();
-          if (${play ? 'true' : 'false'}) v.play().catch(function(){});
-          return;
-        }
-
-        var googleVideoMatch = text.match(/https?:\/\/[^"' ]*googlevideo[^"' ]*/);
-        if (googleVideoMatch) {
-          toRN({ type: 'log', msg: 'Found googlevideo URL: ' + googleVideoMatch[0].substring(0, 120) });
-          attachEvents();
-          v.src = googleVideoMatch[0];
-          v.load();
-          if (${play ? 'true' : 'false'}) v.play().catch(function(){});
-          return;
-        }
-      }
-
-    } catch(e) {
-      toRN({ type: 'log', msg: 'Attempt ' + i + ' exception: ' + e.message });
+window.addEventListener('message', function(event) {
+  try {
+    var data = JSON.parse(event.data);
+    if (data.action === 'play') {
+      v.play().catch(function(){});
+    } else if (data.action === 'pause') {
+      v.pause();
+    } else if (data.action === 'mute') {
+      v.muted = true;
+    } else if (data.action === 'unmute') {
+      v.muted = false;
     }
-  }
+  } catch(e) {}
+});
 
-  // ✅ Last resort: set src directly — let browser handle auth natively
-  toRN({ type: 'log', msg: 'All fetch attempts failed — trying direct src assignment' });
-  setStatus('Loading...');
-  attachEvents();
-  v.src = 'https://drive.google.com/uc?export=download&confirm=t&id=${fileId}';
-  v.load();
-  if (${play ? 'true' : 'false'}) {
-    v.play().catch(function(e) {
-      toRN({ type: 'log', msg: 'Direct play() failed: ' + e.message });
-    });
-  }
+if (${play ? 'true' : 'false'} && ${resolvedUrl ? 'true' : 'false'}) {
+  v.play().catch(function(e) {
+    toRN({ type: 'log', msg: 'play() error: ' + e.message });
+  });
 }
-
-resolveAndPlay();
 </script>
 </body>
 </html>`;
@@ -334,9 +292,6 @@ resolveAndPlay();
         ref={webViewRef}
         source={{
           html,
-          // ✅ CRITICAL: sets origin to drive.google.com
-          // so fetch() sends the Google session cookies
-          // that were set when user browsed Drive in YouTubeDiscoveryScreen
           baseUrl: 'https://drive.google.com',
         }}
         onMessage={handleMessage}

@@ -44,6 +44,8 @@ const AvatarWithFallback = ({
     height:       containerHeight,
     borderRadius,
     overflow:     'hidden' as const,  // clips image/content to circle shape
+    borderWidth:  1,
+    borderColor:  '#E0E0E0',
     ...style,                         // allow override
   };
 

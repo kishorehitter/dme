@@ -243,10 +243,26 @@ def _search_piped(query: str, max_res: int) -> dict | None:
     logger.warning(f'⚠️  All Piped instances failed for "{query}"')
     return None
 
-def _get_video_title_ytdlp(video_id: str) -> str | None:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Related-video metadata fetch + keyword-based content filtering
+#
+# IMPORTANT, confirmed in conversation: YouTube's public search/yt-dlp search
+# does NOT expose true metadata filters (genre, language, "is this a song vs
+# a movie clip vs comedy skit"). What follows is a deliberate, approved
+# approximation — derive signal from the TITLE and CHANNEL NAME only (the
+# only two fields we reliably have), strip generic marketing noise that
+# dilutes search relevance, and bias the query toward same-channel +
+# same-detected-content-type results. This is keyword search, not real
+# metadata filtering. All results still come from YouTube search — never
+# from our own DB, per spec.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_video_metadata_ytdlp(video_id: str) -> dict | None:
     """
-    Fetch a video's title using yt-dlp with multiple player clients.
+    Fetch a video's title + channel using yt-dlp with multiple player clients.
     android_testsuite / tv_embedded bypass the bot-check on datacenter IPs.
+    Returns {'title': str, 'channel': str} or None if all clients fail.
     """
     cookie_file = get_youtube_cookie_file()
     url = f'https://www.youtube.com/watch?v={video_id}'
@@ -270,27 +286,99 @@ def _get_video_title_ytdlp(video_id: str) -> str | None:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             if info and info.get('title'):
-                return info['title']
+                return {
+                    'title': info['title'],
+                    'channel': info.get('channel') or info.get('uploader') or '',
+                }
         except Exception as e:
-            logger.warning(f'⚠️ Title fetch client={clients} failed for {video_id}: {e}')
+            logger.warning(f'⚠️ Metadata fetch client={clients} failed for {video_id}: {e}')
             continue
     return None
 
 
+# Backward-compatible wrapper — kept in case any other call site still
+# expects a bare title string.
+def _get_video_title_ytdlp(video_id: str) -> str | None:
+    meta = _get_video_metadata_ytdlp(video_id)
+    return meta['title'] if meta else None
+
+
+# Generic marketing/noise words that appear in tons of unrelated titles and
+# actively hurt search relevance if left in the query (e.g. "Official",
+# "HD", "Full Video" appear on nearly every upload regardless of content).
+_NOISE_WORDS = {
+    'official', 'video', 'full', 'hd', '4k', 'audio', 'lyrical', 'lyric',
+    'song', 'movie', 'trailer', 'teaser', 'new', 'latest', 'exclusive',
+    'release', 'music', 'mv', 'live', 'concert', 'stream', 'streaming',
+}
+
+# Content-type hint words — if present in the title, bias the related
+# search toward the SAME content type (e.g. don't surface a comedy skit as
+# "related" to a live concert just because a keyword happened to overlap).
+_CONTENT_TYPE_HINTS = {
+    'comedy':  ['comedy', 'funny', 'spoof', 'troll', 'meme'],
+    'live':    ['live', 'concert', 'streaming now', '🔴'],
+    'song':    ['song', 'audio', 'lyrical', 'lyric video', 'full song'],
+    'trailer': ['trailer', 'teaser', 'first look'],
+}
+
+
+def _detect_content_type(title: str) -> str | None:
+    lower = title.lower()
+    for content_type, hints in _CONTENT_TYPE_HINTS.items():
+        if any(hint in lower for hint in hints):
+            return content_type
+    return None
+
+
+def _build_related_query(title: str, channel: str) -> str:
+    """
+    Builds a keyword search query biased toward: same channel, same
+    detected content type, with generic noise words stripped so the
+    remaining proper nouns (movie name, performer name, song name) drive
+    the match instead of being diluted.
+    """
+    import re
+
+    content_type = _detect_content_type(title)
+
+    # Strip bracketed/parenthetical tags ("(Official Video)", "[4K]") and
+    # pipe/bullet-separated trailing taglines — these are pure noise for
+    # search relevance and often duplicate the noise words filtered below,
+    # so removing the whole chunk is more reliable than per-word filtering.
+    cleaned = re.sub(r'[\(\[].*?[\)\]]', ' ', title)
+    cleaned = re.split(r'[|\u2022]', cleaned)[0]  # cut at first | or •
+
+    words = re.findall(r"[\w']+", cleaned.lower())
+    meaningful = [w for w in words if w not in _NOISE_WORDS and len(w) > 1]
+    keyword_core = ' '.join(meaningful[:8]) or cleaned.strip()
+
+    parts = [keyword_core]
+    if channel:
+        parts.append(channel)
+    if content_type:
+        parts.append(content_type)
+    parts.append('related')
+
+    return ' '.join(p for p in parts if p).strip()
+
+
 def _get_related_fallback(videoId: str) -> dict | None:
     """
-    Fetch related videos by searching yt-dlp.
-    Uses multiple player clients to bypass bot-check on Render's datacenter IPs.
+    Fetch related videos by searching yt-dlp, biased toward same
+    channel/content-type using keyword extraction from the source video's
+    title (see _build_related_query). This is YouTube-search-based
+    filtering, not database-driven — results come entirely from YouTube,
+    never from our own DB, per spec.
     """
     try:
-        title = _get_video_title_ytdlp(videoId)
+        meta = _get_video_metadata_ytdlp(videoId)
 
-        if not title:
-            # If we can't get the title either, just search by video ID keyword
-            logger.warning(f'⚠️ Could not fetch title for {videoId}, using ID as query')
+        if not meta:
+            logger.warning(f'⚠️ Could not fetch metadata for {videoId}, using ID as query')
             search_query = videoId
         else:
-            search_query = f'{title} related'
+            search_query = _build_related_query(meta['title'], meta['channel'])
 
         logger.info(f'🔍 Searching for related: "{search_query}"')
         return _search_ytdlp(search_query, 12)
@@ -299,7 +387,6 @@ def _get_related_fallback(videoId: str) -> dict | None:
         logger.error(f'❌ Related fetch exception for "{videoId}": {e}')
         return None
 
-# ... (rest of the view logic remains the same)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class YoutubeRelatedView(APIView):
@@ -310,7 +397,9 @@ class YoutubeRelatedView(APIView):
         if not videoId:
             return Response({'error': 'videoId is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ FIX: Use reliable yt-dlp search-based fallback
+        # ✅ FIX: Use reliable yt-dlp search-based fallback, now with
+        # keyword/content-type/channel-aware filtering (see
+        # _build_related_query above).
         result = _get_related_fallback(videoId)
         
         if not result:

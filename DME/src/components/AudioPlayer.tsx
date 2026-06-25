@@ -17,7 +17,7 @@ let currentlyPlayingAudioRef: { stop: () => void; id?: string } | null = null;
 const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#8100D1', messageId, duration = 0 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [audioDuration, setAudioDuration] = useState(duration || 30);
+  const [audioDuration, setAudioDuration] = useState(duration || 0);
   const [currentTime, setCurrentTime] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
   const [isReady, setIsReady] = useState(false);

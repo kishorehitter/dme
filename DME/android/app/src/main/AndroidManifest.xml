@@ -62,6 +62,11 @@
         android:exported="false" 
         tools:replace="android:exported"/>
 
+      <activity
+          android:name="com.google.android.gms.auth.api.signin.internal.SignInHubActivity"
+          android:theme="@style/GoogleSignInTheme"
+          tools:replace="android:theme" />
+
       <!--
         ✅ Single MainActivity — added showWhenLocked + turnScreenOn.
         These two attributes are what allow the fullScreenIntent to appear

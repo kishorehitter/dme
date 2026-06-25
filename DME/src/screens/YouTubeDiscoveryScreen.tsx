@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import Icon from 'react-native-vector-icons/Ionicons';
+import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { musicAPI } from '../services/api';
 import Toast from 'react-native-toast-message';
@@ -169,6 +170,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         roomCode: newRoomCode,
         videoId:  selectedVideoId,
         source:   selectedSource,
+        title: selectedSource === 'drive' ? 'Drive Video' : undefined,
+        thumbnail: selectedSource === 'drive' 
+            ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`  // ← real thumbnail
+            : undefined,
       });
     }, 800); // was 100ms
   };
@@ -271,21 +276,43 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               likes:    'heart',
               history:  'time',
             };
+            const isActive = activeTab === tab;
             return (
               <TouchableOpacity
                 key={tab}
                 onPress={() => setActiveTab(tab)}
-                style={[styles.tab, activeTab === tab && styles.activeTab]}
+                style={{ overflow: 'hidden', borderRadius: 16 }}
               >
-                <Icon
-                  name={icons[tab]}
-                  size={16}
-                  color={activeTab === tab ? '#fff' : '#666'}
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={[styles.tabText, activeTab === tab && styles.activeTabText]}>
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                </Text>
+                {isActive ? (
+                  <LinearGradient
+                    colors={['#FF007F', '#7F00FF']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.tab}
+                  >
+                    <Icon
+                      name={icons[tab]}
+                      size={16}
+                      color="#fff"
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text style={[styles.tabText, styles.activeTabText]}>
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </Text>
+                  </LinearGradient>
+                ) : (
+                  <View style={[styles.tab, styles.inactiveTab]}>
+                    <Icon
+                      name={icons[tab]}
+                      size={16}
+                      color="#666"
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text style={styles.tabText}>
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </Text>
+                  </View>
+                )}
               </TouchableOpacity>
             );
           })}
@@ -312,95 +339,110 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
           {/* Drive Tab — WebView approach, no OAuth needed */}
           {activeTab === 'drive' && (
             <WebView
-              ref={driveWebViewRef}
-              source={{ uri: 'https://drive.google.com' }}
-              onNavigationStateChange={(navState) => {
-                console.log('DRIVE NAV:', navState.url);
-                handleDriveNavChange(navState);
-              }}
-              onShouldStartLoadWithRequest={(request) => {
-                console.log('DRIVE LOAD REQUEST:', request.url);
-                handleDriveNavChange({ url: request.url });
-                // If it's a file URL, block navigation and handle it ourselves
-                const isFile =
-                  request.url.match(/drive\.google\.com\/file\/d\/([^/?#]+)/) ||
-                  request.url.match(/drive\.google\.com\/open\?id=([^&]+)/);
-                if (isFile) return false; // block, we handle it
-                return true; // allow everything else
-              }}
-              injectedJavaScript={`
-                (function() {
-                  // Poll for file links and intercept clicks
-                  function interceptDriveLinks() {
-                    // Target file cards/rows in Drive UI
-                    document.querySelectorAll('[data-id]').forEach(function(el) {
-                      if (el._intercepted) return;
-                      el._intercepted = true;
-                      el.addEventListener('click', function(e) {
-                        var id = el.getAttribute('data-id');
-                        if (id) {
-                          window.ReactNativeWebView.postMessage(JSON.stringify({
-                            type: 'driveFileSelected',
-                            fileId: id,
-                            fileName: el.getAttribute('data-filename') || 
-                                      el.querySelector('[data-tooltip]')?.getAttribute('data-tooltip') || 
-                                      'Drive Video'
-                          }));
+                ref={driveWebViewRef}
+                source={{ uri: 'https://drive.google.com' }}
+                
+                // ✅ These 3 lines fix the external app opening:
+                setSupportMultipleWindows={false}
+                onOpenWindow={(event) => {
+                    // Force all new windows to load in same WebView
+                    driveWebViewRef.current?.injectJavaScript(
+                        `window.location.href = "${event.nativeEvent.targetUrl}"; true;`
+                    );
+                }}
+                
+                onShouldStartLoadWithRequest={(request) => {
+                    const url = request.url;
+                    console.log('DRIVE REQUEST:', url);
+
+                    // ✅ Allow ALL Google domains inside WebView
+                    if (
+                        url.includes('google.com') ||
+                        url.includes('googleapis.com') ||
+                        url.includes('gstatic.com') ||
+                        url.includes('accounts.google') ||
+                        url.includes('about:blank')
+                    ) {
+                        return true; // stay inside WebView
+                    }
+
+                    // ✅ Block file URLs — handle ourselves
+                    const isFile =
+                        url.match(/drive\.google\.com\/file\/d\/([^/?#]+)/) ||
+                        url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+                    if (isFile) {
+                        handleDriveNavChange({ url });
+                        return false;
+                    }
+
+                    // Block everything else
+                    return false;
+                }}
+
+                // ✅ Chrome 120 user agent — older ones trigger external redirect
+                userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+                
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                thirdPartyCookiesEnabled={true}
+                sharedCookiesEnabled={true}
+                allowsInlineMediaPlayback={true}
+                mediaPlaybackRequiresUserAction={false}
+                backgroundColor="#fff"
+                style={styles.webview}
+
+                onNavigationStateChange={(navState) => {
+                    handleDriveNavChange(navState);
+                }}
+                onMessage={(event) => {
+                    try {
+                        const msg = JSON.parse(event.nativeEvent.data);
+                        if (msg.type === 'driveFileSelected' && msg.fileId) {
+                            selectedSource = 'drive';
+                            setSelectedVideoId(msg.fileId);
+                            setShowOverlay(true);
+                        } else if (msg.type === 'urlChange') {
+                            handleDriveNavChange({ url: msg.url });
                         }
-                      });
-                    });
-                  }
+                    } catch (e) {}
+                }}
+                injectedJavaScript={`
+                    (function() {
+                        // Prevent target="_blank" links from opening externally
+                        document.addEventListener('click', function(e) {
+                            var el = e.target.closest('a');
+                            if (el && el.target === '_blank') {
+                                e.preventDefault();
+                                window.location.href = el.href;
+                            }
+                        }, true);
 
-                  // Run immediately and on DOM changes
-                  interceptDriveLinks();
-                  var observer = new MutationObserver(interceptDriveLinks);
-                  observer.observe(document.body, { childList: true, subtree: true });
+                        function interceptDriveLinks() {
+                            document.querySelectorAll('[data-id]').forEach(function(el) {
+                                if (el._intercepted) return;
+                                el._intercepted = true;
+                                el.addEventListener('click', function(e) {
+                                    var id = el.getAttribute('data-id');
+                                    if (id) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                                            type: 'driveFileSelected',
+                                            fileId: id,
+                                        }));
+                                    }
+                                });
+                            });
+                        }
 
-                  // Also intercept fetch/XHR to catch Drive's internal navigation
-                  var originalPushState = history.pushState;
-                  history.pushState = function() {
-                    originalPushState.apply(this, arguments);
-                    window.ReactNativeWebView.postMessage(JSON.stringify({
-                      type: 'urlChange',
-                      url: window.location.href
-                    }));
-                  };
-
-                  var originalReplaceState = history.replaceState;
-                  history.replaceState = function() {
-                    originalReplaceState.apply(this, arguments);
-                    window.ReactNativeWebView.postMessage(JSON.stringify({
-                      type: 'urlChange',
-                      url: window.location.href
-                    }));
-                  };
-                })();
-                true;
-              `}
-              onMessage={(event) => {
-                try {
-                  const msg = JSON.parse(event.nativeEvent.data);
-                  console.log('DRIVE MESSAGE:', msg);
-
-                  if (msg.type === 'driveFileSelected' && msg.fileId) {
-                    selectedSource = 'drive';
-                    setSelectedVideoId(msg.fileId);
-                    setShowOverlay(true);
-                  } else if (msg.type === 'urlChange') {
-                    handleDriveNavChange({ url: msg.url });
-                  }
-                } catch (e) {}
-              }}
-              style={styles.webview}
-              userAgent="Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36"
-              mediaPlaybackRequiresUserAction={false}
-              allowsInlineMediaPlayback={true}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              thirdPartyCookiesEnabled={true}
-              backgroundColor="#fff"
+                        interceptDriveLinks();
+                        var observer = new MutationObserver(interceptDriveLinks);
+                        observer.observe(document.body, { childList: true, subtree: true });
+                    })();
+                    true;
+                `}
             />
-          )}
+        )}
 
           {/* Likes Tab */}
           {activeTab === 'likes' && (
@@ -541,8 +583,8 @@ const styles = StyleSheet.create({
   headerTitle:       { fontSize: 18, fontWeight: '700', color: '#000' },
 
   tabBar:            { flexDirection: 'row', paddingHorizontal: 1, paddingVertical: 2, gap: 8, justifyContent: 'center', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee' },
-  tab:               { width: 80, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 16, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', flexDirection: 'row' },
-  activeTab:         { backgroundColor: '#9200ec' },
+  tab:               { width: 80, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 16, justifyContent: 'center', alignItems: 'center', flexDirection: 'row' },
+  inactiveTab:       { backgroundColor: '#f0f0f0' },
   tabText:           { fontSize: 13, fontWeight: '600', color: '#666' },
   activeTabText:     { color: '#fff' },
 

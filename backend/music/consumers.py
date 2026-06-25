@@ -2,6 +2,7 @@
 # NEW FILE — doesn't touch your existing code
 
 import json
+import time
 import uuid
 from channels.generic.websocket import AsyncWebsocketConsumer
 from rest_framework_simplejwt.tokens import AccessToken
@@ -148,6 +149,42 @@ class MusicConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             print(f"Error during Cloudinary volatile cleanup: {e}")
 
+    async def _pin_video(self, room, song):
+        if not song or not song.get('videoId'):
+            return
+
+        video_id = song['videoId']
+
+        # Don't let the same user pin the same video twice — keep the
+        # existing entry (and its original position/pinned_at) untouched.
+        already_pinned_by_me = any(
+            item.get('song', {}).get('videoId') == video_id
+            and item.get('added_by_id') == self.user.id
+            for item in room['queue']
+        )
+        if already_pinned_by_me:
+            return
+
+        participant = room['participants'].get(self.user.id, {})
+        item = {
+            'song': song,
+            'added_by_id': self.user.id,
+            'added_by_name': participant.get('name') or self.user.computed_display_name,
+            'added_by_avatar': participant.get('avatar'),
+            'pinned_at': time.time(),
+        }
+
+        room['queue'].append(item)
+        # Keep sorted ascending by pinned_at — index 0 is always the
+        # globally-earliest pin across every user, which is what
+        # pass_aux() plays next.
+        room['queue'].sort(key=lambda q: q.get('pinned_at', 0))
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'queue_update', 'queue': room['queue']}
+        )
+
     async def receive(self, text_data):
         data = json.loads(text_data)
         msg_type = data.get('type')
@@ -188,7 +225,36 @@ class MusicConsumer(AsyncWebsocketConsumer):
             )
 
         elif msg_type == 'queue_add':
-            room['queue'].append(data['song'])
+            # ✅ Backward-compatible alias — internally pins like pin_video,
+            # tagged to whichever user sent this message.
+            await self._pin_video(room, data.get('song'))
+
+        elif msg_type == 'pin_video':
+            # ✅ NEW: anyone (DJ or participant) can pin a related video into
+            # their OWN queue. Insertion keeps room['queue'] sorted by
+            # pinned_at ascending, so index 0 is always the globally-earliest
+            # pin across ALL users — this is what pass_aux() plays next,
+            # implementing the "strict global FIFO across everyone's private
+            # queues" rule. Each item carries added_by_id/name/avatar so the
+            # client can render per-user badges (Related grid) and filter to
+            # "my queue only" (Queue tab) — the data itself isn't private,
+            # since the Related grid intentionally shows everyone's pins.
+            await self._pin_video(room, data.get('song'))
+
+        elif msg_type == 'unpin_video':
+            # ✅ NEW: removes ONLY the CALLING USER's own pin for this
+            # videoId. Server-enforced — we filter by self.user.id, never by
+            # whatever the client claims, so a participant can never unpin
+            # someone else's item even if the client were modified to try.
+            video_id = data.get('videoId')
+            if video_id:
+                room['queue'] = [
+                    item for item in room['queue']
+                    if not (
+                        item.get('song', {}).get('videoId') == video_id
+                        and item.get('added_by_id') == self.user.id
+                    )
+                ]
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {'type': 'queue_update', 'queue': room['queue']}
@@ -196,7 +262,20 @@ class MusicConsumer(AsyncWebsocketConsumer):
 
         elif msg_type == 'pass_aux' and is_dj:
             if room['queue']:
-                next_song = room['queue'].pop(0)
+                # ✅ FIX (Issues 4 & 5 — skip/auto-next both broken):
+                # room['queue'] items are QueueItem-shaped dicts
+                # ({song, added_by_id, added_by_name, added_by_avatar,
+                # pinned_at}) since the pin-queue feature was added. This
+                # was popping the WHOLE wrapper and assigning/broadcasting
+                # it as if it WERE the Song — every client-side read of
+                # currentSong.videoId/title/thumbnail then got undefined
+                # (those fields live one level deeper, at .song.videoId),
+                # silently breaking both skip and auto-advance-on-end:
+                # nothing ever loaded, old audio was never told to stop,
+                # and the video fell back to its "no song" black+spinner
+                # state forever, since videoId could never become defined.
+                popped_item = room['queue'].pop(0)
+                next_song = popped_item.get('song', popped_item)  # tolerate legacy plain-Song items too
 
                 # ✅ Update room state so late joiners get the correct song
                 room['current_video'] = next_song

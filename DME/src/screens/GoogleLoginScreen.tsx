@@ -17,6 +17,7 @@ import {
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
+import { StatusBar } from 'react-native';
 
 // Configure Google Sign-In
 GoogleSignin.configure({
@@ -30,6 +31,11 @@ const GoogleLoginScreen = () => {
   const { googleLogin } = useAuth();
   const [loading, setLoading] = React.useState(false);
   const [loadingStatus, setLoadingStatus] = React.useState('');
+
+  useEffect(() => {
+    StatusBar.setBarStyle('dark-content');
+    StatusBar.setBackgroundColor('#ffffff');
+  }, []);
 
   const handleGoogleLogin = async () => {
     try {

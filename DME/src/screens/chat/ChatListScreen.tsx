@@ -16,6 +16,7 @@ import {
   Modal,
 } from 'react-native';
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import LinearGradient from 'react-native-linear-gradient';
 
 const SafeText = (props: any) => {
   const children = React.Children.map(props.children, child => {
@@ -287,7 +288,20 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                   }}
                   style={{ marginRight: 16 }}
                 >
-                  <MaterialCommunityIcon name="party-popper" size={28} color="#d10000" />
+                  <LinearGradient
+                    colors={['#FF007F', '#7F00FF']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 16,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Icon name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
+                  </LinearGradient>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setMenuVisible(true)}>
                     <Icon name="ellipsis-vertical" size={24} color="#8100D1" />

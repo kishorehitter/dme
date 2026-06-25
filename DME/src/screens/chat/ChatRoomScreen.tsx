@@ -6,7 +6,7 @@
  * 2. AUDIO: WhatsApp-style audio player with smooth progress
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import FastImage from 'react-native-fast-image';
 import {
   View,
@@ -25,12 +25,15 @@ import {
   Linking,
   DeviceEventEmitter,
   Alert,
+  Dimensions,
 } from 'react-native';
 import RNFetchBlob from 'rn-fetch-blob';
 import FileViewer from 'react-native-file-viewer';
 import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import LinearGradient from 'react-native-linear-gradient';
+import Clipboard from '@react-native-clipboard/clipboard';
 import Toast from 'react-native-toast-message';
 import { chatAPI } from '../../services/api';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
@@ -53,82 +56,62 @@ import { API_BASE_URL, getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
 import StickerPreviewModal from '../../components/StickerPreviewModal';
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 
 const THEME_COLOR = '#8100D1';
 const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
 
-const HeaderAvatar = ({ uri, isGroup, chatTitle, style }: any) => {
-  const [error, setError] = useState(false);
-
-  if (!uri || error) {
-    if (isGroup) {
-      return (
-        <View style={[style, { backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' }]}>
-          <Icon name="people" size={24} color="#FFF" />
-        </View>
-      );
-    }
-    return (
-      <View style={[style, styles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Icon name="person" size={20} color={THEME_COLOR} />
-      </View>
-    );
-  }
-
-  return (
-    <Image
-      source={{ uri: resolveImageUrl(uri) }}
-      style={style}
-      onError={() => setError(true)}
-    />
-  );
-};
-
-const MessageAvatar = ({ uri, sName, userId, style, navigation, conversationId }: any) => {
-  const [error, setError] = useState(false);
+const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, conversationId }: any) => {
   const [hasStatus, setHasStatus] = useState(false);
 
   useEffect(() => {
+    let active = true;
     const checkStatus = async () => {
+      try {
         const statuses = await StatusService.getStatuses();
-        setHasStatus(statuses.some(s => s.user_id === userId));
+        if (active) {
+          setHasStatus(statuses.some(s => s.user_id === userId));
+        }
+      } catch (err) {
+        console.error('Status check error in MessageAvatar:', err);
+      }
     };
     checkStatus();
+    return () => {
+      active = false;
+    };
   }, [userId]);
 
   const handleAvatarPress = async () => {
-    const statuses = await StatusService.getStatuses();
-    const userStatuses = statuses.filter(s => s.user_id === userId);
-    
-    if (userStatuses.length > 0) {
-      navigation.navigate('StatusViewer', { statuses: userStatuses, initialIndex: 0 });
-    } else {
+    try {
+      const statuses = await StatusService.getStatuses();
+      const userStatuses = statuses.filter(s => s.user_id === userId);
+      
+      if (userStatuses.length > 0) {
+        navigation.navigate('StatusViewer', { statuses: userStatuses, initialIndex: 0 });
+      } else {
+        navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
+      }
+    } catch (err) {
       navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
     }
   };
 
-  const containerStyle = [
-    style, 
-    hasStatus ? { borderWidth: 2, borderColor: '#8100D1', padding: 2 } : null
-  ];
-
-  if (!uri || error) {
-    return (
-      <TouchableOpacity onPress={handleAvatarPress} style={[containerStyle, styles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Icon name="person" size={16} color={THEME_COLOR} />
-      </TouchableOpacity>
-    );
-  }
+  const avatarStyle = {
+    ...style,
+    ...(hasStatus && { borderWidth: 2, borderColor: '#8100D1', padding: 2 }),
+  };
 
   return (
-    <TouchableOpacity onPress={handleAvatarPress} style={containerStyle}>
-      <Image
-        source={{ uri: resolveImageUrl(uri) }}
-        style={{ width: '100%', height: '100%', borderRadius: (style?.borderRadius || 16) }}
-        onError={() => setError(true)}
-      />
-    </TouchableOpacity>
+    <AvatarWithFallback
+      uri={uri}
+      sticker={sticker}
+      displayName={sName}
+      style={avatarStyle}
+      onPress={handleAvatarPress}
+      isGroup={false}
+    />
   );
 };
 
@@ -151,6 +134,168 @@ interface OtherUser {
   status: string;
   last_seen: string;
 }
+
+const getMessagePreviewText = (message: Message | null | undefined, messagesList?: Message[]) => {
+  if (!message) return '';
+  let msgType = message.message_type;
+  let msgContent = message.content;
+  if (!msgType && messagesList) {
+    const fullMsg = messagesList.find(m => m.id === message.id);
+    if (fullMsg) {
+      msgType = fullMsg.message_type;
+      msgContent = fullMsg.content;
+    }
+  }
+  switch (msgType) {
+    case 'image':
+      return 'Image';
+    case 'video':
+      return 'Video';
+    case 'audio':
+      return 'Audio';
+    case 'document':
+      return 'Document';
+    case 'text':
+    default:
+      return msgContent || '';
+  }
+};
+
+const getReplyMediaUrl = (reply: Message, messagesList?: Message[]) => {
+  let mediaFile = reply.media_file || (reply as any).media_url;
+  if (!mediaFile && messagesList) {
+    const fullMsg = messagesList.find(m => m.id === reply.id);
+    if (fullMsg) {
+      mediaFile = fullMsg.media_file || (fullMsg as any).media_url;
+    }
+  }
+  return mediaFile ? resolveImageUrl(mediaFile) : null;
+};
+
+const getReplyMessageType = (reply: Message, messagesList?: Message[]) => {
+  let type = reply.message_type;
+  if (!type && messagesList) {
+    const fullMsg = messagesList.find(m => m.id === reply.id);
+    if (fullMsg) {
+      type = fullMsg.message_type;
+    }
+  }
+  return type;
+};
+
+const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
+  const replyType = getReplyMessageType(reply, messagesList);
+  const mediaUrl = getReplyMediaUrl(reply, messagesList);
+
+  if (replyType === 'image' && mediaUrl) {
+    return (
+      <Image
+        source={{ uri: mediaUrl }}
+        style={styles.replyMediaThumbnail}
+        resizeMode="cover"
+      />
+    );
+  }
+
+  if (replyType === 'video') {
+    return (
+      <View style={styles.replyMediaPlaceholder}>
+        <Icon name="play" size={16} color="#FFF" />
+      </View>
+    );
+  }
+
+  if (replyType === 'document') {
+    let iconName = 'document-text-outline';
+    const fileName = (mediaUrl || reply.content || '').split('/').pop() || 'Document';
+    const fileExt = fileName.split('.').pop()?.toLowerCase();
+    if (fileExt === 'pdf') iconName = 'document-outline';
+    else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
+    else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
+
+    return (
+      <View style={styles.replyMediaPlaceholder}>
+        <Icon name={iconName} size={18} color={THEME_COLOR} />
+      </View>
+    );
+  }
+
+  return null;
+};
+
+const getFileIconColor = (fileExt: string) => {
+  switch (fileExt) {
+    case 'pdf':
+      return '#D32F2F'; // Red
+    case 'doc':
+    case 'docx':
+      return '#1976D2'; // Blue
+    case 'xls':
+    case 'xlsx':
+    case 'csv':
+      return '#388E3C'; // Green
+    case 'ppt':
+    case 'pptx':
+      return '#E64A19'; // Orange/Red
+    case 'zip':
+    case 'rar':
+    case '7z':
+      return '#F57C00'; // Orange
+    case 'txt':
+      return '#607D8B'; // Slate Grey
+    default:
+      return THEME_COLOR;
+  }
+};
+
+const shouldShowDateSeparator = (index: number, messagesList: Message[]) => {
+  if (!messagesList || index < 0 || index >= messagesList.length) return false;
+  if (index === messagesList.length - 1) {
+    return true;
+  }
+  const currentMsg = messagesList[index];
+  const nextMsg = messagesList[index + 1]; // next in inverted array is older chronologically
+  if (!currentMsg || !nextMsg) return false;
+
+  const currentDate = new Date(currentMsg.created_at);
+  const nextDate = new Date(nextMsg.created_at);
+
+  return (
+    currentDate.getFullYear() !== nextDate.getFullYear() ||
+    currentDate.getMonth() !== nextDate.getMonth() ||
+    currentDate.getDate() !== nextDate.getDate()
+  );
+};
+
+const formatSeparatorDate = (dateStr: string) => {
+  if (!dateStr) return '';
+  try {
+    const messageDate = new Date(dateStr);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    const isSameDay = (d1: Date, d2: Date) =>
+      d1.getFullYear() === d2.getFullYear() &&
+      d1.getMonth() === d2.getMonth() &&
+      d1.getDate() === d2.getDate();
+
+    if (isSameDay(messageDate, today)) {
+      return 'Today';
+    } else if (isSameDay(messageDate, yesterday)) {
+      return 'Yesterday';
+    } else {
+      return messageDate.toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+    }
+  } catch (e) {
+    return '';
+  }
+};
+
 
 const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
@@ -259,6 +404,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   // inverted FlatList shows last item first (bottom) without any scrollToEnd
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversation, setConversation] = useState<any>(null); 
+  const [liveReadTimes, setLiveReadTimes] = useState<{ [userId: number]: string }>({});
+  const [selectedReceiptUser, setSelectedReceiptUser] = useState<{ id: number; name: string; seenTime: string } | null>(null);
   const [isGroup, setIsGroup] = useState(false); 
   const [groupDescription, setGroupDescription] = useState(''); 
   const [activeGroupCall, setActiveGroupCall] = useState<any>(null); 
@@ -280,6 +427,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false); // Scroll to bottom button
   const [showMessageActions, setShowMessageActions] = useState(false); 
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); 
   const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [recentEmojis, setRecentEmojis] = useState<string[]>([
@@ -750,6 +898,29 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         );
         break;
       case 'read_receipt':
+        const readerId = wsMsg.data.user_id;
+        const msgIds = wsMsg.data.message_ids || [];
+        if (readerId && msgIds.length > 0) {
+          // Record current time as live read time
+          setLiveReadTimes(prev => ({
+            ...prev,
+            [readerId]: new Date().toISOString()
+          }));
+          
+          const maxMsgId = Math.max(...msgIds);
+          setConversation(prev => {
+            if (!prev || !prev.participants) return prev;
+            return {
+              ...prev,
+              participants: prev.participants.map((p: any) => {
+                if (p.user?.id === readerId) {
+                  return { ...p, last_read_message: maxMsgId };
+                }
+                return p;
+              })
+            };
+          });
+        }
         setMessages(prev =>
           (Array.isArray(prev) ? prev : []).map(m =>
             wsMsg.data.message_ids?.includes(m.id)
@@ -815,11 +986,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         clearInputRef.current?.();
         setInputClearKey(k => k + 1);
         setEditingMessageId(null);
-        Toast.show({
-          type: 'success',
-          text1: 'Message edited',
-          position: 'bottom',
-        });
       } catch (error) {
         Toast.show({
           type: 'error',
@@ -858,6 +1024,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           ? {
               id: replyToMessage.id,
               content: replyToMessage.content,
+              message_type: replyToMessage.message_type,
+              media_file: replyToMessage.media_file,
               sender: replyToMessage.sender,
             }
           : null,
@@ -1225,8 +1393,25 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const stopRecordingAndSend = async () => {
     if (!isRecordingRef.current) return;
-    // Capture the duration BEFORE stopping the timer
-    const finalDuration = recordingTimeRef.current;
+
+    let finalDuration = recordingTimeRef.current;
+    
+    if (Platform.OS === 'android') {
+      try {
+        const ms = await audioRecorder.getRecordingDuration();
+        if (ms > 0) {
+          finalDuration = Math.round(ms / 1000);
+        }
+      } catch (e) {
+        console.error('Error getting recording duration:', e);
+      }
+    }
+    
+    if (finalDuration < 1) {
+      cancelRecordingProcess();
+      return;
+    }
+
     stopTimer();
     stopPulse();
     isRecordingRef.current = false;
@@ -1484,8 +1669,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   // Instagram-style long press menu handlers
-  const handleMessageLongPress = (item: Message) => {
+  const handleMessageLongPress = (item: Message, event?: any) => {
     setSelectedMessage(item);
+    if (event && event.nativeEvent) {
+      const { pageX, pageY } = event.nativeEvent;
+      setMenuPosition({ x: pageX, y: pageY });
+    } else {
+      setMenuPosition({ x: 0, y: 0 });
+    }
     setShowMessageActions(true);
   };
 
@@ -1715,8 +1906,131 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
+  const handleCopyMessage = () => {
+    if (!selectedMessage) return;
+    Clipboard.setString(selectedMessage.content);
+    setShowMessageActions(false);
+    setSelectedMessage(null);
+    Toast.show({
+      type: 'success',
+      text1: 'Copied to clipboard',
+      position: 'bottom',
+    });
+  };
+
+  const latestSeenMessageId = useMemo(() => {
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.sender?.id === currentUser?.id && m.is_read && !m.is_deleted) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [messages, currentUser?.id]);
+
+  const fmtSeenTime = useCallback((d: string | null) => {
+    if (!d) return 'Seen now';
+    const now = Date.now();
+    const seenTime = new Date(d).getTime();
+    const diffMs = now - seenTime;
+    const diffMin = diffMs / 60000;
+    const diffHours = diffMs / 3600000;
+    const diffDays = diffMs / 86400000;
+
+    if (diffMin < 1) return 'Seen now';
+    if (diffMin < 60) return `Seen ${Math.floor(diffMin)}m ago`;
+    if (diffHours < 24) return `Seen ${Math.floor(diffHours)}h ago`;
+    if (diffDays < 2) return 'Seen yesterday';
+    return `Seen ${new Date(seenTime).toLocaleDateString()}`;
+  }, []);
+
+  const getMessageViewers = (msg: Message, conversationDetails: any) => {
+    if (!conversationDetails || !conversationDetails.participants) return [];
+    return conversationDetails.participants.filter((p: any) => {
+      if (!p.user) return false;
+      if (p.user.id === msg.sender?.id) return false; // exclude sender
+      if (!p.last_read_message) return false;
+      const lastReadId = typeof p.last_read_message === 'object' 
+        ? p.last_read_message.id 
+        : p.last_read_message;
+      return lastReadId >= msg.id;
+    });
+  };
+
+  const getSeenTime = (userId: number, msg: Message) => {
+    const liveTime = liveReadTimes[userId];
+    if (liveTime) return liveTime;
+    return msg.created_at;
+  };
+
+  const GroupReadReceipts = ({ msg }: { msg: Message }) => {
+    const viewers = useMemo(() => getMessageViewers(msg, conversation), [msg, conversation]);
+    
+    if (viewers.length === 0) return null;
+
+    const isMe = msg.sender.id === currentUser?.id;
+
+    return (
+      <View style={[
+        styles.groupReceiptsContainer,
+        {
+          alignSelf: isMe ? 'flex-end' : 'flex-start',
+          marginRight: isMe ? 16 : 0,
+          marginLeft: isMe ? 0 : (isGroup ? 48 : 16),
+          marginTop: 2,
+          marginBottom: 6,
+        }
+      ]}>
+        <View style={styles.groupReceiptsRow}>
+          {viewers.map((v: any, idx: number) => {
+            const isSelected = selectedReceiptUser?.id === v.user.id;
+            return (
+              <TouchableOpacity
+                key={v.user.id}
+                style={[
+                  styles.groupReceiptAvatarWrapper,
+                  idx > 0 && { marginLeft: -6 },
+                  isSelected && { borderWidth: 1.5, borderColor: THEME_COLOR, borderRadius: 10, padding: 1 }
+                ]}
+                activeOpacity={0.8}
+                onPress={() => {
+                  if (isSelected) {
+                    setSelectedReceiptUser(null);
+                  } else {
+                    const time = fmtSeenTime(getSeenTime(v.user.id, msg));
+                    const name = v.user.display_name || v.user.first_name || v.user.email || 'User';
+                    setSelectedReceiptUser({ id: v.user.id, name, seenTime: time });
+                  }
+                }}
+              >
+                <AvatarWithFallback
+                  uri={v.user.profile_picture}
+                  sticker={v.user.avatar_sticker}
+                  displayName={v.user.display_name || v.user.first_name || v.user.email || 'User'}
+                  style={{ width: 18, height: 18, borderRadius: 9, borderWidth: 0 }}
+                  isGroup={false}
+                  initialSize={9}
+                  iconSize={9}
+                />
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        
+        {selectedReceiptUser && viewers.some((v: any) => v.user.id === selectedReceiptUser.id) && (
+          <Text style={[
+            styles.receiptDetailText,
+            { textAlign: isMe ? 'right' : 'left' }
+          ]}>
+            {`${selectedReceiptUser.name} • ${selectedReceiptUser.seenTime}`}
+          </Text>
+        )}
+      </View>
+    );
+  };
+
   // ── RENDER MESSAGE ───────────────────────────────
-  const renderMessage = useCallback(({ item }: { item: Message }) => {
+  const renderMessage = useCallback(({ item, index }: { item: Message; index: number }) => {
     console.log('RENDER MSG:', item.id, item.message_type, item.content, item.created_at);
     const isMe = item.sender.id === currentUser?.id;
     const sName =
@@ -1730,53 +2044,61 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     const validReactions = Object.entries(allReactions).filter(([_, emoji]) => !!emoji && String(emoji).trim() !== '');
     const hasReactions = validReactions.length > 0;
 
+    // We want to show avatar beside the receiver-side message group's first message (chronologically).
+    // In our inverted list, messages are ordered newest-to-oldest, i.e. messages[0] is newest.
+    // The chronologically previous message is messages[index + 1].
+    // So the current message is the first of a consecutive block from the sender if:
+    // the previous message (index + 1) is from a different sender (or doesn't exist).
+    const isFirstInGroup = !isMe && (!messages[index + 1] || messages[index + 1].sender.id !== item.sender.id);
+
     // Handle deleted messages
     if (item.is_deleted) {
       return (
-        <View
-          style={[
-            styles.messageContainer,
-            isMe ? styles.myMessageContainer : styles.theirMessageContainer,
-          ]}
-        >
-          {!isMe && (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
-              {item.sender.avatar_sticker ? (
-                <Text style={{ fontSize: 20 }}>
-                  {item.sender.avatar_sticker}
-                </Text>
-              ) : item.sender.profile_picture ? (
-                <Image
-                  source={{ uri: resolveImageUrl(item.sender.profile_picture) }}
-                  style={styles.avatar}
-                />
-              ) : (
-                (() => {
-                  const initial = getInitials(sName);
-                  return initial ? (
-                    <Text style={styles.avatarText}>{initial}</Text>
-                  ) : (
-                    <Icon name="person" size={16} color={THEME_COLOR} />
-                  );
-                })()
-              )}
+        <View style={{ flexDirection: 'column', width: '100%' }}>
+          {shouldShowDateSeparator(index, messages) && (
+            <View style={styles.dateSeparator}>
+              <Text style={styles.dateSeparatorText}>
+                {formatSeparatorDate(item.created_at)}
+              </Text>
             </View>
           )}
           <View
             style={[
-              styles.messageBubble,
-              isMe ? styles.myMessageBubble : styles.theirMessageBubble,
-              { backgroundColor: '#F5F5F5' },
+              styles.messageContainer,
+              isMe ? styles.myMessageContainer : styles.theirMessageContainer,
             ]}
           >
-            <Text
+            {!isMe && (
+              isFirstInGroup ? (
+                <MessageAvatar
+                  uri={item.sender.profile_picture}
+                  sticker={item.sender.avatar_sticker}
+                  sName={sName}
+                  userId={item.sender.id}
+                  style={styles.avatar}
+                  navigation={navigation}
+                  conversationId={conversationId}
+                />
+              ) : (
+                <View style={{ width: 32, marginRight: spacing.xs }} />
+              )
+            )}
+            <View
               style={[
-                styles.messageText,
-                { color: '#999', fontStyle: 'italic' },
+                styles.messageBubble,
+                isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+                { backgroundColor: '#F5F5F5' },
               ]}
             >
-              The message was removed
-            </Text>
+              <Text
+                style={[
+                  styles.messageText,
+                  { color: '#999', fontStyle: 'italic' },
+                ]}
+              >
+                The message was removed
+              </Text>
+            </View>
           </View>
         </View>
       );
@@ -1838,34 +2160,44 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     if (item.message_type === 'document') {
         const fileName = (item.media_file || 'Document').split('/').pop() || 'Document';
-        const fileExt = fileName.split('.').pop()?.toLowerCase();
+        const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
         let iconName = 'document-text-outline';
         if (fileExt === 'pdf') iconName = 'document-outline';
         else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
         else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
         
+        const fileColor = getFileIconColor(fileExt);
+
         return (
-          <TouchableOpacity 
-            style={[styles.documentMessage, alignmentStyle, { padding: 12, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: borderRadius.md }]}
-            onPress={() => downloadAndOpenFile(url, fileName)}
-          >
-            <View style={styles.documentIconContainer}>
-              <Icon name={iconName} size={28} color={THEME_COLOR} />
+          <View style={[styles.documentBubbleInner, { alignSelf: isMe ? 'flex-end' : 'flex-start' }]}>
+            {/* Left side: Icon + Extension label below it */}
+            <View style={styles.documentLeftContainer}>
+              <Icon name={iconName} size={32} color={fileColor} />
+              <Text style={[styles.documentExtLabel, { color: fileColor }]}>
+                {fileExt.toUpperCase() || 'FILE'}
+              </Text>
             </View>
-            <View style={{ marginLeft: 10, flex: 1, marginRight: 8 }}>
-                <Text 
-                  style={{ fontSize: 14, color: '#333', fontWeight: '500' }} 
-                  numberOfLines={1}
-                  ellipsizeMode="middle"
-                >
-                    {fileName}
-                </Text>
-                <Text style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
-                  {`Download • ${fileExt?.toUpperCase() || 'FILE'}`}
-                </Text>
+
+            {/* Middle: File name */}
+            <View style={styles.documentCenterContainer}>
+              <Text 
+                style={styles.documentFileNameText} 
+                numberOfLines={2}
+                ellipsizeMode="middle"
+              >
+                {fileName}
+              </Text>
             </View>
-            <Icon name="download-outline" size={20} color="#666" />
-          </TouchableOpacity>
+
+            {/* Right side: Green circular download button */}
+            <TouchableOpacity 
+              style={styles.documentDownloadButton}
+              onPress={() => downloadAndOpenFile(url, fileName)}
+              activeOpacity={0.7}
+            >
+              <Icon name="arrow-down" size={16} color="#FFF" />
+            </TouchableOpacity>
+          </View>
         );
     }
 
@@ -1880,7 +2212,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           url={url}
           isMe={isMe}
           onPress={(e: any) => handleMessagePress(item, e)}
-          onLongPress={() => handleMessageLongPress(item)}
+          onLongPress={(e: any) => handleMessageLongPress(item, e)}
           isSticker={isSticker}
         />
       );
@@ -1903,7 +2235,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         <TouchableOpacity
           style={[styles.videoContainer, alignmentStyle, { alignItems: isMe ? 'flex-end' : 'flex-start' }]}
           onPress={(e) => handleMessagePress(item, e)}
-          onLongPress={() => handleMessageLongPress(item)}
+          onLongPress={(e) => handleMessageLongPress(item, e)}
           activeOpacity={0.9}
           delayLongPress={500}
         >
@@ -1919,134 +2251,212 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const isMediaMessage = ['image', 'video'].includes(item.message_type);
 
-    return (
-      <View
-        style={[
-          styles.messageContainer,
-          isMe ? styles.myMessageContainer : styles.theirMessageContainer,
-        ]}
-      >
+    const renderReplyIndicator = (reply: Message, isSender: boolean) => {
+      const hasThumbnail = ['image', 'video', 'document'].includes(getReplyMessageType(reply, messages) || '');
+      return (
         <TouchableOpacity
-          style={[
-            styles.messageBubble,
-            isMe ? styles.myMessageBubble : styles.theirMessageBubble,
-            { alignItems: isMe ? 'flex-end' : 'flex-start' },
-            isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
-            !isMediaMessage && { minWidth: 115 },
-            highlightMessageId === item.id && { 
-              backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
-              borderWidth: 2,
-              borderColor: THEME_COLOR 
-            }
-          ]}
-          onPress={(e) => {
-             // Only trigger message press if NOT media (media has its own internal handlers)
-             // and specifically ignore if it's an unavailable media
-             const isMedia = ['image', 'video', 'audio'].includes(item.message_type);
-             const isUnavailable = !resolveImageUrl((item as any).media_url || item.media_file) || mediaErrorIds.includes(item.id);
-
-             if (isMedia && isUnavailable) return;
-             handleMessagePress(item, e);
-             }}
-          onLongPress={() => handleMessageLongPress(item)}
-          activeOpacity={0.8}
-          delayLongPress={500}
+          style={[styles.replyIndicator, { backgroundColor: isSender ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)' }]}
+          onPress={() => jumpToMessage(reply.id)}
+          activeOpacity={0.7}
         >
-          {item.reply_to && (
-            <TouchableOpacity
-              style={styles.replyIndicator}
-              onPress={() => jumpToMessage(item.reply_to!.id)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.replyIndicatorLine} />
-              <View style={styles.replyIndicatorContentWrapper}>
-                <Text style={styles.replyIndicatorText} numberOfLines={1}>
-                  {String(item.reply_to.sender?.id === currentUser?.id
-                    ? 'You'
-                    : item.reply_to.sender?.display_name || 'User')}
-                </Text>
-                <Text style={styles.replyIndicatorContent} numberOfLines={2}>
-                  {String(item.reply_to.content || '')}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          )}
-
-          {!isMe && isGroup && <Text style={styles.senderName}>{String(sName || '')}</Text>}
-
-          {['image', 'video', 'audio', 'document'].includes(item.message_type) ? (
-            <View>
-              <View style={{ position: 'relative' }}>
-                {renderMedia()}
-                <View style={[styles.messageFooter, { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8, flexDirection: 'row', alignItems: 'center' }]}>
-                  <Text style={[styles.messageTime, { color: '#FFF' }]}>{fmtMsgTime(item.created_at)}</Text>
-                  {isMe && (
-                    <Text style={[styles.messageStatus, { color: '#FFF', marginLeft: 4 }]}>{item.is_read ? '✓✓' : item.delivered_at ? '✓✓' : '✓'}</Text>
-                  )}
-                </View>
-              </View>
-              {hasReactions && (
-                <View style={[
-                  styles.reactionBadge,
-                  {
-                    position: 'relative',
-                    alignSelf: isMe ? 'flex-end' : 'flex-start',
-                    marginTop: -4,
-                    marginLeft: isMe ? 0 : 4,
-                    marginRight: isMe ? 4 : 0,
-                    zIndex: 1,
-                  }
-                ]}>
-                  {validReactions.map(([userId, emoji]) => (
-                    <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
-                  ))}
-                </View>
-              )}
+          <View style={[styles.replyIndicatorLine, { backgroundColor: isSender ? '#FFFFFF' : THEME_COLOR }]} />
+          <View style={styles.replyIndicatorContentWrapper}>
+            <Text style={[styles.replyIndicatorText, { color: isSender ? '#FFFFFF' : THEME_COLOR }]} numberOfLines={1}>
+              {String(reply.sender?.id === currentUser?.id ? 'You' : reply.sender?.display_name || 'User')}
+            </Text>
+            <Text style={[styles.replyIndicatorContent, { color: isSender ? '#EEEEEE' : '#666' }]} numberOfLines={2}>
+              {getMessagePreviewText(reply, messages)}
+            </Text>
+          </View>
+          {hasThumbnail && (
+            <View style={styles.replyThumbnailContainer}>
+              {renderReplyThumbnail(reply, messages)}
             </View>
-          ) : (
-            <>
-              {(item.message_type === 'text' || (!!item.content && typeof item.content === 'string' && !['image', 'video', 'voice note', 'voice message', 'document', 'media', '[sticker]'].includes(item.content.toLowerCase()))) && (
-                <View style={{ position: 'relative', alignSelf: 'stretch' }}>
-                  <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.theirMessageText, item.message_type !== 'text' && { marginTop: 6 }]}>
-                    {String(item.content || '')}
-                    <Text style={{ color: 'transparent' }}>
-                      {isMe ? "\u00A0\u2003\u2003\u2003\u2003\u200D" : "\u00A0\u2003\u2003\u2003\u200D"}
-                    </Text>
-                  </Text>
-                  <View style={styles.inlineTimestampContainer}>
-                    <Text style={[styles.inlineTimestampText, isMe ? styles.myMessageTime : styles.theirMessageTime]}>
-                      {fmtMsgTime(item.created_at)}
-                    </Text>
-                    {isMe && (
-                      item.is_read
-                        ? <Text style={[styles.inlineMessageStatus, styles.seenText]}> ✓✓</Text>
-                        : item.delivered_at
-                        ? <Text style={[styles.inlineMessageStatus, styles.deliveredText]}> ✓✓</Text>
-                        : <Text style={[styles.inlineMessageStatus, styles.sentText]}> ✓</Text>
-                    )}
-                  </View>
-                </View>
-              )}
-
-              {hasReactions && (
-                <View style={[
-                  styles.reactionBadge,
-                  {
-                    alignSelf: isMe ? 'flex-end' : 'flex-start',
-                    marginLeft: isMe ? 0 : 4,
-                    marginRight: isMe ? 4 : 0,
-                  }
-                ]}>{validReactions.map(([userId, emoji]) => (
-                    <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
-                  ))}
-                </View>
-              )}
-            </>
           )}
         </TouchableOpacity>
+      );
+    };
+
+    const renderReactionsBadge = (isSender: boolean) => (
+      <View style={[
+        styles.reactionBadge,
+        {
+          alignSelf: isSender ? 'flex-end' : 'flex-start',
+          backgroundColor: '#FFFFFF',
+          borderRadius: 12,
+          paddingHorizontal: 6,
+          paddingVertical: 2,
+          borderWidth: 1,
+          borderColor: '#E0E0E0',
+          marginTop: 0,
+          marginLeft: isSender ? 0 : 4,
+          marginRight: isSender ? 4 : 0,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.1,
+          shadowRadius: 1,
+          elevation: 1,
+        }
+      ]}>
+        {validReactions.map(([userId, emoji]) => (
+          <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
+        ))}
       </View>
     );
-   }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId]);  // ← replace the single }; with this
+
+    return (
+      <View style={{ flexDirection: 'column', width: '100%' }}>
+        {shouldShowDateSeparator(index, messages) && (
+          <View style={styles.dateSeparator}>
+            <Text style={styles.dateSeparatorText}>
+              {formatSeparatorDate(item.created_at)}
+            </Text>
+          </View>
+        )}
+        <View
+          style={[
+            styles.messageContainer,
+            isMe ? styles.myMessageContainer : styles.theirMessageContainer,
+            hasReactions && { marginBottom: 12 },
+          ]}
+        >
+          {!isMe && (
+            isFirstInGroup ? (
+              <MessageAvatar
+                uri={item.sender.profile_picture}
+                sticker={item.sender.avatar_sticker}
+                sName={sName}
+                userId={item.sender.id}
+                style={styles.avatar}
+                navigation={navigation}
+                conversationId={conversationId}
+              />
+            ) : (
+              <View style={{ width: 32, marginRight: spacing.xs }} />
+            )
+          )}
+
+          {['image', 'video', 'audio', 'document'].includes(item.message_type) ? (
+            <TouchableOpacity
+              style={[
+                styles.messageBubble,
+                isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+                { alignItems: isMe ? 'flex-end' : 'flex-start' },
+                isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
+                !isMediaMessage && { minWidth: 50 },
+                highlightMessageId === item.id && { 
+                  backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
+                  borderWidth: 2,
+                  borderColor: THEME_COLOR 
+                }
+              ]}
+              onPress={(e) => {
+                 // Only trigger message press if NOT media (media has its own internal handlers)
+                 // and specifically ignore if it's an unavailable media
+                 const isMedia = ['image', 'video', 'audio'].includes(item.message_type);
+                 const isUnavailable = !resolveImageUrl((item as any).media_url || item.media_file) || mediaErrorIds.includes(item.id);
+
+                 if (isMedia && isUnavailable) return;
+                 handleMessagePress(item, e);
+                 }}
+              onLongPress={(e) => handleMessageLongPress(item, e)}
+              activeOpacity={0.8}
+              delayLongPress={500}
+            >
+              {item.reply_to && renderReplyIndicator(item.reply_to, isMe)}
+              {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+              <View>
+                <View style={{ position: 'relative' }}>
+                  {renderMedia()}
+                </View>
+                {hasReactions && renderReactionsBadge(isMe)}
+              </View>
+            </TouchableOpacity>
+          ) : (
+            isMe ? (
+              <View style={{ maxWidth: '80%', minWidth: 50, alignSelf: 'flex-end' }}>
+                <TouchableOpacity
+                  style={[
+                    {
+                      width: '100%',
+                      alignItems: 'flex-start',
+                      padding: spacing.md,
+                      borderRadius: borderRadius.lg,
+                      borderTopRightRadius: 4,
+                      overflow: 'hidden',
+                    }
+                  ]}
+                  onPress={(e) => handleMessagePress(item, e)}
+                  onLongPress={(e) => handleMessageLongPress(item, e)}
+                  activeOpacity={0.8}
+                  delayLongPress={500}
+                >
+                  <LinearGradient
+                    colors={['#d68df5', '#9b50d8', '#8e2bff']}
+                    start={{ x: 0, y: 1 }}
+                    end={{ x: 1, y: 0 }}
+                    style={StyleSheet.absoluteFill}
+                  />
+                  {item.reply_to && renderReplyIndicator(item.reply_to, true)}
+                  {!!item.edited_at && (
+                    <Text style={{ fontSize: 11, color: 'rgba(255, 0, 0, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                  )}
+                  <Text style={[styles.messageText, { color: '#FFFFFF' }]}>
+                    {String(item.content || '')}
+                  </Text>
+                </TouchableOpacity>
+                {hasReactions && renderReactionsBadge(true)}
+              </View>
+            ) : (
+              <View style={{ maxWidth: '70%', minWidth: 50, alignSelf: 'flex-start' }}>
+                <TouchableOpacity
+                  style={[
+                    styles.messageBubble,
+                    styles.theirMessageBubble,
+                    {
+                      width: '100%',
+                      alignItems: 'flex-start',
+                      backgroundColor: '#EFEFEF',
+                      borderTopLeftRadius: 4,
+                      padding: spacing.md,
+                      borderRadius: borderRadius.lg,
+                    }
+                  ]}
+                  onPress={(e) => handleMessagePress(item, e)}
+                  onLongPress={(e) => handleMessageLongPress(item, e)}
+                  activeOpacity={0.8}
+                  delayLongPress={500}
+                >
+                  {item.reply_to && renderReplyIndicator(item.reply_to, false)}
+                  {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+                  {!!item.edited_at && (
+                    <Text style={{ fontSize: 11, color: '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                  )}
+                  <Text style={[styles.messageText, { color: '#000000' }]}>
+                    {String(item.content || '')}
+                  </Text>
+                                  </TouchableOpacity>
+                {hasReactions && renderReactionsBadge(false)}
+              </View>
+            )
+          )}
+        </View>
+        
+        {/* Seen Status (Instagram Style) */}
+        {!isGroup && item.id === latestSeenMessageId && (
+          <View style={{ alignSelf: 'flex-end', marginRight: 16, marginTop: -2, marginBottom: 6 }}>
+            <Text style={{ fontSize: 11, color: '#999', fontWeight: '500' }}>
+              {fmtSeenTime(item.delivered_at || item.created_at)}
+            </Text>
+          </View>
+        )}
+
+        {isGroup && item.id === messages[0]?.id && (
+          <GroupReadReceipts msg={item} />
+        )}
+      </View>
+    );
+  }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, liveReadTimes, selectedReceiptUser]);
   
 
   if (isLoading) {
@@ -2107,29 +2517,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           }
           activeOpacity={0.7}
         >
-          {isGroup ? (
-            <HeaderAvatar
-              uri={conversation?.profile_picture}
-              isGroup={true}
-              style={styles.headerAvatar}
-            />
-          ) : (
-            otherUser &&
-            (otherUser.avatar_sticker ? (
-              <View style={[styles.headerAvatar, styles.avatarPlaceholder]}>
-                <Text style={styles.headerSticker}>
-                  {otherUser.avatar_sticker}
-                </Text>
-              </View>
-            ) : (
-              <HeaderAvatar
-                uri={otherUser.profile_picture}
-                isGroup={false}
-                chatTitle={chatTitle}
-                style={styles.headerAvatar}
-              />
-            ))
-          )}
+          <AvatarWithFallback
+            uri={isGroup ? conversation?.profile_picture : otherUser?.profile_picture}
+            sticker={isGroup ? null : otherUser?.avatar_sticker}
+            displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
+            isGroup={isGroup}
+            style={styles.headerAvatar}
+          />
 
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerName} numberOfLines={1}>
@@ -2217,15 +2611,22 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         onEndReachedThreshold={0.3}
         onScroll={handleOnScroll}
         onScrollToIndexFailed={info => {
-            console.warn('ScrollToIndex failed, retrying after layout...', info);
-            const wait = setTimeout(() => {
-                flatListRef.current?.scrollToIndex({ 
-                    index: info.index, 
-                    animated: true, 
-                    viewPosition: 0.5 
-                });
-            }, 500);
-            return () => clearTimeout(wait);
+          console.warn('ScrollToIndex failed, scrolling to estimated offset and retrying...', info);
+          flatListRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: true,
+          });
+          setTimeout(() => {
+            try {
+              flatListRef.current?.scrollToIndex({ 
+                index: info.index, 
+                animated: true, 
+                viewPosition: 0.5 
+              });
+            } catch (err) {
+              console.warn('ScrollToIndex retry failed:', err);
+            }
+          }, 100);
         }}
         scrollEventThrottle={16}
         ListFooterComponent={
@@ -2280,9 +2681,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               {`Replying to ${replyToMessage.sender.id === currentUser?.id ? 'yourself' : replyToMessage.sender.display_name || 'User'}`}
             </Text>
             <Text style={styles.replyPreviewText} numberOfLines={2}>
-              {replyToMessage.content}
+              {getMessagePreviewText(replyToMessage, messages)}
             </Text>
           </View>
+          {['image', 'video', 'document'].includes(getReplyMessageType(replyToMessage, messages) || '') && (
+            <View style={styles.replyPreviewThumbnailContainer}>
+              {renderReplyThumbnail(replyToMessage, messages)}
+            </View>
+          )}
           <TouchableOpacity
             onPress={() => setReplyToMessage(null)}
             style={styles.cancelReplyButton}
@@ -2384,119 +2790,194 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         }}
       >
         <TouchableOpacity
-          style={styles.modalOverlay}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }}
           activeOpacity={1}
           onPress={() => {
             setShowMessageActions(false);
             setSelectedMessage(null);
           }}
         >
-          <View style={styles.messageActionsContainer}>
-            {/* Horizontal emoji row */}
-            <View style={styles.emojiRow}>
-              {recentEmojis.map((emoji, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.emojiQuickButton}
-                  onPress={() => handleQuickReaction(emoji)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.emojiQuick}>{emoji}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={styles.emojiQuickButton}
-                onPress={() => {
-                  setShowFullEmojiPicker(true);
-                  setShowMessageActions(false);
-                }}
-                activeOpacity={0.7}
-              >
-                <Icon name="add" size={28} color="#666" />
-              </TouchableOpacity>
-            </View>
+          {selectedMessage && (() => {
+            const isMe = selectedMessage.sender.id === currentUser?.id;
+            const screenHeight = Dimensions.get('window').height;
+            const positionStyle: any = { position: 'absolute', width: 280 };
+            
+            if (menuPosition.y < screenHeight * 0.45) {
+              positionStyle.top = Math.max(70, menuPosition.y + 10);
+            } else {
+              positionStyle.bottom = Math.max(80, (screenHeight - menuPosition.y) + 10);
+            }
+            
+            if (isMe) {
+              positionStyle.right = 16;
+            } else {
+              positionStyle.left = 48; // offset for avatar
+            }
 
-            {/* Vertical actions menu */}
-            <View style={styles.actionsColumn}>
-              <TouchableOpacity
-                style={styles.actionMenuItem}
-                onPress={handleReplyFromMenu}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Icon
-                    name="arrow-undo-outline"
-                    size={20}
-                    color="#333"
-                    style={{ marginRight: 12 }}
+            return (
+              <View style={[styles.messageActionsContainer, positionStyle]}>
+                {/* Row 1: Reactions */}
+                <View style={styles.emojiRow}>
+                  <FlatList
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    data={['❤️', '😂', '😁','😒','😊', '🤣', '🤗','🥰','😘', '😉', '😏','😔','🤫', '✅', '🤔','🙄','🥳','🔥', '😍', '🥹', '😭', '😮', '👍', '🙏', '💯']}
+                    keyExtractor={(item) => item}
+                    contentContainerStyle={{ paddingHorizontal: 8 }}
+                    renderItem={({ item: emoji }) => (
+                      <TouchableOpacity
+                        style={styles.emojiQuickButton}
+                        onPress={() => handleQuickReaction(emoji)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.emojiQuick}>{emoji}</Text>
+                      </TouchableOpacity>
+                    )}
                   />
-                  <Text style={styles.actionMenuItemText}>Reply</Text>
                 </View>
-              </TouchableOpacity>
-              {selectedMessage?.sender.id === currentUser?.id && (
-                <>
+
+                {/* Row 2: Sender (Time & Status) vs Receiver (Time Only) */}
+                {isMe ? (
+                  <View style={styles.menuTimeStatusRow}>
+                    <Text style={styles.menuTimeText}>
+                      {fmtMsgTime(selectedMessage.created_at)}
+                    </Text>
+                    <Text style={styles.menuTimeText}>
+                      {new Date(selectedMessage.created_at).toLocaleDateString()}
+                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      {selectedMessage.is_read ? (
+                        <Icon name="checkmark-done" size={16} color={THEME_COLOR} />
+                      ) : selectedMessage.delivered_at ? (
+                        <Icon name="checkmark-done" size={16} color="#A0A0A0" />
+                      ) : (
+                        <Icon name="checkmark" size={16} color="#A0A0A0" />
+                      )}
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.menuTimeStatusRow}>
+                    <Text style={styles.menuTimeText}>
+                      {fmtMsgTime(selectedMessage.created_at)}
+                    </Text>
+                    <Text style={styles.menuTimeText}>
+                      {new Date(selectedMessage.created_at).toLocaleDateString()}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Vertical actions menu */}
+                <View style={styles.actionsColumn}>
+                  {/* Row 3: Reply */}
                   <TouchableOpacity
                     style={styles.actionMenuItem}
-                    onPress={handleEditMessage}
+                    onPress={handleReplyFromMenu}
                   >
-                    <View
-                      style={{ flexDirection: 'row', alignItems: 'center' }}
-                    >
+                    <View style={styles.actionMenuItemContent}>
                       <Icon
-                        name="create-outline"
+                        name="arrow-undo-outline"
                         size={20}
                         color="#333"
                         style={{ marginRight: 12 }}
                       />
-                      <Text style={styles.actionMenuItemText}>Edit</Text>
+                      <Text style={styles.actionMenuItemText}>Reply</Text>
                     </View>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.actionMenuItem}
-                    onPress={handleDeleteMessage}
-                  >
-                    <View
-                      style={{ flexDirection: 'row', alignItems: 'center' }}
-                    >
-                      <Icon
-                        name="trash-outline"
-                        size={20}
-                        color="#FF4444"
-                        style={{ marginRight: 12 }}
-                      />
-                      <Text
-                        style={[
-                          styles.actionMenuItemText,
-                          { color: '#FF4444' },
-                        ]}
+
+                  {/* Row 4 (Sender Edit, Receiver Copy) */}
+                  {isMe ? (
+                    <>
+                      {/* Edit */}
+                      <TouchableOpacity
+                        style={styles.actionMenuItem}
+                        onPress={handleEditMessage}
                       >
-                        Unsend
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                </>
-              )}
-              {selectedMessage?.sender.id !== currentUser?.id && (
-                <TouchableOpacity
-                  style={styles.actionMenuItem}
-                  onPress={handleDeleteMessage}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Icon
-                      name="trash-outline"
-                      size={20}
-                      color="#FF4444"
-                      style={{ marginRight: 12 }}
-                    />
-                    <Text
-                      style={[styles.actionMenuItemText, { color: '#FF4444' },]}
-                    >
-                      Delete
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
+                        <View style={styles.actionMenuItemContent}>
+                          <Icon
+                            name="create-outline"
+                            size={20}
+                            color="#333"
+                            style={{ marginRight: 12 }}
+                          />
+                          <Text style={styles.actionMenuItemText}>Edit</Text>
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Copy */}
+                      <TouchableOpacity
+                        style={styles.actionMenuItem}
+                        onPress={handleCopyMessage}
+                      >
+                        <View style={styles.actionMenuItemContent}>
+                          <Icon
+                            name="copy-outline"
+                            size={20}
+                            color="#333"
+                            style={{ marginRight: 12 }}
+                          />
+                          <Text style={styles.actionMenuItemText}>Copy</Text>
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Unsend */}
+                      <TouchableOpacity
+                        style={styles.actionMenuItem}
+                        onPress={handleDeleteMessage}
+                      >
+                        <View style={styles.actionMenuItemContent}>
+                          <Icon
+                            name="trash-outline"
+                            size={20}
+                            color="#FF4444"
+                            style={{ marginRight: 12 }}
+                          />
+                          <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
+                            Unsend
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <>
+                      {/* Copy */}
+                      <TouchableOpacity
+                        style={styles.actionMenuItem}
+                        onPress={handleCopyMessage}
+                      >
+                        <View style={styles.actionMenuItemContent}>
+                          <Icon
+                            name="copy-outline"
+                            size={20}
+                            color="#333"
+                            style={{ marginRight: 12 }}
+                          />
+                          <Text style={styles.actionMenuItemText}>Copy</Text>
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Delete */}
+                      <TouchableOpacity
+                        style={styles.actionMenuItem}
+                        onPress={handleDeleteMessage}
+                      >
+                        <View style={styles.actionMenuItemContent}>
+                          <Icon
+                            name="trash-outline"
+                            size={20}
+                            color="#FF4444"
+                            style={{ marginRight: 12 }}
+                          />
+                          <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
+                            Delete
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
+              </View>
+            );
+          })()}
         </TouchableOpacity>
       </Modal>
 
@@ -2842,19 +3323,17 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: THEME_COLOR, fontSize: fontSize.sm, fontWeight: 'bold' },
   messageBubble: {
-    maxWidth: '85%',
-    padding: spacing.md,
     borderRadius: borderRadius.lg,
   },
   myMessageBubble: { backgroundColor: 'transparent', borderTopRightRadius: 4 },
   theirMessageBubble: { backgroundColor: 'transparent', borderTopLeftRadius: 4 },
   senderName: {
-    fontSize: fontSize.xs,
+    fontSize: fontSize.sm,
     color: THEME_COLOR,
     fontWeight: '600',
     marginBottom: spacing.xs,
   },
-  messageText: { fontSize: 16, lineHeight: 22 },
+  messageText: { fontSize: 16, lineHeight: 22, flexShrink:0, flex:0 },
   myMessageText: { color: '#000' },
   theirMessageText: { color: '#000' },
   messageFooter: {
@@ -2873,6 +3352,27 @@ const styles = StyleSheet.create({
   seenText: { color: THEME_COLOR },
   deliveredText: { color: SENT_COLOR },
   sentText: { color: SENT_COLOR },
+  groupReceiptsContainer: {
+    marginVertical: 4,
+    flexDirection: 'column',
+  },
+  groupReceiptsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  groupReceiptAvatarWrapper: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 1,
+    elevation: 1,
+  },
+  receiptDetailText: {
+    fontSize: 10,
+    color: '#888',
+    marginTop: 4,
+    fontWeight: '500',
+  },
   messageImage: {
     width: 200,
     height: 200,
@@ -2902,6 +3402,62 @@ const styles = StyleSheet.create({
   },
   documentIcon: { fontSize: fontSize.lg, marginRight: spacing.sm },
   documentText: { fontSize: fontSize.md },
+  documentBubbleInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.03)',
+    borderRadius: borderRadius.md,
+    width: 250,
+  },
+  documentLeftContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    minWidth: 42,
+  },
+  documentExtLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  documentCenterContainer: {
+    flex: 1,
+    marginRight: 8,
+    justifyContent: 'center',
+  },
+  documentFileNameText: {
+    fontSize: 13,
+    color: '#333',
+    fontWeight: '500',
+  },
+  documentDownloadButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#2E7D32', // Premium Green
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
+  },
+  dateSeparator: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginVertical: 12,
+  },
+  dateSeparatorText: {
+    fontSize: 11,
+    color: '#666',
+    fontWeight: '600',
+  },
   replyIndicator: {
     marginBottom: spacing.xs,
     backgroundColor: 'rgba(0,0,0,0.05)',
@@ -2910,6 +3466,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     maxWidth: '100%',
+    minWidth: 180,
   },
   replyIndicatorLine: {
     width: 3,
@@ -2928,6 +3485,38 @@ const styles = StyleSheet.create({
     fontSize: fontSize.sm,
     color: '#666',
     flexShrink: 1,
+  },
+  replyThumbnailContainer: {
+    marginLeft: spacing.sm,
+    width: 40,
+    height: 40,
+    borderRadius: borderRadius.sm,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  replyPreviewThumbnailContainer: {
+    marginRight: spacing.sm,
+    width: 40,
+    height: 40,
+    borderRadius: borderRadius.sm,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  replyMediaThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  replyMediaPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: borderRadius.sm,
   },
   reactionBadge: {
     alignSelf: 'flex-end',
@@ -3221,39 +3810,63 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 0,
-    width: '85%',
-    maxWidth: 340,
-    alignSelf: 'center',
+    width: 200,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
     overflow: 'hidden',
   },
   emojiRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
   },
   emojiQuickButton: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     justifyContent: 'center',
     alignItems: 'center',
+    marginHorizontal: 2,
   },
   emojiQuick: {
     fontSize: 28,
   },
-  actionsColumn: {
-    paddingVertical: 8,
-  },
-  actionMenuItem: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+  menuTimeStatusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
+  menuTimeText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  menuStatusText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  actionsColumn: {
+    paddingVertical: 4,
+  },
+  actionMenuItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  actionMenuItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   actionMenuItemText: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#000',
   },
   // Double-tap reaction animation

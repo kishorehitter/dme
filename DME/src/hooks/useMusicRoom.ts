@@ -21,6 +21,18 @@ export interface Song {
   source?: 'youtube' | 'drive'; 
 }
 
+// ✅ NEW: a queue entry — wraps a Song with WHO pinned it and WHEN, so the
+// client can render per-user avatar badges (Related grid, visible to
+// everyone) and filter to "my queue only" (Queue tab, client-side filter —
+// the data itself isn't private, see consumers.py _pin_video).
+export interface QueueItem {
+  song: Song;
+  addedById: number;
+  addedByName: string;
+  addedByAvatar?: string;
+  pinnedAt: number; // epoch seconds — global FIFO order across ALL users
+}
+
 export interface RoomState {
   roomCode: string;
   roomName?: string; // ✅ Made optional
@@ -28,9 +40,38 @@ export interface RoomState {
   currentSong: Song | null;
   position: number;
   isPlaying: boolean;
-  queue: Song[];
+  queue: QueueItem[];
   participants: Participant[];
 }
+
+// Backend sends queue items as snake_case
+// ({ song, added_by_id, added_by_name, added_by_avatar, pinned_at }).
+// This normalizes to the camelCase QueueItem shape the rest of the app uses,
+// and tolerates legacy plain-Song queue items (pre-pin-feature data) by
+// wrapping them with placeholder attribution so old/new shapes never crash
+// the UI during a rolling deploy.
+const normalizeQueueItem = (raw: any): QueueItem => {
+  if (raw && raw.song) {
+    return {
+      song: raw.song,
+      addedById: raw.added_by_id,
+      addedByName: raw.added_by_name ?? 'Someone',
+      addedByAvatar: raw.added_by_avatar,
+      pinnedAt: raw.pinned_at ?? 0,
+    };
+  }
+  // Legacy shape: queue item WAS the Song itself.
+  return {
+    song: raw,
+    addedById: -1,
+    addedByName: raw?.addedBy ?? 'Someone',
+    addedByAvatar: undefined,
+    pinnedAt: 0,
+  };
+};
+
+const normalizeQueue = (rawQueue: any[]): QueueItem[] =>
+  Array.isArray(rawQueue) ? rawQueue.map(normalizeQueueItem) : [];
 
 export const useMusicRoom = (
   roomCode: string, 
@@ -98,7 +139,7 @@ export const useMusicRoom = (
             currentSong: message.data.current_video,
             position: message.data.position,
             isPlaying: message.data.is_playing,
-            queue: message.data.queue,
+            queue: normalizeQueue(message.data.queue),
             participants: message.data.participants
           }));
           
@@ -145,28 +186,7 @@ export const useMusicRoom = (
             isPlaying: is_playing
           }));
 
-          // Only seek/play if listener (not DJ) and position diff > 2s
-          if (!currentState.isDJ && playerRef.current) {
-            // ✅ Expert Fix: Guard every sync seek
-            if (!isPlayerReadyRef?.current) return;
-            
-            // ✅ 100% Solution: Block sync seeks if an ad is playing!
-            if (isAdPlayingRef?.current) {
-               console.log('🚫 [SYNC] Blocked: Ad is playing');
-               return;
-            }
-            
-            // ✅ Expert Fix: 3-second cooldown after ready
-            if (playerReadyTimeRef && (Date.now() - playerReadyTimeRef.current < 3000)) {
-               console.log('⏳ [SYNC] Skipping: In post-ready cooldown');
-               return;
-            }
-
-            const currentTime = await playerRef.current.getCurrentTime();
-            if (Math.abs(currentTime - syncPos) > 1.2) {
-                playerRef.current.seekTo(syncPos, true);
-            }
-          }
+          // Sync seeking is coordinated entirely by MusicRoomScreen to keep audio and video in sync.
           break;
 
         case 'dj_background':
@@ -189,7 +209,7 @@ export const useMusicRoom = (
         case 'queue_update':
           setRoomState(prev => ({
             ...prev,
-            queue: message.data.queue
+            queue: normalizeQueue(message.data.queue)
           }));
           break;
 
@@ -272,6 +292,18 @@ export const useMusicRoom = (
     musicWebSocketService.addToQueue(song);
   }, []);
 
+  // ✅ NEW: pin a related video into the caller's own queue. Server enforces
+  // the global-FIFO ordering and dedupe — this just sends the request.
+  const pinVideo = useCallback((song: Song) => {
+    musicWebSocketService.pinVideo(song);
+  }, []);
+
+  // ✅ NEW: unpin the caller's own queue item for this videoId. Server
+  // enforces that only YOUR pin is removed, regardless of what's sent.
+  const unpinVideo = useCallback((videoId: string) => {
+    musicWebSocketService.unpinVideo(videoId);
+  }, []);
+
   const passAux = useCallback(() => {
     musicWebSocketService.passAux();
   }, []);
@@ -303,6 +335,8 @@ export const useMusicRoom = (
     syncSeek,
     updateLocalPosition,
     addToQueue,
+    pinVideo,
+    unpinVideo,
     passAux,
   };
 };

@@ -139,6 +139,26 @@ class MusicWebSocketService {
     this.send({ type: 'queue_add', song });
   }
 
+  // ✅ NEW: pin a related video into the caller's own queue. Server
+  // (consumers.py _pin_video) tags it with the caller's user id/name/avatar
+  // and a pinned_at timestamp, then keeps the room queue sorted by
+  // pinned_at — global FIFO across every user's pins.
+  pinVideo(song: {
+    videoId: string;
+    title: string;
+    thumbnail: string;
+    channelTitle: string;
+    addedBy: string;
+  }) {
+    this.send({ type: 'pin_video', song });
+  }
+
+  // ✅ NEW: unpin the caller's own queue item for this videoId. Server
+  // enforces that only the calling user's own pin is removed.
+  unpinVideo(videoId: string) {
+    this.send({ type: 'unpin_video', videoId });
+  }
+
   passAux() {
     this.send({ type: 'pass_aux' });
   }

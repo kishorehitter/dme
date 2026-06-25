@@ -15,7 +15,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity,
+  View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   FlatList, Image, ActivityIndicator,
   StatusBar, TextInput,
   Dimensions, Keyboard, Platform, ScrollView,
@@ -27,7 +27,7 @@ import YoutubePlayer from '../components/YoutubePlayer';
 import TrackPlayerService from '../services/TrackPlayerService';
 import TrackPlayer, { Event, PlaybackState } from '@rntp/player';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { useMusicRoom, Song } from '../hooks/useMusicRoom';
+import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
 import { useAuth } from '../context/AuthContext';
 import { useFocusEffect } from '@react-navigation/native';
@@ -106,12 +106,14 @@ interface ControlsProps {
   onSeek: (t: number) => void;
   onNext: () => void;
   onToggleFullscreen: () => void;
+  onShowRelated: () => void;
+  isFullscreen: boolean;
 }
 
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
   position, duration,
-  onPlayPause, onSeek, onNext, onToggleFullscreen,
+  onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, isFullscreen,
 }) => {
   const canControlRef = useRef(canControl);
   const durationRef = useRef(duration);
@@ -121,6 +123,11 @@ const VideoControls: React.FC<ControlsProps> = ({
 
   const opacity    = useRef(new Animated.Value(1)).current;
   const knobX      = useRef(new Animated.Value(0)).current;
+  // Independent from `opacity` — drives the track's thumb/expanded-height
+  // reveal. In non-fullscreen mode the thin progress line must stay
+  // visible even while `opacity` fades the rest of the controls out, so
+  // it needs its own animated value rather than sharing `opacity`.
+  const trackExpand = useRef(new Animated.Value(0)).current;
   const isSeeking  = useRef(false);
   const seekTarget = useRef(0);
   const barLayoutX = useRef(0);
@@ -133,7 +140,14 @@ const VideoControls: React.FC<ControlsProps> = ({
       duration:        200,
       useNativeDriver: true,
     }).start();
-  }, [visible]);
+    if (!isFullscreen) {
+      Animated.timing(trackExpand, {
+        toValue:         visible ? 1 : 0,
+        duration:        200,
+        useNativeDriver: false, // animates height, which native driver can't handle
+      }).start();
+    }
+  }, [visible, isFullscreen]);
 
   useEffect(() => {
     if (!isSeeking.current) {
@@ -177,13 +191,21 @@ const VideoControls: React.FC<ControlsProps> = ({
   })).current;
 
   return (
-    <Animated.View style={[cv.wrap, { opacity }]} pointerEvents={visible ? 'box-none' : 'none'}>
+    <Animated.View style={[cv.wrap, { opacity: isFullscreen ? opacity : 1 }]} pointerEvents={(visible || !isFullscreen) ? 'box-none' : 'none'}>
       <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
       <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
 
-      <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
-        <Icon name="expand" size={18} color="#fff" />
-      </TouchableOpacity>
+      <Animated.View style={[{ position: 'absolute', top: 6, left: 12 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+        <TouchableOpacity style={cv.relatedBtn} onPress={onShowRelated}>
+          <Icon name="layers-outline" size={18} color="#fff" />
+        </TouchableOpacity>
+      </Animated.View>
+
+      <Animated.View style={[{ position: 'absolute', top: 6, right: 12 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+        <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
+          <Icon name="expand" size={18} color="#fff" />
+        </TouchableOpacity>
+      </Animated.View>
 
       {!isBuffering && !isEnded && (
         <TouchableOpacity
@@ -215,38 +237,101 @@ const VideoControls: React.FC<ControlsProps> = ({
         </TouchableOpacity>
       )}
 
-      <View style={cv.bottomBar}>
-        <View
-          {...pan.panHandlers}
-          style={{ height: 30, justifyContent: 'center', marginBottom: 6 }}
-          onLayout={(event) => {
-            const { x, width: w } = event.nativeEvent.layout;
-            barLayoutX.current = x;
-            barWidth.current = w;
-          }}
-        >
-          <View style={cv.track}>
-            <View style={[cv.fill, { width: `${pct * 100}%` }]} />
-            <Animated.View style={[cv.knob, { transform: [{ translateX: knobX }] }]} />
+      {isFullscreen ? (
+        // ── FULLSCREEN: unchanged from the original behavior — entire
+        // bar (track + time row) only appears on tap, governed by the
+        // same `opacity` as play/pause/skip/expand, positioned exactly
+        // where it has always sat (above the bottom, with its existing
+        // padding) — not pinned to bottom:0.
+        <View style={cv.bottomBar}>
+          <View
+            {...pan.panHandlers}
+            style={{ height: 30, justifyContent: 'center', marginBottom: 6 }}
+            onLayout={(event) => {
+              const { x, width: w } = event.nativeEvent.layout;
+              barLayoutX.current = x;
+              barWidth.current = w;
+            }}
+          >
+            <View style={cv.track}>
+              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
+              <Animated.View style={[cv.knob, { transform: [{ translateX: knobX }] }]} />
+            </View>
+          </View>
+          <View style={cv.timeRow}>
+            <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
+            <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
+              {!canControl && (
+                <View style={cv.watchBadge}>
+                  <Icon name="eye-outline" size={11} color="rgba(255,255,255,0.5)" />
+                  <Text style={cv.watchText}>Watching</Text>
+                </View>
+              )}
+              {canControl && (
+                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         </View>
-        <View style={cv.timeRow}>
-          <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
-          <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-            {!canControl && (
-              <View style={cv.watchBadge}>
-                <Icon name="eye-outline" size={11} color="rgba(255,255,255,0.5)" />
-                <Text style={cv.watchText}>Watching</Text>
-              </View>
-            )}
-            {canControl && (
-              <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
-              </TouchableOpacity>
-            )}
+      ) : (
+        // ── NON-FULLSCREEN: YouTube-style. Time/skip row fades in/out
+        // with the rest of the controls (shares `opacity`). The thin
+        // progress line below it is ALWAYS visible — pinned flush to the
+        // video's absolute bottom edge, full width, no padding — and only
+        // its thumb + taller interactive hit area expand on tap, via the
+        // independent `trackExpand` value so it never disappears with the
+        // rest of the controls.
+        <>
+          <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+            <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
+            <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
+              {!canControl && (
+                <View style={cv.watchBadge}>
+                  <Icon name="eye-outline" size={11} color="rgba(255,255,255,0.5)" />
+                  <Text style={cv.watchText}>Watching</Text>
+                </View>
+              )}
+              {canControl && (
+                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </Animated.View>
+
+          <View
+            {...pan.panHandlers}
+            style={cv.bottomEdgeTrackHit}
+            onLayout={(event) => {
+              const { x, width: w } = event.nativeEvent.layout;
+              barLayoutX.current = x;
+              barWidth.current = w;
+            }}
+          >
+            <Animated.View
+              style={[
+                cv.bottomEdgeTrack,
+                {
+                  height: trackExpand.interpolate({ inputRange: [0, 1], outputRange: [2, 4] }),
+                },
+              ]}
+            >
+              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
+              <Animated.View
+                style={[
+                  cv.knob,
+                  {
+                    opacity: trackExpand,
+                    transform: [{ translateX: knobX }],
+                  },
+                ]}
+              />
+            </Animated.View>
           </View>
-        </View>
-      </View>
+        </>
+      )}
     </Animated.View>
   );
 };
@@ -255,18 +340,39 @@ const cv = StyleSheet.create({
   wrap:             { ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center' },
   scrimTop:         { position: 'absolute', top: 0, left: 0, right: 0, height: 80, backgroundColor: 'transparent' },
   scrimBottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, height: 100, backgroundColor: 'transparent' },
-  expandBtn:        { position: 'absolute', top: 12, right: 12, width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  expandBtn:        { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  relatedBtn:       { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   bufferWrap:       { ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center', gap: 10, backgroundColor: 'rgba(0,0,0,0.3)' },
   bufferText:       { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '600' },
   centreBtn:        { width: 70, height: 70, justifyContent: 'center', alignItems: 'center' },
   centreBtnInner:   { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', justifyContent: 'center', alignItems: 'center' },
   centreBtnDisabled:{ borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,0,0,0.2)' },
   bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
+  // ── Non-fullscreen, always-visible bottom-edge progress line ──
+  bottomEdgeTrackHit: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 24, // generous invisible drag area — the visible line itself is only 2-4px
+    justifyContent: 'flex-end',
+  },
+  bottomEdgeTrack: {
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    justifyContent: 'center',
+  },
+  timeRowFloating: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 12, // sits just above the always-visible track + its hit area
+  },
   track:            { height: 2, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 1, justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, height: 2, backgroundColor: '#fff', borderRadius: 1 },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#fff', borderRadius: 1 },
   knob:             { position: 'absolute', top: -4, marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: '#fff' },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '600' },
+  timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
   watchBadge:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
   watchText:        { color: 'rgba(255,255,255,0.5)', fontSize: 9, fontWeight: '700', textTransform: 'uppercase' },
 });
@@ -330,6 +436,12 @@ const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
 // Main MusicRoomScreen
 // ─────────────────────────────────────────────────────────────────────────────
 const MusicRoomScreen = ({ route, navigation }: any) => {
+  // ✅ AUDIO DELAY OFFSET (in seconds)
+  // Adjust this value to calibrate audio-to-video alignment (lip-sync).
+  // Negative values delay the video player to match audio lag (e.g., Bluetooth).
+  // Try values between -0.10 (100ms) and -0.20 (200ms) for typical Bluetooth devices.
+  const AUDIO_VIDEO_OFFSET = -0.30;
+
   const { roomCode, isDJMode, initialVideoId, roomName: initialRoomName } = route.params;
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -409,6 +521,30 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
+  // ✅ NEW: bumped by an explicit replay action to force the audio load
+  // effect to re-run even when currentSong?.videoId is unchanged (replaying
+  // the SAME video). Distinct from videoId itself so normal playback,
+  // seeking, and sync never accidentally trigger a reload — only an
+  // explicit user replay does.
+  const [audioReloadToken, setAudioReloadToken] = useState(0);
+  // Guards the rendezvous's compensating delay against a stale callback
+  // firing if the effect re-runs (new song, etc.) before the delay elapses.
+  const rendezvousTokenRef = useRef(0);
+  // ✅ NEW: single source of truth for "both audio (TrackPlayer) and video
+  // (YoutubePlayer/DrivePlayer) are ready AND aligned at the same position,
+  // safe to reveal the real frame to the user." Until this is true, the UI
+  // shows pure black + spinner — no thumbnail, no peeking at a half-loaded
+  // or unsynced frame. This replaces:
+  //   - the old "isPlayerReady && isTrackPlayerReady" play-prop gate, which
+  //     let audio actually start (TrackPlayer.play() inside
+  //     playYouTubeVideo()) independently of this gate, causing audio to
+  //     start before video.
+  //   - the ad-overlay's translucent thumbnail flicker, which sat on top of
+  //     the live WebView while ad-detection ran.
+  const [mediaFullySynced, setMediaFullySynced] = useState(false);
+  // True while we are actively re-establishing sync after a seek — video
+  // is held paused+spinner, audio is the "anchor" we wait on.
+  const [isReseeking, setIsReseeking] = useState(false);
   const richInputRef = useRef<RichTextInputRef>(null);
 
   useEffect(() => {
@@ -543,6 +679,11 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const [doubleTapReaction, setDoubleTapReaction] = useState({ visible: false, x: 0, y: 0 });
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [relatedVideos, setRelatedVideos] = useState<Song[]>([]);
+  const [isLoadingRelated, setIsLoadingRelated] = useState(false);
+  // ✅ Single related-videos panel state. Opened either via the top-left
+  // icon button (available anytime, anyone — DJ or participant) or
+  // automatically when the video ends (existing behavior). Shows queue +
+  // fresh suggestions only — no PIP, no current-song display, per spec.
   const [showRelated, setShowRelated] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -625,8 +766,14 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     return () => {
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
-      // Stop audio when screen unmounts (leave room, back gesture, etc.)
-      try { TrackPlayer.stop(); } catch (_) {}
+      // ✅ FIX (notification surviving room close): destroy() only released
+      // the JS-side MediaController — confirmed against native source, it
+      // never touches the queue or the foreground service/notification.
+      // endSession() cancels any in-flight load, pauses, then CLEARS the
+      // queue (mediaItemCount → 0), which is what actually makes Media3's
+      // notification provider drop the notification, then stops.
+      try { TrackPlayerService.endSession(); } catch (_) {}
+      loadedAudioSessionRef.current = null;
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
       }
@@ -636,6 +783,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
+      if (seekPollRef.current) clearInterval(seekPollRef.current);
     };
   }, []);
 
@@ -645,6 +793,10 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const hasInitialized = useRef(false);
   const metadataLock = useRef<string | null>(null);
   const currentSongRef = useRef<Song | null>(null);
+  // Lets fetchSwipeSuggestions (declared with stable empty deps further
+  // down) always read the CURRENT queue when it runs, without needing
+  // `queue` in its dependency array — same rationale as currentSongRef.
+  const roomStateQueueRef = useRef<QueueItem[]>([]);
   const livePositionRef = useRef(0);
   const roomPositionRef = useRef(0);
   const isInBackgroundRef = useRef(false);
@@ -666,13 +818,128 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const autoSkipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const adMuteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ✅ NEW: screen-owned ground truth for "have I (this screen instance,
+  // this room) already loaded this exact track into TrackPlayer".
+  // Deliberately NOT derived from TrackPlayer.isPlaying()/getProgress() —
+  // those reflect momentary native playback state and flip during normal
+  // buffering/seeking, which previously caused the audio effect to reload
+  // the entire track from the network on every watch_sync tick. This ref
+  // is only ever set by this screen's own successful load, and cleared on
+  // unmount/destroy, so it can't be fooled by a transient native blip.
+  const loadedAudioSessionRef = useRef<string | null>(null);
+
+  // Kept current by an effect right after showControlsFor's own
+  // declaration further down — lets the plain tap handler above call the
+  // latest showControlsFor without needing it declared yet at this point
+  // in the component body.
+  const showControlsForRef = useRef<(ms?: number) => void>(() => {});
+
   // AppState refs for background/foreground position tracking
   const appState = useRef(AppState.currentState);
   const backgroundStartPosition = useRef<number>(0);
   const backgroundStartTime = useRef<number>(0);
 
-  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
+  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
+
+  const seekPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ✅ NEW: monotonic token so a stale seek's delayed resume (playVideo
+  // after the settle timeout) can detect it's been superseded by a newer
+  // seek and skip firing, instead of yanking the player out of the newer
+  // seek's own settle window.
+  const resumeSeekTokenRef = useRef(0);
+
+  // ✅ NEW: Unified performLocalSeek helper to coordinate audio and video seeking
+  const performLocalSeek = useCallback((t: number) => {
+    if (t < 0 || isNaN(t)) return;
+    if (seekingRef.current) return;
+
+    // Simulate user action window to ignore transient updates
+    isUserAction.current = true;
+    const actionTimer = setTimeout(() => { isUserAction.current = false; }, 3000);
+
+    seekingRef.current = true;
+    setIsReseeking(true);
+
+    // Invalidate any pending audio-resume from a previous seek.
+    resumeSeekTokenRef.current++;
+
+    if (seekPollRef.current) {
+      clearInterval(seekPollRef.current);
+      seekPollRef.current = null;
+    }
+
+    try {
+      if (!playerRef.current || typeof playerRef.current.seekTo !== 'function') {
+        seekingRef.current = false;
+        clearTimeout(actionTimer);
+        return;
+      }
+
+      // Seek video in-place while staying in playing state (prevents stutter/stuck frame)
+      playerRef.current.seekTo(t, true);
+
+      setLivePosition(t);
+      livePositionRef.current = t;
+
+      // Pause audio to prevent stale sound from the old position
+      try { TrackPlayer.pause(); } catch (_) {}
+      TrackPlayer.seekTo(t);
+
+      let attempts = 0;
+      const maxAttempts = 50; // ~5s ceiling
+
+      seekPollRef.current = setInterval(() => {
+        attempts++;
+        try {
+          const { position: tpPos } = TrackPlayer.getProgress();
+          const closeEnough = Math.abs(tpPos - t) < 1.0;
+          const timedOut = attempts >= maxAttempts;
+
+          if (closeEnough || timedOut) {
+            clearInterval(seekPollRef.current!);
+            seekPollRef.current = null;
+
+            const landingPos = closeEnough ? tpPos : t;
+            console.log('🎯 [SEEK SYNC] Audio landed at:', landingPos,
+              'attempts:', attempts, timedOut ? '(timeout)' : '');
+
+            // Snap video to audio's exact position with offset compensation
+            if (playerRef.current && isPlayerReadyRef.current) {
+              playerRef.current.seekTo(landingPos + AUDIO_VIDEO_OFFSET, true);
+              livePositionRef.current = landingPos;
+              setLivePosition(landingPos);
+            }
+
+            // Resume audio if room is playing
+            if (isPlaying) {
+              try { TrackPlayer.play(); } catch (_) {}
+            }
+            setIsReseeking(false);
+            // Cooldown before allowing other seeks/sync updates
+            setTimeout(() => { seekingRef.current = false; }, 800);
+          }
+        } catch (e) {
+          clearInterval(seekPollRef.current!);
+          seekPollRef.current = null;
+          if (isPlaying) {
+            try { TrackPlayer.play(); } catch (_) {}
+          }
+          setIsReseeking(false);
+          setTimeout(() => { seekingRef.current = false; }, 800);
+        }
+      }, 100);
+
+    } catch (error) {
+      console.error('🎯 [LOCAL SEEK ERROR]', error);
+      if (seekPollRef.current) {
+        clearInterval(seekPollRef.current);
+        seekPollRef.current = null;
+      }
+      setIsReseeking(false);
+      seekingRef.current = false;
+    }
+  }, [isPlaying, playerRef, isPlayerReadyRef]);
 
   // --- RE-IMPLEMENTED LOGIC ---
   useEffect(() => {
@@ -699,112 +966,234 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     TrackPlayerService.setupPlayer();
   }, []);
 
-  // ✅ START/STOP TrackPlayer audio based on room play state
-  // No hand-off, no switching — TrackPlayer simply always owns the audio
-  // NOTE: ALL @rntp/player v5 APIs are synchronous (void) — no await needed
+  // ✅ FIX: this effect now ONLY loads the track when the SONG itself
+  // changes (videoId/source) — isPlaying is deliberately NOT a dependency.
+  // Previously isPlaying was in the dependency array, and since room-state
+  // isPlaying flips false→true on practically every watch_sync tick, this
+  // effect was re-running constantly and calling playYouTubeVideo() (a full
+  // network reload) on every sync, seek, and position update. That's what
+  // caused "video reloads instead of continuing seamlessly" and "jumping
+  // backward resets to the start" — every seek triggered a sync, which
+  // toggled isPlaying, which reloaded the whole track from scratch.
+  // Starting/stopping playback in response to isPlaying is now handled by
+  // the separate lightweight effect below.
   useEffect(() => {
-    console.log('🎵 [AUDIO EFFECT] fired:', {
+    console.log('🎵 [AUDIO LOAD EFFECT] fired:', {
       videoId: currentSong?.videoId,
       source: currentSong?.source,
-      isPlaying,
-      title: currentSong?.title,
     });
 
-    if (!currentSong?.videoId || !isPlaying) {
-      console.log('🎵 [AUDIO EFFECT] early return — no song or not playing');
-      if (currentSong?.source !== 'drive') {
-        try { TrackPlayer.pause(); } catch (_) {}
-      }
+    if (!currentSong?.videoId) {
       setIsTrackPlayerReady(false);
+      setMediaFullySynced(false);
       return;
     }
 
     if (currentSong.source === 'drive') {
-      console.log('🎵 [AUDIO EFFECT] Drive — unblocking player');
+      console.log('🎵 [AUDIO LOAD EFFECT] Drive — waiting for onStreamResolved to load TrackPlayer');
+      // Do NOT set isTrackPlayerReady here. DrivePlayer will fire onStreamResolved
+      // once it has the CDN URL, which loads TrackPlayer and sets isTrackPlayerReady.
+      setIsTrackPlayerReady(false);
+      setMediaFullySynced(false);
+      return;
+    }
+
+    // ✅ Already loaded THIS exact track in THIS screen session — do
+    // nothing. This is the only reload guard now, and it's based on our
+    // own ref (set after a successful load below), never on a live
+    // native read like isPlaying()/getProgress() which can be transiently
+    // false during normal buffering and would falsely trigger a reload.
+    if (loadedAudioSessionRef.current === currentSong.videoId) {
+      console.log('🎵 [AUDIO LOAD EFFECT] Already loaded — skipping reload');
       setIsTrackPlayerReady(true);
       return;
     }
 
-    // ── YouTube: load stream URL async, then hand off to sync TrackPlayer ──
     let cancelled = false;
     setIsTrackPlayerReady(false);
+    // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
+    // until the rendezvous effect below confirms both engines are ready
+    // and explicitly starts them together.
+    setMediaFullySynced(false);
+    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
 
     const startAudio = async () => {
       try {
-        // v5: getActiveMediaItem() is SYNCHRONOUS — no await
-        const activeTrack = TrackPlayer.getActiveMediaItem();
-        if (activeTrack?.mediaId !== currentSong.videoId) {
-          console.log('🎵 [AUDIO] Loading new track:', currentSong.title);
-          // playYouTubeVideo does an async fetch then calls sync TrackPlayer APIs
-          await TrackPlayerService.playYouTubeVideo(
-            currentSong.videoId,
-            currentSong.title,
-            currentSong.channelTitle || 'Music Room',
-            currentSong.thumbnail,
-            currentSong.source
-          );
-          if (!cancelled) {
-            const pos = livePositionRef.current;
-            if (pos > 0) {
-              // v5: seekTo() is SYNCHRONOUS — no await
-              TrackPlayer.seekTo(pos);
-            }
-            setIsTrackPlayerReady(true);
-          }
-        } else {
-          // v5: isPlaying() is SYNCHRONOUS — no await
-          const isPlayingNow = TrackPlayer.isPlaying();
-          if (!isPlayingNow) {
-            // v5: play() is SYNCHRONOUS — no await
-            TrackPlayer.play();
-          }
-          if (!cancelled) setIsTrackPlayerReady(true);
+        console.log('🎵 [AUDIO] Preparing track (autoplay deferred to rendezvous):', currentSong.title);
+        // ✅ FIX (audio starting ~1s before video): autoplay=false means
+        // this only calls setMediaItem() (which starts buffering) and
+        // does NOT call TrackPlayer.play(). Playback is started explicitly
+        // by the rendezvous effect below, in the same tick as the video's
+        // playVideo(), once both report ready.
+        await TrackPlayerService.playYouTubeVideo(
+          currentSong.videoId,
+          currentSong.title,
+          currentSong.channelTitle || 'Music Room',
+          currentSong.thumbnail,
+          currentSong.source,
+          undefined,
+          false // autoplay
+        );
+        if (cancelled) return;
+
+        // ✅ Mark as loaded for THIS session only after a successful load.
+        // Cleared on unmount/destroy so a new room never inherits this.
+        loadedAudioSessionRef.current = currentSong.videoId;
+
+        if (livePositionRef.current > 0) {
+          TrackPlayer.seekTo(livePositionRef.current);
         }
+        // ✅ Mark TrackPlayer ready immediately after stream is loaded to prevent 3s initial delay
+        setIsTrackPlayerReady(true);
       } catch (e) {
         console.error('🎵 [AUDIO] Start error:', e);
-        if (!cancelled) setIsTrackPlayerReady(true);
+        if (!cancelled) setIsTrackPlayerReady(true); // Unblock on error
       }
     };
 
     startAudio();
-    return () => { cancelled = true; };
-  }, [currentSong?.videoId, currentSong?.source, isPlaying]);
 
-  // ✅ NEW: Keep participant TrackPlayer in sync with room position
+    return () => {
+      cancelled = true;
+      if (safetyTimer) clearTimeout(safetyTimer);
+    };
+  }, [currentSong?.videoId, currentSong?.source, audioReloadToken]);
+
+  // ✅ NEW: the rendezvous. Fires whenever either engine's readiness flag
+  // changes. Only acts on a FRESH load (mediaFullySynced still false) —
+  // once a track has been started this way, ongoing play/pause is handled
+  // by the lightweight effect below, and seeks are handled by the
+  // dedicated re-seek effect further down.
+  //
+  // This is the fix for "audio starts ~1s before video": previously
+  // TrackPlayer.play() fired the instant the stream URL resolved,
+  // independent of whether the video had finished loading. Now audio is
+  // only PREPARED (autoplay:false above) until this effect confirms the
+  // video side is ALSO ready, then both are started together — TrackPlayer
+  // explicitly seeked to 0 and played, video's playVideo() called in the
+  // same synchronous block.
+  // ✅ Ref that mirrors playerState for use inside intervals/timeouts
+  // (state variables capture stale closures, this ref is always current).
+  const playerStateRef = useRef('unstarted');
+
+  useEffect(() => {
+    if (mediaFullySynced) return; // already running, nothing to do
+    if (!currentSong?.videoId) return;
+    if (isReseeking) return; // a seek is in control right now, not us
+
+    // Drive now uses the same rendezvous as YouTube — no special case needed.
+
+    if (isPlayerReady && isTrackPlayerReady) {
+      // If room isn't playing yet (DJ startup — syncPlay comes later),
+      // both engines are ready and paused. That IS synced — just not
+      // playing. Let the play/pause reflection handle the actual start
+      // when isPlaying becomes true.
+      if (!isPlaying) {
+        console.log('🎯 [RENDEZVOUS] Both ready, room paused — synced by definition');
+        setMediaFullySynced(true);
+        return;
+      }
+
+      console.log('🎯 [RENDEZVOUS] Both engines ready — syncing startup');
+
+      const startPos = livePositionRef.current > 0 ? livePositionRef.current : 0;
+
+      // Seek both to the starting position. Audio stays paused until the
+      // video WebView confirms it's actually rendering frames.
+      try {
+        TrackPlayer.seekTo(startPos);
+        TrackPlayer.pause();
+      } catch (_) {}
+      try { playerRef.current?.seekTo?.(startPos, true); } catch (_) {}
+
+      // The play prop (which no longer includes mediaFullySynced) will
+      // cause the video to start playing. Poll until the video confirms
+      // 'playing' state, then start audio and remove the overlay.
+      const myToken = ++rendezvousTokenRef.current;
+      let ticks = 0;
+      const checkInterval = setInterval(() => {
+        ticks++;
+        if (rendezvousTokenRef.current !== myToken) {
+          clearInterval(checkInterval);
+          return;
+        }
+
+        const videoPlaying = playerStateRef.current === 'playing';
+        const timedOut = ticks >= 40; // 4s safety
+
+        if (videoPlaying || timedOut) {
+          clearInterval(checkInterval);
+          console.log(timedOut
+            ? '🎯 [RENDEZVOUS] Safety timeout — starting audio anyway'
+            : '🎯 [RENDEZVOUS] Video confirmed playing — starting audio');
+
+          // Start audio — video is already playing (or we timed out).
+          try { TrackPlayer.play(); } catch (_) {}
+
+          // Snap video to audio's actual measured position once, then
+          // let the steady-state DJ ticker handle any residual drift.
+          setTimeout(() => {
+            if (rendezvousTokenRef.current !== myToken) return;
+            try {
+              const { position: tpPos } = TrackPlayer.getProgress();
+              if (tpPos > 0 && playerRef.current) {
+                playerRef.current.seekTo(tpPos + AUDIO_VIDEO_OFFSET, true);
+              }
+            } catch (_) {}
+          }, 200);
+
+          livePositionRef.current = startPos;
+          setLivePosition(startPos);
+          setMediaFullySynced(true);
+        }
+      }, 100);
+    }
+  }, [isPlayerReady, isTrackPlayerReady, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isPlaying]);
+
+  // ✅ NEW: lightweight play/pause reflection — reacts to room isPlaying
+  // WITHOUT ever calling setMediaItem/reloading. This is the only place
+  // isPlaying should affect TrackPlayer once a track is loaded.
+  useEffect(() => {
+    if (!currentSong?.videoId) return;
+    // Don't try to control playback before our own load effect has
+    // actually loaded this track into TrackPlayer.
+    if (loadedAudioSessionRef.current !== currentSong.videoId) return;
+    // Don't fight the rendezvous on the very first start, and don't fight
+    // an active re-seek — both have their own explicit play/pause calls.
+    if (!mediaFullySynced || isReseeking) return;
+
+    try {
+      if (isPlaying) {
+        TrackPlayer.play();
+      } else {
+        TrackPlayer.pause();
+      }
+    } catch (_) {}
+  }, [isPlaying, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking]);
+
+  // ✅ NEW: Keep participant TrackPlayer and video in sync with room position
   // Fires when DJ broadcasts a sync update (position changes from WebSocket)
-  // NOTE: ALL @rntp/player v5 APIs are synchronous — no await
   useEffect(() => {
     if (isDJ) return; // DJ manages their own position
     if (!isPlaying || !currentSong?.videoId) return;
     if (isDJBackgroundedRef.current) return; // ← KEY FIX: ignore syncs while DJ is backgrounded
 
     // ✅ Ignore syncs for 3s after DJ returns to foreground
-    // DJ's first few broadcasts after waking up may still be stale
     if (djForegroundReturnTime.current > 0 &&
         Date.now() - djForegroundReturnTime.current < 3000) {
       console.log('📱 [PARTICIPANT SYNC] Skipping — DJ foreground cooldown');
       return;
     }
 
-    const syncAudioToRoom = () => {
-      try {
-        // v5: getProgress() is SYNCHRONOUS — no await
-        const progress = TrackPlayer.getProgress();
-        const tpPosition = progress.position;
-        const drift = Math.abs(tpPosition - position);
+    const progress = TrackPlayer.getProgress();
+    const tpPosition = progress.position;
+    const drift = Math.abs(tpPosition - position);
 
-        // ✅ Raised threshold: 5s instead of 2s to avoid buffering-noise resyncs
-        if (drift > 5) {
-          console.log('🎵 [PARTICIPANT SYNC] Drift detected:', drift, '— resyncing');
-          // v5: seekTo() is SYNCHRONOUS — no await
-          TrackPlayer.seekTo(position);
-          livePositionRef.current = position;
-        }
-      } catch (e) {}
-    };
-
-    syncAudioToRoom();
-  }, [position, isDJ, isPlaying, currentSong?.videoId]);
+    if (drift > 3 && !seekingRef.current && !isReseeking) {
+      console.log('🎵 [PARTICIPANT SYNC] Drift detected:', drift, '— resyncing to room position:', position);
+      performLocalSeek(position);
+    }
+  }, [position, isDJ, isPlaying, currentSong?.videoId, performLocalSeek, isReseeking]);
 
   // ✅ NEW: Hybrid Perfect Sync Listener
   // 1. Gives WebView a head-start while audio buffers (150ms delay)
@@ -812,70 +1201,43 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // 3. Includes a 'retry' snap at 300ms to ensure it lands even on slow devices
   // 4. Guarded by lastSnapVideoId to only fire once per song (preventing resume jumps)
   useEffect(() => {
-    let headStartTimeout: ReturnType<typeof setTimeout> | null = null;
-
     const sub = TrackPlayer.addEventListener(Event.PlaybackStateChanged, (event) => {
-      if (event.state === PlaybackState.Buffering) {
-        // Head-start: unblock WebView while audio buffers
-        headStartTimeout = setTimeout(() => {
-          setIsTrackPlayerReady(true);
-        }, 150);
 
-      } else if (event.state === PlaybackState.Ready) {
-        // ✅ Cancel head-start timer if Ready (playing) fires before it completes
-        if (headStartTimeout) {
-          clearTimeout(headStartTimeout);
-          headStartTimeout = null;
-        }
-
-        // v5: getActiveMediaItem() is SYNCHRONOUS — no await
+      if (event.state === PlaybackState.Ready) {
         const activeTrack = TrackPlayer.getActiveMediaItem();
-        
-        // ✅ Only snap once per song to avoid visual jumps on manual pause/resume
+
+        setIsTrackPlayerReady(true);
+
         if (activeTrack?.mediaId && activeTrack.mediaId !== lastSnapVideoId.current) {
           lastSnapVideoId.current = activeTrack.mediaId;
-          console.log('🎵 [SYNC] New track detected, starting sync sequence:', activeTrack.mediaId);
-          
-          // Ensure WebView is unblocked
-          setIsTrackPlayerReady(true);
 
-          // Pass 1: Quick snap (50ms)
           setTimeout(() => {
-            // v5: getProgress() is SYNCHRONOUS — no await
-            const progress = TrackPlayer.getProgress();
-            const tpPosition = progress.position;
+            const { position: tpPosition } = TrackPlayer.getProgress();
             if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.1) {
-              playerRef.current.seekTo(tpPosition, true);
+              playerRef.current.seekTo(tpPosition + AUDIO_VIDEO_OFFSET, true);
               livePositionRef.current = tpPosition;
-              console.log('🎵 [SYNC] Pass 1 (50ms) snapped to:', tpPosition);
             }
           }, 50);
 
-          // Pass 2: Retry snap (300ms) for stability on slow initializations
           setTimeout(() => {
-            // v5: getProgress() is SYNCHRONOUS — no await
-            const progress = TrackPlayer.getProgress();
-            const tpPosition = progress.position;
+            const { position: tpPosition } = TrackPlayer.getProgress();
             if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.1) {
-              playerRef.current.seekTo(tpPosition, true);
+              playerRef.current.seekTo(tpPosition + AUDIO_VIDEO_OFFSET, true);
               livePositionRef.current = tpPosition;
-              console.log('🎵 [SYNC] Pass 2 (300ms) snapped to:', tpPosition);
             }
           }, 300);
         }
-      } else if (event.state === PlaybackState.Ended || event.state === PlaybackState.Error) {
-        if (headStartTimeout) {
-          clearTimeout(headStartTimeout);
-          headStartTimeout = null;
-        }
+
+      } else if (
+        event.state === PlaybackState.Ended ||
+        event.state === PlaybackState.Error
+      ) {
         setIsTrackPlayerReady(false);
       }
+
     });
 
-    return () => {
-      sub.remove();
-      if (headStartTimeout) clearTimeout(headStartTimeout);
-    };
+    return () => sub.remove();
   }, []);
 
   // ✅ APPSTATE — seamless background/foreground transition
@@ -965,6 +1327,10 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   }, [currentSong]);
 
   useEffect(() => {
+    roomStateQueueRef.current = queue;
+  }, [queue]);
+
+  useEffect(() => {
     livePositionRef.current = livePosition;
   }, [livePosition]);
 
@@ -972,6 +1338,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     if (currentSong?.videoId) {
       preloadedRef.current = false;
       joinSnapshotConsumed.current = false; // ✅ NEW: reset for each new song
+      playerStateRef.current = 'unstarted';
     }
   }, [currentSong?.videoId]);
 
@@ -1023,13 +1390,31 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         if (isAd && !isAdPlayingRef.current) {
           isAdPlayingRef.current = true;
           setIsAdPlaying(true);
+          // ✅ Ticker is now the only ad detector — perform the actual skip
+          // here too (previously split between this effect and the removed
+          // onReady interval, which is what caused duration to thrash).
           playerRef.current?.fastForwardAd?.();
+          playerRef.current?.seekTo?.(0, true);
         } else if (!isAd && isAdPlayingRef.current) {
           isAdPlayingRef.current = false;
           setIsAdPlaying(false);
         }
 
         lastCurrentTime = pos;
+
+        // ✅ FIX (Bug 1 — desync): keep the muted video snapped to TrackPlayer's audio
+        // position (plus custom offset compensation) for both DJ and participants to ensure perfect lip-sync.
+        if (isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isUserAction.current && mediaFullySynced && !isReseeking) {
+          try {
+            const tpProgress = TrackPlayer.getProgress();
+            const tpPos = tpProgress.position;
+            const targetVideoPos = tpPos + AUDIO_VIDEO_OFFSET;
+            if (tpPos > 0 && pos !== undefined && Math.abs(targetVideoPos - pos) > 1.5) {
+              console.log('🎯 [SYNC] Video drifted from audio by', Math.abs(targetVideoPos - pos).toFixed(2), '— resnapping');
+              playerRef.current?.seekTo(targetVideoPos, true);
+            }
+          } catch (_) {}
+        }
 
         if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isUserAction.current && Math.floor(pos ?? 0) % 5 === 0) {
           syncPlay(pos ?? 0);
@@ -1038,7 +1423,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     }, 500);
 
     return () => clearInterval(interval);
-  }, [isConnected, isDJ, isPlaying, currentSong?.videoId, syncPlay, playerState, isPlayerReadyRef]);
+  }, [isConnected, isDJ, isPlaying, currentSong?.videoId, syncPlay, playerState, isPlayerReadyRef, mediaFullySynced, isReseeking]);
 
   const handleSelectSong = useCallback(async (song: Song, forcePlay = false) => {
     const hasActiveVideo = !!currentSongRef.current?.videoId && playerState !== 'ended';
@@ -1050,6 +1435,17 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       if (!song.channelTitle || song.title === 'Loading...' || song.title === 'Initializing...') {
         richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name);
         richSong.addedBy = song.addedBy ?? user?.display_name;
+      }
+      // ✅ FIX (replay button not replaying): the audio load effect's
+      // dependency array is [currentSong?.videoId, currentSong?.source] —
+      // replaying the SAME video means videoId doesn't change, so that
+      // effect never re-fires, and loadedAudioSessionRef still thinks this
+      // track is "already loaded" from before it ended. Clearing the ref
+      // here forces the next load-effect pass to treat this as a genuine
+      // fresh load and actually restart TrackPlayer from position 0.
+      if (richSong.videoId === loadedAudioSessionRef.current) {
+        loadedAudioSessionRef.current = null;
+        setAudioReloadToken(t => t + 1);
       }
       setIsSyncing(true);
       loadSong(richSong, currentRoomName);
@@ -1137,6 +1533,13 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       controlTimer.current = setTimeout(() => setShowControls(false), ms) as any;
     }
   }, [isPlaying]);
+
+  // Keep the swipe gesture's ref pointed at the latest showControlsFor —
+  // see the comment at showControlsForRef's declaration for why this
+  // indirection is necessary.
+  useEffect(() => {
+    showControlsForRef.current = showControlsFor;
+  }, [showControlsFor]);
 
   useEffect(() => { showControlsFor(); }, [isPlaying, showControlsFor]);
 
@@ -1294,27 +1697,95 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     }
   }, [duration, isPlayerReady]);
 
+  // Single related-videos fetch, used by both triggers (top-left button,
+  // anytime; auto-open on video end). Filters out anything already in the
+  // queue, since those render as their own grid cells (with pinner avatar
+  // badges) via the `queue` prop — showing them again here as plain
+  // suggestions would be a confusing duplicate. Does NOT itself open the
+  // panel — callers decide when (see call sites below).
   const fetchRelated = useCallback(async () => {
+    setIsLoadingRelated(true);
     try {
-      const data = await musicAPI.getRelatedVideos(currentSongRef.current?.videoId || '');
-      setRelatedVideos(data.items.map((item: any) => ({
-        videoId: item.id.videoId,
-        title: item.snippet.title,
-        thumbnail: item.snippet.thumbnails.medium.url,
-        channelTitle: item.snippet.channelTitle,
-      })));
-      setTimeout(() => {
-        setPlayerState(curr => {
-          if (curr === 'ended') setShowRelated(true);
-          return curr;
-        });
-      }, 3000);
+      const queuedIds = new Set(roomStateQueueRef.current.map(q => q.song.videoId));
+
+      if (currentSongRef.current?.source === 'drive') {
+        console.log('📂 [RELATED] Drive video detected — fetching from watch history or trending');
+        let fallbackSongs: Song[] = [];
+
+        try {
+          const historyData = await musicAPI.getWatchHistory();
+          if (Array.isArray(historyData) && historyData.length > 0) {
+            const mappedHistory = historyData
+              .map((item: any) => ({
+                videoId: item.video_id,
+                title: item.title,
+                thumbnail: item.thumbnail,
+                channelTitle: item.channel_title || 'Music History',
+                source: item.source || 'youtube',
+              }))
+              .filter((song: Song) => song.videoId !== currentSongRef.current?.videoId && !queuedIds.has(song.videoId));
+
+            // Shuffle history to show random suggestions
+            fallbackSongs = mappedHistory.sort(() => 0.5 - Math.random());
+          }
+        } catch (err) {
+          console.warn('📂 [RELATED] Failed to load history:', err);
+        }
+
+        // If history is empty or loading history failed, fetch trending YouTube videos
+        if (fallbackSongs.length === 0) {
+          try {
+            console.log('📂 [RELATED] History empty — fetching trending YouTube videos');
+            const searchData = await musicAPI.searchYouTube('trending music');
+            if (searchData && Array.isArray(searchData.items)) {
+              fallbackSongs = searchData.items
+                .map((item: any) => ({
+                  videoId: item.id.videoId,
+                  title: item.snippet.title,
+                  thumbnail: item.snippet.thumbnails.medium.url,
+                  channelTitle: item.snippet.channelTitle,
+                  source: 'youtube',
+                }))
+                .filter((song: Song) => !queuedIds.has(song.videoId));
+            }
+          } catch (err) {
+            console.error('📂 [RELATED] Failed to fetch search trending:', err);
+          }
+        }
+
+        setRelatedVideos(fallbackSongs.slice(0, 15));
+      } else {
+        const data = await musicAPI.getRelatedVideos(currentSongRef.current?.videoId || '');
+        const fresh = data.items
+          .map((item: any) => ({
+            videoId: item.id.videoId,
+            title: item.snippet.title,
+            thumbnail: item.snippet.thumbnails.medium.url,
+            channelTitle: item.snippet.channelTitle,
+          }))
+          .filter((song: Song) => !queuedIds.has(song.videoId));
+        setRelatedVideos(fresh);
+      }
     } catch (e) {
       console.error('Related videos fetch failed:', e);
+    } finally {
+      setIsLoadingRelated(false);
     }
   }, []);
 
+  // Re-fetch whenever the panel opens (button or auto-on-end), and again
+  // if the current song changes while it's still open (so suggestions
+  // don't go stale if playback advances to a new song mid-browse).
+  useEffect(() => {
+    if (showRelated) {
+      fetchRelated();
+    }
+  }, [showRelated, currentSong?.videoId, fetchRelated]);
+
   const onPlayerStateChange = async (state: string) => {
+    // ✅ Always update the ref so intervals/timeouts can read the
+    // current video state without stale-closure issues.
+    playerStateRef.current = state;
     setPlayerState(state);
 
     if (state === 'playing') {
@@ -1323,8 +1794,14 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       playingStartTime.current = 0;
     }
 
-    if (state === 'buffering' || state === 'unstarted' || state === 'cued') setIsBuffering(true);
-    else setIsBuffering(false);
+    // ✅ FIX: Suppress buffering state changes during active seek.
+    // The seekingRef prevents the spinner↔pause icon flicker that
+    // occurs when the video reports buffering→playing→buffering at
+    // the new position while audio is still catching up.
+    if (!seekingRef.current) {
+      if (state === 'buffering' || state === 'unstarted' || state === 'cued') setIsBuffering(true);
+      else setIsBuffering(false);
+    }
     if (['unstarted', 'playing', 'paused', 'cued', 'buffering'].includes(state)) setIsPlayerReady(true);
 
     if (state === 'ended') {
@@ -1334,6 +1811,12 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           passAux();
         } else {
           fetchRelated();
+          setTimeout(() => {
+            setPlayerState(curr => {
+              if (curr === 'ended') setShowRelated(true);
+              return curr;
+            });
+          }, 3000);
         }
       }
       return;
@@ -1359,7 +1842,10 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     if (!isDJ && !isDJMode) return;
     setActionWindow();
     if (queue.length === 0) {
-      fetchRelated();
+      // Nothing queued to skip to — show the related panel immediately so
+      // there's visible feedback and a way to pick something, instead of
+      // silently fetching suggestions in the background with no UI change.
+      setShowRelated(true);
     } else {
       setIsSyncing(true);
       passAux();
@@ -1384,32 +1870,14 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
   const handleSeek = useCallback(async (t: number) => {
     if (isAdPlayingRef.current) return;
-
-    setActionWindow(3000);
-
     if (seekingRef.current) return;
-    seekingRef.current = true;
 
-    try {
-      if (t < 0 || isNaN(t)) return;
-      if (!playerRef.current || typeof playerRef.current.seekTo !== 'function') return;
+    // Broadcast seek to the room
+    syncSeek(t);
 
-      const seekPromise = playerRef.current.seekTo(t, true);
-      if (seekPromise) await seekPromise;
-
-      setLivePosition(t);
-
-      // ✅ Also seek TrackPlayer so audio stays in sync after a manual seek
-      // v5: seekTo() is SYNCHRONOUS — no await
-      TrackPlayer.seekTo(t);
-
-      syncSeek(t);
-    } catch (error) {
-      console.error('🎯 [SEEK ERROR]', error);
-    } finally {
-      setTimeout(() => { seekingRef.current = false; }, 800);
-    }
-  }, [syncSeek]);
+    // Perform local seek coordination
+    performLocalSeek(t);
+  }, [performLocalSeek, syncSeek]);
 
   const handlePress = (item: any, event: any) => {
     const now = Date.now();
@@ -1507,8 +1975,10 @@ const sendChatMessage = () => {
               </TouchableOpacity>
               <TouchableOpacity style={[s.pillButton, s.leaveButton]} onPress={() => {
                 setShowLeaveConfirm(false);
-                // v5: stop() is SYNCHRONOUS — no await
-                try { TrackPlayer.stop(); } catch (e) {}
+                // ✅ FIX: clear the queue (not just stop/destroy) so the
+                // Media3 notification actually disappears — see endSession().
+                try { TrackPlayerService.endSession(); } catch (_) {}
+                loadedAudioSessionRef.current = null;
                 navigation.goBack();
               }}>
                 <Text style={s.buttonText}>Leave</Text>
@@ -1602,7 +2072,10 @@ const sendChatMessage = () => {
             </View>
           )}
 
-          {/* VIDEO */}
+          {/* VIDEO — stays in its normal flow position always now. The
+              related-videos panel (opened via the top-left icon button,
+              not a swipe/PIP) renders as a separate overlay on top while
+              this keeps playing underneath, unaffected. */}
           <View style={fullscreen ? s.videoWrapFullscreen : s.videoWrap}>
             <View style={StyleSheet.absoluteFill} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
               {currentSong && currentSong.videoId && currentSong.title !== 'Initializing...' ? (
@@ -1614,13 +2087,31 @@ const sendChatMessage = () => {
                     ref={playerRef}
                     fileId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady}
-                    muted={false}
+                    muted={true}
                     onReady={() => {
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
                       setIsBuffering(false);
-                      setIsTrackPlayerReady(true); // Drive doesn't use TrackPlayer
+                      // isTrackPlayerReady is set by onStreamResolved → TrackPlayer ready event
+                    }}
+                    onStreamResolved={(cdnUrl, cdnHeaders) => {
+                      // Drive CDN URL resolved — load it into TrackPlayer as the audio master.
+                      // This mirrors exactly how YouTube audio is loaded, so the rendezvous,
+                      // DJ sync ticker, seeking, and background/foreground all work identically.
+                      if (!currentSong) return;
+                      console.log('🎵 [DRIVE AUDIO] Stream resolved — loading into TrackPlayer');
+                      TrackPlayerService.playDirectUrl(
+                        cdnUrl,
+                        cdnHeaders,
+                        currentSong.title,
+                        currentSong.channelTitle || 'Drive',
+                        currentSong.thumbnail,
+                        0,    // duration — TrackPlayer will detect it from stream
+                        false // autoplay deferred to rendezvous
+                      );
+                      loadedAudioSessionRef.current = currentSong.videoId;
+                      setIsTrackPlayerReady(true);
                     }}
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
@@ -1668,43 +2159,28 @@ const sendChatMessage = () => {
                       isAdPlayingRef.current = true;
                       realDurationLockedRef.current = false;
 
+                      // ✅ FIX (Bug 1 — duration jumping / desync):
+                      // Previously this block ran its OWN setInterval that
+                      // independently measured duration and decided
+                      // ad-vs-real-video, calling setDuration/setRealDuration
+                      // on its own schedule. The "Stable Position ticker"
+                      // effect elsewhere in this component does the exact
+                      // same job with a different (stricter, sample-averaged)
+                      // heuristic. Having two independent detectors meant
+                      // duration could be overwritten by whichever one fired
+                      // last, visibly jumping between values. We now let the
+                      // ticker be the single source of truth — onReady only
+                      // seeds "assume this is an ad until the ticker proves
+                      // otherwise", matching what the ticker already expects
+                      // (isAdPlayingRef starts true, masterDuration starts 0).
                       if (adSkipIntervalRef.current) clearInterval(adSkipIntervalRef.current);
                       if (adMuteTimer.current) clearTimeout(adMuteTimer.current);
 
-                      adSkipIntervalRef.current = setInterval(async () => {
-                        try {
-                          const dur = await playerRef.current?.getDuration();
-                          if (!dur || dur <= 0) return;
-
-                          if (!realDurationLockedRef.current && masterDuration.current === 0) {
-                            masterDuration.current = dur;
-                            return;
-                          }
-
-                          const isAd = masterDuration.current > 0 &&
-                            Math.abs(dur - masterDuration.current) > 10;
-
-                          if (isAd) {
-                            isAdPlayingRef.current = true;
-                            setIsAdPlaying(true);
-                            playerRef.current?.seekTo(0, true);
-                          } else {
-                            if (!realDurationLockedRef.current) {
-                              realDurationLockedRef.current = true;
-                              masterDuration.current = dur;
-                              playerRef.current?.setRealDuration(dur);
-                              setDuration(dur);
-                            }
-                            if (isAdPlayingRef.current) {
-                              isAdPlayingRef.current = false;
-                              setIsAdPlaying(false);
-                            }
-                          }
-                        } catch (e) {}
-                      }, 500);
-
+                      // Safety net only: if the ticker hasn't cleared the
+                      // "assume ad" flag within 20s (e.g. ticker hasn't
+                      // started yet, very slow buffering), stop blocking the
+                      // UI on the ad overlay. This does NOT touch duration.
                       adMuteTimer.current = setTimeout(() => {
-                        if (adSkipIntervalRef.current) clearInterval(adSkipIntervalRef.current);
                         setIsAdPlaying(false);
                         isAdPlayingRef.current = false;
                       }, 20000);
@@ -1746,9 +2222,7 @@ const sendChatMessage = () => {
 
               ) : (
                 <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                  {currentSong?.thumbnail && (
-                    <Image source={{ uri: currentSong.thumbnail }} style={[StyleSheet.absoluteFill, { opacity: 0.3 }]} blurRadius={25} />
-                  )}
+                  <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
                 </View>
               )}
             </View>
@@ -1760,14 +2234,10 @@ const sendChatMessage = () => {
                 justifyContent: 'center', alignItems: 'center',
                 gap: 12, padding: 24, zIndex: 999,
               }]}>
-                <Icon name="ban-outline" size={48} color="#ff4444" />
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center' }}>
-                  {playerError === 'embed_not_allowed' ? 'This video cannot be played' : 'Playback error'}
-                </Text>
                 <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, textAlign: 'center' }}>
                   {playerError === 'embed_not_allowed'
                     ? 'The video owner has restricted playback outside YouTube'
-                    : 'Something went wrong. Try another video.'}
+                    : 'Video Unplayable'}
                 </Text>
                 {(isDJ || isDJMode) && (
                   <TouchableOpacity
@@ -1776,7 +2246,7 @@ const sendChatMessage = () => {
                       setPlayerError(null);
                       setShowDiscovery(true);
                     }}
-                    style={{ marginTop: 8, backgroundColor: '#8100D1', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
+                    style={{ marginTop: 8, backgroundColor: '#31313100', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
                   >
                     <Text style={{ color: '#fff', fontWeight: '700' }}>Pick Another Video</Text>
                   </TouchableOpacity>
@@ -1784,11 +2254,15 @@ const sendChatMessage = () => {
               </View>
             )}
 
-            {/* Tap handler */}
+            {/* Simple tap on empty video space shows controls. A tap that
+                lands on a VideoControls button (rendered after this, on
+                top) fires that button's onPress instead, never reaching
+                here — same as the original behavior, swipe gesture removed
+                per spec (replaced by the top-left Related icon button). */}
             {!playerError && playerState !== 'ended' && (
-              <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-                <TouchableOpacity activeOpacity={1} style={StyleSheet.absoluteFill} onPress={() => showControlsFor()} />
-              </View>
+              <TouchableWithoutFeedback onPress={() => showControlsForRef.current()}>
+                <View style={StyleSheet.absoluteFill} />
+              </TouchableWithoutFeedback>
             )}
 
             <VideoControls
@@ -1796,13 +2270,15 @@ const sendChatMessage = () => {
               isPlaying={isPlaying}
               isEnded={playerState === 'ended'}
               canControl={(isDJ || isDJMode) && isPlayerReady}
-              isBuffering={isBuffering && !!currentSong}
+              isBuffering={!isReseeking && (isBuffering || (currentSong?.source !== 'drive' && !isTrackPlayerReady)) && !!currentSong}
               position={livePosition}
               duration={duration}
               onPlayPause={handlePlayPause}
               onSeek={handleSeek}
               onNext={handleNext}
               onToggleFullscreen={() => setFullscreen(!fullscreen)}
+              onShowRelated={() => setShowRelated(true)}
+              isFullscreen={fullscreen}
             />
 
             {/* Persistent Replay Button */}
@@ -1819,23 +2295,67 @@ const sendChatMessage = () => {
               />
             )}
 
-            {/* Ad overlay — only for YouTube, Drive has no ads */}
+            {/* Ad overlay — only for YouTube, Drive has no ads. Pure black,
+                no thumbnail — a translucent thumbnail here was sitting on
+                top of the live (possibly already-playing) WebView frame
+                underneath and was the source of the reported flicker. */}
             {isAdPlaying && !playerError && currentSong?.source !== 'drive' && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 20, justifyContent: 'center', alignItems: 'center' }]}>
-                {currentSong?.thumbnail && (
-                  <Image source={{ uri: currentSong.thumbnail }} style={[StyleSheet.absoluteFill, { opacity: 0.15 }]} blurRadius={20} />
-                )}
-                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.8)' }]} />
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 20, justifyContent: 'center', alignItems: 'center' }]} />
+            )}
+
+            {/* ✅ Sync overlay — covers ONLY the initial startup
+                rendezvous (before audio+video are both confirmed running).
+                NOT shown during seeks — the video stays visible with its
+                natural seek behavior, only audio is briefly silent. */}
+            {!playerError && currentSong?.videoId && currentSong.title !== 'Initializing...' &&
+              !mediaFullySynced && (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 30, justifyContent: 'center', alignItems: 'center' }]}>
+                <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
               </View>
             )}
 
-            {/* Related videos overlay — only for YouTube */}
+            {/* Small corner indicator during seek — audio catching up */}
+            {isReseeking && mediaFullySynced && (
+              <View style={{ position: 'absolute', top: 12, left: '50%', marginLeft: -16, zIndex: 35, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <ActivityIndicator size="small" color="#fff" />
+              </View>
+            )}
+
+            {/* Related videos overlay — queue (global play order, with
+                pinner avatar badges) + fresh suggestions. No PIP, no
+                current-song display, per spec. Opened via the top-left
+                Related icon button (anytime) or automatically when the
+                video ends. Selecting ANY video here while the player has
+                ENDED plays it immediately (handleSelectSong's forcePlay
+                path) instead of only pinning it into a queue that nothing
+                would ever auto-advance from. */}
             {showRelated && !fullscreen && currentSong?.source !== 'drive' && (
               <View style={s.relatedOverlay}>
+                <TouchableOpacity
+                  style={s.relatedCloseBtn}
+                  onPress={() => setShowRelated(false)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Icon name="close-circle" size={26} color="#fff" />
+                </TouchableOpacity>
+                {isLoadingRelated && relatedVideos.length === 0 && (
+                  <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" style={{ marginTop: 12 }} />
+                )}
                 <RelatedVideosGrid
-                  videos={relatedVideos}
-                  onSelect={(song) => { setShowRelated(false); handleSelectSong(song); }}
-                  onReplay={() => { if (currentSong) { setShowRelated(false); handleSelectSong(currentSong); } }}
+                  queueItems={queue}
+                  suggestedVideos={relatedVideos}
+                  myUserId={user?.id ?? -1}
+                  onPinVideo={(song) => {
+                    if (playerState === 'ended') {
+                      // Nothing left for the room to auto-advance to —
+                      // play this immediately instead of just pinning it.
+                      setShowRelated(false);
+                      handleSelectSong(song, true);
+                    } else {
+                      pinVideo(song);
+                    }
+                  }}
+                  onUnpinVideo={(videoId) => unpinVideo(videoId)}
                 />
               </View>
             )}
@@ -1870,7 +2390,7 @@ const sendChatMessage = () => {
                         </View>
                       ))}
                       <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
-                        <Icon name="person-add-outline" size={16} color="#8100D1" />
+                        <Icon name="person-add-outline" size={16} color="#fdfdfd" />
                       </TouchableOpacity>
                     </ScrollView>
                   </View>
@@ -2052,35 +2572,51 @@ const sendChatMessage = () => {
                 </>
               ) : (
                 <View style={{ flex: 1 }}>
-                  <View style={s.queueHeader}>
-                    <Text style={s.queueTitle}>Up Next ({queue.length})</Text>
-                    <TouchableOpacity onPress={() => setActiveTab('chat')} style={s.queueCloseBtn}>
-                      <Icon name="close-circle" size={20} color="#fff" />
-                      <Text style={s.queueCloseText}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <FlatList
-                    data={queue}
-                    keyExtractor={(_, i) => i.toString()}
-                    style={{ flex: 1 }}
-                    contentContainerStyle={{ padding: 12 }}
-                    ListEmptyComponent={<Text style={s.emptyText}>Queue is empty — use 🔍 to add songs</Text>}
-                    renderItem={({ item, index }) => (
-                      <View style={s.qRow}>
-                        <Text style={s.qNum}>{index + 1}</Text>
-                        <Image source={{ uri: item.thumbnail }} style={s.qThumb} />
-                        <View style={{ flex: 1, marginLeft: 10 }}>
-                          <Text style={s.qTitle} numberOfLines={1}>{item.title}</Text>
-                          <Text style={s.qBy}>Added by {item.addedBy ?? item.channelTitle}</Text>
-                        </View>
-                        {(isDJ || isDJMode) && (
-                          <TouchableOpacity onPress={() => handleSelectSong(item)}>
-                            <Icon name="play-circle" size={26} color="#8100D1" />
+                  {(() => {
+                    // ✅ Queue tab shows ONLY the viewing user's own pinned
+                    // items — per spec, each person's queue is private to
+                    // them in this view (the Related grid is where everyone
+                    // sees everyone's pins). We still show each item's
+                    // GLOBAL position (its index in the full, all-users
+                    // queue) so a user can tell when their pick is actually
+                    // coming up, not just its position within their own
+                    // filtered list.
+                    const myQueue = queue
+                      .map((item, globalIndex) => ({ item, globalIndex }))
+                      .filter(({ item }) => item.addedById === (user?.id ?? -1));
+
+                    return (
+                      <>
+                        <View style={s.queueHeader}>
+                          <Text style={s.queueTitle}>My Queue ({myQueue.length})</Text>
+                          <TouchableOpacity onPress={() => setActiveTab('chat')} style={s.queueCloseBtn}>
+                            <Icon name="close-circle" size={20} color="#fff" />
+                            <Text style={s.queueCloseText}>Close</Text>
                           </TouchableOpacity>
-                        )}
-                      </View>
-                    )}
-                  />
+                        </View>
+                        <FlatList
+                          data={myQueue}
+                          keyExtractor={({ item }) => `${item.song.videoId}_${item.addedById}`}
+                          style={{ flex: 1 }}
+                          contentContainerStyle={{ padding: 12 }}
+                          ListEmptyComponent={<Text style={s.emptyText}>Your queue is empty — swipe the video to browse and pin songs</Text>}
+                          renderItem={({ item: { item, globalIndex } }) => (
+                            <View style={s.qRow}>
+                              <Text style={s.qNum}>{globalIndex + 1}</Text>
+                              <Image source={{ uri: item.song.thumbnail }} style={s.qThumb} />
+                              <View style={{ flex: 1, marginLeft: 10 }}>
+                                <Text style={s.qTitle} numberOfLines={1}>{item.song.title}</Text>
+                                <Text style={s.qBy}>Up next in #{globalIndex + 1} position</Text>
+                              </View>
+                              <TouchableOpacity onPress={() => unpinVideo(item.song.videoId)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                                <Icon name="close-circle" size={24} color="rgba(255,255,255,0.5)" />
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        />
+                      </>
+                    );
+                  })()}
                 </View>
               )}
             </>
@@ -2149,6 +2685,7 @@ const sendChatMessage = () => {
 // Styles
 const s = StyleSheet.create({
   relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 15 },
+  relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
   root:              { flex: 1, backgroundColor: '#000' },
   inner:             { flex: 1, backgroundColor: '#000' },
   loadingContainer:  { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },

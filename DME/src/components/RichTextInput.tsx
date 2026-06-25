@@ -37,19 +37,12 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
   const { onTextChange, onChangeText, onContentSizeChange, text, ...rest } = props;
   const nativeRef = useRef<any>(null);
 
-  // ✅ Expose clear/setText so parent can imperatively control text
   useImperativeHandle(ref, () => ({
     clear: () => {
-      const node = findNodeHandle(nativeRef.current);
-      if (node) {
-        UIManager.dispatchViewManagerCommand(node, 'clear', []);
-      }
+      nativeRef.current?.setNativeProps({ text: '' });
     },
     setText: (newText: string) => {
-      const node = findNodeHandle(nativeRef.current);
-      if (node) {
-        UIManager.dispatchViewManagerCommand(node, 'setText', [newText]);
-      }
+      nativeRef.current?.setNativeProps({ text: newText });
     },
   }));
 

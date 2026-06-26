@@ -39,12 +39,11 @@ class MusicWebSocketService {
         this.currentRoomCode = roomCode;
         this.disconnect();
 
-        // Ensure auth token is validated and refreshed via axios interceptors before connecting
-        try {
-          await api.get('/accounts/profile/');
-        } catch (err) {
+        // We removed the blocking await here because it was causing WS timeouts.
+        // It's still good to fire the request so Axios can refresh the token in the background if needed.
+        api.get('/accounts/profile/').catch(err => {
           console.warn('🎵 Music WS pre-connect token refresh failed/skipped:', err);
-        }
+        });
 
         const token = await AsyncStorage.getItem('access_token');
         if (!token) {

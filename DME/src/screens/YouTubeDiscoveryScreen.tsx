@@ -10,7 +10,7 @@ import {
   View, StyleSheet, TouchableOpacity,
   StatusBar, Text, DeviceEventEmitter,
   TextInput, Keyboard, KeyboardAvoidingView,
-  Platform, Dimensions, Image, FlatList,
+  Platform, Dimensions, Image, FlatList, ActivityIndicator,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -46,6 +46,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [historyQuery, setHistoryQuery] = useState('');
   const [likesQuery, setLikesQuery]     = useState('');
 
+  const [ytQuery, setYtQuery]           = useState('');
+  const [ytResults, setYtResults]       = useState<any[]>([]);
+  const [isYtSearching, setIsYtSearching] = useState(false);
+
   const isNavigating = useRef(false);
 
   // ─── Load history & likes on mount ────────────────────────────────────────
@@ -53,7 +57,28 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     isNavigating.current = false;
     loadHistory();
     loadLikes();
+    handleSearchYouTube('trending music videos');
   }, []);
+
+  const handleSearchYouTube = async (queryToSearch?: string) => {
+    const q = queryToSearch || ytQuery;
+    if (!q.trim()) return;
+    Keyboard.dismiss();
+    setIsYtSearching(true);
+    try {
+      const data = await musicAPI.searchYouTube(q, 15);
+      if (data && data.items) {
+        setYtResults(data.items);
+      } else {
+        setYtResults([]);
+      }
+    } catch (e) {
+      console.error('YouTube search failed', e);
+      Toast.show({ type: 'error', text1: 'Search failed' });
+    } finally {
+      setIsYtSearching(false);
+    }
+  };
 
   const loadHistory = async () => {
     try {
@@ -194,44 +219,63 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }, 800); // was 100ms
   };
 
-  // ─── Grid item renderer (History & Likes) ─────────────────────────────────
+  // ─── Grid item renderer (History & Likes & YouTube) ───────────────────────
   const renderGridItem = (
     { item }: { item: any },
-    type: 'history' | 'likes'
+    type: 'history' | 'likes' | 'youtube'
   ) => {
     const isDrive  = item.source === 'drive';
-    const thumb    = isDrive
-      ? (item.thumbnail || 'https://via.placeholder.com/150/000000/FFFFFF?text=Drive')
-      : item.thumbnail;
-    const videoId  = item.video_id;
-    const source   = item.source || 'youtube';
+    let videoId = item.video_id || item.videoId;
+    let thumb = item.thumbnail;
+    let title = item.title;
+    let channel = item.channel_title || item.channelTitle;
+    let source = item.source || 'youtube';
+
+    if (type === 'youtube' && item.id?.videoId) {
+      videoId = item.id.videoId;
+      title = item.snippet?.title;
+      thumb = item.snippet?.thumbnails?.medium?.url;
+      channel = item.snippet?.channelTitle;
+    }
+
+    if (isDrive && !thumb) {
+      thumb = 'https://via.placeholder.com/150/000000/FFFFFF?text=Drive';
+    }
+
+    // We can't remove items from youtube search
+    const canRemove = type === 'history' || type === 'likes';
 
     return (
       <View style={styles.gridItem}>
         <TouchableOpacity
           style={styles.gridItemClick}
-          onPress={() => handleSelectMedia(item, source)}
+          onPress={() => handleSelectMedia(
+            type === 'youtube' ? { video_id: videoId, title, thumbnail: thumb, channel_title: channel } : item, 
+            source
+          )}
         >
           <Image source={{ uri: thumb }} style={styles.gridThumb} />
           <View style={styles.gridInfo}>
             <Text style={styles.gridTitle} numberOfLines={2}>
-              {item.title}
+              {title}
             </Text>
             <Text style={styles.gridSub}>
-              {item.channel_title || (isDrive ? 'Google Drive' : '')}
+              {channel || (isDrive ? 'Google Drive' : '')}
             </Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.removeItem}
-          onPress={() =>
-            type === 'history'
-              ? removeHistoryItem(videoId, source)
-              : removeLikeItem(videoId, source)
-          }
-        >
-          <Icon name="close-circle" size={20} color="rgba(255,255,255,0.4)" />
-        </TouchableOpacity>
+        {canRemove && (
+          <TouchableOpacity
+            style={styles.removeItem}
+            onPress={() =>
+              type === 'history'
+                ? removeHistoryItem(videoId, source)
+                : removeLikeItem(videoId, source)
+            }
+          >
+            <Icon name="close-circle" size={20} color="rgba(255,255,255,0.4)" />
+          </TouchableOpacity>
+        )}
       </View>
     );
   };
@@ -323,17 +367,32 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
           {/* YouTube Tab */}
           {activeTab === 'youtube' && (
-            <WebView
-              ref={youtubeWebViewRef}
-              source={{ uri: 'https://m.youtube.com' }}
-              onNavigationStateChange={handleYouTubeNavChange}
-              style={styles.webview}
-              userAgent="Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36"
-              mediaPlaybackRequiresUserAction={false}
-              allowsInlineMediaPlayback={true}
-              javaScriptEnabled={true}
-              backgroundColor="#000"
-            />
+            <View style={styles.tabContent}>
+              <View style={styles.searchBar}>
+                <Icon name="search" size={18} color="#666" />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search YouTube..."
+                  value={ytQuery}
+                  onChangeText={setYtQuery}
+                  onSubmitEditing={() => handleSearchYouTube()}
+                  returnKeyType="search"
+                />
+                {isYtSearching && <ActivityIndicator size="small" color="#FF007F" style={{ marginLeft: 8 }} />}
+              </View>
+              <FlatList
+                data={ytResults}
+                numColumns={2}
+                keyExtractor={(item, index) => item.id?.videoId || index.toString()}
+                renderItem={item => renderGridItem(item, 'youtube')}
+                contentContainerStyle={styles.gridContent}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>
+                    {isYtSearching ? 'Searching YouTube...' : 'No results found'}
+                  </Text>
+                }
+              />
+            </View>
           )}
 
           {/* Drive Tab — WebView approach, no OAuth needed */}

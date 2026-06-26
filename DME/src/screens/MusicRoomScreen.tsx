@@ -738,12 +738,12 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   useFocusEffect(
     React.useCallback(() => {
       if (Platform.OS === 'android' && SystemBar) {
-        try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
+        try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
       }
       return () => {
         // Restore to default light navigation bar color when leaving the room
         if (Platform.OS === 'android' && SystemBar) {
-          try { SystemBar.setNavigationBarColor('#FFFFFF', false); } catch (e) {}
+          try { SystemBar.setNavigationBarColor('#FFFFFF', true); } catch (e) {}
         }
       };
     }, [])
@@ -753,11 +753,11 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     if (Platform.OS === 'android' && SystemBar) {
       if (!showDiscovery) {
         const t = setTimeout(() => {
-          try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
+          try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
         }, 300);
         return () => clearTimeout(t);
       } else {
-        try { SystemBar.setNavigationBarColor('#111111', true); } catch (e) {}
+        try { SystemBar.setNavigationBarColor('#111111', false); } catch (e) {}
       }
     }
   }, [showDiscovery]);
@@ -1985,7 +1985,7 @@ const sendChatMessage = () => {
 
   useEffect(() => {
     if (Platform.OS === 'android' && SystemBar) {
-      try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
+      try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
     }
   }, [showLeaveConfirm]);
 

@@ -274,10 +274,13 @@ class YouTubeStreamView(APIView):
 
     def post(self, request):
         video_id = request.data.get('videoId', '').strip()
+        client_error = request.data.get('clientError', '').strip()
         if not video_id:
             return Response({'error': 'Video ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         logger.info(f'🎵 Stream request for video_id={video_id}')
+        if client_error:
+            logger.warning(f'⚠️ Client reported extraction failure: {client_error}')
 
         # ── Step 1: yt-dlp with cookie auth (primary & most reliable) ─────────
         cookie_file = _get_cookie_file()

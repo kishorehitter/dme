@@ -106,151 +106,150 @@ const tryInvidiousInstance = async (instance: string, videoId: string): Promise<
     throw new Error(`Instance ${instance} returned invalid data`);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// InnerTube API extraction — uses YouTube's own internal API with the
-// "android" client type. This is the same API yt-dlp uses internally.
-//
-// Why this works:
-//   • The `android` client (ANDROID_TESTSUITE specifically) returns
-//     plain, non-ciphered audio stream URLs — no JS decipher needed.
-//   • It's an authenticated-app API: YouTube doesn't bot-block it by IP
-//     the same way it blocks web scraping from datacenter IPs.
-//   • Running from the user's phone (residential IP) makes it even more
-//     reliable since it looks exactly like the official YouTube Android app.
-//
-// Why the old HTML scraping approach failed:
-//   • axios on Android is not a browser — YouTube serves a bot/consent page.
-//   • Even if ytInitialPlayerResponse was found, most streams use
-//     signatureCipher, which requires executing YouTube's obfuscated JS.
-//   • Raw cipher URLs are rejected with 403 by YouTube's CDN.
-// ─────────────────────────────────────────────────────────────────────────────
+// InnerTube API extraction — tries different YouTube client profiles sequentially.
+// Why we try multiple clients:
+//   • ANDROID_TESTSUITE (version 1.9) is now permanently blocked for many videos (returns "This video is not available").
+//   • ANDROID_VR (Oculus Quest) and TVHTML5 (Chromecast/Smart TV) clients are NOT permanently blocked.
+//   • ANDROID_VR client is especially ideal because it does not require signature/cipher decryption.
+//   • Running from the client's residential/cellular IP avoids the "LOGIN_REQUIRED/bot-blocked" error that datacenters hit.
 const tryInnerTubeExtraction = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
-    console.log(`🎵 [InnerTube] Attempting InnerTube API fetch for videoId=${videoId}`);
-    try {
-        // InnerTube API endpoint — same one YouTube's Android app uses
-        const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player';
+    const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player';
+    const API_KEY = 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w';
 
-        // Use ANDROID_TESTSUITE client: returns direct (non-ciphered) stream URLs.
-        // clientVersion must match a real version YouTube accepts.
-        const requestBody = {
-            context: {
-                client: {
-                    clientName: 'ANDROID_TESTSUITE',
-                    clientVersion: '1.9',
-                    androidSdkVersion: 30,
-                    hl: 'en',
-                    gl: 'US',
-                    utcOffsetMinutes: 0,
-                },
-            },
-            videoId: videoId,
-            playbackContext: {
-                contentPlaybackContext: {
-                    html5Preference: 'HTML5_PREF_WANTS',
-                },
-            },
-            racyCheckOk: true,
-            contentCheckOk: true,
-        };
+    const clientProfiles = [
+        {
+            name: 'ANDROID_VR',
+            version: '1.60.19',
+            userAgent: 'Mozilla/5.0 (Linux; U; Android 10; Oculus Quest Build/QQ3A.200805.001) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/15.0.0.0.22.44.249463283 SamsungBrowser/4.0 Chrome/89.0.4389.90 Mobile VR Safari/537.36',
+            extraContext: { androidSdkVersion: 30 }
+        },
+        {
+            name: 'TVHTML5',
+            version: '7.20230405.08.01',
+            userAgent: 'Mozilla/5.0 (Chromecast; Chromecast Ultra Build/1.36.154813) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36',
+            extraContext: {}
+        },
+        {
+            name: 'ANDROID_TESTSUITE',
+            version: '1.9',
+            userAgent: 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
+            extraContext: { androidSdkVersion: 30 }
+        }
+    ];
 
-        let response;
+    for (const client of clientProfiles) {
+        console.log(`🎵 [InnerTube] Attempting client profile: ${client.name} (version ${client.version}) for videoId=${videoId}`);
         try {
-            response = await axios.post(
-                `${INNERTUBE_API_URL}?key=AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w`,
+            const requestBody = {
+                context: {
+                    client: {
+                        clientName: client.name,
+                        clientVersion: client.version,
+                        hl: 'en',
+                        gl: 'US',
+                        utcOffsetMinutes: 0,
+                        ...client.extraContext
+                    },
+                },
+                videoId: videoId,
+                playbackContext: {
+                    contentPlaybackContext: {
+                        html5Preference: 'HTML5_PREF_WANTS',
+                    },
+                },
+                racyCheckOk: true,
+                contentCheckOk: true,
+            };
+
+            const response = await axios.post(
+                `${INNERTUBE_API_URL}?key=${API_KEY}`,
                 requestBody,
                 {
-                    timeout: 8000,
+                    timeout: 6000,
                     headers: {
                         'Content-Type': 'application/json',
-                        'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
-                        'X-YouTube-Client-Name': '30',
-                        'X-YouTube-Client-Version': '17.31.35',
+                        'User-Agent': client.userAgent,
                         'Origin': 'https://www.youtube.com',
                     },
                 }
             );
-        } catch (postError: any) {
-            const status = postError?.response?.status;
-            const statusText = postError?.response?.statusText;
-            const errorData = postError?.response?.data;
-            console.error(`❌ [InnerTube] Request post failed. Status: ${status} (${statusText}). Data:`, JSON.stringify(errorData));
-            throw new Error(`InnerTube post error (status: ${status}): ${postError.message}`);
+
+            if (response.status !== 200 || !response.data) {
+                console.warn(`⚠️ [InnerTube - ${client.name}] Request returned status ${response.status}`);
+                continue;
+            }
+
+            const playerResponse = response.data;
+
+            // Check for playability
+            const playabilityStatus = playerResponse.playabilityStatus?.status;
+            if (playabilityStatus && playabilityStatus !== 'OK') {
+                const reason = playerResponse.playabilityStatus?.reason || '';
+                console.warn(`⚠️ [InnerTube - ${client.name}] Playability check failed: ${playabilityStatus} — Reason: ${reason}`);
+                continue; // Try next client
+            }
+
+            const streamingData = playerResponse.streamingData;
+            if (!streamingData) {
+                console.warn(`⚠️ [InnerTube - ${client.name}] Missing streamingData in response JSON structure.`);
+                continue;
+            }
+
+            const adaptiveFormats: any[] = streamingData.adaptiveFormats || [];
+            const muxedFormats: any[] = streamingData.formats || [];
+
+            // Filter for audio-only streams
+            const audioStreams = adaptiveFormats.filter(
+                (f: any) => f.mimeType && f.mimeType.startsWith('audio/')
+            );
+
+            let best: any = null;
+
+            if (audioStreams.length > 0) {
+                // Sort by bitrate descending — pick highest quality audio
+                best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+            } else if (muxedFormats.length > 0) {
+                // Fall back to a muxed format
+                best = muxedFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+                console.log(`🎵 [InnerTube - ${client.name}] No adaptive audio streams; using muxed format`);
+            }
+
+            if (!best) {
+                console.warn(`⚠️ [InnerTube - ${client.name}] Neither adaptive audio nor muxed formats were found.`);
+                continue;
+            }
+
+            let streamUrl: string | null = best.url || null;
+
+            if (!streamUrl && (best.signatureCipher || best.cipher)) {
+                // signatureCipher present — we cannot decode without YouTube's JS.
+                // Usually ANDROID_VR and TVHTML5 return direct URLs, but handle defensively.
+                console.warn(`⚠️ [InnerTube - ${client.name}] Unexpected signatureCipher encountered — skipping.`);
+                continue;
+            }
+
+            if (!streamUrl) {
+                console.warn(`⚠️ [InnerTube - ${client.name}] Stream URL resolved to null.`);
+                continue;
+            }
+
+            const duration = parseInt(playerResponse.videoDetails?.lengthSeconds || '0', 10);
+            console.log(`✅ [InnerTube - ${client.name}] Extraction success! mimeType=${best.mimeType}, bitrate=${best.bitrate}`);
+
+            return {
+                url: streamUrl,
+                duration: duration || 0,
+            };
+        } catch (e: any) {
+            const status = e?.response?.status;
+            const errorData = e?.response?.data;
+            console.warn(`⚠️ [InnerTube - ${client.name}] Request failed. Status: ${status}. Error: ${e.message}`, errorData ? JSON.stringify(errorData) : '');
+            continue; // Proceed to the next client profile
         }
-
-        if (response.status !== 200 || !response.data) {
-            console.error(`❌ [InnerTube] Invalid response status: ${response.status}`);
-            throw new Error(`InnerTube returned status ${response.status}`);
-        }
-
-        const playerResponse = response.data;
-
-        // Check for playability
-        const playabilityStatus = playerResponse.playabilityStatus?.status;
-        if (playabilityStatus && playabilityStatus !== 'OK') {
-            const reason = playerResponse.playabilityStatus?.reason || '';
-            console.error(`❌ [InnerTube] Playability check failed: ${playabilityStatus} — Reason: ${reason}`);
-            throw new Error(`Video not playable: ${playabilityStatus} — ${reason}`);
-        }
-
-        const streamingData = playerResponse.streamingData;
-        if (!streamingData) {
-            console.error('❌ [InnerTube] Missing streamingData in response JSON structure.');
-            throw new Error('No streamingData in InnerTube response');
-        }
-
-        // Prefer adaptiveFormats (higher quality separate audio track)
-        // Fall back to formats (muxed) which always have audio
-        const adaptiveFormats: any[] = streamingData.adaptiveFormats || [];
-        const muxedFormats: any[] = streamingData.formats || [];
-
-        // Filter for audio-only streams from adaptive formats
-        const audioStreams = adaptiveFormats.filter(
-            (f: any) => f.mimeType && f.mimeType.startsWith('audio/')
-        );
-
-        let best: any = null;
-
-        if (audioStreams.length > 0) {
-            // Sort by bitrate descending — pick highest quality audio
-            best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-        } else if (muxedFormats.length > 0) {
-            // Fall back to a muxed format — audio is included but video quality is lower
-            best = muxedFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-            console.log('🎵 [InnerTube] No adaptive audio-only streams; using muxed format');
-        }
-
-        if (!best) {
-            console.error('❌ [InnerTube] Neither adaptive audio nor muxed streams were found.');
-            throw new Error('No usable stream found in InnerTube response');
-        }
-
-        // With ANDROID_TESTSUITE client, URLs should be direct (no signatureCipher).
-        // But handle the cipher case defensively just in case.
-        let streamUrl: string | null = best.url || null;
-
-        if (!streamUrl && (best.signatureCipher || best.cipher)) {
-            // signatureCipher present — we cannot decode without YouTube's JS.
-            // This shouldn't happen with ANDROID_TESTSUITE, but log it clearly.
-            console.warn('⚠️ [InnerTube] Unexpected signatureCipher encountered — client version might be too old or blocked.');
-            throw new Error('signatureCipher present — cannot decode without JS execution');
-        }
-
-        if (!streamUrl) {
-            console.error('❌ [InnerTube] Stream URL resolved to null, even though stream format was found.');
-            throw new Error('Stream URL is null after InnerTube response parsing');
-        }
-
-        const duration = parseInt(playerResponse.videoDetails?.lengthSeconds || '0', 10);
-        console.log(`✅ [InnerTube] Extraction success! mimeType=${best.mimeType}, bitrate=${best.bitrate}`);
-
-        return {
-            url: streamUrl,
-            duration: duration || 0,
-        };
-    } catch (e: any) {
-        console.warn('⚠️ [InnerTube] Failed:', e?.message || e);
-        return null;
     }
+
+    console.error('❌ [InnerTube] All client profile extraction attempts exhausted.');
+    return null;
 };
 
 // Resolves stream URL client-side in parallel
@@ -350,10 +349,14 @@ export const playYouTubeVideo = async (
 
     let url: string | null = null;
     let duration: number = 0;
+    let clientErrorMsg = '';
 
-    const tryBackend = async () => {
+    const tryBackend = async (clientError?: string) => {
         console.log('🎵 [AUDIO] Trying backend for stream URL extraction...');
-        const response = await api.post('/youtube/stream/', { videoId });
+        const response = await api.post('/youtube/stream/', { 
+            videoId,
+            clientError: clientError || ''
+        });
         if (!response.data || !response.data.url) {
             throw new Error('No stream URL returned from backend');
         }
@@ -368,7 +371,7 @@ export const playYouTubeVideo = async (
         if (clientExtraction && clientExtraction.url) {
             return clientExtraction;
         }
-        throw new Error('Client-side extraction failed');
+        throw new Error('Client-side extraction returned null or invalid data');
     };
 
     // ── Strategy Selection based on environment ──
@@ -385,7 +388,7 @@ export const playYouTubeVideo = async (
                 const res = await tryClientSide();
                 url = res.url;
                 duration = res.duration;
-            } catch (err) {
+            } catch (err: any) {
                 console.error('❌ [AUDIO] All resolution methods failed in DEV:', err);
             }
         }
@@ -397,9 +400,10 @@ export const playYouTubeVideo = async (
             duration = res.duration;
             console.log('🎵 [AUDIO] Successfully loaded stream URL via client-side extraction');
         } catch (e: any) {
-            console.warn('⚠️ [AUDIO] Client-side extraction failed in PROD, falling back to backend...', e?.message || e);
+            clientErrorMsg = e?.message || String(e);
+            console.warn('⚠️ [AUDIO] Client-side extraction failed in PROD, falling back to backend...', clientErrorMsg);
             try {
-                const res = await tryBackend();
+                const res = await tryBackend(clientErrorMsg);
                 url = res.url;
                 duration = res.duration;
             } catch (err) {

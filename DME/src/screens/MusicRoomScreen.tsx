@@ -51,7 +51,7 @@ import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import StickerPreviewModal from '../components/StickerPreviewModal';
 import FastImage from 'react-native-fast-image';
 
-const { SystemBar } = NativeModules;
+const { SystemBar, MusicService } = NativeModules;
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
 
@@ -785,6 +785,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       // queue (mediaItemCount → 0), which is what actually makes Media3's
       // notification provider drop the notification, then stops.
       try { TrackPlayerService.endSession(); } catch (_) {}
+      try { if (MusicService) MusicService.stopService(); } catch (_) {}
       loadedAudioSessionRef.current = null;
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
@@ -893,6 +894,13 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
       setLivePosition(t);
       livePositionRef.current = t;
+
+      if (currentSong?.source !== 'drive') {
+        // YouTube videos don't use TrackPlayer, so no need to sync audio engine
+        seekingRef.current = false;
+        setIsReseeking(false);
+        return;
+      }
 
       // Pause audio to prevent stale sound from the old position
       try { TrackPlayer.pause(); } catch (_) {}
@@ -1032,12 +1040,26 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
     const startAudio = async () => {
       try {
+        if (currentSong.source !== 'drive') {
+          // YouTube explicitly bypasses TrackPlayer to avoid bot-blocked audio streams
+          console.log('🎵 [AUDIO] YouTube video — using native WebView for audio');
+          setIsWebViewMuted(false);
+          playerRef.current?.setVolume?.(100);
+          
+          loadedAudioSessionRef.current = currentSong.videoId;
+          setIsTrackPlayerReady(true);
+          
+          if (MusicService) {
+            MusicService.startService(
+              currentSong.title, 
+              currentSong.channelTitle || 'Music Room', 
+              isPlaying
+            );
+          }
+          return;
+        }
+
         console.log('🎵 [AUDIO] Preparing track (autoplay deferred to rendezvous):', currentSong.title);
-        // ✅ FIX (audio starting ~1s before video): autoplay=false means
-        // this only calls setMediaItem() (which starts buffering) and
-        // does NOT call TrackPlayer.play(). Playback is started explicitly
-        // by the rendezvous effect below, in the same tick as the video's
-        // playVideo(), once both report ready.
         const success = await TrackPlayerService.playYouTubeVideo(
           currentSong.videoId,
           currentSong.title,
@@ -1049,19 +1071,8 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         );
         if (cancelled) return;
 
-        if (!success) {
-          Toast.show({
-            type: 'info',
-            text1: 'Playing directly from YouTube',
-            text2: 'Background playback is unavailable for this track.',
-            visibilityTime: 6000,
-          });
-          setIsWebViewMuted(false);
-          playerRef.current?.setVolume?.(100);
-        } else {
-          setIsWebViewMuted(true);
-          playerRef.current?.setVolume?.(0);
-        }
+        setIsWebViewMuted(true);
+        playerRef.current?.setVolume?.(0);
 
         // ✅ Mark as loaded for THIS session only after a successful load.
         // Cleared on unmount/destroy so a new room never inherits this.
@@ -1127,10 +1138,12 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
       // Seek both to the starting position. Audio stays paused until the
       // video WebView confirms it's actually rendering frames.
-      try {
-        TrackPlayer.seekTo(startPos);
-        TrackPlayer.pause();
-      } catch (_) {}
+      if (currentSong.source === 'drive') {
+        try {
+          TrackPlayer.seekTo(startPos);
+          TrackPlayer.pause();
+        } catch (_) {}
+      }
       try { playerRef.current?.seekTo?.(startPos, true); } catch (_) {}
 
       // The play prop (which no longer includes mediaFullySynced) will
@@ -1155,19 +1168,21 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
             : '🎯 [RENDEZVOUS] Video confirmed playing — starting audio');
 
           // Start audio — video is already playing (or we timed out).
-          try { TrackPlayer.play(); } catch (_) {}
+          if (currentSong.source === 'drive') {
+            try { TrackPlayer.play(); } catch (_) {}
 
-          // Snap video to audio's actual measured position once, then
-          // let the steady-state DJ ticker handle any residual drift.
-          setTimeout(() => {
-            if (rendezvousTokenRef.current !== myToken) return;
-            try {
-              const { position: tpPos } = TrackPlayer.getProgress();
-              if (tpPos > 0 && playerRef.current) {
-                playerRef.current.seekTo(tpPos + AUDIO_VIDEO_OFFSET, true);
-              }
-            } catch (_) {}
-          }, 200);
+            // Snap video to audio's actual measured position once, then
+            // let the steady-state DJ ticker handle any residual drift.
+            setTimeout(() => {
+              if (rendezvousTokenRef.current !== myToken) return;
+              try {
+                const { position: tpPos } = TrackPlayer.getProgress();
+                if (tpPos > 0 && playerRef.current) {
+                  playerRef.current.seekTo(tpPos + AUDIO_VIDEO_OFFSET, true);
+                }
+              } catch (_) {}
+            }, 200);
+          }
 
           livePositionRef.current = startPos;
           setLivePosition(startPos);
@@ -1188,6 +1203,17 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     // Don't fight the rendezvous on the very first start, and don't fight
     // an active re-seek — both have their own explicit play/pause calls.
     if (!mediaFullySynced || isReseeking) return;
+
+    if (currentSong.source !== 'drive') {
+      if (MusicService) {
+        MusicService.updatePlaybackState(
+          currentSong.title, 
+          currentSong.channelTitle || 'Music Room', 
+          isPlaying
+        );
+      }
+      return;
+    }
 
     try {
       if (isPlaying) {

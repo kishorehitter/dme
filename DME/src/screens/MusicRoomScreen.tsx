@@ -1040,7 +1040,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           Toast.show({
             type: 'error',
             text1: 'Audio streaming blocked or unavailable',
-            text2: 'Update YOUTUBE_COOKIES_B64 on Render backend',
+            text2: 'Direct stream extraction failed. Please try another track.',
             visibilityTime: 6000,
           });
         }

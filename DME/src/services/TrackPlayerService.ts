@@ -67,7 +67,7 @@ const promiseAny = <T>(promises: Promise<T>[]): Promise<T> => {
 
 const tryPipedInstance = async (instance: string, videoId: string): Promise<{ url: string; duration: number }> => {
     const response = await axios.get(`${instance}/streams/${videoId}`, {
-        timeout: 4000,
+        timeout: 1500,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     if (response.status === 200 && response.data) {
@@ -87,7 +87,7 @@ const tryPipedInstance = async (instance: string, videoId: string): Promise<{ ur
 
 const tryInvidiousInstance = async (instance: string, videoId: string): Promise<{ url: string; duration: number }> => {
     const response = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-        timeout: 4000,
+        timeout: 1500,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     if (response.status === 200 && response.data) {
@@ -106,106 +106,163 @@ const tryInvidiousInstance = async (instance: string, videoId: string): Promise<
     throw new Error(`Instance ${instance} returned invalid data`);
 };
 
-// Direct YouTube Web HTML extraction from client's residential IP
-const tryDirectHtmlExtraction = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
-    console.log(`🎵 [Direct HTML Extraction] Attempting direct fetch for videoId=${videoId}`);
+// ─────────────────────────────────────────────────────────────────────────────
+// InnerTube API extraction — uses YouTube's own internal API with the
+// "android" client type. This is the same API yt-dlp uses internally.
+//
+// Why this works:
+//   • The `android` client (ANDROID_TESTSUITE specifically) returns
+//     plain, non-ciphered audio stream URLs — no JS decipher needed.
+//   • It's an authenticated-app API: YouTube doesn't bot-block it by IP
+//     the same way it blocks web scraping from datacenter IPs.
+//   • Running from the user's phone (residential IP) makes it even more
+//     reliable since it looks exactly like the official YouTube Android app.
+//
+// Why the old HTML scraping approach failed:
+//   • axios on Android is not a browser — YouTube serves a bot/consent page.
+//   • Even if ytInitialPlayerResponse was found, most streams use
+//     signatureCipher, which requires executing YouTube's obfuscated JS.
+//   • Raw cipher URLs are rejected with 403 by YouTube's CDN.
+// ─────────────────────────────────────────────────────────────────────────────
+const tryInnerTubeExtraction = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
+    console.log(`🎵 [InnerTube] Attempting InnerTube API fetch for videoId=${videoId}`);
     try {
-        const response = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
-            timeout: 6000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5'
-            }
-        });
+        // InnerTube API endpoint — same one YouTube's Android app uses
+        const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player';
+
+        // Use ANDROID_TESTSUITE client: returns direct (non-ciphered) stream URLs.
+        // clientVersion must match a real version YouTube accepts.
+        const requestBody = {
+            context: {
+                client: {
+                    clientName: 'ANDROID_TESTSUITE',
+                    clientVersion: '1.9',
+                    androidSdkVersion: 30,
+                    hl: 'en',
+                    gl: 'US',
+                    utcOffsetMinutes: 0,
+                },
+            },
+            videoId: videoId,
+            playbackContext: {
+                contentPlaybackContext: {
+                    html5Preference: 'HTML5_PREF_WANTS',
+                },
+            },
+            racyCheckOk: true,
+            contentCheckOk: true,
+        };
+
+        let response;
+        try {
+            response = await axios.post(
+                `${INNERTUBE_API_URL}?key=AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w`,
+                requestBody,
+                {
+                    timeout: 8000,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
+                        'X-YouTube-Client-Name': '30',
+                        'X-YouTube-Client-Version': '17.31.35',
+                        'Origin': 'https://www.youtube.com',
+                    },
+                }
+            );
+        } catch (postError: any) {
+            const status = postError?.response?.status;
+            const statusText = postError?.response?.statusText;
+            const errorData = postError?.response?.data;
+            console.error(`❌ [InnerTube] Request post failed. Status: ${status} (${statusText}). Data:`, JSON.stringify(errorData));
+            throw new Error(`InnerTube post error (status: ${status}): ${postError.message}`);
+        }
 
         if (response.status !== 200 || !response.data) {
-            throw new Error('Failed to fetch YouTube page');
+            console.error(`❌ [InnerTube] Invalid response status: ${response.status}`);
+            throw new Error(`InnerTube returned status ${response.status}`);
         }
 
-        const html = response.data;
-        
-        // Find ytInitialPlayerResponse
-        let playerResponseStr = '';
-        const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/s) ||
-                      html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/s) ||
-                      html.match(/window\[['"]ytInitialPlayerResponse['"]\]\s*=\s*({.+?});/s);
-                      
-        if (match && match[1]) {
-            playerResponseStr = match[1];
-        } else {
-            // Try looking for json block
-            const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*(?:<\/script>|var|window|const|let)/s);
-            if (jsonMatch && jsonMatch[1]) {
-                playerResponseStr = jsonMatch[1];
-            }
+        const playerResponse = response.data;
+
+        // Check for playability
+        const playabilityStatus = playerResponse.playabilityStatus?.status;
+        if (playabilityStatus && playabilityStatus !== 'OK') {
+            const reason = playerResponse.playabilityStatus?.reason || '';
+            console.error(`❌ [InnerTube] Playability check failed: ${playabilityStatus} — Reason: ${reason}`);
+            throw new Error(`Video not playable: ${playabilityStatus} — ${reason}`);
         }
 
-        if (!playerResponseStr) {
-            throw new Error('ytInitialPlayerResponse not found in HTML');
-        }
-
-        const playerResponse = JSON.parse(playerResponseStr);
         const streamingData = playerResponse.streamingData;
         if (!streamingData) {
-            throw new Error('No streamingData found in playerResponse');
+            console.error('❌ [InnerTube] Missing streamingData in response JSON structure.');
+            throw new Error('No streamingData in InnerTube response');
         }
 
-        const adaptiveFormats = streamingData.adaptiveFormats || [];
-        // Filter audio streams (mimeType starts with audio/)
-        const audioStreams = adaptiveFormats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/'));
-        
-        if (audioStreams.length === 0) {
-            throw new Error('No audio streams found');
+        // Prefer adaptiveFormats (higher quality separate audio track)
+        // Fall back to formats (muxed) which always have audio
+        const adaptiveFormats: any[] = streamingData.adaptiveFormats || [];
+        const muxedFormats: any[] = streamingData.formats || [];
+
+        // Filter for audio-only streams from adaptive formats
+        const audioStreams = adaptiveFormats.filter(
+            (f: any) => f.mimeType && f.mimeType.startsWith('audio/')
+        );
+
+        let best: any = null;
+
+        if (audioStreams.length > 0) {
+            // Sort by bitrate descending — pick highest quality audio
+            best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        } else if (muxedFormats.length > 0) {
+            // Fall back to a muxed format — audio is included but video quality is lower
+            best = muxedFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+            console.log('🎵 [InnerTube] No adaptive audio-only streams; using muxed format');
         }
 
-        // Sort by bitrate descending to get best quality
-        const best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-        
-        let streamUrl = best.url;
-        
-        // If url is not directly present, it might be in signatureCipher or cipher
+        if (!best) {
+            console.error('❌ [InnerTube] Neither adaptive audio nor muxed streams were found.');
+            throw new Error('No usable stream found in InnerTube response');
+        }
+
+        // With ANDROID_TESTSUITE client, URLs should be direct (no signatureCipher).
+        // But handle the cipher case defensively just in case.
+        let streamUrl: string | null = best.url || null;
+
         if (!streamUrl && (best.signatureCipher || best.cipher)) {
-            const cipher = best.signatureCipher || best.cipher;
-            // Parse signatureCipher query string. We can extract it manually to avoid URLSearchParams issues.
-            const urlMatch = cipher.match(/url=([^&]+)/);
-            const sMatch = cipher.match(/s=([^&]+)/);
-            const spMatch = cipher.match(/sp=([^&]+)/);
-            
-            if (urlMatch) {
-                const cipherUrl = decodeURIComponent(urlMatch[1]);
-                const s = sMatch ? decodeURIComponent(sMatch[1]) : '';
-                const sp = spMatch ? decodeURIComponent(spMatch[1]) : 'sig';
-                streamUrl = `${cipherUrl}&${sp}=${s}`;
-                console.log('🎵 [Direct HTML Extraction] Found signatureCipher stream');
-            }
+            // signatureCipher present — we cannot decode without YouTube's JS.
+            // This shouldn't happen with ANDROID_TESTSUITE, but log it clearly.
+            console.warn('⚠️ [InnerTube] Unexpected signatureCipher encountered — client version might be too old or blocked.');
+            throw new Error('signatureCipher present — cannot decode without JS execution');
         }
 
         if (!streamUrl) {
-            throw new Error('No direct stream URL found');
+            console.error('❌ [InnerTube] Stream URL resolved to null, even though stream format was found.');
+            throw new Error('Stream URL is null after InnerTube response parsing');
         }
 
         const duration = parseInt(playerResponse.videoDetails?.lengthSeconds || '0', 10);
-        console.log('✅ [Direct HTML Extraction] Direct extraction success!');
+        console.log(`✅ [InnerTube] Extraction success! mimeType=${best.mimeType}, bitrate=${best.bitrate}`);
+
         return {
             url: streamUrl,
-            duration: duration || 0
+            duration: duration || 0,
         };
     } catch (e: any) {
-        console.warn('⚠️ [Direct HTML Extraction] Failed:', e?.message || e);
+        console.warn('⚠️ [InnerTube] Failed:', e?.message || e);
         return null;
     }
 };
 
 // Resolves stream URL client-side in parallel
 const extractStreamUrlClientSide = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
-    // 1. Try direct web HTML extraction first (unproxied, uses user's residential IP)
-    const directResult = await tryDirectHtmlExtraction(videoId);
-    if (directResult && directResult.url) {
-        return directResult;
+    // 1. Try InnerTube API first — uses YouTube's own internal Android API.
+    //    Returns plain (non-ciphered) URLs directly from the user's residential IP.
+    const innerTubeResult = await tryInnerTubeExtraction(videoId);
+    if (innerTubeResult && innerTubeResult.url) {
+        return innerTubeResult;
     }
 
-    console.log(`🎵 [Client-Side Extraction] Direct extraction failed, falling back to parallel public instances for videoId=${videoId}`);
+    console.log(`🎵 [Client-Side Extraction] InnerTube failed, falling back to parallel public instances for videoId=${videoId}`);
 
     const trials: Promise<{ url: string; duration: number }>[] = [];
 

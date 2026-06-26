@@ -3,6 +3,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WS_BASE_URL, getWebSocketUrl } from '../config/network';
+import api from './api';
 
 export type WebSocketMessage = {
   type:
@@ -42,16 +43,25 @@ class WebSocketService {
     return new Promise(async (resolve, reject) => {
       try {
         const token = await AsyncStorage.getItem('access_token');
+        if (token) {
+          try {
+            await api.get('/accounts/profile/');
+          } catch (err) {
+            console.warn('WS pre-connect notifications token refresh failed/skipped:', err);
+          }
+        }
+        
+        const updatedToken = await AsyncStorage.getItem('access_token');
         
         // Retry logic if token is temporarily missing
-        if (!token && retries > 0) {
+        if (!updatedToken && retries > 0) {
             setTimeout(() => this.connectToNotifications(retries - 1).then(resolve).catch(reject), 500);
             return;
         }
 
-        if (!token) throw new Error('No token');
+        if (!updatedToken) throw new Error('No token');
         
-        const url = getWebSocketUrl('notifications', token);
+        const url = getWebSocketUrl('notifications', updatedToken);
         console.log('Connecting to Notification WS:', url);
         
         this.notificationWs = new WebSocket(url);
@@ -101,6 +111,12 @@ class WebSocketService {
         this.isLoggedOut = false;
         this.currentConversationId = conversationId;
         this.disconnectRoom();
+
+        try {
+          await api.get('/accounts/profile/');
+        } catch (err) {
+          console.warn('WS pre-connect room token refresh failed/skipped:', err);
+        }
 
         const url = await this.getWebSocketURL(conversationId);
         if (!url) {

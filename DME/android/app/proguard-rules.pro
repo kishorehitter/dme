@@ -90,3 +90,10 @@
 -dontwarn javax.annotation.**
 -dontwarn javax.inject.**
 -dontwarn sun.misc.Unsafe
+
+# React Native WebView
+-keep class com.reactnativecommunity.webview.** { *; }
+
+# WebView / WebKit
+-keep class android.webkit.** { *; }
+-dontwarn android.webkit.**

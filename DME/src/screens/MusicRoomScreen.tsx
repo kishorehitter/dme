@@ -1025,7 +1025,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         // does NOT call TrackPlayer.play(). Playback is started explicitly
         // by the rendezvous effect below, in the same tick as the video's
         // playVideo(), once both report ready.
-        await TrackPlayerService.playYouTubeVideo(
+        const success = await TrackPlayerService.playYouTubeVideo(
           currentSong.videoId,
           currentSong.title,
           currentSong.channelTitle || 'Music Room',
@@ -1035,6 +1035,15 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           false // autoplay
         );
         if (cancelled) return;
+
+        if (!success) {
+          Toast.show({
+            type: 'error',
+            text1: 'Audio streaming blocked or unavailable',
+            text2: 'Update YOUTUBE_COOKIES_B64 on Render backend',
+            visibilityTime: 6000,
+          });
+        }
 
         // ✅ Mark as loaded for THIS session only after a successful load.
         // Cleared on unmount/destroy so a new room never inherits this.

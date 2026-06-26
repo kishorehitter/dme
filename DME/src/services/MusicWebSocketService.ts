@@ -2,6 +2,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getWebSocketUrl } from '../config/network';
+import api from './api';
 
 export type MusicWSMessage = {
   type:
@@ -37,6 +38,13 @@ class MusicWebSocketService {
       try {
         this.currentRoomCode = roomCode;
         this.disconnect();
+
+        // Ensure auth token is validated and refreshed via axios interceptors before connecting
+        try {
+          await api.get('/accounts/profile/');
+        } catch (err) {
+          console.warn('🎵 Music WS pre-connect token refresh failed/skipped:', err);
+        }
 
         const token = await AsyncStorage.getItem('access_token');
         if (!token) {

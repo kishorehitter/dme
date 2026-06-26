@@ -106,9 +106,106 @@ const tryInvidiousInstance = async (instance: string, videoId: string): Promise<
     throw new Error(`Instance ${instance} returned invalid data`);
 };
 
+// Direct YouTube Web HTML extraction from client's residential IP
+const tryDirectHtmlExtraction = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
+    console.log(`🎵 [Direct HTML Extraction] Attempting direct fetch for videoId=${videoId}`);
+    try {
+        const response = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
+            timeout: 6000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5'
+            }
+        });
+
+        if (response.status !== 200 || !response.data) {
+            throw new Error('Failed to fetch YouTube page');
+        }
+
+        const html = response.data;
+        
+        // Find ytInitialPlayerResponse
+        let playerResponseStr = '';
+        const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/s) ||
+                      html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/s) ||
+                      html.match(/window\[['"]ytInitialPlayerResponse['"]\]\s*=\s*({.+?});/s);
+                      
+        if (match && match[1]) {
+            playerResponseStr = match[1];
+        } else {
+            // Try looking for json block
+            const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*(?:<\/script>|var|window|const|let)/s);
+            if (jsonMatch && jsonMatch[1]) {
+                playerResponseStr = jsonMatch[1];
+            }
+        }
+
+        if (!playerResponseStr) {
+            throw new Error('ytInitialPlayerResponse not found in HTML');
+        }
+
+        const playerResponse = JSON.parse(playerResponseStr);
+        const streamingData = playerResponse.streamingData;
+        if (!streamingData) {
+            throw new Error('No streamingData found in playerResponse');
+        }
+
+        const adaptiveFormats = streamingData.adaptiveFormats || [];
+        // Filter audio streams (mimeType starts with audio/)
+        const audioStreams = adaptiveFormats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/'));
+        
+        if (audioStreams.length === 0) {
+            throw new Error('No audio streams found');
+        }
+
+        // Sort by bitrate descending to get best quality
+        const best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        
+        let streamUrl = best.url;
+        
+        // If url is not directly present, it might be in signatureCipher or cipher
+        if (!streamUrl && (best.signatureCipher || best.cipher)) {
+            const cipher = best.signatureCipher || best.cipher;
+            // Parse signatureCipher query string. We can extract it manually to avoid URLSearchParams issues.
+            const urlMatch = cipher.match(/url=([^&]+)/);
+            const sMatch = cipher.match(/s=([^&]+)/);
+            const spMatch = cipher.match(/sp=([^&]+)/);
+            
+            if (urlMatch) {
+                const cipherUrl = decodeURIComponent(urlMatch[1]);
+                const s = sMatch ? decodeURIComponent(sMatch[1]) : '';
+                const sp = spMatch ? decodeURIComponent(spMatch[1]) : 'sig';
+                streamUrl = `${cipherUrl}&${sp}=${s}`;
+                console.log('🎵 [Direct HTML Extraction] Found signatureCipher stream');
+            }
+        }
+
+        if (!streamUrl) {
+            throw new Error('No direct stream URL found');
+        }
+
+        const duration = parseInt(playerResponse.videoDetails?.lengthSeconds || '0', 10);
+        console.log('✅ [Direct HTML Extraction] Direct extraction success!');
+        return {
+            url: streamUrl,
+            duration: duration || 0
+        };
+    } catch (e: any) {
+        console.warn('⚠️ [Direct HTML Extraction] Failed:', e?.message || e);
+        return null;
+    }
+};
+
 // Resolves stream URL client-side in parallel
 const extractStreamUrlClientSide = async (videoId: string): Promise<{ url: string; duration: number } | null> => {
-    console.log(`🎵 [Client-Side Extraction] Attempting parallel extraction for videoId=${videoId}`);
+    // 1. Try direct web HTML extraction first (unproxied, uses user's residential IP)
+    const directResult = await tryDirectHtmlExtraction(videoId);
+    if (directResult && directResult.url) {
+        return directResult;
+    }
+
+    console.log(`🎵 [Client-Side Extraction] Direct extraction failed, falling back to parallel public instances for videoId=${videoId}`);
 
     const trials: Promise<{ url: string; duration: number }>[] = [];
 
@@ -179,11 +276,11 @@ export const playYouTubeVideo = async (
     source?: string,
     onAudioReady?: () => void,
     autoplay: boolean = true
-) => {
+): Promise<boolean> => {
     // ── Drive: WebView handles its own audio, nothing to do here ──
     if (source === 'drive') {
         console.log('🎵 [AUDIO] Drive video — skipping TrackPlayer, WebView handles audio');
-        return;
+        return true;
     }
 
     // ✅ NEW: claim a generation token for this specific call.
@@ -260,13 +357,13 @@ export const playYouTubeVideo = async (
     // that's not us anymore.
     if (isStale()) {
         console.log('🎵 [AUDIO] Discarding stale load result for', videoId, '(superseded)');
-        return;
+        return true;
     }
 
     if (!url) {
         onAudioReady?.()
         console.warn('🎵 [AUDIO] No stream URL resolved — TrackPlayer will be silent');
-        return;
+        return false;
     }
 
     try {
@@ -275,7 +372,7 @@ export const playYouTubeVideo = async (
         // possible moment to skip them.
         if (isStale()) {
             console.log('🎵 [AUDIO] Discarding stale load right before commit for', videoId);
-            return;
+            return true;
         }
 
         // v5: setMediaItem() replaces the queue atomically (clear + add in one call)
@@ -301,11 +398,13 @@ export const playYouTubeVideo = async (
         } else {
             console.log('🎵 [AUDIO] TrackPlayer prepared (autoplay deferred):', title);
         }
+        return true;
     } catch (error) {
         console.error('🎵 [AUDIO] TrackPlayer setMediaItem/play error:', error);
         if (!isStale()) {
             onAudioReady?.();
         }
+        return false;
     }
 };
 

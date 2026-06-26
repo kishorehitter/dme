@@ -162,7 +162,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         rel:            0,
         modestbranding: 0,
         iv_load_policy: 3,
-        origin:         'https://localhost',
+        origin:         'https://www.youtube.com',
         suggestedQuality: 'highres',
       },
       events: {
@@ -314,7 +314,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     <View style={[styles.container, style]}>
       <WebView
         ref={webViewRef}
-        source={{ html, baseUrl: 'https://localhost/' }}
+        source={{ html, baseUrl: 'https://www.youtube.com/' }}
         onMessage={handleMessage}
         javaScriptEnabled
         domStorageEnabled

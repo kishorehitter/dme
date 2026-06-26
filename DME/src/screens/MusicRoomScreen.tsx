@@ -21,6 +21,7 @@ import {
   Dimensions, Keyboard, Platform, ScrollView,
   KeyboardAvoidingView, Modal, BackHandler,
   Animated, PanResponder, DeviceEventEmitter, AppState,
+  NativeModules,
 } from 'react-native';
 import DrivePlayer from '../components/DrivePlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
@@ -50,6 +51,7 @@ import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import StickerPreviewModal from '../components/StickerPreviewModal';
 import FastImage from 'react-native-fast-image';
 
+const { SystemBar } = NativeModules;
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
 
@@ -734,19 +736,28 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
   useFocusEffect(
     React.useCallback(() => {
-      try { changeNavigationBarColor('#000000', false); } catch (e) {}
-      return () => {};
+      if (Platform.OS === 'android' && SystemBar) {
+        try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
+      }
+      return () => {
+        // Restore to default light navigation bar color when leaving the room
+        if (Platform.OS === 'android' && SystemBar) {
+          try { SystemBar.setNavigationBarColor('#FFFFFF', false); } catch (e) {}
+        }
+      };
     }, [])
   );
 
   useEffect(() => {
-    if (!showDiscovery) {
-      const t = setTimeout(() => {
-        try { changeNavigationBarColor('#000000', false); } catch (e) {}
-      }, 300);
-      return () => clearTimeout(t);
-    } else {
-      try { changeNavigationBarColor('#111111', false); } catch (e) {}
+    if (Platform.OS === 'android' && SystemBar) {
+      if (!showDiscovery) {
+        const t = setTimeout(() => {
+          try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
+        }, 300);
+        return () => clearTimeout(t);
+      } else {
+        try { SystemBar.setNavigationBarColor('#111111', true); } catch (e) {}
+      }
     }
   }, [showDiscovery]);
 
@@ -1966,8 +1977,8 @@ const sendChatMessage = () => {
   };
 
   useEffect(() => {
-    if (Platform.OS === 'android') {
-      try { changeNavigationBarColor('#000000', false); } catch (e) {}
+    if (Platform.OS === 'android' && SystemBar) {
+      try { SystemBar.setNavigationBarColor('#000000', true); } catch (e) {}
     }
   }, [showLeaveConfirm]);
 

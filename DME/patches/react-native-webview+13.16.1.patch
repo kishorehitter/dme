@@ -1,0 +1,29 @@
+diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+index 80c6803..750384d 100644
+--- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
++++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+@@ -122,6 +122,24 @@ public class RNCWebView extends WebView implements LifecycleEventListener {
+         cleanupCallbacksAndDestroy();
+     }
+ 
++    @Override
++    protected void onWindowVisibilityChanged(int visibility) {
++        if (visibility == View.GONE) {
++            super.onWindowVisibilityChanged(View.VISIBLE);
++        } else {
++            super.onWindowVisibilityChanged(visibility);
++        }
++    }
++
++    @Override
++    public void dispatchWindowVisibilityChanged(int visibility) {
++        if (visibility == View.GONE) {
++            super.dispatchWindowVisibilityChanged(View.VISIBLE);
++        } else {
++            super.dispatchWindowVisibilityChanged(visibility);
++        }
++    }
++
+     @Override
+     public boolean onTouchEvent(MotionEvent event) {
+         if (this.nestedScrollEnabled) {

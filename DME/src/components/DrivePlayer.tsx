@@ -30,88 +30,16 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
   const positionRef = useRef(0);
   const durationRef = useRef(0);
   const isReadyRef = useRef(false);
-  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
 
   const inject = (js: string) => {
     webViewRef.current?.injectJavaScript(js + '; true;');
   };
 
-  const resolveDriveUrl = async (id: string): Promise<string> => {
-    const urls = [
-      `https://drive.google.com/uc?export=download&confirm=t&id=${id}`,
-      `https://drive.google.com/uc?export=download&confirm=t&id=${id}&authuser=0`,
-    ];
+  if (!fileId) {
+    return <View style={styles.container} />;
+  }
 
-    for (let i = 0; i < urls.length; i++) {
-      try {
-        console.log(`🎬 [DRIVE RESOLVER] Native fetch attempt ${i + 1} for ${id}`);
-        const response = await fetch(urls[i], {
-          method: 'GET',
-        });
-
-        const contentType = response.headers.get('content-type') || '';
-        const finalUrl = response.url;
-
-        console.log(`🎬 [DRIVE RESOLVER] Native response: status=${response.status}, contentType=${contentType}, finalUrl=${finalUrl}`);
-
-        if (contentType.includes('video') || contentType.includes('octet-stream')) {
-          console.log(`🎬 [DRIVE RESOLVER] SUCCESS: Direct stream resolved: ${finalUrl}`);
-          return finalUrl;
-        }
-
-        if (contentType.includes('html')) {
-          const text = await response.text();
-          
-          // Check for virus scan warning page
-          if (text.includes('virus') || text.includes('download_warning') || text.includes('confirm')) {
-            const confirmMatch = text.match(/confirm=([^&"]+)/);
-            if (confirmMatch) {
-              const confirmToken = confirmMatch[1];
-              const confirmUrl = `https://drive.google.com/uc?export=download&confirm=${confirmToken}&id=${id}`;
-              console.log(`🎬 [DRIVE RESOLVER] Found confirm token. Fetching confirm URL: ${confirmUrl}`);
-              
-              const confirmResponse = await fetch(confirmUrl);
-              const confirmContentType = confirmResponse.headers.get('content-type') || '';
-              if (confirmContentType.includes('video') || confirmContentType.includes('octet-stream')) {
-                console.log(`🎬 [DRIVE RESOLVER] SUCCESS via confirm token: ${confirmResponse.url}`);
-                return confirmResponse.url;
-              }
-            }
-          }
-
-          // Fallback regex matching in HTML (double-escaped since it's defined inside a standard template literal)
-          const mp4Match = text.match(/https?:\/\/[\w.-]+(?:\.[\w.-]+)+[\w\-._~:/?#[\]@!$&'()*+,;=]+\.mp4[^\s"']*/);
-          if (mp4Match) {
-            console.log(`🎬 [DRIVE RESOLVER] Found mp4 URL in HTML: ${mp4Match[0]}`);
-            return mp4Match[0];
-          }
-
-          const googleVideoMatch = text.match(/https?:\/\/[^"' ]*googlevideo[^"' ]*/);
-          if (googleVideoMatch) {
-            console.log(`🎬 [DRIVE RESOLVER] Found googlevideo URL in HTML: ${googleVideoMatch[0]}`);
-            return googleVideoMatch[0];
-          }
-        }
-      } catch (e: any) {
-        console.warn(`🎬 [DRIVE RESOLVER] Native fetch attempt ${i} failed:`, e.message);
-      }
-    }
-
-    // Last resort fallback
-    console.log(`🎬 [DRIVE RESOLVER] Native resolution failed. Returning direct link fallback.`);
-    return `https://drive.google.com/uc?export=download&confirm=t&id=${id}`;
-  };
-
-  React.useEffect(() => {
-    if (!fileId) return;
-    isReadyRef.current = false;
-    setResolvedUrl(null);
-    resolveDriveUrl(fileId).then((url) => {
-      console.log('🎬 [DRIVE PLAYER] Stream resolved via native resolver:', url);
-      setResolvedUrl(url);
-      onStreamResolved?.(url, {});
-    });
-  }, [fileId]);
+  const initialUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
 
   const html = `
 <!DOCTYPE html>
@@ -124,8 +52,10 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
   #dmevideo {
     width:100%; height:100%;
     object-fit:contain; background:#000;
-    display: ${resolvedUrl ? 'block' : 'none'};
   }
+  video::-webkit-media-controls { display: none !important; }
+  video::-webkit-media-controls-enclosure { display: none !important; }
+  video::-webkit-media-controls-start-playback-button { display: none !important; -webkit-appearance: none; }
   #status {
     position:fixed; top:50%; left:50%;
     transform:translate(-50%,-50%);
@@ -137,13 +67,13 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 </style>
 </head>
 <body>
-<div id="status">${resolvedUrl ? 'Loading video...' : 'Resolving Google Drive stream...'}</div>
+<div id="status">Loading video...</div>
 <video
   id="dmevideo"
   playsinline
   webkit-playsinline
   preload="auto"
-  src="${resolvedUrl || ''}"
+  src="${initialUrl}"
   ${muted ? 'muted' : ''}
 ></video>
 
@@ -151,23 +81,35 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 var v = document.getElementById('dmevideo');
 var statusEl = document.getElementById('status');
 var ready = false;
+var hasAttemptedBypass = false;
 
 function toRN(obj) {
   try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
 }
 
 function showPlayer() {
-  v.style.display = 'block';
+  if (v) v.style.display = 'block';
   statusEl.style.display = 'none';
 }
 
+function attemptWarningBypass() {
+  if (hasAttemptedBypass) {
+    toRN({ type: 'playerError', code: -1, msg: 'Video unplayable even after bypass attempt' });
+    return;
+  }
+  hasAttemptedBypass = true;
+  statusEl.innerText = "Bypassing Google Drive scan...";
+  statusEl.style.display = 'block';
+  v.style.display = 'none';
+
+  toRN({ type: 'needsBypass' });
+}
+
 function attachEvents() {
+  if (!v) return;
+
   v.addEventListener('loadedmetadata', function() {
-    if (!ready) {
-      ready = true;
-      showPlayer();
-      toRN({ type: 'playerReady', duration: v.duration || 0 });
-    }
+    toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
   });
 
   v.addEventListener('canplay', function() {
@@ -189,19 +131,22 @@ function attachEvents() {
   v.addEventListener('playing', function() { toRN({ type: 'stateChange', state: 'playing' }); });
 
   v.addEventListener('error', function() {
-    var code = v.error ? v.error.code : -1;
-    var msg  = v.error ? v.error.message : 'unknown';
-    toRN({ type: 'playerError', code: code, msg: msg });
+    // If the video tag throws an error, it's likely because Google Drive fed it the HTML virus warning page.
+    // We catch this and attempt the token bypass!
+    attemptWarningBypass();
   });
 }
 
 attachEvents();
 
 window.addEventListener('message', function(event) {
+  if (!v) return;
   try {
     var data = JSON.parse(event.data);
     if (data.action === 'play') {
-      v.play().catch(function(){});
+      v.play().catch(function(e) {
+        toRN({ type: 'log', msg: 'play() msg error: ' + e.message });
+      });
     } else if (data.action === 'pause') {
       v.pause();
     } else if (data.action === 'mute') {
@@ -212,14 +157,42 @@ window.addEventListener('message', function(event) {
   } catch(e) {}
 });
 
-if (${play ? 'true' : 'false'} && ${resolvedUrl ? 'true' : 'false'}) {
-  v.play().catch(function(e) {
-    toRN({ type: 'log', msg: 'play() error: ' + e.message });
-  });
-}
+// Initial playback is handled via the injected messages.
 </script>
 </body>
 </html>`;
+
+  const resolveWarningBypass = async () => {
+    try {
+      console.log('🎬 [DRIVE RESOLVER] React Native intercepting warning page to bypass CORS...');
+      const res = await fetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
+      const text = await res.text();
+      const match = text.match(/confirm=([^&"]+)/);
+      
+      if (match) {
+        const token = match[1];
+        const bypassUrl = `https://drive.google.com/uc?export=download&confirm=${token}&id=${fileId}`;
+        console.log('🎬 [DRIVE RESOLVER] Native bypass token extracted successfully!');
+        
+        inject(`
+          var v = document.getElementById('dmevideo');
+          var statusEl = document.getElementById('status');
+          if (v && statusEl) {
+            statusEl.innerText = "Stream secured, buffering...";
+            v.src = "${bypassUrl}";
+            v.load();
+            v.play().catch(function(e){});
+          }
+        `);
+      } else {
+        console.warn('🎬 [DRIVE RESOLVER] Could not find confirm token natively.');
+        onError?.(-1);
+      }
+    } catch (e) {
+      console.error('🎬 [DRIVE RESOLVER] Native fetch failed:', e);
+      onError?.(-1);
+    }
+  };
 
   const handleMessage = (event: any) => {
     try {
@@ -237,6 +210,9 @@ if (${play ? 'true' : 'false'} && ${resolvedUrl ? 'true' : 'false'}) {
           isReadyRef.current = true;
           durationRef.current = msg.duration || 0;
           onReady?.();
+          if (play) {
+            inject(`(function(){ var v=document.getElementById('dmevideo'); if(v) v.play().catch(function(e){ window.ReactNativeWebView.postMessage(JSON.stringify({type:'log',msg:'play() post-ready error: '+e.message})); }); })()`);
+          }
           break;
         case 'stateChange':
           onStateChange?.(msg.state);
@@ -245,6 +221,9 @@ if (${play ? 'true' : 'false'} && ${resolvedUrl ? 'true' : 'false'}) {
           positionRef.current = msg.currentTime;
           durationRef.current = msg.duration || durationRef.current;
           onProgress?.(msg.currentTime, msg.duration);
+          break;
+        case 'needsBypass':
+          resolveWarningBypass();
           break;
         case 'playerError':
           onError?.(msg.code);
@@ -272,9 +251,9 @@ if (${play ? 'true' : 'false'} && ${resolvedUrl ? 'true' : 'false'}) {
       inject(`
         (function() {
           var v = document.getElementById('dmevideo');
-          if (v) v.currentTime = ${0};
+          if (v) v.currentTime = ${s};
         })();
-      `.replace('${0}', s.toString()));
+      `);
       positionRef.current = s;
     },
     getCurrentTime:   async () => positionRef.current,

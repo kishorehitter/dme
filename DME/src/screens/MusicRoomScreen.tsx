@@ -21,12 +21,12 @@ import {
   Dimensions, Keyboard, Platform, ScrollView,
   KeyboardAvoidingView, Modal, BackHandler,
   Animated, PanResponder, DeviceEventEmitter, AppState,
-  NativeModules,
 } from 'react-native';
 import DrivePlayer from '../components/DrivePlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
 import TrackPlayerService from '../services/TrackPlayerService';
 import TrackPlayer, { Event, PlaybackState } from '@rntp/player';
+import { startMusicService, updateMusicService, stopMusicService } from '../services/MusicServiceBridge';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
@@ -51,7 +51,6 @@ import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import StickerPreviewModal from '../components/StickerPreviewModal';
 import FastImage from 'react-native-fast-image';
 
-const { SystemBar, MusicService } = NativeModules;
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
 
@@ -153,7 +152,9 @@ const VideoControls: React.FC<ControlsProps> = ({
 
   useEffect(() => {
     if (!isSeeking.current) {
-      knobX.setValue(pct * barWidth.current);
+      const rawX = pct * barWidth.current;
+      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      knobX.setValue(clampedX);
     }
   }, [pct]);
 
@@ -163,10 +164,11 @@ const VideoControls: React.FC<ControlsProps> = ({
 
     onPanResponderGrant: (evt) => {
       isSeeking.current = true;
-      const nx = Math.max(0, Math.min(barWidth.current, evt.nativeEvent.locationX));
-      knobX.setValue(nx);
+      const rawX = Math.max(0, Math.min(barWidth.current, evt.nativeEvent.locationX));
+      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      knobX.setValue(clampedX);
       if (durationRef.current > 0 && barWidth.current > 0) {
-        seekTarget.current = (nx / barWidth.current) * durationRef.current;
+        seekTarget.current = (rawX / barWidth.current) * durationRef.current;
       } else {
         seekTarget.current = 0;
       }
@@ -174,10 +176,11 @@ const VideoControls: React.FC<ControlsProps> = ({
 
     onPanResponderMove: (evt) => {
       const touchX = evt.nativeEvent.pageX - barLayoutX.current;
-      const nx = Math.max(0, Math.min(barWidth.current, touchX));
-      knobX.setValue(nx);
+      const rawX = Math.max(0, Math.min(barWidth.current, touchX));
+      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      knobX.setValue(clampedX);
       if (durationRef.current > 0 && barWidth.current > 0) {
-        seekTarget.current = (nx / barWidth.current) * durationRef.current;
+        seekTarget.current = (rawX / barWidth.current) * durationRef.current;
       }
     },
 
@@ -357,7 +360,7 @@ const cv = StyleSheet.create({
     left: 0,
     right: 0,
     height: 24, // generous invisible drag area — the visible line itself is only 2-4px
-    justifyContent: 'flex-end',
+    justifyContent: 'center', // Centers the line within the 24px area, lifting it 10px from the absolute bottom edge so the pointer doesn't clip
   },
   bottomEdgeTrack: {
     width: '100%',
@@ -547,7 +550,6 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // True while we are actively re-establishing sync after a seek — video
   // is held paused+spinner, audio is the "anchor" we wait on.
   const [isReseeking, setIsReseeking] = useState(false);
-  const [isWebViewMuted, setIsWebViewMuted] = useState(true);
   const richInputRef = useRef<RichTextInputRef>(null);
 
   useEffect(() => {
@@ -737,28 +739,19 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
   useFocusEffect(
     React.useCallback(() => {
-      if (Platform.OS === 'android' && SystemBar) {
-        try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
-      }
-      return () => {
-        // Restore to default light navigation bar color when leaving the room
-        if (Platform.OS === 'android' && SystemBar) {
-          try { SystemBar.setNavigationBarColor('#FFFFFF', true); } catch (e) {}
-        }
-      };
+      try { changeNavigationBarColor('#000000', false); } catch (e) {}
+      return () => {};
     }, [])
   );
 
   useEffect(() => {
-    if (Platform.OS === 'android' && SystemBar) {
-      if (!showDiscovery) {
-        const t = setTimeout(() => {
-          try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
-        }, 300);
-        return () => clearTimeout(t);
-      } else {
-        try { SystemBar.setNavigationBarColor('#111111', false); } catch (e) {}
-      }
+    if (!showDiscovery) {
+      const t = setTimeout(() => {
+        try { changeNavigationBarColor('#000000', false); } catch (e) {}
+      }, 300);
+      return () => clearTimeout(t);
+    } else {
+      try { changeNavigationBarColor('#111111', false); } catch (e) {}
     }
   }, [showDiscovery]);
 
@@ -785,7 +778,8 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       // queue (mediaItemCount → 0), which is what actually makes Media3's
       // notification provider drop the notification, then stops.
       try { TrackPlayerService.endSession(); } catch (_) {}
-      try { if (MusicService) MusicService.stopService(); } catch (_) {}
+      // Stop the YouTube foreground service + dismiss the media notification.
+      stopMusicService();
       loadedAudioSessionRef.current = null;
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
@@ -895,60 +889,13 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       setLivePosition(t);
       livePositionRef.current = t;
 
-      if (currentSong?.source !== 'drive') {
-        // YouTube videos don't use TrackPlayer, so no need to sync audio engine
-        seekingRef.current = false;
+      // Both Drive and YouTube IFrames own the audio. seekTo above already moved it.
+      // Give the IFrame 600ms to buffer the new position, then unblock.
+      console.log('🎯 [SEEK SYNC] Waiting for IFrame to buffer seek to', t);
+      setTimeout(() => {
         setIsReseeking(false);
-        return;
-      }
-
-      // Pause audio to prevent stale sound from the old position
-      try { TrackPlayer.pause(); } catch (_) {}
-      TrackPlayer.seekTo(t);
-
-      let attempts = 0;
-      const maxAttempts = 50; // ~5s ceiling
-
-      seekPollRef.current = setInterval(() => {
-        attempts++;
-        try {
-          const { position: tpPos } = TrackPlayer.getProgress();
-          const closeEnough = Math.abs(tpPos - t) < 1.0;
-          const timedOut = attempts >= maxAttempts;
-
-          if (closeEnough || timedOut) {
-            clearInterval(seekPollRef.current!);
-            seekPollRef.current = null;
-
-            const landingPos = closeEnough ? tpPos : t;
-            console.log('🎯 [SEEK SYNC] Audio landed at:', landingPos,
-              'attempts:', attempts, timedOut ? '(timeout)' : '');
-
-            // Snap video to audio's exact position with offset compensation
-            if (playerRef.current && isPlayerReadyRef.current) {
-              playerRef.current.seekTo(landingPos + AUDIO_VIDEO_OFFSET, true);
-              livePositionRef.current = landingPos;
-              setLivePosition(landingPos);
-            }
-
-            // Resume audio if room is playing
-            if (isPlaying) {
-              try { TrackPlayer.play(); } catch (_) {}
-            }
-            setIsReseeking(false);
-            // Cooldown before allowing other seeks/sync updates
-            setTimeout(() => { seekingRef.current = false; }, 800);
-          }
-        } catch (e) {
-          clearInterval(seekPollRef.current!);
-          seekPollRef.current = null;
-          if (isPlaying) {
-            try { TrackPlayer.play(); } catch (_) {}
-          }
-          setIsReseeking(false);
-          setTimeout(() => { seekingRef.current = false; }, 800);
-        }
-      }, 100);
+        setTimeout(() => { seekingRef.current = false; }, 800);
+      }, 600);
 
     } catch (error) {
       console.error('🎯 [LOCAL SEEK ERROR]', error);
@@ -1009,14 +956,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       return;
     }
 
-    if (currentSong.source === 'drive') {
-      console.log('🎵 [AUDIO LOAD EFFECT] Drive — waiting for onStreamResolved to load TrackPlayer');
-      // Do NOT set isTrackPlayerReady here. DrivePlayer will fire onStreamResolved
-      // once it has the CDN URL, which loads TrackPlayer and sets isTrackPlayerReady.
-      setIsTrackPlayerReady(false);
-      setMediaFullySynced(false);
-      return;
-    }
+
 
     // ✅ Already loaded THIS exact track in THIS screen session — do
     // nothing. This is the only reload guard now, and it's based on our
@@ -1031,7 +971,6 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
     let cancelled = false;
     setIsTrackPlayerReady(false);
-    setIsWebViewMuted(true);
     // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
     // until the rendezvous effect below confirms both engines are ready
     // and explicitly starts them together.
@@ -1040,27 +979,13 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
     const startAudio = async () => {
       try {
-        if (currentSong.source !== 'drive') {
-          // YouTube explicitly bypasses TrackPlayer to avoid bot-blocked audio streams
-          console.log('🎵 [AUDIO] YouTube video — using native WebView for audio');
-          setIsWebViewMuted(false);
-          playerRef.current?.setVolume?.(100);
-          
-          loadedAudioSessionRef.current = currentSong.videoId;
-          setIsTrackPlayerReady(true);
-          
-          if (MusicService) {
-            MusicService.startService(
-              currentSong.title, 
-              currentSong.channelTitle || 'Music Room', 
-              isPlaying
-            );
-          }
-          return;
-        }
-
         console.log('🎵 [AUDIO] Preparing track (autoplay deferred to rendezvous):', currentSong.title);
-        const success = await TrackPlayerService.playYouTubeVideo(
+        // ✅ FIX (audio starting ~1s before video): autoplay=false means
+        // this only calls setMediaItem() (which starts buffering) and
+        // does NOT call TrackPlayer.play(). Playback is started explicitly
+        // by the rendezvous effect below, in the same tick as the video's
+        // playVideo(), once both report ready.
+        await TrackPlayerService.playYouTubeVideo(
           currentSong.videoId,
           currentSong.title,
           currentSong.channelTitle || 'Music Room',
@@ -1071,15 +996,18 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         );
         if (cancelled) return;
 
-        setIsWebViewMuted(true);
-        playerRef.current?.setVolume?.(0);
-
         // ✅ Mark as loaded for THIS session only after a successful load.
         // Cleared on unmount/destroy so a new room never inherits this.
         loadedAudioSessionRef.current = currentSong.videoId;
 
-        if (livePositionRef.current > 0) {
-          TrackPlayer.seekTo(livePositionRef.current);
+        // 🎵 YouTube/Drive path: start the foreground service so Android won't kill
+        // the process in the background, and show the media notification.
+        if (!currentSong.source || currentSong.source === 'youtube' || currentSong.source === 'drive') {
+          startMusicService(
+            currentSong.title,
+            currentSong.channelTitle || 'Music Room',
+            isDJ || isDJMode
+          );
         }
         // ✅ Mark TrackPlayer ready immediately after stream is loaded to prevent 3s initial delay
         setIsTrackPlayerReady(true);
@@ -1136,14 +1064,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
       const startPos = livePositionRef.current > 0 ? livePositionRef.current : 0;
 
-      // Seek both to the starting position. Audio stays paused until the
-      // video WebView confirms it's actually rendering frames.
-      if (currentSong.source === 'drive') {
-        try {
-          TrackPlayer.seekTo(startPos);
-          TrackPlayer.pause();
-        } catch (_) {}
-      }
+      // Seek video to starting position
       try { playerRef.current?.seekTo?.(startPos, true); } catch (_) {}
 
       // The play prop (which no longer includes mediaFullySynced) will
@@ -1168,21 +1089,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
             : '🎯 [RENDEZVOUS] Video confirmed playing — starting audio');
 
           // Start audio — video is already playing (or we timed out).
-          if (currentSong.source === 'drive') {
-            try { TrackPlayer.play(); } catch (_) {}
 
-            // Snap video to audio's actual measured position once, then
-            // let the steady-state DJ ticker handle any residual drift.
-            setTimeout(() => {
-              if (rendezvousTokenRef.current !== myToken) return;
-              try {
-                const { position: tpPos } = TrackPlayer.getProgress();
-                if (tpPos > 0 && playerRef.current) {
-                  playerRef.current.seekTo(tpPos + AUDIO_VIDEO_OFFSET, true);
-                }
-              } catch (_) {}
-            }, 200);
-          }
 
           livePositionRef.current = startPos;
           setLivePosition(startPos);
@@ -1204,25 +1111,16 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     // an active re-seek — both have their own explicit play/pause calls.
     if (!mediaFullySynced || isReseeking) return;
 
-    if (currentSong.source !== 'drive') {
-      if (MusicService) {
-        MusicService.updatePlaybackState(
-          currentSong.title, 
-          currentSong.channelTitle || 'Music Room', 
-          isPlaying
-        );
-      }
-      return;
+    // Keep the media notification play/pause icon in sync for YouTube/Drive tracks.
+    if (!currentSong?.source || currentSong?.source === 'youtube' || currentSong?.source === 'drive') {
+      updateMusicService(
+        currentSong?.title ?? '',
+        currentSong?.channelTitle ?? 'Music Room',
+        isPlaying,
+        isDJ || isDJMode
+      );
     }
-
-    try {
-      if (isPlaying) {
-        TrackPlayer.play();
-      } else {
-        TrackPlayer.pause();
-      }
-    } catch (_) {}
-  }, [isPlaying, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking]);
+  }, [isPlaying, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isDJ, isDJMode]);
 
   // ✅ NEW: Keep participant TrackPlayer and video in sync with room position
   // Fires when DJ broadcasts a sync update (position changes from WebSocket)
@@ -1238,15 +1136,15 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       return;
     }
 
-    const progress = TrackPlayer.getProgress();
-    const tpPosition = progress.position;
-    const drift = Math.abs(tpPosition - position);
+    // Drift check: Both Drive and YouTube IFrames report their current time via onProgress -> livePositionRef
+    let currentPosition = livePositionRef.current;
+    const drift = Math.abs(currentPosition - position);
 
     if (drift > 3 && !seekingRef.current && !isReseeking) {
       console.log('🎵 [PARTICIPANT SYNC] Drift detected:', drift, '— resyncing to room position:', position);
       performLocalSeek(position);
     }
-  }, [position, isDJ, isPlaying, currentSong?.videoId, performLocalSeek, isReseeking]);
+  }, [position, isDJ, isPlaying, currentSong?.videoId, currentSong?.source, performLocalSeek, isReseeking]);
 
   // ✅ NEW: Hybrid Perfect Sync Listener
   // 1. Gives WebView a head-start while audio buffers (150ms delay)
@@ -1316,46 +1214,12 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         isInBackgroundRef.current = false; // ✅ Back in foreground
 
         if (isDJ || isDJMode) {
-          try {
-            // v5: getProgress() is SYNCHRONOUS — no await
-            const progress = TrackPlayer.getProgress();
-            const actualPosition = progress.position;
-            console.log('📱 [FG] TrackPlayer actual position:', actualPosition);
-
-            livePositionRef.current = actualPosition;
-            setLivePosition(actualPosition);
-
-            // ✅ Tell participants DJ is back — resume sync
-            musicWebSocketService.sendBackgroundState(false, actualPosition);
-            syncPlay(actualPosition);
-
-            // Snap the muted WebView to the correct time so video matches audio
-            if (isPlaying && playerRef.current && isPlayerReadyRef.current) {
-              playerRef.current.seekTo(actualPosition, true);
-            }
-          } catch (e) {
-            // Fallback to elapsed calculation
-            const elapsed = (Date.now() - backgroundStartTime.current) / 1000;
-            const resumePosition = backgroundStartPosition.current + elapsed;
-            
-            livePositionRef.current = resumePosition;
-            musicWebSocketService.sendBackgroundState(false, resumePosition);
-            syncPlay(resumePosition);
-            
-            if (isPlaying && playerRef.current && isPlayerReadyRef.current) {
-              playerRef.current.seekTo(resumePosition, true);
-              setLivePosition(resumePosition);
-            }
-          }
+          // ✅ Tell participants DJ is back — no need to seek since the WebView played continuously
+          musicWebSocketService.sendBackgroundState(false, livePositionRef.current);
+          console.log('📱 [FG] Returned to foreground. Playing seamlessly at:', livePositionRef.current);
         } else {
-            // Participant side — snap WebView to where TrackPlayer is
-            const elapsed = (Date.now() - backgroundStartTime.current) / 1000;
-            const resumePosition = backgroundStartPosition.current + elapsed;
-            if (isPlaying && playerRef.current && isPlayerReadyRef.current) {
-              playerRef.current.seekTo(resumePosition, true);
-              setLivePosition(resumePosition);
-              livePositionRef.current = resumePosition;
-            }
+          // Participant side — no need to seek, WebView kept playing.
+          console.log('📱 [FG] Participant returned to foreground.');
         }
       }
     });
@@ -1455,19 +1319,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
         lastCurrentTime = pos;
 
-        // ✅ FIX (Bug 1 — desync): keep the muted video snapped to TrackPlayer's audio
-        // position (plus custom offset compensation) for both DJ and participants to ensure perfect lip-sync.
-        if (isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isUserAction.current && mediaFullySynced && !isReseeking) {
-          try {
-            const tpProgress = TrackPlayer.getProgress();
-            const tpPos = tpProgress.position;
-            const targetVideoPos = tpPos + AUDIO_VIDEO_OFFSET;
-            if (tpPos > 0 && pos !== undefined && Math.abs(targetVideoPos - pos) > 1.5) {
-              console.log('🎯 [SYNC] Video drifted from audio by', Math.abs(targetVideoPos - pos).toFixed(2), '— resnapping');
-              playerRef.current?.seekTo(targetVideoPos, true);
-            }
-          } catch (_) {}
-        }
+
 
         if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isUserAction.current && Math.floor(pos ?? 0) % 5 === 0) {
           syncPlay(pos ?? 0);
@@ -1507,6 +1359,23 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     }
     Keyboard.dismiss();
   }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName]);
+
+  useEffect(() => {
+    const playSub = DeviceEventEmitter.addListener('MEDIA_PLAY', () => {
+      if (isDJ || isDJMode) {
+        syncPlay(livePositionRef.current || 0);
+      }
+    });
+    const pauseSub = DeviceEventEmitter.addListener('MEDIA_PAUSE', () => {
+      if (isDJ || isDJMode) {
+        syncPause(livePositionRef.current || 0);
+      }
+    });
+    return () => {
+      playSub.remove();
+      pauseSub.remove();
+    };
+  }, [isDJ, isDJMode, syncPlay, syncPause]);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('VIDEO_SELECTED', async (data) => {
@@ -2010,8 +1879,8 @@ const sendChatMessage = () => {
   };
 
   useEffect(() => {
-    if (Platform.OS === 'android' && SystemBar) {
-      try { SystemBar.setNavigationBarColor('#000000', false); } catch (e) {}
+    if (Platform.OS === 'android') {
+      try { changeNavigationBarColor('#000000', false); } catch (e) {}
     }
   }, [showLeaveConfirm]);
 
@@ -2140,31 +2009,16 @@ const sendChatMessage = () => {
                     ref={playerRef}
                     fileId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady}
-                    muted={isWebViewMuted}
+                    muted={false}
                     onReady={() => {
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
                       setIsBuffering(false);
-                      // isTrackPlayerReady is set by onStreamResolved → TrackPlayer ready event
                     }}
                     onStreamResolved={(cdnUrl, cdnHeaders) => {
-                      // Drive CDN URL resolved — load it into TrackPlayer as the audio master.
-                      // This mirrors exactly how YouTube audio is loaded, so the rendezvous,
-                      // DJ sync ticker, seeking, and background/foreground all work identically.
                       if (!currentSong) return;
-                      console.log('🎵 [DRIVE AUDIO] Stream resolved — loading into TrackPlayer');
-                      TrackPlayerService.playDirectUrl(
-                        cdnUrl,
-                        cdnHeaders,
-                        currentSong.title,
-                        currentSong.channelTitle || 'Drive',
-                        currentSong.thumbnail,
-                        0,    // duration — TrackPlayer will detect it from stream
-                        false // autoplay deferred to rendezvous
-                      );
-                      loadedAudioSessionRef.current = currentSong.videoId;
-                      setIsTrackPlayerReady(true);
+                      console.log('🎵 [DRIVE AUDIO] Stream resolved — WebView owns audio');
                     }}
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
@@ -2183,9 +2037,9 @@ const sendChatMessage = () => {
                     ref={playerRef}
                     videoId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
-                    muted={isWebViewMuted}
+                    muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
                     onReady={() => {
-                      playerRef.current?.setVolume?.(isWebViewMuted ? 0 : 100);
+                      // NOTE: do NOT call setVolume(0) here — we want real audio from the IFrame
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
@@ -2203,8 +2057,6 @@ const sendChatMessage = () => {
                             : targetPosition;
                           console.log('👋 [JOIN] Seeking to live position:', safePosition);
                           playerRef.current?.seekTo(safePosition, true);
-                          // v5: seekTo() is SYNCHRONOUS — no await
-                          try { TrackPlayer.seekTo(safePosition); } catch (_) {}
                         }, 2000);
                       }
 
@@ -2369,8 +2221,10 @@ const sendChatMessage = () => {
 
             {/* Small corner indicator during seek — audio catching up */}
             {isReseeking && mediaFullySynced && (
-              <View style={{ position: 'absolute', top: 12, left: '50%', marginLeft: -16, zIndex: 35, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <ActivityIndicator size="small" color="#fff" />
+              <View style={[StyleSheet.absoluteFill, { zIndex: 35, justifyContent: 'center', alignItems: 'center' }]} pointerEvents="none">
+                <View style={{ backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <ActivityIndicator size="small" color="#fff" />
+                </View>
               </View>
             )}
 

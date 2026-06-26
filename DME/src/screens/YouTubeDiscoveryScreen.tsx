@@ -176,11 +176,24 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   };
 
   // ─── Start new party (Flow 1) ──────────────────────────────────────────────
-  const handleStartParty = () => {
+  const handleStartParty = async () => {
     if (!roomName.trim()) { alert('Please enter a party name'); return; }
     if (!selectedVideoId) return;
     if (isNavigating.current) return;
     isNavigating.current = true;
+
+    let finalTitle = undefined;
+    if (selectedSource === 'drive') {
+      try {
+        const res = await fetch(`https://drive.google.com/file/d/${selectedVideoId}/view`);
+        const text = await res.text();
+        const match = text.match(/<title>([^<]+)<\/title>/);
+        if (match) {
+          finalTitle = match[1].replace(' - Google Drive', '').trim();
+        }
+      } catch (e) {}
+      if (!finalTitle) finalTitle = 'Drive Video';
+    }
 
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     navigation.replace('MusicRoom', {
@@ -195,7 +208,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         roomCode: newRoomCode,
         videoId:  selectedVideoId,
         source:   selectedSource,
-        title: selectedSource === 'drive' ? 'Drive Video' : undefined,
+        title: finalTitle,
         thumbnail: selectedSource === 'drive' 
             ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`  // ← real thumbnail
             : undefined,
@@ -203,10 +216,23 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }, 800); // was 100ms
   };
 
-  const handleAddToQueue = () => {
+  const handleAddToQueue = async () => {
     if (!selectedVideoId) return;
     if (isNavigating.current) return;
     isNavigating.current = true;
+
+    let finalTitle = undefined;
+    if (selectedSource === 'drive') {
+      try {
+        const res = await fetch(`https://drive.google.com/file/d/${selectedVideoId}/view`);
+        const text = await res.text();
+        const match = text.match(/<title>([^<]+)<\/title>/);
+        if (match) {
+          finalTitle = match[1].replace(' - Google Drive', '').trim();
+        }
+      } catch (e) {}
+      if (!finalTitle) finalTitle = 'Drive Video';
+    }
 
     navigation.goBack();
 
@@ -215,6 +241,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         roomCode,
         videoId: selectedVideoId,
         source:  selectedSource,
+        title: finalTitle,
+        thumbnail: selectedSource === 'drive' 
+            ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`  // ← real thumbnail
+            : undefined,
       });
     }, 800); // was 100ms
   };
@@ -367,32 +397,52 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
           {/* YouTube Tab */}
           {activeTab === 'youtube' && (
-            <View style={styles.tabContent}>
-              <View style={styles.searchBar}>
-                <Icon name="search" size={18} color="#666" />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Search YouTube..."
-                  value={ytQuery}
-                  onChangeText={setYtQuery}
-                  onSubmitEditing={() => handleSearchYouTube()}
-                  returnKeyType="search"
-                />
-                {isYtSearching && <ActivityIndicator size="small" color="#FF007F" style={{ marginLeft: 8 }} />}
-              </View>
-              <FlatList
-                data={ytResults}
-                numColumns={2}
-                keyExtractor={(item, index) => item.id?.videoId || index.toString()}
-                renderItem={item => renderGridItem(item, 'youtube')}
-                contentContainerStyle={styles.gridContent}
-                ListEmptyComponent={
-                  <Text style={styles.emptyText}>
-                    {isYtSearching ? 'Searching YouTube...' : 'No results found'}
-                  </Text>
-                }
-              />
-            </View>
+            <WebView
+              ref={youtubeWebViewRef}
+              source={{ uri: 'https://m.youtube.com' }}
+              onNavigationStateChange={handleYouTubeNavChange}
+              
+              setSupportMultipleWindows={false}
+              onOpenWindow={(event) => {
+                  youtubeWebViewRef.current?.injectJavaScript(
+                      `window.location.href = "${event.nativeEvent.targetUrl}"; true;`
+                  );
+              }}
+              
+              onShouldStartLoadWithRequest={(request) => {
+                  const url = request.url;
+                  
+                  // Intercept video clicks immediately
+                  const videoIdMatch = url.match(/[?&]v=([^&]+)/) || url.match(/shorts\/([^?&/]+)/);
+                  if (videoIdMatch?.[1]) {
+                      handleYouTubeNavChange({ url });
+                      return false; // Stop loading the video page
+                  }
+                  
+                  if (
+                      url.includes('youtube.com') ||
+                      url.includes('google.com') ||
+                      url.includes('googleapis.com') ||
+                      url.includes('gstatic.com') ||
+                      url.includes('accounts.google') ||
+                      url.includes('about:blank')
+                  ) {
+                      return true; 
+                  }
+                  return false;
+              }}
+
+              userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+              
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              thirdPartyCookiesEnabled={true}
+              sharedCookiesEnabled={true}
+              allowsInlineMediaPlayback={true}
+              mediaPlaybackRequiresUserAction={false}
+              backgroundColor="#000"
+              style={{ flex: 1 }}
+            />
           )}
 
           {/* Drive Tab — WebView approach, no OAuth needed */}

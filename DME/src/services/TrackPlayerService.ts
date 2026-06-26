@@ -344,6 +344,14 @@ export const playYouTubeVideo = async (
     onAudioReady?: () => void,
     autoplay: boolean = true
 ): Promise<boolean> => {
+    // ── YouTube: IFrame WebView owns the audio. MusicForegroundService keeps
+    //            the process alive. TrackPlayer is NOT used for this path. ──
+    if (!source || source === 'youtube') {
+        console.log('🎵 [AUDIO] YouTube video — TrackPlayer skipped, IFrame WebView owns audio');
+        onAudioReady?.();
+        return true;
+    }
+
     // ── Drive: WebView handles its own audio, nothing to do here ──
     if (source === 'drive') {
         console.log('🎵 [AUDIO] Drive video — skipping TrackPlayer, WebView handles audio');

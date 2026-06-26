@@ -547,6 +547,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // True while we are actively re-establishing sync after a seek — video
   // is held paused+spinner, audio is the "anchor" we wait on.
   const [isReseeking, setIsReseeking] = useState(false);
+  const [isWebViewMuted, setIsWebViewMuted] = useState(true);
   const richInputRef = useRef<RichTextInputRef>(null);
 
   useEffect(() => {
@@ -1022,6 +1023,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
     let cancelled = false;
     setIsTrackPlayerReady(false);
+    setIsWebViewMuted(true);
     // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
     // until the rendezvous effect below confirms both engines are ready
     // and explicitly starts them together.
@@ -1049,11 +1051,16 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
         if (!success) {
           Toast.show({
-            type: 'error',
-            text1: 'Audio streaming blocked or unavailable',
-            text2: 'Direct stream extraction failed. Please try another track.',
+            type: 'info',
+            text1: 'Playing directly from YouTube',
+            text2: 'Background playback is unavailable for this track.',
             visibilityTime: 6000,
           });
+          setIsWebViewMuted(false);
+          playerRef.current?.setVolume?.(100);
+        } else {
+          setIsWebViewMuted(true);
+          playerRef.current?.setVolume?.(0);
         }
 
         // ✅ Mark as loaded for THIS session only after a successful load.
@@ -2107,7 +2114,7 @@ const sendChatMessage = () => {
                     ref={playerRef}
                     fileId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady}
-                    muted={true}
+                    muted={isWebViewMuted}
                     onReady={() => {
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
@@ -2150,9 +2157,9 @@ const sendChatMessage = () => {
                     ref={playerRef}
                     videoId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
-                    muted={true}
+                    muted={isWebViewMuted}
                     onReady={() => {
-                      playerRef.current?.setVolume?.(0);
+                      playerRef.current?.setVolume?.(isWebViewMuted ? 0 : 100);
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();

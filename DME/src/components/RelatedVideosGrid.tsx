@@ -81,9 +81,6 @@ const RelatedVideosGrid: React.FC<Props> = ({
             )}
           </View>
           <Text style={styles.videoTitle} numberOfLines={2}>{item.song.title}</Text>
-          <Text style={styles.pinnedByText} numberOfLines={1}>
-            {item.addedById === myUserId ? 'Your pick' : `${item.addedByName}'s pick`}
-          </Text>
         </View>
       );
     }

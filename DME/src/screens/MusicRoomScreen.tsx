@@ -13,7 +13,7 @@
  *       — zero gap on minimize / lock screen / foreground return
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   FlatList, Image, ActivityIndicator,
@@ -32,6 +32,7 @@ import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
 import { useAuth } from '../context/AuthContext';
 import { useFocusEffect } from '@react-navigation/native';
+import { useCall } from '../context/CallContext';
 import api, { musicAPI } from '../services/api';
 import InviteModal from '../components/InviteModal';
 import AvatarWithFallback from '../components/AvatarWithFallback';
@@ -109,12 +110,14 @@ interface ControlsProps {
   onToggleFullscreen: () => void;
   onShowRelated: () => void;
   isFullscreen: boolean;
+  isDrivePlayer?: boolean;
 }
 
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
   position, duration,
   onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, isFullscreen,
+  isDrivePlayer,
 }) => {
   const canControlRef = useRef(canControl);
   const durationRef = useRef(duration);
@@ -200,19 +203,42 @@ const VideoControls: React.FC<ControlsProps> = ({
       <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
       <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
 
-      <Animated.View style={[{ position: 'absolute', top: 6, left: 12 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+      <Animated.View style={[{ position: 'absolute', top: 2, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
         <TouchableOpacity style={cv.relatedBtn} onPress={onShowRelated}>
           <Icon name="layers-outline" size={18} color="#fff" />
         </TouchableOpacity>
       </Animated.View>
 
-      <Animated.View style={[{ position: 'absolute', top: 6, right: 12 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+      <Animated.View style={[{ position: 'absolute', top: 2, right: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
         <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
           <Icon name="expand" size={18} color="#fff" />
         </TouchableOpacity>
       </Animated.View>
 
-      {!isBuffering && !isEnded && (
+      {isDrivePlayer && !isBuffering && !isEnded && (
+        <Animated.View
+          style={[cv.centreBtn, { opacity }]}
+          pointerEvents={visible ? 'auto' : 'none'}
+        >
+          <TouchableOpacity
+            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+            onPress={() => onPlayPause()}
+            activeOpacity={0.7}
+            disabled={!canControl}
+          >
+            <View style={[cv.centreBtnInner, !canControl && cv.centreBtnDisabled]}>
+              <Icon
+                name={isPlaying ? 'pause' : 'play'}
+                size={32}
+                color={canControl ? '#fff' : 'rgba(255,255,255,0.35)'}
+                style={{ marginLeft: isPlaying ? 0 : 5 }}
+              />
+            </View>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      {!isDrivePlayer && !isBuffering && !isEnded && (
         <TouchableOpacity
           style={[cv.centreBtn, { opacity: 0 }]}
           onPress={() => onPlayPause()}
@@ -248,22 +274,8 @@ const VideoControls: React.FC<ControlsProps> = ({
         // same `opacity` as play/pause/skip/expand, positioned exactly
         // where it has always sat (above the bottom, with its existing
         // padding) — not pinned to bottom:0.
-        <View style={cv.bottomBar}>
-          <View
-            {...pan.panHandlers}
-            style={{ height: 30, justifyContent: 'center', marginBottom: 6 }}
-            onLayout={(event) => {
-              const { x, width: w } = event.nativeEvent.layout;
-              barLayoutX.current = x;
-              barWidth.current = w;
-            }}
-          >
-            <View style={cv.track}>
-              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
-              <Animated.View style={[cv.knob, { transform: [{ translateX: knobX }] }]} />
-            </View>
-          </View>
-          <View style={cv.timeRow}>
+        <View style={[cv.bottomBar, { paddingHorizontal: 0, paddingBottom: 0 }]}>
+          <View style={[cv.timeRow, { paddingHorizontal: 16, marginBottom: 8 }]}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
             <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
               {!canControl && (
@@ -277,6 +289,20 @@ const VideoControls: React.FC<ControlsProps> = ({
                   <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
+            </View>
+          </View>
+          <View
+            {...pan.panHandlers}
+            style={{ height: 24, justifyContent: 'flex-end', paddingHorizontal: 0 }}
+            onLayout={(event) => {
+              const { x, width: w } = event.nativeEvent.layout;
+              barLayoutX.current = x;
+              barWidth.current = w;
+            }}
+          >
+            <View style={[cv.track, { borderRadius: 0, backgroundColor: 'rgba(255,255,255,0.2)' }]}>
+              <View style={[cv.fill, { width: `${pct * 100}%`, borderRadius: 0 }]} />
+              <Animated.View style={[cv.knob, { transform: [{ translateX: knobX }], bottom: -3, top: undefined }]} />
             </View>
           </View>
         </View>
@@ -359,8 +385,8 @@ const cv = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: 24, // generous invisible drag area — the visible line itself is only 2-4px
-    justifyContent: 'center', // Centers the line within the 24px area, lifting it 10px from the absolute bottom edge so the pointer doesn't clip
+    height: 24, // generous invisible drag area
+    justifyContent: 'flex-end', // Aligns the line flush to the absolute bottom edge
   },
   bottomEdgeTrack: {
     width: '100%',
@@ -369,13 +395,13 @@ const cv = StyleSheet.create({
   },
   timeRowFloating: {
     position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 12, // sits just above the always-visible track + its hit area
+    left: 2,
+    right: 8,
+    bottom: 4, // slightly lower — closer to the always-visible progress track
   },
   track:            { height: 2, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 1, justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#fff', borderRadius: 1 },
-  knob:             { position: 'absolute', top: -4, marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: '#fff' },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#c4c4c4', borderRadius: 1 },
+  knob:             { position: 'absolute', top: -2, marginLeft: -5, width: 6, height: 6, borderRadius: 6, backgroundColor: '#fff' },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
   timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
   watchBadge:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
@@ -440,16 +466,21 @@ const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main MusicRoomScreen
 // ─────────────────────────────────────────────────────────────────────────────
-const MusicRoomScreen = ({ route, navigation }: any) => {
+const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // ✅ AUDIO DELAY OFFSET (in seconds)
   // Adjust this value to calibrate audio-to-video alignment (lip-sync).
   // Negative values delay the video player to match audio lag (e.g., Bluetooth).
   // Try values between -0.10 (100ms) and -0.20 (200ms) for typical Bluetooth devices.
   const AUDIO_VIDEO_OFFSET = -0.30;
 
-  const { roomCode, isDJMode, initialVideoId, roomName: initialRoomName } = route.params;
+  const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, roomName: initialRoomName } = route.params || {};
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
+  
+  // Calculate initial position from background cache on mount
+  const cachedRoomState = musicWebSocketService.getLastRoomState();
+  const initialRoomPosition = (cachedRoomState && musicWebSocketService.getCurrentRoomCode() === roomCode) ? (cachedRoomState.position || 0) : 0;
+
   const chatListRef = useRef<FlatList>(null);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollToBottom = useCallback((animated = true) => {
@@ -516,7 +547,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const [isBuffering, setIsBuffering] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [duration, setDuration] = useState(0);
-  const [livePosition, setLivePosition] = useState(0);
+  const [livePosition, setLivePosition] = useState(initialRoomPosition);
   const [activeTab, setActiveTab] = useState<'chat' | 'queue'>('chat');
   const [replyingTo, setReplyingTo] = useState<any>(null);
   const [fullScreenMedia, setFullScreenMedia] = useState<{url: string, type: 'image' | 'video'} | null>(null);
@@ -737,33 +768,35 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // ----------------------------
 
 
-  useFocusEffect(
-    React.useCallback(() => {
-      try { changeNavigationBarColor('#000000', false); } catch (e) {}
-      return () => {};
-    }, [])
-  );
-
-  useEffect(() => {
+  // ⚡ Set nav bar to black synchronously before the first paint so Android
+  // never shows a white flash when the music screen opens.
+  useLayoutEffect(() => {
     if (!showDiscovery) {
-      const t = setTimeout(() => {
-        try { changeNavigationBarColor('#000000', false); } catch (e) {}
-      }, 300);
-      return () => clearTimeout(t);
+      try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
     } else {
-      try { changeNavigationBarColor('#111111', false); } catch (e) {}
+      try { changeNavigationBarColor('#111111', false, false); } catch (e) {}
     }
   }, [showDiscovery]);
 
+  const wasFullscreen = useRef(false);
   useEffect(() => {
     if (fullscreen) {
+      wasFullscreen.current = true;
       Orientation.lockToLandscape();
       StatusBar.setHidden(true);
       hideNavigationBar();
     } else {
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
-      showNavigationBar();
+      
+      // Only call showNavigationBar if we are actually exiting a fullscreen state.
+      // Calling it on initial mount forces the OS to redraw the bar and flashes it white.
+      if (wasFullscreen.current) {
+        showNavigationBar();
+        setTimeout(() => {
+          try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+        }, 100);
+      }
     }
   }, [fullscreen]);
 
@@ -771,16 +804,16 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     return () => {
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
-      // ✅ FIX (notification surviving room close): destroy() only released
-      // the JS-side MediaController — confirmed against native source, it
-      // never touches the queue or the foreground service/notification.
-      // endSession() cancels any in-flight load, pauses, then CLEARS the
-      // queue (mediaItemCount → 0), which is what actually makes Media3's
-      // notification provider drop the notification, then stops.
-      try { TrackPlayerService.endSession(); } catch (_) {}
-      // Stop the YouTube foreground service + dismiss the media notification.
-      stopMusicService();
-      loadedAudioSessionRef.current = null;
+      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (e) {}
+      
+      if (!(global as any).keepMusicRoomAlive) {
+        try { TrackPlayerService.endSession(); } catch (_) {}
+        stopMusicService();
+        loadedAudioSessionRef.current = null;
+        (global as any).loadedAudioSessionId = null;
+        (global as any).activeMusicRoomCode = null;
+      }
+
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
       }
@@ -794,6 +827,10 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     };
   }, []);
 
+  useEffect(() => {
+    (global as any).keepMusicRoomAlive = false;
+  }, []);
+
   // Refs
   const [isAdPlaying, setIsAdPlaying] = useState(false);
   const controlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -804,7 +841,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // down) always read the CURRENT queue when it runs, without needing
   // `queue` in its dependency array — same rationale as currentSongRef.
   const roomStateQueueRef = useRef<QueueItem[]>([]);
-  const livePositionRef = useRef(0);
+  const livePositionRef = useRef(initialRoomPosition);
   const roomPositionRef = useRef(0);
   const isInBackgroundRef = useRef(false);
   const isDJBackgroundedRef = useRef(false);
@@ -814,6 +851,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const preloadedRef = useRef(false);
   const playerReadyTime = useRef(0);
   const isPlayerReadyRef = useRef(false);
+  const lastSeekTimeRef = useRef(0); // ✅ Tracks last seek time to prevent seek storms
   const joinSnapshotConsumed = useRef(false); // ✅ NEW
   const lastSnapVideoId = useRef<string | null>(null);
   const isAdPlayingRef = useRef(false);
@@ -833,7 +871,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   // the entire track from the network on every watch_sync tick. This ref
   // is only ever set by this screen's own successful load, and cleared on
   // unmount/destroy, so it can't be fooled by a transient native blip.
-  const loadedAudioSessionRef = useRef<string | null>(null);
+  const loadedAudioSessionRef = useRef<string | null>((global as any).loadedAudioSessionId || null);
 
   // Kept current by an effect right after showControlsFor's own
   // declaration further down — lets the plain tap handler above call the
@@ -846,8 +884,34 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   const backgroundStartPosition = useRef<number>(0);
   const backgroundStartTime = useRef<number>(0);
 
+  const { callState } = useCall();
+
   const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
+
+  // Ref that always holds the latest isConnected value — safe to read inside
+  // async callbacks / setInterval closures that would otherwise capture a stale copy.
+  const isConnectedRef = useRef(isConnected);
+  useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
+
+  const handleMinimize = useCallback(() => {
+    (global as any).keepMusicRoomAlive = true;
+    (global as any).activeMusicRoomCode = roomCode;
+    DeviceEventEmitter.emit('minimize_music_room', true);
+  }, [roomCode]);
+
+  useEffect(() => {
+    (global as any).activeMusicRoomCode = roomCode;
+  }, [roomCode]);
+
+  useEffect(() => {
+    if (callState.isActive) {
+      console.log('📞 [CALL ACTIVE] Pausing music room playback');
+      if (isPlaying && (isDJ || isDJMode)) {
+        syncPause(livePositionRef.current || 0);
+      }
+    }
+  }, [callState.isActive, isPlaying, isDJ, isDJMode, syncPause]);
 
   const seekPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // ✅ NEW: monotonic token so a stale seek's delayed resume (playVideo
@@ -865,6 +929,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     isUserAction.current = true;
     const actionTimer = setTimeout(() => { isUserAction.current = false; }, 3000);
 
+    lastSeekTimeRef.current = Date.now();
     seekingRef.current = true;
     setIsReseeking(true);
 
@@ -921,6 +986,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       return () => clearTimeout(timer);
     }
   }, [currentSong?.videoId, isPlaying, isPlayerReady]);
+
 
   // ─────────────────────────────────────────────────────────────────────────
   // AUDIO ENGINE — TrackPlayer owns ALL audio at ALL times
@@ -999,6 +1065,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
         // ✅ Mark as loaded for THIS session only after a successful load.
         // Cleared on unmount/destroy so a new room never inherits this.
         loadedAudioSessionRef.current = currentSong.videoId;
+        (global as any).loadedAudioSessionId = currentSong.videoId;
 
         // 🎵 YouTube/Drive path: start the foreground service so Android won't kill
         // the process in the background, and show the media notification.
@@ -1006,6 +1073,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           startMusicService(
             currentSong.title,
             currentSong.channelTitle || 'Music Room',
+            currentSong.thumbnail || '',
             isDJ || isDJMode
           );
         }
@@ -1113,14 +1181,28 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
     // Keep the media notification play/pause icon in sync for YouTube/Drive tracks.
     if (!currentSong?.source || currentSong?.source === 'youtube' || currentSong?.source === 'drive') {
-      updateMusicService(
+       updateMusicService(
         currentSong?.title ?? '',
         currentSong?.channelTitle ?? 'Music Room',
+        currentSong?.thumbnail ?? '',
         isPlaying,
         isDJ || isDJMode
       );
     }
-  }, [isPlaying, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isDJ, isDJMode]);
+  }, [isPlaying, currentSong?.videoId, currentSong?.source, currentSong?.title, currentSong?.channelTitle, currentSong?.thumbnail, mediaFullySynced, isReseeking, isDJ, isDJMode]);
+
+  // ✅ Seeding initial compensated position immediately when joinSnapshot is received
+  // This ensures livePositionRef is set before the player becomes ready, so the rendezvous
+  // starts playback directly from the compensated position instead of starting at 0.
+  useEffect(() => {
+    if (!isDJ && !isDJMode && joinSnapshot && livePositionRef.current === 0) {
+      const elapsed = (Date.now() - joinSnapshot.receivedAt) / 1000;
+      const targetPos = joinSnapshot.position + elapsed;
+      livePositionRef.current = targetPos;
+      setLivePosition(targetPos);
+      console.log('🎵 [JOIN] Seeding initial compensated position:', targetPos);
+    }
+  }, [joinSnapshot, isDJ, isDJMode]);
 
   // ✅ NEW: Keep participant TrackPlayer and video in sync with room position
   // Fires when DJ broadcasts a sync update (position changes from WebSocket)
@@ -1136,6 +1218,16 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       return;
     }
 
+    // Guard: don't drift-sync until the player is actually ready AND the join snapshot has been consumed.
+    // Before the player is ready, livePositionRef is 0 — so drift = full room position (false positive).
+    // Before snapshot is consumed, we haven't done the initial seek yet so any drift seek would fight it.
+    if (!isPlayerReadyRef.current) return;
+    if (!isDJ && !isDJMode && !joinSnapshotConsumed.current) return;
+
+    // ✅ Cooldown: ignore drift syncs if we performed a seek very recently (within 5 seconds)
+    // to give the video player enough time to buffer, start playing, and catch up.
+    if (Date.now() - lastSeekTimeRef.current < 5000) return;
+
     // Drift check: Both Drive and YouTube IFrames report their current time via onProgress -> livePositionRef
     let currentPosition = livePositionRef.current;
     const drift = Math.abs(currentPosition - position);
@@ -1144,7 +1236,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       console.log('🎵 [PARTICIPANT SYNC] Drift detected:', drift, '— resyncing to room position:', position);
       performLocalSeek(position);
     }
-  }, [position, isDJ, isPlaying, currentSong?.videoId, currentSong?.source, performLocalSeek, isReseeking]);
+  }, [position, isDJ, isDJMode, isPlaying, currentSong?.videoId, currentSong?.source, performLocalSeek, isReseeking]);
 
   // ✅ NEW: Hybrid Perfect Sync Listener
   // 1. Gives WebView a head-start while audio buffers (150ms delay)
@@ -1350,6 +1442,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       // fresh load and actually restart TrackPlayer from position 0.
       if (richSong.videoId === loadedAudioSessionRef.current) {
         loadedAudioSessionRef.current = null;
+        (global as any).loadedAudioSessionId = null;
         setAudioReloadToken(t => t + 1);
       }
       setIsSyncing(true);
@@ -1381,28 +1474,30 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     const sub = DeviceEventEmitter.addListener('VIDEO_SELECTED', async (data) => {
       if (data.roomCode !== roomCode) return;
 
-      // Wait for WebSocket to be connected (max 15s)
-      const waitForConnection = () => new Promise<void>((resolve, reject) => {
-        if (isConnected) { resolve(); return; }
-        let elapsed = 0;
-        const interval = setInterval(() => {
-          elapsed += 100;
-          if (isConnected) {
-            clearInterval(interval);
-            resolve();
-          } else if (elapsed >= 15000) {
-            clearInterval(interval);
-            reject(new Error('WS timeout'));
-          }
-        }, 100);
-      });
+      // If already connected, bypass waiting completely (use ref to avoid stale closure)
+      if (!isConnectedRef.current) {
+        // Wait for WebSocket to be connected (max 15s)
+        const waitForConnection = () => new Promise<void>((resolve, reject) => {
+          let elapsed = 0;
+          const interval = setInterval(() => {
+            elapsed += 100;
+            if (isConnectedRef.current) {   // ← always reads the LATEST value
+              clearInterval(interval);
+              resolve();
+            } else if (elapsed >= 15000) {
+              clearInterval(interval);
+              reject(new Error('WS timeout'));
+            }
+          }, 100);
+        });
 
-      try {
-        await waitForConnection();
-      } catch (e) {
-        console.error('VIDEO_SELECTED: WS never connected');
-        Toast.show({ type: 'error', text1: 'Connection failed, try again' });
-        return;
+        try {
+          await waitForConnection();
+        } catch (e) {
+          console.error('VIDEO_SELECTED: WS never connected');
+          Toast.show({ type: 'error', text1: 'Connection failed, try again' });
+          return;
+        }
       }
 
       // Now safe to load
@@ -1417,8 +1512,21 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
           source:       'drive',
         };
       } else {
-        song = await fetchYouTubeMetadata(data.videoId, user?.display_name);
-        song.source = 'youtube';
+        // If we already have a title from params/selection, build the song immediately
+        // without an extra network round-trip so the UI shows real info right away.
+        if (data.title && data.thumbnail) {
+          song = {
+            videoId:      data.videoId,
+            title:        data.title,
+            thumbnail:    data.thumbnail,
+            channelTitle: data.channelTitle || 'YouTube',
+            addedBy:      user?.display_name || 'Someone',
+            source:       'youtube',
+          };
+        } else {
+          song = await fetchYouTubeMetadata(data.videoId, user?.display_name);
+          song.source = 'youtube';
+        }
       }
 
       handleSelectSong(song);
@@ -1427,10 +1535,10 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     });
 
     return () => sub.remove();
-  }, [roomCode, user?.display_name, handleSelectSong, isConnected]);
+  }, [roomCode, user?.display_name, handleSelectSong]);
 
   useEffect(() => {
-    if (isDJ && currentSong?.videoId && metadataLock.current !== currentSong.videoId &&
+    if (currentSong?.videoId && metadataLock.current !== currentSong.videoId &&
         (currentSong.title === 'Initializing...' || currentSong.title === 'Loading...' || !currentSong.channelTitle)) {
       const fetchMeta = async () => {
         try {
@@ -1446,7 +1554,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
       };
       fetchMeta();
     }
-  }, [isDJ, currentSong?.videoId, currentSong?.title, user?.display_name, updateCurrentSongMetadata]);
+  }, [currentSong?.videoId, currentSong?.title, user?.display_name, updateCurrentSongMetadata]);
 
   const showControlsFor = useCallback((ms = 3500) => {
     setShowControls(true);
@@ -1467,20 +1575,64 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
 
   useEffect(() => {
     if (isDJMode && initialVideoId && isConnected && !hasInitialized.current) {
-      setTimeout(() => {
-        // Do NOT set hasInitialized here — let the Sync effect set it later!
+      hasInitialized.current = true;
+      const isDrive = initialSource === 'drive';
+
+      const buildAndLoad = (resolvedTitle: string, resolvedThumbnail: string, resolvedChannel: string) => {
         setIsSyncing(true);
         const song: Song = {
           videoId: initialVideoId,
-          title: 'Initializing...',
-          thumbnail: `https://img.youtube.com/vi/${initialVideoId}/mqdefault.jpg`,
-          channelTitle: 'YouTube',
+          title: resolvedTitle,
+          thumbnail: resolvedThumbnail,
+          channelTitle: resolvedChannel,
           addedBy: user?.display_name ?? 'You',
+          source: isDrive ? 'drive' : 'youtube',
         };
         loadSong(song, currentRoomName);
-      }, 500);
+      };
+
+      if (isDrive) {
+        // Drive: we have the title already from params or fallback
+        setTimeout(() => {
+          buildAndLoad(
+            initialTitle || 'Drive Video',
+            initialThumbnail || 'https://via.placeholder.com/150/1a1a2e/FFFFFF?text=Drive',
+            'Google Drive',
+          );
+        }, 500);
+      } else if (initialTitle && initialThumbnail) {
+        // YouTube: all info already available from route params (selected from history/likes)
+        setTimeout(() => {
+          buildAndLoad(
+            initialTitle,
+            initialThumbnail,
+            'YouTube',
+          );
+        }, 500);
+      } else {
+        // YouTube: WebView interception — no title captured. Fetch metadata then load.
+        // Start loading the video immediately with a placeholder so playback isn't delayed,
+        // then update with real metadata as soon as the fetch returns.
+        const fallbackThumb = `https://img.youtube.com/vi/${initialVideoId}/mqdefault.jpg`;
+        setTimeout(() => {
+          buildAndLoad('Loading...', fallbackThumb, 'YouTube');
+        }, 500);
+
+        // Fetch real metadata in parallel and update once resolved
+        fetchYouTubeMetadata(initialVideoId, user?.display_name)
+          .then((meta) => {
+            if (meta?.title) {
+              updateCurrentSongMetadata({
+                ...meta,
+                addedBy: user?.display_name ?? 'You',
+                source: 'youtube',
+              });
+            }
+          })
+          .catch((e) => console.warn('🎵 Initial metadata fetch failed:', e));
+      }
     }
-  }, [isConnected, initialVideoId, isDJMode, loadSong, user?.display_name]);
+  }, [isConnected, initialVideoId, initialSource, initialTitle, initialThumbnail, isDJMode, loadSong, updateCurrentSongMetadata, user?.display_name]);
 
   useEffect(() => {
     if (currentSong?.videoId) {
@@ -1538,6 +1690,8 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
   }, [isPlayerReady, isDJ, isDJMode, currentSong, isPlaying, isSyncing, playerState, syncPlay]);
 
   useEffect(() => {
+    if (isMinimized) return;
+
     const backAction = () => {
       if (showDiscovery) { setShowDiscovery(false); return true; }
       if (fullscreen) { setFullscreen(false); return true; }
@@ -1546,7 +1700,7 @@ const MusicRoomScreen = ({ route, navigation }: any) => {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen]);
+  }, [showDiscovery, fullscreen, isMinimized]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -1878,11 +2032,6 @@ const sendChatMessage = () => {
     Keyboard.dismiss();
   };
 
-  useEffect(() => {
-    if (Platform.OS === 'android') {
-      try { changeNavigationBarColor('#000000', false); } catch (e) {}
-    }
-  }, [showLeaveConfirm]);
 
   const renderLeaveModal = () => {
     if (!showLeaveConfirm) return null;
@@ -1897,11 +2046,14 @@ const sendChatMessage = () => {
               </TouchableOpacity>
               <TouchableOpacity style={[s.pillButton, s.leaveButton]} onPress={() => {
                 setShowLeaveConfirm(false);
-                // ✅ FIX: clear the queue (not just stop/destroy) so the
-                // Media3 notification actually disappears — see endSession().
+                (global as any).keepMusicRoomAlive = false;
+                (global as any).activeMusicRoomCode = null;
+                (global as any).loadedAudioSessionId = null;
                 try { TrackPlayerService.endSession(); } catch (_) {}
+                stopMusicService();
                 loadedAudioSessionRef.current = null;
-                navigation.goBack();
+                musicWebSocketService.disconnect();
+                DeviceEventEmitter.emit('close_music_room');
               }}>
                 <Text style={s.buttonText}>Leave</Text>
               </TouchableOpacity>
@@ -1912,18 +2064,23 @@ const sendChatMessage = () => {
     );
   };
 
+  if (!roomCode) {
+    return null;
+  }
+
   if (isLoading) {
     return (
       <View style={s.loadingContainer}>
-        <ActivityIndicator size="large" color="#8100D1" />
-        <Text style={s.loadingText}>Joining room...</Text>
+        <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
+        <ActivityIndicator size="large" color="#ffffff" />
+        <Text style={s.loadingText}>{isDJMode ? 'Creating room...' : 'Joining room...'}</Text>
       </View>
     );
   }
 
   return (
     <View style={s.root}>
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+      <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
 
       {/* IMMERSIVE BACKGROUND */}
       <View style={StyleSheet.absoluteFill}>
@@ -1945,6 +2102,9 @@ const sendChatMessage = () => {
           {/* HEADER */}
           {!fullscreen && !isKeyboardVisible && (
             <View style={s.header}>
+              <TouchableOpacity onPress={handleMinimize} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Icon name="arrow-back" size={28} color="#fff" />
+              </TouchableOpacity>
               <TouchableOpacity onPress={() => setShowLeaveConfirm(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Icon name="close" size={28} color="#fff" />
               </TouchableOpacity>
@@ -2000,7 +2160,7 @@ const sendChatMessage = () => {
               this keeps playing underneath, unaffected. */}
           <View style={fullscreen ? s.videoWrapFullscreen : s.videoWrap}>
             <View style={StyleSheet.absoluteFill} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
-              {currentSong && currentSong.videoId && currentSong.title !== 'Initializing...' ? (
+              {currentSong && currentSong.videoId ? (
                 
                 // ─── Drive Video ───────────────────────────────────────────────
                 currentSong.source === 'drive' ? (
@@ -2038,6 +2198,16 @@ const sendChatMessage = () => {
                     videoId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
                     muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
+                    onVideoData={(extractedTitle, author) => {
+                      if (currentSong && (currentSong.title === 'Loading...' || currentSong.title === 'Initializing...' || !currentSong.channelTitle)) {
+                        console.log('🎵 [METADATA] Extracted video data from IFrame:', extractedTitle, 'by', author);
+                        updateCurrentSongMetadata({
+                          ...currentSong,
+                          title: extractedTitle || currentSong.title,
+                          channelTitle: author || currentSong.channelTitle || 'YouTube',
+                        });
+                      }
+                    }}
                     onReady={() => {
                       // NOTE: do NOT call setVolume(0) here — we want real audio from the IFrame
                       setIsPlayerReady(true);
@@ -2049,15 +2219,20 @@ const sendChatMessage = () => {
                         joinSnapshotConsumed.current = true;
                         const snapshotTime = joinSnapshot.receivedAt;
                         const snapshotPosition = joinSnapshot.position;
+                        // Use the most recent watch_sync position which is more accurate than snapshot
+                        // snapshot was saved on room_state, but by now we may have received fresher syncs
+                        // We use the latest `position` from roomState for accuracy
                         setTimeout(() => {
-                          const targetPosition = snapshotPosition +
-                            ((Date.now() - snapshotTime) / 1000);
+                          const elapsed = (Date.now() - snapshotTime) / 1000;
+                          const targetPosition = snapshotPosition + elapsed;
                           const safePosition = duration > 0
                             ? Math.min(targetPosition, duration - 2)
                             : targetPosition;
-                          console.log('👋 [JOIN] Seeking to live position:', safePosition);
+                          console.log('👋 [JOIN] Seeking to live position:', safePosition, '(snapshot:', snapshotPosition, '+ elapsed:', elapsed.toFixed(1), 's)');
                           playerRef.current?.seekTo(safePosition, true);
-                        }, 2000);
+                          livePositionRef.current = safePosition;
+                          lastSeekTimeRef.current = Date.now();
+                        }, 500); // Reduced from 2000ms — player is already ready at this point
                       }
 
                       setIsAdPlaying(true);
@@ -2184,6 +2359,7 @@ const sendChatMessage = () => {
               onToggleFullscreen={() => setFullscreen(!fullscreen)}
               onShowRelated={() => setShowRelated(true)}
               isFullscreen={fullscreen}
+              isDrivePlayer={currentSong?.source === 'drive'}
             />
 
             {/* Persistent Replay Button */}
@@ -2243,10 +2419,12 @@ const sendChatMessage = () => {
                   onPress={() => setShowRelated(false)}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <Icon name="close-circle" size={26} color="#fff" />
+                  <Icon name="close-circle" size={36} color="#fff" />
                 </TouchableOpacity>
                 {isLoadingRelated && relatedVideos.length === 0 && (
-                  <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" style={{ marginTop: 12 }} />
+                  <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }]}>
+                    <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
+                  </View>
                 )}
                 <RelatedVideosGrid
                   queueItems={queue}

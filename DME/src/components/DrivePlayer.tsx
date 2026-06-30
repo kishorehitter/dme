@@ -87,6 +87,14 @@ function toRN(obj) {
   try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
 }
 
+// DIAGNOSTIC ONLY — added on top of the known-working baseline, nothing
+// else changed. document.cookie only shows non-HttpOnly cookies, so an
+// empty result here doesn't prove no session exists, but a real Google
+// session cookie showing up here would prove the sign-in WebView's
+// session IS reaching this WebView.
+toRN({ type: 'log', msg: 'document.cookie at load: [' + document.cookie + ']' });
+toRN({ type: 'log', msg: 'navigator.userAgent: [' + navigator.userAgent + ']' });
+
 function showPlayer() {
   if (v) v.style.display = 'block';
   statusEl.style.display = 'none';
@@ -101,6 +109,8 @@ function attemptWarningBypass() {
   statusEl.innerText = "Bypassing Google Drive scan...";
   statusEl.style.display = 'block';
   v.style.display = 'none';
+
+  toRN({ type: 'log', msg: 'document.cookie at bypass time: [' + document.cookie + ']' });
 
   toRN({ type: 'needsBypass' });
 }
@@ -166,14 +176,31 @@ window.addEventListener('message', function(event) {
     try {
       console.log('🎬 [DRIVE RESOLVER] React Native intercepting warning page to bypass CORS...');
       const res = await fetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
+      console.log('🎬 [DRIVE RESOLVER] response status=', res.status, 'redirected=', res.redirected, 'finalUrl=', res.url);
       const text = await res.text();
-      const match = text.match(/confirm=([^&"]+)/);
-      
-      if (match) {
-        const token = match[1];
-        const bypassUrl = `https://drive.google.com/uc?export=download&confirm=${token}&id=${fileId}`;
-        console.log('🎬 [DRIVE RESOLVER] Native bypass token extracted successfully!');
-        
+      console.log('🎬 [DRIVE RESOLVER] FULL BODY:', text);
+
+      // Parse the real warning-page form generically: its action URL and
+      // EVERY hidden input, rather than assuming a fixed field set. Drive's
+      // current form includes id, export, authuser, confirm, uuid, AND a
+      // time-stamped anti-CSRF/freshness token named "at" — all six fields
+      // are required together; sending only some of them gets you served
+      // the warning page again (which is what every earlier attempt did,
+      // since none of them included "at").
+      const formActionMatch = text.match(/<form[^>]*action="([^"]+)"/);
+      const allInputs = [...text.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g)];
+      console.log('🎬 [DRIVE RESOLVER] form action=', formActionMatch ? formActionMatch[1] : null);
+      console.log('🎬 [DRIVE RESOLVER] all hidden inputs=', JSON.stringify(allInputs.map(m => ({ name: m[1], value: m[2] }))));
+
+      if (formActionMatch && allInputs.length > 0) {
+        const actionUrl = formActionMatch[1];
+        const params = new URLSearchParams();
+        allInputs.forEach(([, name, value]) => {
+          params.set(name, value);
+        });
+        const bypassUrl = `${actionUrl}?${params.toString()}`;
+        console.log('🎬 [DRIVE RESOLVER] Built bypass URL from real form fields:', bypassUrl);
+
         inject(`
           var v = document.getElementById('dmevideo');
           var statusEl = document.getElementById('status');
@@ -181,11 +208,13 @@ window.addEventListener('message', function(event) {
             statusEl.innerText = "Stream secured, buffering...";
             v.src = "${bypassUrl}";
             v.load();
-            v.play().catch(function(e){});
+            v.play().catch(function(e){
+              window.ReactNativeWebView.postMessage(JSON.stringify({type:'log', msg:'play() after form-bypass rejected: ' + e.message}));
+            });
           }
         `);
       } else {
-        console.warn('🎬 [DRIVE RESOLVER] Could not find confirm token natively.');
+        console.warn('🎬 [DRIVE RESOLVER] Could not find a download form on the warning page.');
         onError?.(-1);
       }
     } catch (e) {
@@ -282,7 +311,6 @@ window.addEventListener('message', function(event) {
         thirdPartyCookiesEnabled
         originWhitelist={['*']}
         mixedContentMode="always"
-        userAgent="Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         style={styles.webview}
         onShouldStartLoadWithRequest={() => true}
       />

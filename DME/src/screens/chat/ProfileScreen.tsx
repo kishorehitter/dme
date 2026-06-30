@@ -311,6 +311,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
               if (response.ok || response.status === 200) {
                 setIsBlocked(!isBlocked);
+                
+                try {
+                  const key = `settings_blocked_users_${user?.id || 'default'}`;
+                  const stored = await AsyncStorage.getItem(key);
+                  const list = stored ? JSON.parse(stored) : [];
+                  if (!isBlocked) {
+                    // Blocked: Add to list
+                    const name = viewingOtherProfile.display_name || viewingOtherProfile.username || viewingOtherProfile.email || 'User';
+                    if (!list.some((u: any) => u.id === viewingOtherProfile.id.toString())) {
+                      list.push({ id: viewingOtherProfile.id.toString(), name });
+                    }
+                  } else {
+                    // Unblocked: Remove from list
+                    const filtered = list.filter((u: any) => u.id !== viewingOtherProfile.id.toString());
+                    await AsyncStorage.setItem(key, JSON.stringify(filtered));
+                  }
+                  if (!isBlocked) {
+                    await AsyncStorage.setItem(key, JSON.stringify(list));
+                  }
+                } catch (e) {
+                  console.warn('Failed to sync blocked list in ProfileScreen', e);
+                }
+
                 Toast.show({
                   type: 'success',
                   text1: isBlocked ? 'User unblocked' : 'User blocked',
@@ -359,6 +382,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               bio: fullProfile.bio || '',
               quick_reaction: fullProfile.quick_reaction || '❤️',
             });
+          } else if (response.status === 403) {
+            Alert.alert(
+              'Profile Unavailable',
+              'This profile is not available.',
+              [{ text: 'OK', onPress: () => navigation.goBack() }]
+            );
           } else {
             setProfile(viewingOtherProfile);
             setFormData({

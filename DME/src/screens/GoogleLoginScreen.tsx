@@ -18,6 +18,8 @@ import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-si
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { StatusBar } from 'react-native';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { useFocusEffect } from '@react-navigation/native';
 
 // Configure Google Sign-In
 GoogleSignin.configure({
@@ -124,14 +126,12 @@ const GoogleLoginScreen = () => {
             source={require('../assets/google.png')}
             style={{ width: 20, height: 21, borderRadius: 0, marginRight: 8}}
           />
-          {loading ? (
-            <View style={styles.loadingWrapper}>
-              <ActivityIndicator color="#7b00c7" size="small" />
-              <Text style={[styles.googleButtonText, { marginLeft: 10 }]}>{loadingStatus}</Text>
-            </View>
-          ) : (
+          <View style={styles.loadingWrapper}>
             <Text style={styles.googleButtonText}>Sign in with Google</Text>
-          )}
+            {loading && (
+              <ActivityIndicator color="#7b00c7" size="small" style={{ marginLeft: 10 }} />
+            )}
+          </View>
         </TouchableOpacity>
 
         <Text style={styles.footer}>

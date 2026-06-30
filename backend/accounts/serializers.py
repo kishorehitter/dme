@@ -18,7 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'email', 'username', 'profile_picture', 'avatar_sticker', 'quick_reaction', 'display_name',
-                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
+                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'last_seen_privacy', 'computed_display_name', 'last_username_change')
         read_only_fields = ('id', 'email', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
 
     def get_profile_picture(self, obj):
@@ -83,7 +83,7 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'display_name', 'bio', 'profile_picture', 'avatar_sticker', 'quick_reaction')
+        fields = ('username', 'display_name', 'bio', 'profile_picture', 'avatar_sticker', 'quick_reaction', 'last_seen_privacy')
 
     def validate_username(self, value):
         value = value.lower()

@@ -19,7 +19,7 @@ class UserMinimalSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'profile_picture', 'avatar_sticker', 'display_name', 'last_seen')
+        fields = ('id', 'username', 'profile_picture', 'avatar_sticker', 'display_name', 'last_seen', 'last_seen_privacy')
 
     def get_display_name(self, obj):
         """Return custom display_name or username."""

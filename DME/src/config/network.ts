@@ -4,6 +4,7 @@ const PRODUCTION_HOST = 'dme-19zq.onrender.com'; // not a secret → hardcode fi
 const PRODUCTION_PORT = '';
 
 const DEVELOPMENT_HOST = Config.DEVELOPMENT_HOST ?? '';
+// const DEVELOPMENT_HOST = '10.36.7.51';
 
 const DEVELOPMENT_PORT = Config.DEVELOPMENT_PORT ?? '8000'; // fallback to 8000 if missing
 

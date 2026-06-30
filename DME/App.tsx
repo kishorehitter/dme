@@ -23,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import websocketService from './src/services/websocket';
 import messaging from '@react-native-firebase/messaging';
 import notifee, { EventType } from '@notifee/react-native';
+import { UpdateProvider } from './src/context/UpdateContext';
 
 export let navigationRef: NavigationContainerRef<any> | null = null;
 
@@ -138,14 +139,12 @@ export function handleNotificationNavigation(data: FCMData) {
   if (type === 'music_invite') {
     console.log('[App] 🎵 Music invite detected, navigating to room:', data.room_code);
     try {
-        navigationRef.dispatch(
-          CommonActions.navigate('MusicRoom', {
-            roomCode: data.room_code,
-            isDJMode: false,
-            initialVideoId: data.video_id,
-          }),
-        );
-        console.log('[App] ✅ Navigation dispatched successfully');
+        DeviceEventEmitter.emit('open_music_room', {
+          roomCode: data.room_code,
+          isDJMode: false,
+          initialVideoId: data.video_id,
+        });
+        console.log('[App] ✅ open_music_room event emitted successfully');
     } catch (e) {
         console.error('[App] ❌ Navigation dispatch failed:', e);
     }
@@ -376,29 +375,31 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <SafeAreaProvider>
-        <View style={styles.container}>
-          <StatusBar
-            barStyle="dark-content"
-            backgroundColor="transparent"
-            translucent={true}
-          />
-          <AuthProvider>
-            <CallProvider>
-              <AppNavigator
-                setNavigationRef={setNavigationRef}
-                onNavigatorReady={onNavigatorReady}
-              />
-              <CallOverlay />
-              <Toast />
-            </CallProvider>
-          </AuthProvider>
-          {!isSplashFinished && (
-            <AppSplash 
-              onFinish={() => setIsSplashFinished(true)} 
-              startFadeOut={isAppReady}
+        <UpdateProvider>
+          <View style={styles.container}>
+            <StatusBar
+              barStyle="dark-content"
+              backgroundColor="transparent"
+              translucent={true}
             />
-          )}
-        </View>
+            <AuthProvider>
+              <CallProvider>
+                <AppNavigator
+                  setNavigationRef={setNavigationRef}
+                  onNavigatorReady={onNavigatorReady}
+                />
+                <CallOverlay />
+                <Toast />
+              </CallProvider>
+            </AuthProvider>
+            {!isSplashFinished && (
+              <AppSplash 
+                onFinish={() => setIsSplashFinished(true)} 
+                startFadeOut={isAppReady}
+              />
+            )}
+          </View>
+        </UpdateProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

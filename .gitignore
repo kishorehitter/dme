@@ -48,7 +48,10 @@ backend/status_media/
 
 staticfiles/*
 !staticfiles/.gitkeep
-# YouTube cookies (sensitive — never commit)
+# YouTube cookies (sensitive ï¿½ never commit)
 cookies.txt
 *_cookies.txt
 *_yt_cookies.txt
+
+DME-Release/                                                                                                                                                                                                     â–„
+DME/android/.gradle_home/ 

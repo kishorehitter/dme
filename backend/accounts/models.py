@@ -49,6 +49,12 @@ class User(AbstractUser):
     is_profile_complete = models.BooleanField(default=False, help_text="Whether the user has completed onboarding")
     last_username_change = models.DateTimeField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True, help_text="Last time user disconnected from WebSocket")
+    last_seen_privacy = models.CharField(
+        max_length=10,
+        choices=[('everyone', 'Everyone'), ('nobody', 'Nobody')],
+        default='everyone',
+        help_text="Last seen privacy setting"
+    )
 
     @property
     def clean_profile_picture_url(self):

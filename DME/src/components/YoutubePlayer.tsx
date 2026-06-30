@@ -28,6 +28,7 @@ interface Props {
   onAdStarted?:   () => void;
   onAdEnded?:     () => void;
   onError?:       (error: any) => void;
+  onVideoData?:   (title: string, author: string) => void; // ✅ Callback for auto-extracted metadata
   style?:         any;
 }
 
@@ -40,6 +41,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     videoId, play, muted = false,
     onReady, onStateChange, onProgress,
     onAdStarted, onAdEnded, onError,
+    onVideoData,
     style,
   } = props;
 
@@ -63,6 +65,25 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     * { margin:0; padding:0; }
     html, body { width:100%; height:100%; background:#000; overflow:hidden; }
     #player { width:100%; height:100%; }
+
+    /* ── Hide ALL YouTube UI chrome ─────────────────────────────────── */
+    .ytp-chrome-top, .ytp-gradient-top, .ytp-title, .ytp-title-channel,
+    .ytp-title-text, .ytp-title-beacon, .ytp-chrome-top-buttons,
+    .ytp-watermark, .ytp-youtube-button, .ytp-chrome-bottom,
+    .ytp-gradient-bottom, .ytp-progress-bar-container, .ytp-progress-bar,
+    .ytp-cards-button, .ytp-cards-teaser, .iv-branding, .iv-card,
+    .iv-drawer, .iv-message, .ytp-ce-element, .ytp-ce-covering-overlay,
+    .ytp-endscreen-element, .ytp-endscreen-content, .ytp-share-button,
+    .ytp-overflow-button, .ytp-miniplayer-button, .ytp-size-button,
+    .ytp-fullscreen-button, .ytp-copylink-button, .ytp-pause-overlay,
+    .ytp-hover-overlay, .ytp-subtitles-button, .ytp-settings-button,
+    .ytp-ad-text-overlay, .ytp-ad-badge, .ytp-ad-info-dialog,
+    .branding-img, .branding-img-container
+    {
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
   </style>
 </head>
 <body>
@@ -83,6 +104,50 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   function toRN(obj) {
     try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
   }
+
+  // ── CSS: aggressively hide all YouTube UI chrome ──────────────────────────
+  var HIDE_CSS = [
+    '.ytp-chrome-top','.ytp-gradient-top','.ytp-title','.ytp-title-channel',
+    '.ytp-title-text','.ytp-title-beacon','.ytp-chrome-top-buttons',
+    '.ytp-watermark','.ytp-youtube-button',
+    '.ytp-chrome-bottom','.ytp-gradient-bottom',
+    '.ytp-progress-bar-container','.ytp-progress-bar',
+    '.ytp-cards-button','.ytp-cards-teaser',
+    '.iv-branding','.iv-card','.iv-drawer','.iv-message',
+    '.ytp-ce-element','.ytp-ce-covering-overlay',
+    '.ytp-endscreen-element','.ytp-endscreen-content',
+    '.ytp-share-button','.ytp-overflow-button',
+    '.ytp-miniplayer-button','.ytp-size-button',
+    '.ytp-fullscreen-button','.ytp-copylink-button',
+    '.ytp-pause-overlay','.ytp-hover-overlay',
+    '.ytp-subtitles-button','.ytp-settings-button',
+    '.ytp-ad-text-overlay','.ytp-ad-badge','.ytp-ad-info-dialog',
+    '.branding-img','.branding-img-container',
+  ].join(',');
+
+  function hideYouTubeUI() {
+    try {
+      var iframes = document.querySelectorAll('iframe');
+      iframes.forEach(function(iframe) {
+        try {
+          var doc = iframe.contentDocument;
+          if (!doc) return;
+          var existing = doc.getElementById('dme-hide-style');
+          if (!existing) {
+            var s = doc.createElement('style');
+            s.id = 'dme-hide-style';
+            s.textContent = HIDE_CSS + '{ display:none!important; opacity:0!important; pointer-events:none!important; }';
+            (doc.head || doc.documentElement).appendChild(s);
+          }
+        } catch(e) {}
+      });
+      var els = document.querySelectorAll(HIDE_CSS);
+      els.forEach(function(el) { el.style.cssText = 'display:none!important;opacity:0!important;pointer-events:none!important;'; });
+    } catch(e) {}
+  }
+
+  var observer = new MutationObserver(function() { hideYouTubeUI(); });
+  observer.observe(document.body, { childList: true, subtree: true });
 
   // ── Ad-skip engine ─────────────────────────────────────────────────────────
   var SKIP_SEL = [
@@ -107,6 +172,19 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         }
       }
     }
+    try {
+      var iframes = document.querySelectorAll('iframe');
+      iframes.forEach(function(iframe) {
+        try {
+          var doc = iframe.contentDocument;
+          if (!doc) return;
+          for (var j = 0; j < SKIP_SEL.length; j++) {
+            var b = doc.querySelector(SKIP_SEL[j]);
+            if (b) { b.click(); toRN({ type: 'adSkipClicked' }); }
+          }
+        } catch(e) {}
+      });
+    } catch(e) {}
     return false;
   }
 
@@ -146,6 +224,17 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     }, 1000);
   }
 
+  function postVideoData() {
+    try {
+      if (player && typeof player.getVideoData === 'function') {
+        var data = player.getVideoData();
+        if (data && data.title) {
+          toRN({ type: 'videoData', title: data.title, author: data.author || '' });
+        }
+      }
+    } catch(ex) {}
+  }
+
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
@@ -160,8 +249,11 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         controls:       0,
         playsinline:    1,
         rel:            0,
-        modestbranding: 0,
+        modestbranding: 1,
         iv_load_policy: 3,
+        cc_load_policy: 0,
+        fs:             0,
+        disablekb:      1,
         origin:         'https://localhost',
         suggestedQuality: 'highres',
       },
@@ -171,11 +263,16 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           toRN({ type: 'playerReady' });
           startAdEngine();
           startProgress();
+          postVideoData();
+          setTimeout(hideYouTubeUI, 500);
+          setTimeout(hideYouTubeUI, 1500);
         },
         onStateChange: function(e) {
           var map = {'-1':'unstarted','0':'ended','1':'playing','2':'paused','3':'buffering','5':'cued'};
           var state = map[String(e.data)] || 'unstarted';
           toRN({ type: 'stateChange', state: state });
+          postVideoData();
+          setTimeout(hideYouTubeUI, 200);
         },
         onError: function(e) {
           toRN({ type: 'playerError', code: e.data });
@@ -237,6 +334,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           break;
         case 'progress':
           onProgress?.(msg.currentTime, msg.duration);
+          break;
+        case 'videoData':
+          onVideoData?.(msg.title, msg.author);
           break;
         case 'adStarted': onAdStarted?.(); break;
         case 'adEnded':   onAdEnded?.();   break;
@@ -310,11 +410,14 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     },
   }), []);
 
+  // ✅ Memoize WebView source to prevent reload flashing when parent component re-renders
+  const webViewSource = React.useMemo(() => ({ html, baseUrl: 'https://localhost/' }), [videoId]);
+
   return (
     <View style={[styles.container, style]}>
       <WebView
         ref={webViewRef}
-        source={{ html, baseUrl: 'https://localhost/' }}
+        source={webViewSource}
         onMessage={handleMessage}
         javaScriptEnabled
         domStorageEnabled

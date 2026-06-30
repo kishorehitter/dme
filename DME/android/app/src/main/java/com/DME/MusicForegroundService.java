@@ -13,6 +13,9 @@ import android.os.IBinder;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.support.v4.media.MediaMetadataCompat;
+import android.graphics.Color;
+import java.io.InputStream;
+import java.net.URL;
 import androidx.core.app.NotificationCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
@@ -54,6 +57,9 @@ public class MusicForegroundService extends Service {
         });
     }
 
+    private Bitmap downloadedThumbnail = null;
+    private String currentThumbnailUrl = "";
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_STICKY;
@@ -71,14 +77,17 @@ public class MusicForegroundService extends Service {
         }
 
         // Extract track info
-        String title = intent.getStringExtra(EXTRA_TITLE);
-        String artist = intent.getStringExtra(EXTRA_ARTIST);
-        boolean isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, true);
-        boolean isDJ = intent.getBooleanExtra(EXTRA_IS_DJ, false);
+        final String title = intent.getStringExtra(EXTRA_TITLE);
+        final String artist = intent.getStringExtra(EXTRA_ARTIST);
+        final boolean isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, true);
+        final boolean isDJ = intent.getBooleanExtra(EXTRA_IS_DJ, false);
+        final String thumbnail = intent.getStringExtra("thumbnail");
 
-        if (title == null) title = "Music Room";
-        if (artist == null) artist = "";
+        if (title == null) {
+            return START_STICKY; // Guard against incomplete intents
+        }
 
+        // Handle Play/Pause actions
         if (ACTION_PLAY.equals(action) || ACTION_PAUSE.equals(action)) {
             boolean play = ACTION_PLAY.equals(action);
             
@@ -127,7 +136,34 @@ public class MusicForegroundService extends Service {
             )
             .build());
 
-        // Build and show the notification
+        // Trigger dynamic download if thumbnail URL changed
+        if (thumbnail != null && !thumbnail.isEmpty() && !thumbnail.equals(currentThumbnailUrl)) {
+            currentThumbnailUrl = thumbnail;
+            downloadedThumbnail = null; // Clear cached image
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        URL url = new URL(thumbnail);
+                        InputStream in = url.openStream();
+                        Bitmap bmp = BitmapFactory.decodeStream(in);
+                        if (bmp != null) {
+                            downloadedThumbnail = bmp;
+                            // Re-build and trigger notification update with new large icon
+                            Notification updateNotif = buildNotification(title, artist, isPlaying, isDJ);
+                            NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                            if (manager != null) {
+                                manager.notify(1, updateNotif);
+                            }
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            }).start();
+        }
+
+        // Build and show the notification immediately (falls back to app icon if thumbnail not downloaded yet)
         Notification notification = buildNotification(title, artist, isPlaying, isDJ);
         startForeground(1, notification);
 
@@ -147,21 +183,26 @@ public class MusicForegroundService extends Service {
             this, 0, openAppIntent, flags
         );
 
-        // Load the full-color app icon as the LargeIcon
+        // Load the full-color app icon as the LargeIcon or use downloaded thumbnail
         Bitmap largeIcon = null;
-        try {
-            largeIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
-        } catch (Exception e) {
-            // Ignore if decode fails
+        if (downloadedThumbnail != null) {
+            largeIcon = downloadedThumbnail;
+        } else {
+            try {
+                largeIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
+            } catch (Exception e) {
+                // Ignore if decode fails
+            }
         }
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(artist)
+            .setSubText("DME") // Explicitly show App Name next to small icon
             .setSmallIcon(R.drawable.ic_notification) // Silhouette icon for status bar
-            .setSubText("NOW PLAYING") // Adds the NOW PLAYING text next to the app name in the header
             .setContentIntent(openAppPending)
             .setOngoing(isPlaying)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
 
         if (isDJ) {

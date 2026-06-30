@@ -422,6 +422,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
   const [isUserBlocked, setIsUserBlocked] = useState(false); // Whether current user blocked other
   const [amIBlocked, setAmIBlocked] = useState(false); // Whether other user blocked current user
+  const [lastSeenPrivacy, setLastSeenPrivacy] = useState<'everyone' | 'nobody'>('everyone');
   const [chatTitle, setChatTitle] = useState(name || 'Chat');
   const [shouldSkipLoad, setShouldSkipLoad] = useState(false); // Skip loading messages
   const [showPermissionModal, setShowPermissionModal] = useState(false);
@@ -605,6 +606,19 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     if (params?.isBlocked !== undefined) {
       setIsUserBlocked(params.isBlocked);
     }
+
+    const loadLastSeenPrivacy = async () => {
+      try {
+        const key = `settings_last_seen_${currentUser?.id || 'default'}`;
+        const val = await AsyncStorage.getItem(key);
+        if (val) {
+          setLastSeenPrivacy(val as 'everyone' | 'nobody');
+        }
+      } catch (e) {
+        console.warn(e);
+      }
+    };
+    loadLastSeenPrivacy();
 
     if (params?.cleared) {
       // Clear messages locally when chat was cleared
@@ -2535,6 +2549,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 : otherUser
                 ? amIBlocked
                   ? ''
+                  : otherUser.last_seen_privacy === 'nobody'
+                  ? ''
                   : fmtLastSeen(otherUser.last_seen) === 'Online'
                   ? 'Online'
                   : `Last seen ${fmtLastSeen(otherUser.last_seen)}`
@@ -3109,6 +3125,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 );
                 if (response.ok) {
                   setIsUserBlocked(false);
+                  try {
+                    const key = `settings_blocked_users_${currentUser?.id || 'default'}`;
+                    const stored = await AsyncStorage.getItem(key);
+                    const list = stored ? JSON.parse(stored) : [];
+                    const filtered = list.filter((u: any) => u.id !== otherUser.id.toString());
+                    await AsyncStorage.setItem(key, JSON.stringify(filtered));
+                  } catch (e) {
+                    console.warn(e);
+                  }
                   Toast.show({
                     type: 'success',
                     text1: 'User unblocked',
@@ -3241,8 +3266,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
     height: 60,
   },
   headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },

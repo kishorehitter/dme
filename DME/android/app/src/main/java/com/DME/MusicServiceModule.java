@@ -36,11 +36,12 @@ public class MusicServiceModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void startService(String title, String artist, boolean isPlaying, boolean isDJ) {
+    public void startService(String title, String artist, String thumbnail, boolean isPlaying, boolean isDJ) {
         Intent intent = new Intent(reactContext, MusicForegroundService.class);
         intent.setAction(MusicForegroundService.ACTION_START);
         intent.putExtra(MusicForegroundService.EXTRA_TITLE, title);
         intent.putExtra(MusicForegroundService.EXTRA_ARTIST, artist);
+        intent.putExtra("thumbnail", thumbnail);
         intent.putExtra(MusicForegroundService.EXTRA_IS_PLAYING, isPlaying);
         intent.putExtra("isDJ", isDJ);
 
@@ -52,8 +53,8 @@ public class MusicServiceModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void updatePlaybackState(String title, String artist, boolean isPlaying, boolean isDJ) {
-        startService(title, artist, isPlaying, isDJ);
+    public void updatePlaybackState(String title, String artist, String thumbnail, boolean isPlaying, boolean isDJ) {
+        startService(title, artist, thumbnail, isPlaying, isDJ);
     }
 
     @ReactMethod

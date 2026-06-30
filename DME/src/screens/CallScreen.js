@@ -31,6 +31,7 @@ import InCallManager from 'react-native-incall-manager';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useCall } from '../context/CallContext';
+import { useAuth } from '../context/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 import fcmService from '../services/fcm';
@@ -387,6 +388,44 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
   );
 };
 
+const DummyAudioParticipantView = ({ remoteUserName, remoteUserPic, statusText }) => {
+  return (
+    <View style={styles.audioCallContainer}>
+      <View style={styles.audioAvatarContainer}>
+        {remoteUserPic ? (
+          <Image source={{ uri: remoteUserPic }} style={styles.largeProfilePic} />
+        ) : (
+          <View style={styles.avatarPlaceholder}>
+            <Icon name="person" size={100} color="#9CA3AF" />
+          </View>
+        )}
+        <Text style={styles.audioRemoteName}>{remoteUserName}</Text>
+        <Text style={[styles.audioCallStatus, { color: '#FF3B30' }]}>
+          {statusText}
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+const DummyVideoParticipantView = ({ remoteUserName, statusText }) => {
+  return (
+    <View style={styles.fullScreenContainer}>
+      <View style={styles.fullScreenPlaceholder}>
+        <View style={styles.avatarPlaceholder}>
+          <Icon name="person" size={80} color="#9CA3AF" />
+        </View>
+      </View>
+      <View style={styles.callingOverlay}>
+        <Text style={styles.callingName}>{remoteUserName}</Text>
+        <Text style={[styles.callingSubtext, { color: '#FF3B30' }]}>
+          {statusText}
+        </Text>
+      </View>
+    </View>
+  );
+};
+
 const CallScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
@@ -397,6 +436,7 @@ const CallScreen = () => {
     minimizeCall, maximizeCall, startTimer, stopTimer, setLiveKitConfig: setLiveKitConfigGlobal,
     updateCallParams
   } = useCall();
+  const { user } = useAuth();
 
   const callType = params.callType || params.call_type || 'audio';
   const isGroupCall = params.isGroupCall || params.is_group_call || false;
@@ -441,6 +481,7 @@ const CallScreen = () => {
   }, []);
 
   const [isCallingState, setIsCallingState] = useState(false);
+  const [blockStatus, setBlockStatus] = useState(null); // 'blocked_by_caller' | 'blocked_by_receiver' | null
   const [isFocused, setIsFocused] = useState(true);
 
   const currentCallIdRef = useRef(params.callId || params.call_id || null);
@@ -924,7 +965,67 @@ const CallScreen = () => {
       updateCallParams({ ...params, callId: currentCallIdRef.current, ...config });
       await setupSignaling(currentCallIdRef.current);
     } catch (err) {
+      const errResponse = err?.response;
+      if (errResponse && errResponse.status === 403) {
+        const blockType = errResponse.data?.block_type;
+        if (blockType === 'blocked_by_caller') {
+          setBlockStatus('blocked_by_caller');
+          Alert.alert(
+            'Unblock User',
+            'You have blocked this user. Would you like to unblock them and make the call?',
+            [
+              {
+                text: 'Cancel',
+                style: 'cancel',
+                onPress: () => handleEndCall()
+              },
+              {
+                text: 'Unblock & Call',
+                onPress: async () => {
+                  try {
+                    await api.post(`/accounts/users/${receiverId}/block/`, { blocked: false });
+                    
+                    // Remove from AsyncStorage settings block list
+                    try {
+                      const key = `settings_blocked_users_${user?.id || 'default'}`;
+                      const stored = await AsyncStorage.getItem(key);
+                      if (stored) {
+                        const list = JSON.parse(stored);
+                        const filtered = list.filter((u) => u.id !== receiverId.toString());
+                        await AsyncStorage.setItem(key, JSON.stringify(filtered));
+                      }
+                    } catch (storageErr) {
+                      console.warn('[Call] Failed to update local blocked list:', storageErr);
+                    }
+
+                    setBlockStatus(null);
+                    initializeCall();
+                  } catch (unblockErr) {
+                    console.error('[Call] Failed to unblock user:', unblockErr);
+                    Toast.show({
+                      type: 'error',
+                      text1: 'Failed to unblock user',
+                      position: 'bottom',
+                    });
+                    handleEndCall();
+                  }
+                }
+              }
+            ]
+          );
+          return;
+        } else if (blockType === 'blocked_by_receiver') {
+          setBlockStatus('blocked_by_receiver');
+          setIsCallingState(true);
+          setTimeout(() => {
+            handleEndCall();
+          }, 5000);
+          return;
+        }
+      }
+
       console.error('[Call] Init error:', err);
+
       Toast.show({
         type: 'error',
         text1: 'Connection lost',
@@ -1030,67 +1131,79 @@ const CallScreen = () => {
         <Icon name="chevron-down" size={30} color="#fff" />
       </TouchableOpacity>
 
-      {/* ✅ FIX 7: Only render LiveKitRoom when we have a real config.
-          Using connect={shouldLiveKitConnect} prevents ghost reconnections.
-          No more dummy URL / dummy token — avoids spurious connection attempts. */}
-      {liveKitConfig && (
-        <LiveKitRoom
-          serverUrl={liveKitConfig.serverUrl}
-          token={liveKitConfig.token}
-          connect={shouldLiveKitConnect}
-          audio={true}
-          video={callType === 'video'}
-          onDisconnected={() => {
-            console.log('[Call] LiveKitRoom onDisconnected');
-            // ✅ FIX 2+4: Only trigger cleanup on unexpected disconnects.
-            // If isIntentionalDisconnectRef is true we already ran handleEndCall,
-            // so we must NOT call it again here — that was the ghost-reconnect root cause.
-            if (
-              !isEndingRef.current &&
-              !isIntentionalDisconnectRef.current &&
-              partnerJoinedRef.current &&
-              !callMissedRef.current
-            ) {
-              console.log('[Call] Unexpected disconnect detected, ending call');
-              handleEndCall();
-            }
-          }}
-          onError={err => {
-            const msg = err?.message || '';
-            if (msg.includes('Client initiated disconnect')) return;
-            if (msg.includes('NegotiationError')) return;
-            if (msg.includes('cancelled')) return;
-            if (isIntentionalDisconnectRef.current) return; // ✅ Ignore errors after intentional end
+      {blockStatus === 'blocked_by_receiver' ? (
+        callType === 'video' ? (
+          <DummyVideoParticipantView
+            remoteUserName={remoteUserName}
+            statusText="You were blocked by the user"
+          />
+        ) : (
+          <DummyAudioParticipantView
+            remoteUserName={remoteUserName}
+            remoteUserPic={remoteUserPic}
+            statusText="You were blocked by the user"
+          />
+        )
+      ) : (
+        liveKitConfig && (
+          <LiveKitRoom
+            serverUrl={liveKitConfig.serverUrl}
+            token={liveKitConfig.token}
+            connect={shouldLiveKitConnect}
+            audio={true}
+            video={callType === 'video'}
+            onDisconnected={() => {
+              console.log('[Call] LiveKitRoom onDisconnected');
+              // ✅ FIX 2+4: Only trigger cleanup on unexpected disconnects.
+              // If isIntentionalDisconnectRef is true we already ran handleEndCall,
+              // so we must NOT call it again here — that was the ghost-reconnect root cause.
+              if (
+                !isEndingRef.current &&
+                !isIntentionalDisconnectRef.current &&
+                partnerJoinedRef.current &&
+                !callMissedRef.current
+              ) {
+                console.log('[Call] Unexpected disconnect detected, ending call');
+                handleEndCall();
+              }
+            }}
+            onError={err => {
+              const msg = err?.message || '';
+              if (msg.includes('Client initiated disconnect')) return;
+              if (msg.includes('NegotiationError')) return;
+              if (msg.includes('cancelled')) return;
+              if (isIntentionalDisconnectRef.current) return; // ✅ Ignore errors after intentional end
 
-            Toast.show({
-              type: 'error',
-              text1: 'Connection lost',
-              position: 'bottom',
-            });
-            handleEndCall();
-          }}
-        >
-          <RoomCapture onRoom={onRoomConnected} />
-          {isGroupCall ? (
-            <GroupCallView callType={callType} />
-          ) : callType === 'video' ? (
-            <VideoParticipantView
-              onPartnerJoined={handlePartnerJoined}
-              remoteUserName={remoteUserName}
-              remoteUserPic={remoteUserPic}
-              callType={callType}
-              isCallingState={isCallingState}
-            />
-          ) : (
-            <AudioParticipantView
-              onPartnerJoined={handlePartnerJoined}
-              remoteUserName={remoteUserName}
-              remoteUserPic={remoteUserPic}
-              partnerJoined={partnerJoined}
-              isCallingState={isCallingState}
-            />
-          )}
-        </LiveKitRoom>
+              Toast.show({
+                type: 'error',
+                text1: 'Connection lost',
+                position: 'bottom',
+              });
+              handleEndCall();
+            }}
+          >
+            <RoomCapture onRoom={onRoomConnected} />
+            {isGroupCall ? (
+              <GroupCallView callType={callType} />
+            ) : callType === 'video' ? (
+              <VideoParticipantView
+                onPartnerJoined={handlePartnerJoined}
+                remoteUserName={remoteUserName}
+                remoteUserPic={remoteUserPic}
+                callType={callType}
+                isCallingState={isCallingState}
+              />
+            ) : (
+              <AudioParticipantView
+                onPartnerJoined={handlePartnerJoined}
+                remoteUserName={remoteUserName}
+                remoteUserPic={remoteUserPic}
+                partnerJoined={partnerJoined}
+                isCallingState={isCallingState}
+              />
+            )}
+          </LiveKitRoom>
+        )
       )}
 
       <View style={[styles.topBar, { top: insets.top + (Platform.OS === 'ios' ? 2 : 12) }]}>

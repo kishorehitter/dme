@@ -324,7 +324,6 @@ export const StatusTabScreen = () => {
             </View>
           ) : (
             <View style={styles.empty}>
-              <Icon name="ellipse-outline" size={48} color="#ddd" />
               <Text style={styles.emptyText}>No recent updates</Text>
             </View>
           )

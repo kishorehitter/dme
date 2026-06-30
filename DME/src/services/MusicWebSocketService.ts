@@ -32,6 +32,7 @@ class MusicWebSocketService {
   private reconnectDelay = 3000;
   private currentRoomCode: string | null = null;
   private reconnectTimeoutId: any = null;
+  private lastRoomState: any = null;
 
   async connect(roomCode: string): Promise<void> {
     return new Promise(async (resolve, reject) => {
@@ -213,10 +214,23 @@ class MusicWebSocketService {
       this.isConnected = false;
       this.currentRoomCode = null;
     }
+    this.lastRoomState = null;
   }
 
   getConnectionState(): boolean {
     return this.isConnected;
+  }
+
+  getCurrentRoomCode(): string | null {
+    return this.currentRoomCode;
+  }
+
+  setLastRoomState(state: any) {
+    this.lastRoomState = state;
+  }
+
+  getLastRoomState(): any {
+    return this.lastRoomState;
   }
 }
 

@@ -28,3 +28,16 @@ allprojects {
         maven { url 'https://jitpack.io' }
     }
 }
+
+subprojects { project ->
+    project.pluginManager.withPlugin("com.android.application") {
+        project.android.defaultConfig.externalNativeBuild.cmake {
+            arguments "-DCMAKE_DISABLE_PRECOMPILED_HEADERS=ON"
+        }
+    }
+    project.pluginManager.withPlugin("com.android.library") {
+        project.android.defaultConfig.externalNativeBuild.cmake {
+            arguments "-DCMAKE_DISABLE_PRECOMPILED_HEADERS=ON"
+        }
+    }
+}

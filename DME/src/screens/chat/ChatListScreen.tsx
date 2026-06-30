@@ -11,10 +11,19 @@ import {
   ActivityIndicator,
   Alert,
   DeviceEventEmitter,
-  StatusBar,
   Platform,
   Modal,
+  TextInput,
+  LayoutAnimation,
+  UIManager,
+  PanResponder,
+  Linking,
+  Animated,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 
@@ -29,6 +38,9 @@ const Text = SafeText;
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
+import { useUpdateInfo } from '../../context/UpdateContext';
+import { useFocusEffect } from '@react-navigation/native';
+import { downloadAndInstallAPK } from '../../services/updateDownloader';
 import { useAuth } from '../../context/AuthContext';
 import { chatAPI } from '../../services/api';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
@@ -42,15 +54,26 @@ interface ChatListScreenProps {
 }
 
 const PopoverMenu = ({ 
-  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect
+  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect, onSettings, onAppUpdate
 }: { 
   visible: boolean, onClose: () => void, onNewGroup: () => void, onClearAll: () => void,
-  onProfile: () => void, onLogout: () => void, onSelect: () => void
+  onProfile: () => void, onLogout: () => void, onSelect: () => void,
+  onSettings: () => void, onAppUpdate: () => void
 }) => {
+  const { hasUpdate } = useUpdateInfo();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
         <View style={styles.popover}>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onAppUpdate(); }}>
+            <Icon name="download-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>App Update</Text>
+            {hasUpdate && (
+              <View style={styles.newBadge}>
+                <Text style={styles.newBadgeText}>New</Text>
+              </View>
+            )}
+          </TouchableOpacity>
           <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onProfile(); }}>
             <Icon name="person-outline" size={20} color="#333" />
             <Text style={styles.popoverText}>Profile</Text>
@@ -66,6 +89,10 @@ const PopoverMenu = ({
           <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
             <Icon name="checkbox-outline" size={20} color="#333" />
             <Text style={styles.popoverText}>Select and clear</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSettings(); }}>
+            <Icon name="settings-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Settings</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.popoverItem, { borderTopWidth: 1, borderColor: '#eee', marginTop: 4 }]} onPress={() => { onClose(); onLogout(); }}>
             <Icon name="log-out-outline" size={20} color="#F44336" />
@@ -128,9 +155,123 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const { user, logout } = useAuth();
+  const updateInfo = useUpdateInfo();
   const insets = useSafeAreaInsets();
   const isLoadingRef = useRef(false);
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const lastScrollY = useRef(0);
+
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
+  const handleDownloadUpdate = async (downloadUrl: string) => {
+    try {
+      setIsDownloadingUpdate(true);
+      setDownloadProgress(0);
+      await downloadAndInstallAPK(downloadUrl, (received, total) => {
+        if (total > 0) {
+          setDownloadProgress(Math.round((received / total) * 100));
+        }
+      });
+    } catch (error) {
+      console.error('Update download/install failed', error);
+      Alert.alert('Update Failed', 'Failed to download or install the app update. Please try again.');
+    } finally {
+      setIsDownloadingUpdate(false);
+    }
+  };
+
+  const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
+  const spinValue = useRef(new Animated.Value(0)).current;
+
+  useFocusEffect(
+    useCallback(() => {
+      setActiveRoomCode((global as any).activeMusicRoomCode || null);
+    }, [])
+  );
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      setActiveRoomCode((global as any).activeMusicRoomCode || null);
+    };
+
+    const subMinimize = DeviceEventEmitter.addListener('minimize_music_room', handleVisibility);
+    const subOpen = DeviceEventEmitter.addListener('open_music_room', handleVisibility);
+    const subClose = DeviceEventEmitter.addListener('close_music_room', () => setActiveRoomCode(null));
+
+    return () => {
+      subMinimize.remove();
+      subOpen.remove();
+      subClose.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation | null = null;
+    if (activeRoomCode) {
+      animation = Animated.loop(
+        Animated.timing(spinValue, {
+          toValue: 1,
+          duration: 4000,
+          useNativeDriver: true,
+        })
+      );
+      animation.start();
+    } else {
+      spinValue.setValue(0);
+    }
+    return () => {
+      if (animation) {
+        animation.stop();
+      }
+    };
+  }, [activeRoomCode]);
+
+  const spin = spinValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  const toggleSearch = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setShowSearch(prev => {
+      if (prev) setSearchQuery('');
+      return !prev;
+    });
+  };
+
+  const setSearchExpanded = (visible: boolean) => {
+    if (visible === showSearch) return;
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setShowSearch(visible);
+    if (!visible) setSearchQuery('');
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponderCapture: (evt, gestureState) => {
+        const dragDownToOpen = gestureState.dy > 10 && lastScrollY.current <= 10 && !showSearch;
+        const dragUpToClose = gestureState.dy < -10 && showSearch;
+        return dragDownToOpen || dragUpToClose;
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        if (gestureState.dy > 45 && !showSearch) {
+          setSearchExpanded(true);
+        } else if (gestureState.dy < -30 && showSearch) {
+          setSearchExpanded(false);
+        }
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        if (gestureState.dy > 30 && !showSearch) {
+          setSearchExpanded(true);
+        } else if (gestureState.dy < -15 && showSearch) {
+          setSearchExpanded(false);
+        }
+      },
+    })
+  ).current;
 
   const [previewData, setPreviewData] = useState<{
     visible: boolean; uri: string | null; isGroup: boolean; displayName: string; sticker: string | null;
@@ -255,25 +396,35 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   useEffect(() => {
     navigation.setOptions({
       headerShown: true,
-      headerTitleAlign: selectionMode ? 'center' : 'left',
+      headerTitleAlign: 'center',
       headerTitle: () => (
         !selectionMode ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Image
-                    source={require('../../assets/logo.png')}
-                    style={{ width: 35, height: 35, borderRadius: 14, marginRight: 8 }}
-                />
-                <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
-            </View>
+            <TouchableOpacity 
+              onPress={toggleSearch}
+              activeOpacity={0.7}
+              style={{ padding: 10 }}
+            >
+                <Icon name={showSearch ? "chevron-up" : "chevron-down"} size={20} color="#8212c7" />
+            </TouchableOpacity>
         ) : (
             <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
         )
       ),
-      headerLeft: selectionMode ? () => (
-        <TouchableOpacity style={{marginLeft: 16}} onPress={() => { setSelectionMode(false); setSelectedIds([]); }}>
-            <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
-        </TouchableOpacity>
-      ) : undefined,
+      headerLeft: () => (
+        selectionMode ? (
+          <TouchableOpacity style={{marginLeft: 16}} onPress={() => { setSelectionMode(false); setSelectedIds([]); }}>
+              <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}>
+              <Image
+                  source={require('../../assets/logo.png')}
+                  style={{ width: 35, height: 35, borderRadius: 14, marginRight: 8 }}
+              />
+              <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
+          </View>
+        )
+      ),
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16 }}>
           {selectionMode ? (
@@ -284,24 +435,47 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
              <>
                 <TouchableOpacity
                   onPress={() => {
-                    navigation.navigate('YouTubeDiscovery', {});
+                    if (activeRoomCode) {
+                      DeviceEventEmitter.emit('minimize_music_room', false);
+                    } else {
+                      navigation.navigate('YouTubeDiscovery', {});
+                    }
                   }}
                   style={{ marginRight: 16 }}
                 >
-                  <LinearGradient
-                    colors={['#FF007F', '#7F00FF']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 16,
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Icon name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
-                  </LinearGradient>
+                  {activeRoomCode ? (
+                    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                      <LinearGradient
+                        colors={['#FF007F', '#00FFFF', '#FFD700', '#7F00FF']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 14,
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Icon name="disc" size={15} color="#fff" />
+                      </LinearGradient>
+                    </Animated.View>
+                  ) : (
+                    <LinearGradient
+                      colors={['#FF007F', '#7F00FF']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 14,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Icon name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
+                    </LinearGradient>
+                  )}
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setMenuVisible(true)}>
                     <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
@@ -310,30 +484,195 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           )}
         </View>
       ),
-      headerStyle: { backgroundColor: selectionMode ? '#F8F0FF' : '#fff', elevation: 2, shadowOpacity: 0.1 },
+      headerStyle: { backgroundColor: selectionMode ? '#F8F0FF' : '#fff', elevation: 0, shadowOpacity: 0, borderBottomWidth: 0 },
     });
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, showSearch, activeRoomCode]);
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} {...panResponder.panHandlers}>
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
         onNewGroup={() => { setMenuVisible(false); navigation.navigate('CreateGroup'); }}
         onClearAll={() => { setMenuVisible(false); handleClearAll(); }}
-        onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        onLogout={() => { setMenuVisible(false); handleLogout(); }}
+        onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        
+        onLogout={() => { setMenuVisible(false); handleLogout(); }}
         onSelect={() => { setMenuVisible(false); setSelectionMode(true); }}
+        onSettings={() => {
+          setMenuVisible(false);
+          navigation.navigate('Settings');
+        }}
+        onAppUpdate={() => {
+          setMenuVisible(false);
+          if (updateInfo.hasUpdate && updateInfo.downloadUrl) {
+            handleDownloadUpdate(updateInfo.downloadUrl);
+          } else {
+            Alert.alert('App Update', 'You are on the latest version of DME.');
+          }
+        }}
       />
-      <View style={styles.tabContainer}>
-        <TouchableOpacity style={[styles.tabButton, activeTab === 'all' && styles.activeTabButton]} onPress={() => setActiveTab('all')}>
-          <Text style={[styles.tabText, activeTab === 'all' && styles.activeTabText]}>Chats</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.tabButton, activeTab === 'groups' && styles.activeTabButton]} onPress={() => setActiveTab('groups')}>
-          <Text style={[styles.tabText, activeTab === 'groups' && styles.activeTabText]}>Groups</Text>
-        </TouchableOpacity>
-      </View>
+      <Modal visible={isDownloadingUpdate} transparent animationType="fade">
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}>
+          <View style={{
+            width: 280,
+            backgroundColor: '#fff',
+            borderRadius: 12,
+            padding: 24,
+            alignItems: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.25,
+            shadowRadius: 4,
+            elevation: 5,
+          }}>
+            <ActivityIndicator size="large" color="#8100D1" style={{ marginBottom: 16 }} />
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 8 }}>
+              Downloading Update
+            </Text>
+            <Text style={{ fontSize: 14, color: '#666', marginBottom: 16, textAlign: 'center' }}>
+              Please wait while the new version is being downloaded...
+            </Text>
+            <View style={{
+              width: '100%',
+              height: 6,
+              backgroundColor: '#eee',
+              borderRadius: 3,
+              overflow: 'hidden',
+              marginBottom: 8,
+            }}>
+              <View style={{
+                width: `${downloadProgress}%`,
+                height: '100%',
+                backgroundColor: '#8100D1',
+              }} />
+            </View>
+            <Text style={{ fontSize: 14, fontWeight: '600', color: '#8100D1' }}>
+              {downloadProgress}%
+            </Text>
+          </View>
+        </View>
+      </Modal>
+      {showSearch && (
+        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8, paddingHorizontal: 12 }}>
+            <Icon name="search" size={20} color="#888" />
+            <TextInput
+              style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
+              placeholder="Search by name..."
+              placeholderTextColor="#888"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Icon name="close-circle" size={20} color="#888" />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      )}
+
+
       <FlatList
-        data={conversations.filter(c => activeTab === 'all' || c.is_group)}
+        ListHeaderComponent={
+          <View style={[styles.tabContainer, { backgroundColor: '#fff', paddingBottom: 8 }]}>
+            {activeTab === 'all' ? (
+              <TouchableOpacity style={{ flex: 1, marginHorizontal: 4 }} onPress={() => setActiveTab('all')}>
+                <LinearGradient
+                  colors={['#FF007F', '#7F00FF']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={{ padding: 1.5, borderRadius: borderRadius.lg || 8 }}
+                >
+                  <View style={{
+                    backgroundColor: '#FFFFFF',
+                    paddingVertical: (spacing.sm || 8) - 1.5,
+                    alignItems: 'center',
+                    borderRadius: (borderRadius.lg || 8) - 1.5,
+                  }}>
+                    <Text style={[styles.tabText, styles.activeTabText]}>Chats</Text>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    borderWidth: 1, 
+                    borderColor: '#CCCCCC', 
+                    marginHorizontal: 4,
+                    paddingVertical: (spacing.sm || 8) - 1,
+                  }
+                ]} 
+                onPress={() => setActiveTab('all')}
+              >
+                <Text style={styles.tabText}>Chats</Text>
+              </TouchableOpacity>
+            )}
+
+            {activeTab === 'groups' ? (
+              <TouchableOpacity style={{ flex: 1, marginHorizontal: 4 }} onPress={() => setActiveTab('groups')}>
+                <LinearGradient
+                  colors={['#FF007F', '#7F00FF']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={{ padding: 1.5, borderRadius: borderRadius.lg || 8 }}
+                >
+                  <View style={{
+                    backgroundColor: '#FFFFFF',
+                    paddingVertical: (spacing.sm || 8) - 1.5,
+                    alignItems: 'center',
+                    borderRadius: (borderRadius.lg || 8) - 1.5,
+                  }}>
+                    <Text style={[styles.tabText, styles.activeTabText]}>Groups</Text>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    borderWidth: 1, 
+                    borderColor: '#CCCCCC', 
+                    marginHorizontal: 4,
+                    paddingVertical: (spacing.sm || 8) - 1,
+                  }
+                ]} 
+                onPress={() => setActiveTab('groups')}
+              >
+                <Text style={styles.tabText}>Groups</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        }
+        data={conversations.filter(c => {
+          const matchesTab = activeTab === 'all' || c.is_group;
+          if (!matchesTab) return false;
+          
+          if (searchQuery.trim()) {
+            const displayName = c.is_group 
+              ? (c.name || 'Group') 
+              : (c.other_user?.display_name || c.other_user?.email || 'User');
+            return displayName.toLowerCase().startsWith(searchQuery.trim().toLowerCase());
+          }
+          return true;
+        })}
+        onScroll={(e) => {
+          const currentY = e.nativeEvent.contentOffset.y;
+          // Detect scroll down (swiping up on list)
+          if (currentY > 30 && currentY > lastScrollY.current) {
+             setSearchExpanded(false);
+          }
+          lastScrollY.current = currentY;
+        }}
+        scrollEventThrottle={16}
         renderItem={({ item }) => {
           const isSelected = selectedIds.includes(item.id);
           const userId = item.is_group ? null : item.other_user?.id;
@@ -342,9 +681,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           
           let isOnline = false;
           if (!item.is_group && item.other_user) {
-            const lastSeen = new Date(item.other_user.last_seen).getTime();
-            const now = Date.now();
-            isOnline = (now - lastSeen) < 120000;
+            const isPrivacyNobody = item.other_user.last_seen_privacy === 'nobody';
+            if (!isPrivacyNobody) {
+              const lastSeen = new Date(item.other_user.last_seen).getTime();
+              const now = Date.now();
+              isOnline = (now - lastSeen) < 120000;
+            }
           }
 
           return (
@@ -456,12 +798,12 @@ const styles = StyleSheet.create({
   avatar: { width: 50, height: 50, borderRadius: 25 },
   avatarPlaceholder: { backgroundColor: '#E8DEF8', borderWidth: 1, borderColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' },
   avatarText: { color: THEME_COLOR, fontSize: fontSize.lg, fontWeight: 'bold' },
-  conversationItem: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: spacing.md, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  conversationItem: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: spacing.md },
   content: { flex: 1, justifyContent: 'center', marginLeft: spacing.md },
   name: { fontSize: fontSize.lg, fontWeight: '600', color: '#000' },
   lastMessage: { fontSize: fontSize.md, color: '#666' },
-  tabContainer: { flexDirection: 'row', padding: spacing.sm, backgroundColor: '#F8F8F8', borderBottomWidth: 1, borderBottomColor: '#EEE' },
-  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.md },
+  tabContainer: { flexDirection: 'row', padding: spacing.sm },
+  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
   activeTabText: { color: THEME_COLOR, fontWeight: '700' },
@@ -475,6 +817,18 @@ const styles = StyleSheet.create({
   popover: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: '#fff', borderRadius: 8, padding: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
   popoverText: { fontSize: 14, color: '#333' },
+  newBadge: {
+    marginLeft: 'auto',
+    backgroundColor: '#4CAF50',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  newBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '600',
+  },
   composeButton: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl, width: 60, height: 50,  borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10,  backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
   onlineDot: {
     position: 'absolute',

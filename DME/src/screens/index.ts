@@ -22,3 +22,6 @@ export { StatusPrivacyScreen } from './chat/StatusPrivacyScreen';
 // Call Screens
 export { default as CallScreen } from './CallScreen';
 export { default as IncomingCallScreen } from './IncomingCallScreen';
+
+// Settings Screen
+export { SettingsScreen } from './chat/SettingsScreen';

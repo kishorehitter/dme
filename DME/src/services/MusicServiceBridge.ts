@@ -28,10 +28,11 @@ const { MusicService } = NativeModules;
 export const startMusicService = (
   title: string,
   artist: string,
+  thumbnail: string,
   isDJ: boolean
 ): void => {
   try {
-    MusicService?.startService(title, artist, true, isDJ);
+    MusicService?.startService(title, artist, thumbnail, true, isDJ);
   } catch (e) {
     console.warn('[MusicServiceBridge] startService error:', e);
   }
@@ -44,11 +45,12 @@ export const startMusicService = (
 export const updateMusicService = (
   title: string,
   artist: string,
+  thumbnail: string,
   isPlaying: boolean,
   isDJ: boolean
 ): void => {
   try {
-    MusicService?.updatePlaybackState(title, artist, isPlaying, isDJ);
+    MusicService?.updatePlaybackState(title, artist, thumbnail, isPlaying, isDJ);
   } catch (e) {
     console.warn('[MusicServiceBridge] updatePlaybackState error:', e);
   }

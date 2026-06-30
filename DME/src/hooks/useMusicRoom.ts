@@ -81,15 +81,21 @@ export const useMusicRoom = (
   isAdPlayingRef?: React.MutableRefObject<boolean>,
   isDJBackgroundedRef?: React.MutableRefObject<boolean>
 ) => {
-  const [roomState, setRoomState] = useState<RoomState>({
-    roomCode,
-    roomName: '', // ✅ Initialized as empty string
-    isDJ: false,
-    currentSong: null,
-    position: 0,
-    isPlaying: false,
-    queue: [],
-    participants: []
+  const [roomState, setRoomState] = useState<RoomState>(() => {
+    const cached = musicWebSocketService.getLastRoomState();
+    if (cached && musicWebSocketService.getCurrentRoomCode() === roomCode) {
+      return cached;
+    }
+    return {
+      roomCode,
+      roomName: '', // ✅ Initialized as empty string
+      isDJ: false,
+      currentSong: null,
+      position: 0,
+      isPlaying: false,
+      queue: [],
+      participants: []
+    };
   });
 
   const roomStateRef = useRef(roomState);
@@ -97,6 +103,7 @@ export const useMusicRoom = (
 
   useEffect(() => {
     roomStateRef.current = roomState;
+    musicWebSocketService.setLastRoomState(roomState);
   }, [roomState]);
 
   useEffect(() => {
@@ -113,8 +120,13 @@ export const useMusicRoom = (
     const connectToRoom = async () => {
       try {
         setIsLoading(true);
-        await musicWebSocketService.connect(roomCode);
-        setIsConnected(true);
+        if (musicWebSocketService.getConnectionState() && musicWebSocketService.getCurrentRoomCode() === roomCode) {
+          console.log('🎵 Music WS already connected, reusing connection');
+          setIsConnected(true);
+        } else {
+          await musicWebSocketService.connect(roomCode);
+          setIsConnected(true);
+        }
       } catch (error) {
         console.error('Failed to connect to music room:', error);
       } finally {
@@ -246,7 +258,9 @@ export const useMusicRoom = (
 
     return () => {
       unsubscribe();
-      musicWebSocketService.disconnect();
+      if (!(global as any).keepMusicRoomAlive) {
+        musicWebSocketService.disconnect();
+      }
     };
   }, [roomCode]);
 
@@ -323,6 +337,7 @@ export const useMusicRoom = (
 
   return {
     roomState,
+    setRoomState,
     joinSnapshot,
     isConnected,
     isLoading,

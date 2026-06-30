@@ -5,7 +5,7 @@
  * - Unified History/Likes management
  */
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useLayoutEffect } from 'react';
 import {
   View, StyleSheet, TouchableOpacity,
   StatusBar, Text, DeviceEventEmitter,
@@ -18,6 +18,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { musicAPI } from '../services/api';
 import Toast from 'react-native-toast-message';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
 
 const { width } = Dimensions.get('window');
 
@@ -38,6 +39,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [activeTab, setActiveTab]       = useState<TabType>('youtube');
   const [roomName, setRoomName]         = useState('');
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
 
   // History / Likes
@@ -53,6 +55,14 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const isNavigating = useRef(false);
 
   // ─── Load history & likes on mount ────────────────────────────────────────
+  // Restore white nav bar when overlay closes. Going black is handled inline
+  // at each setShowOverlay(true) call site so it fires synchronously.
+  useLayoutEffect(() => {
+    if (!showOverlay) {
+      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+    }
+  }, [showOverlay]);
+
   useEffect(() => {
     isNavigating.current = false;
     loadHistory();
@@ -108,6 +118,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     if (videoIdMatch?.[1]) {
       selectedSource = 'youtube';
       setSelectedVideoId(videoIdMatch[1]);
+      setSelectedItem(null); // URL parsing doesn't have an item object
+      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
       setShowOverlay(true);
       youtubeWebViewRef.current?.injectJavaScript(
         `window.location.href = "https://m.youtube.com"; true;`
@@ -132,6 +144,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
       selectedSource = 'drive';
       setSelectedVideoId(fileId);
+      setSelectedItem(null);
+      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
       setShowOverlay(true);
 
       // Send Drive back to home so user doesn't stay on file view
@@ -144,11 +158,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   // ─── History / Likes grid item selection ──────────────────────────────────
   const handleSelectMedia = (item: any, source: 'youtube' | 'drive') => {
     selectedSource = source;
+    setSelectedItem(item);
     if (source === 'youtube') {
       setSelectedVideoId(item.video_id || item.videoId);
     } else {
       setSelectedVideoId(item.video_id || item.id);
     }
+    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
     setShowOverlay(true);
   };
 
@@ -192,28 +208,34 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
           finalTitle = match[1].replace(' - Google Drive', '').trim();
         }
       } catch (e) {}
-      if (!finalTitle) finalTitle = 'Drive Video';
+      if (!finalTitle) finalTitle = selectedItem?.title || 'Drive Video';
+    } else {
+      finalTitle = selectedItem?.title;
     }
 
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    navigation.replace('MusicRoom', {
+    const initThumbnail = selectedSource === 'drive'
+      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`
+      : selectedItem?.thumbnail;
+
+    // ⚡ Set nav bar black immediately — before the emit / navigation so Android
+    // never gets a chance to render a white nav bar on the first frame.
+    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+
+    if (typeof navigation.setOptions === 'function') {
+      navigation.setOptions({ animationEnabled: false });
+    }
+    navigation.goBack();
+    DeviceEventEmitter.emit('open_music_room', {
       roomCode: newRoomCode,
       isDJMode: true,
       roomName: roomName,
+      initialVideoId: selectedVideoId,
+      initialSource: selectedSource,
+      initialTitle: finalTitle,
+      initialThumbnail: initThumbnail,
     });
 
-    // Increase delay to 800ms to give WS time to connect
-    setTimeout(() => {
-      DeviceEventEmitter.emit('VIDEO_SELECTED', {
-        roomCode: newRoomCode,
-        videoId:  selectedVideoId,
-        source:   selectedSource,
-        title: finalTitle,
-        thumbnail: selectedSource === 'drive' 
-            ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`  // ← real thumbnail
-            : undefined,
-      });
-    }, 800); // was 100ms
   };
 
   const handleAddToQueue = async () => {
@@ -231,7 +253,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
           finalTitle = match[1].replace(' - Google Drive', '').trim();
         }
       } catch (e) {}
-      if (!finalTitle) finalTitle = 'Drive Video';
+      if (!finalTitle) finalTitle = selectedItem?.title || 'Drive Video';
+    } else {
+      finalTitle = selectedItem?.title;
     }
 
     navigation.goBack();
@@ -244,7 +268,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         title: finalTitle,
         thumbnail: selectedSource === 'drive' 
             ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`  // ← real thumbnail
-            : undefined,
+            : selectedItem?.thumbnail,
       });
     }, 800); // was 100ms
   };
@@ -328,7 +352,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      <StatusBar 
+        barStyle={showOverlay && selectedVideoId ? "light-content" : "dark-content"} 
+        backgroundColor="transparent" 
+        translucent={true}
+      />
 
       <View style={[styles.mainContent, { paddingTop: insets.top || 30 }]}>
 
@@ -509,6 +537,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                         if (msg.type === 'driveFileSelected' && msg.fileId) {
                             selectedSource = 'drive';
                             setSelectedVideoId(msg.fileId);
+                            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
                             setShowOverlay(true);
                         } else if (msg.type === 'urlChange') {
                             handleDriveNavChange({ url: msg.url });
@@ -630,10 +659,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             {/* Flow 1 — Start new party */}
             {!isFlow2 ? (
               <View style={[styles.topSection, { paddingTop: insets.top + 20 }]}>
-                <Text style={styles.namingTitle}>Name your party</Text>
+                <Text style={styles.namingTitle}>Name your Lobby</Text>
                 <TextInput
                   style={styles.namingInput}
-                  placeholder="e.g. Movie Night..."
+                  placeholder="e.g. Fun Time..."
                   placeholderTextColor="rgba(255,255,255,0.4)"
                   value={roomName}
                   onChangeText={setRoomName}
@@ -645,7 +674,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                   onPress={handleStartParty}
                   disabled={!roomName.trim()}
                 >
-                  <Text style={styles.submitBtnText}>🎉 Start Party</Text>
+                  <Text style={styles.submitBtnText}>Start Party 🎉</Text>
                 </TouchableOpacity>
               </View>
             ) : (

@@ -272,8 +272,15 @@ class UserDetailView(generics.RetrieveAPIView):
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        # Record interaction if viewing someone else's profile
+        # Check if there is a block relationship
         if instance.id != request.user.id:
+            if UserBlock.objects.filter(blocker=instance, blocked=request.user).exists() or \
+               UserBlock.objects.filter(blocker=request.user, blocked=instance).exists():
+                return Response(
+                    {'error': 'You do not have permission to view this profile'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             from .models import ProfileInteraction
             ProfileInteraction.objects.get_or_create(
                 viewer=request.user,

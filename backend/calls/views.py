@@ -32,6 +32,20 @@ class InviteToCallView(APIView):
 
         try:
             receiver = User.objects.get(id=receiver_id)
+            
+            # Check for block relationship
+            from accounts.models import UserBlock
+            if UserBlock.objects.filter(blocker=request.user, blocked=receiver).exists():
+                return Response(
+                    {'error': 'Cannot invite user: you have blocked this user.', 'block_type': 'blocked_by_caller'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            elif UserBlock.objects.filter(blocker=receiver, blocked=request.user).exists():
+                return Response(
+                    {'error': 'Cannot invite user: you are blocked by this user.', 'block_type': 'blocked_by_receiver'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             caller_name = request.user.display_name or request.user.email
             caller_avatar = get_profile_picture_url(request.user, request)
 
@@ -158,6 +172,19 @@ class CallInitiateView(APIView):
             receiver = User.objects.get(id=receiver_id)
         except User.DoesNotExist:
             return Response({'error': 'Receiver not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check for block relationship
+        from accounts.models import UserBlock
+        if UserBlock.objects.filter(blocker=request.user, blocked=receiver).exists():
+            return Response(
+                {'error': 'Cannot initiate call: you have blocked this user.', 'block_type': 'blocked_by_caller'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        elif UserBlock.objects.filter(blocker=receiver, blocked=request.user).exists():
+            return Response(
+                {'error': 'Cannot initiate call: you are blocked by this user.', 'block_type': 'blocked_by_receiver'},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Create call record
         call = Call.objects.create(

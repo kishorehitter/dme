@@ -1,9 +1,9 @@
 // services/updateChecker.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DeviceInfo from 'react-native-device-info';
 
 const GITHUB_OWNER = 'kishorehitter';
 const GITHUB_REPO = 'DME-releases';
-const CURRENT_VERSION = '1.0.0';
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const LAST_CHECK_KEY = 'update_last_checked';
@@ -17,6 +17,8 @@ export interface UpdateInfo {
 
 export async function checkForUpdate(): Promise<UpdateInfo> {
   try {
+    const currentVersion = DeviceInfo.getVersion(); // reads versionName from build.gradle
+
     const res = await fetch(
       `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`
     );
@@ -25,7 +27,7 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
     const release = await res.json();
     const latestVersion = release.tag_name.replace(/^v/, '');
 
-    if (compareVersions(latestVersion, CURRENT_VERSION) > 0) {
+    if (compareVersions(latestVersion, currentVersion) > 0) {
       const apkAsset = release.assets?.find((a: any) => a.name.endsWith('.apk'));
       return {
         hasUpdate: true,
@@ -50,7 +52,7 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-// --- throttled wrapper added below ---
+// --- throttled wrapper (unchanged) ---
 export async function checkForUpdateThrottled(): Promise<UpdateInfo> {
   try {
     const lastChecked = await AsyncStorage.getItem(LAST_CHECK_KEY);
@@ -66,6 +68,6 @@ export async function checkForUpdateThrottled(): Promise<UpdateInfo> {
     await AsyncStorage.setItem(CACHED_RESULT_KEY, JSON.stringify(result));
     return result;
   } catch (e) {
-    return checkForUpdate(); // fallback if AsyncStorage fails
+    return checkForUpdate();
   }
 }

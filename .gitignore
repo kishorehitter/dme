@@ -55,3 +55,7 @@ cookies.txt
 
 DME-Release/                                                                                                                                                                                                     ▄
 DME/android/.gradle_home/ 
+
+# JVM crash logs
+hs_err_pid*.log
+replay_pid*.log

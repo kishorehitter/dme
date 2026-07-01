@@ -35,7 +35,7 @@ import YouTubeDiscoveryScreen from '../screens/YouTubeDiscoveryScreen';
 import { useState, useEffect, useLayoutEffect } from 'react';
 import { Pressable } from 'react-native';
 import { navigationRef } from '../../App';
-import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -177,34 +177,11 @@ const ChatStack: React.FC<any> = ({ logout }) => {
   }, []);
 
   useLayoutEffect(() => {
-    let t1: any = null;
-    let t2: any = null;
-    let t3: any = null;
-    let t4: any = null;
-
     if (musicRoom.roomCode && !musicRoom.isMinimized) {
-      // Immediate paint pass
-      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
-      
-      // Safety paint passes to override active transition layout locks
-      t1 = setTimeout(() => { try { changeNavigationBarColor('#000000', false, false); } catch (_) {} }, 50);
-      t2 = setTimeout(() => { try { changeNavigationBarColor('#000000', false, false); } catch (_) {} }, 200);
-      t3 = setTimeout(() => { try { changeNavigationBarColor('#000000', false, false); } catch (_) {} }, 500);
-      t4 = setTimeout(() => { try { changeNavigationBarColor('#000000', false, false); } catch (_) {} }, 800);
+      pinNavBarColor('#000000');
     } else {
-      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
-      t1 = setTimeout(() => { try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {} }, 50);
-      t2 = setTimeout(() => { try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {} }, 200);
-      t3 = setTimeout(() => { try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {} }, 500);
-      t4 = setTimeout(() => { try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {} }, 800);
+      pinNavBarColor('#FFFFFF');
     }
-
-    return () => {
-      if (t1) clearTimeout(t1);
-      if (t2) clearTimeout(t2);
-      if (t3) clearTimeout(t3);
-      if (t4) clearTimeout(t4);
-    };
   }, [musicRoom.roomCode, musicRoom.isMinimized]);
 
   return (

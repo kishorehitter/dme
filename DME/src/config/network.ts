@@ -5,7 +5,6 @@ const PRODUCTION_PORT = '';
 
 const DEVELOPMENT_HOST = Config.DEVELOPMENT_HOST ?? '';
 
-
 const DEVELOPMENT_PORT = Config.DEVELOPMENT_PORT ?? '8000'; // fallback to 8000 if missing
 
 const IS_DEV = __DEV__;

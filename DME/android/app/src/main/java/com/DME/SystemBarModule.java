@@ -6,14 +6,17 @@ import android.os.Build;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.UiThreadUtil;
 
-public class SystemBarModule extends ReactContextBaseJavaModule {
+public class SystemBarModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
+
     public SystemBarModule(ReactApplicationContext reactContext) {
         super(reactContext);
+        reactContext.addLifecycleEventListener(this);
     }
 
     @Override
@@ -21,8 +24,28 @@ public class SystemBarModule extends ReactContextBaseJavaModule {
         return "SystemBar";
     }
 
+    // Remembered state so we can reassert after focus/resume events
+    private volatile String lastNavColor = null;
+    private volatile boolean lastNavLightIcons = false;
+
+    private volatile String lastStatusColor = null;
+    private volatile boolean lastStatusLightIcons = false;
+
     @ReactMethod
     public void setNavigationBarColor(final String colorHex, final boolean lightIcons) {
+        lastNavColor = colorHex;
+        lastNavLightIcons = lightIcons;
+        applyNavigationBarColor(colorHex, lightIcons);
+    }
+
+    @ReactMethod
+    public void setStatusBarColor(final String colorHex, final boolean lightIcons) {
+        lastStatusColor = colorHex;
+        lastStatusLightIcons = lightIcons;
+        applyStatusBarColor(colorHex, lightIcons);
+    }
+
+    private void applyNavigationBarColor(final String colorHex, final boolean lightIcons) {
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
@@ -55,8 +78,7 @@ public class SystemBarModule extends ReactContextBaseJavaModule {
         });
     }
 
-    @ReactMethod
-    public void setStatusBarColor(final String colorHex, final boolean lightIcons) {
+    private void applyStatusBarColor(final String colorHex, final boolean lightIcons) {
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
@@ -87,5 +109,29 @@ public class SystemBarModule extends ReactContextBaseJavaModule {
                 }
             }
         });
+    }
+
+    // --- LifecycleEventListener ---
+    // Reapplies last-known colors when the host activity resumes
+    // (e.g. after backgrounding, a system dialog, or another activity taking focus).
+
+    @Override
+    public void onHostResume() {
+        if (lastNavColor != null) {
+            applyNavigationBarColor(lastNavColor, lastNavLightIcons);
+        }
+        if (lastStatusColor != null) {
+            applyStatusBarColor(lastStatusColor, lastStatusLightIcons);
+        }
+    }
+
+    @Override
+    public void onHostPause() {
+        // no-op
+    }
+
+    @Override
+    public void onHostDestroy() {
+        // no-op
     }
 }

@@ -11,6 +11,8 @@
  * 7. ✅ Fullscreen rotation mode
  * 8. ✅ SEAMLESS BACKGROUND AUDIO: WebView always muted, TrackPlayer owns ALL audio
  *       — zero gap on minimize / lock screen / foreground return
+ * 9. ✅ IDLE CLOSE TIMER: Auto-closes room after 10 minutes of inactivity
+ *       (ended with empty queue OR paused with no active playback)
  */
 
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
@@ -41,7 +43,7 @@ import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Orientation from 'react-native-orientation-locker';
-import changeNavigationBarColor, { hideNavigationBar, showNavigationBar } from 'react-native-navigation-bar-color';
+import { pinNavBarColor } from '../utils/navBarPin';
 import { resolveImageUrl } from '../utils/image';
 import { colors } from '../utils/theme';
 import { API_BASE_URL } from '../config/network';
@@ -770,37 +772,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
   // ----------------------------
 
-  useLayoutEffect(() => {
-    try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
-  }, []);
-  // ⚡ Set nav bar to black synchronously before the first paint so Android
-  // never shows a white flash when the music screen opens.
-  useLayoutEffect(() => {
-    if (!showDiscovery) {
-      try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
-    } else {
-      try { changeNavigationBarColor('#111111', false, false); } catch (e) {}
-    }
-  }, [showDiscovery]);
-
   const wasFullscreen = useRef(false);
   useEffect(() => {
     if (fullscreen) {
       wasFullscreen.current = true;
       Orientation.lockToLandscape();
       StatusBar.setHidden(true);
-      hideNavigationBar();
     } else {
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
       
-      // Only call showNavigationBar if we are actually exiting a fullscreen state.
-      // Calling it on initial mount forces the OS to redraw the bar and flashes it white.
       if (wasFullscreen.current) {
-        showNavigationBar();
-        setTimeout(() => {
-          try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
-        }, 100);
+        pinNavBarColor('#000000');
       }
     }
   }, [fullscreen]);
@@ -809,7 +792,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     return () => {
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
-      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (e) {}
       
       if (!(global as any).keepMusicRoomAlive) {
         try { TrackPlayerService.endSession(); } catch (_) {}
@@ -829,6 +811,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         clearTimeout(typingTimeoutRef.current);
       }
       if (seekPollRef.current) clearInterval(seekPollRef.current);
+      if (idleCloseTimerRef.current) clearTimeout(idleCloseTimerRef.current);
     };
   }, []);
 
@@ -867,6 +850,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const realDurationLockedRef = useRef(false);
   const autoSkipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const adMuteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
 
   // ✅ NEW: screen-owned ground truth for "have I (this screen instance,
   // this room) already loaded this exact track into TrackPlayer".
@@ -894,6 +878,42 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
 
+  const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearIdleCloseTimer = useCallback(() => {
+    if (idleCloseTimerRef.current) {
+      clearTimeout(idleCloseTimerRef.current);
+      idleCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleIdleClose = useCallback(() => {
+    clearIdleCloseTimer();
+    idleCloseTimerRef.current = setTimeout(() => {
+      console.log('⏱️ [IDLE CLOSE] 10 min idle — auto-closing room');
+      (global as any).keepMusicRoomAlive = false;
+      (global as any).activeMusicRoomCode = null;
+      (global as any).loadedAudioSessionId = null;
+      try { TrackPlayerService.endSession(); } catch (_) {}
+      stopMusicService();
+      loadedAudioSessionRef.current = null;
+      musicWebSocketService.disconnect();
+      DeviceEventEmitter.emit('close_music_room');
+    }, 10 * 60 * 1000);
+  }, [clearIdleCloseTimer]);
+
+  useEffect(() => {
+    const isEndedWithEmptyQueue = playerState === 'ended' && queue.length === 0;
+    const isPausedIdle = !isPlaying && currentSong?.videoId;
+
+    if (isEndedWithEmptyQueue || isPausedIdle) {
+      scheduleIdleClose();
+    } else {
+      clearIdleCloseTimer();
+    }
+
+    return () => clearIdleCloseTimer();
+  }, [isPlaying, playerState, queue.length, currentSong?.videoId, scheduleIdleClose, clearIdleCloseTimer]);
   // Ref that always holds the latest isConnected value — safe to read inside
   // async callbacks / setInterval closures that would otherwise capture a stale copy.
   const isConnectedRef = useRef(isConnected);
@@ -2108,11 +2128,12 @@ const sendChatMessage = () => {
       {/* IMMERSIVE BACKGROUND */}
       <View style={StyleSheet.absoluteFill}>
         {currentSong?.thumbnail ? (
-          <Image source={{ uri: currentSong.thumbnail }} style={StyleSheet.absoluteFill} blurRadius={30} />
+          <Image source={{ uri: currentSong.thumbnail }} style={StyleSheet.absoluteFill} blurRadius={40} />
         ) : (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }]} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: '#0D0D0D' }]} />
         )}
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.85)' }]} />
+        {/* Glassy dark overlay instead of flat black scrim */}
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(20,20,30,0.55)' }]} />
       </View>
 
       <KeyboardAvoidingView

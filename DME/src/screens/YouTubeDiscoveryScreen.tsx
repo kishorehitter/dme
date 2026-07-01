@@ -5,7 +5,7 @@
  * - Unified History/Likes management
  */
 
-import React, { useRef, useState, useEffect, useLayoutEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View, StyleSheet, TouchableOpacity,
   StatusBar, Text, DeviceEventEmitter,
@@ -18,7 +18,6 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { musicAPI } from '../services/api';
 import Toast from 'react-native-toast-message';
-import changeNavigationBarColor from 'react-native-navigation-bar-color';
 
 const { width } = Dimensions.get('window');
 
@@ -53,20 +52,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [isYtSearching, setIsYtSearching] = useState(false);
 
   const isNavigating = useRef(false);
-
-  // ─── Load history & likes on mount ────────────────────────────────────────
-  // Restore white nav bar when overlay closes. Going black is handled inline
-  // at each setShowOverlay(true) call site so it fires synchronously.
-  useLayoutEffect(() => {
-    if (!showOverlay) {
-      // ✅ Only restore white when overlay is closed AND we're not navigating away
-      if (!isNavigating.current) {
-        try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
-      }
-    } else {
-      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
-    }
-  }, [showOverlay]);
 
   useEffect(() => {
     isNavigating.current = false;
@@ -124,7 +109,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       selectedSource = 'youtube';
       setSelectedVideoId(videoIdMatch[1]);
       setSelectedItem(null); // URL parsing doesn't have an item object
-      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+      
       setShowOverlay(true);
       youtubeWebViewRef.current?.injectJavaScript(
         `window.location.href = "https://m.youtube.com"; true;`
@@ -150,7 +135,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       selectedSource = 'drive';
       setSelectedVideoId(fileId);
       setSelectedItem(null);
-      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+      
       setShowOverlay(true);
 
       // Send Drive back to home so user doesn't stay on file view
@@ -169,7 +154,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     } else {
       setSelectedVideoId(item.video_id || item.id);
     }
-    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+    
     setShowOverlay(true);
   };
 
@@ -202,8 +187,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     if (!selectedVideoId) return;
     if (isNavigating.current) return;
     isNavigating.current = true;
-
-    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
 
     let finalTitle = undefined;
     if (selectedSource === 'drive') {
@@ -542,7 +525,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                         if (msg.type === 'driveFileSelected' && msg.fileId) {
                             selectedSource = 'drive';
                             setSelectedVideoId(msg.fileId);
-                            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+                           
                             setShowOverlay(true);
                         } else if (msg.type === 'urlChange') {
                             handleDriveNavChange({ url: msg.url });

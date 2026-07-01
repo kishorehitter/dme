@@ -726,6 +726,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [editedName, setEditedName] = useState('');
   const [showRoomInfo, setShowRoomInfo] = useState(true);
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  const [roomScreenReady, setRoomScreenReady] = useState(false);
+  const roomRevealedOnceRef = useRef(false);
+
 
   useEffect(() => {
     const showSub = Keyboard.addListener('keyboardDidShow', () => {
@@ -767,7 +770,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
   // ----------------------------
 
-
+  useLayoutEffect(() => {
+    try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+  }, []);
   // ⚡ Set nav bar to black synchronously before the first paint so Android
   // never shows a white flash when the music screen opens.
   useLayoutEffect(() => {
@@ -1166,6 +1171,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       }, 100);
     }
   }, [isPlayerReady, isTrackPlayerReady, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isPlaying]);
+
+  // ✅ NEW: gates the ENTIRE room UI behind a plain black overlay until
+  // the very first song is fully loaded, metadata-resolved, and
+  // audio+video are synced.
+  useEffect(() => {
+    if (roomRevealedOnceRef.current) return;
+    const isSongInfoReady =
+      !!currentSong?.videoId &&
+      currentSong.title !== 'Loading...' &&
+      currentSong.title !== 'Initializing...';
+    if (mediaFullySynced && isSongInfoReady) {
+      const t = setTimeout(() => {
+        roomRevealedOnceRef.current = true;
+        setRoomScreenReady(true);
+      }, 120);
+      return () => clearTimeout(t);
+    }
+  }, [mediaFullySynced, currentSong?.videoId, currentSong?.title]);
 
   // ✅ NEW: lightweight play/pause reflection — reacts to room isPlaying
   // WITHOUT ever calling setMediaItem/reloading. This is the only place
@@ -2100,7 +2123,7 @@ const sendChatMessage = () => {
           {renderLeaveModal()}
 
           {/* HEADER */}
-          {!fullscreen && !isKeyboardVisible && (
+          {!fullscreen && (!isKeyboardVisible || isEditingName) && (
             <View style={s.header}>
               <TouchableOpacity onPress={handleMinimize} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Icon name="arrow-back" size={28} color="#fff" />
@@ -2118,6 +2141,8 @@ const sendChatMessage = () => {
                     onBlur={handleUpdateRoomName}
                     autoFocus
                     maxLength={25}
+                    returnKeyType="done"
+                    blurOnSubmit={true}
                     placeholder="Room Name"
                     placeholderTextColor="rgba(255,255,255,0.4)"
                   />
@@ -2763,12 +2788,29 @@ const sendChatMessage = () => {
         )}
 
       </KeyboardAvoidingView>
+      {/* ✅ NEW: plain black cover — hides the placeholder header/np-bar/
+          video/nav-bar flash until the first song is truly ready to play.
+          Sits above everything (header, video, controls, related panel)
+          via zIndex, and blocks taps until lifted. */}
+      {!roomScreenReady && (
+        <View style={s.fullRoomLoadingOverlay} pointerEvents="auto">
+          <ActivityIndicator size="large" color="rgba(255,255,255,0.85)" />
+        </View>
+      )}
     </View>
   );
 };
 
 // Styles
 const s = StyleSheet.create({
+  fullRoomLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+    zIndex: 500,
+    elevation: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 15 },
   relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
   root:              { flex: 1, backgroundColor: '#000' },

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { NavigationContainer, DefaultTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -42,50 +42,86 @@ const Tab = createBottomTabNavigator();
 
 // HeaderRightIcons component removed
 
-const MainTabs = () => (
-  <Tab.Navigator
-    detachPreviousScreen={false}
-    screenOptions={({ route }) => ({
-      headerShown: true,
-      animation: 'none',
-      lazy: false,
-      tabBarActiveBackgroundColor: 'transparent',
-      tabBarInactiveBackgroundColor: 'transparent',
-      tabBarIcon: ({ color, size, focused }) => {
-        let iconName = 'chatbubble-outline';
-        if (route.name === 'Chats')  iconName = focused ? 'chatbubble' : 'chatbubble-outline';
-        else if (route.name === 'Status') iconName = focused ? 'person-circle' : 'person-circle-outline';
-        else if (route.name === 'Calls')  iconName = focused ? 'call' : 'call-outline';
-        
-        return <Icon name={iconName} size={24} color={color} />;
-      },
-      tabBarButton: (props) => (
-        <Pressable
-          {...props}
-          android_ripple={{ color: 'transparent' }}
-        />
-      ),
-      tabBarActiveTintColor: '#8100D1',
-      tabBarInactiveTintColor: 'gray',
-      tabBarHideOnKeyboard: true,
-      tabBarLabelStyle: {
-        fontSize: 12,
-      },
-      tabBarStyle: {
-        height: 60,
-        paddingBottom: 6,
-        paddingTop: 4,
-      },
-      tabBarIconStyle: {
-        marginBottom: 0,
-      },
-    })}
-  >
-    <Tab.Screen name="Chats"  component={ChatListScreen} />
-    <Tab.Screen name="Status" component={StatusTabScreen} />
-    <Tab.Screen name="Calls"  component={CallLogTabScreen} />
-  </Tab.Navigator>
-);
+const MainTabs = () => {
+  const statusBtnRef = useRef<View>(null);
+
+  const measureAndEmitStatusTab = () => {
+    if (statusBtnRef.current) {
+      statusBtnRef.current.measure((x, y, width, height, pageX, pageY) => {
+        if (width > 0 && height > 0) {
+          DeviceEventEmitter.emit('status_tab_measured', {
+            x: pageX, y: pageY, width, height,
+          });
+        }
+      });
+    }
+  };
+
+  useEffect(() => {
+    const t = setTimeout(measureAndEmitStatusTab, 700);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <Tab.Navigator
+      detachPreviousScreen={false}
+      screenOptions={({ route }) => ({
+        headerShown: true,
+        animation: 'none',
+        lazy: false,
+        tabBarActiveBackgroundColor: 'transparent',
+        tabBarInactiveBackgroundColor: 'transparent',
+        tabBarIcon: ({ color, size, focused }) => {
+          let iconName = 'chatbubble-outline';
+          if (route.name === 'Chats')  iconName = focused ? 'chatbubble' : 'chatbubble-outline';
+          else if (route.name === 'Status') iconName = focused ? 'person-circle' : 'person-circle-outline';
+          else if (route.name === 'Calls')  iconName = focused ? 'call' : 'call-outline';
+
+          return <Icon name={iconName} size={24} color={color} />;
+        },
+        tabBarButton: (props) => {
+          if (route.name === 'Status') {
+            return (
+              <Pressable
+                {...props}
+                android_ripple={{ color: 'transparent' }}
+                style={[props.style, { flex: 1 }]}
+              >
+                {props.children}
+                <View
+                  ref={statusBtnRef}
+                  collapsable={false}
+                  onLayout={measureAndEmitStatusTab}
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    width: 32,
+                    height: 32,
+                    alignSelf: 'center',
+                    top: 4,
+                  }}
+                />
+              </Pressable>
+            );
+          }
+          return (
+            <Pressable {...props} android_ripple={{ color: 'transparent' }} />
+          );
+        },
+        tabBarActiveTintColor: '#8100D1',
+        tabBarInactiveTintColor: 'gray',
+        tabBarHideOnKeyboard: true,
+        tabBarLabelStyle: { fontSize: 12 },
+        tabBarStyle: { height: 60, paddingBottom: 6, paddingTop: 4 },
+        tabBarIconStyle: { marginBottom: 0 },
+      })}
+    >
+      <Tab.Screen name="Chats"  component={ChatListScreen} />
+      <Tab.Screen name="Status" component={StatusTabScreen} />
+      <Tab.Screen name="Calls"  component={CallLogTabScreen} />
+    </Tab.Navigator>
+  );
+};
 
 const ChatStack: React.FC<any> = ({ logout }) => {
   const handleLogout = () => {

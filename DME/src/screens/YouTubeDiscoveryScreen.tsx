@@ -59,7 +59,12 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   // at each setShowOverlay(true) call site so it fires synchronously.
   useLayoutEffect(() => {
     if (!showOverlay) {
-      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+      // ✅ Only restore white when overlay is closed AND we're not navigating away
+      if (!isNavigating.current) {
+        try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+      }
+    } else {
+      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
     }
   }, [showOverlay]);
 
@@ -198,6 +203,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     if (isNavigating.current) return;
     isNavigating.current = true;
 
+    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+
     let finalTitle = undefined;
     if (selectedSource === 'drive') {
       try {
@@ -218,9 +225,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`
       : selectedItem?.thumbnail;
 
-    // ⚡ Set nav bar black immediately — before the emit / navigation so Android
-    // never gets a chance to render a white nav bar on the first frame.
-    try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     if (typeof navigation.setOptions === 'function') {
       navigation.setOptions({ animationEnabled: false });

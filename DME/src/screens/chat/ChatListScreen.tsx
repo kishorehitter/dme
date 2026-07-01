@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import OnboardingTour, { TourTarget, TourStepKey } from '../../components/OnboardingTour';
 import {
   View,
   Text as RNText,
@@ -159,12 +161,83 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const insets = useSafeAreaInsets();
   const isLoadingRef = useRef(false);
   const deletedConversationIdsRef = useRef<Set<number>>(new Set());
-  const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const lastScrollY = useRef(0);
 
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+
+  // ── Onboarding tour ────────────────────────────────────────────────────────
+  const ONBOARDING_KEY = 'dme_onboarding_done_v1';
+  const [tourVisible, setTourVisible] = useState(false);
+  const [tourTargets, setTourTargets] = useState<Partial<Record<TourStepKey, TourTarget>>>({});
+  const fabRef = useRef<View>(null);
+  const playBtnRef = useRef<View>(null);
+  const menuBtnRef = useRef<View>(null);
+
+
+  // Check if first launch
+  useEffect(() => {
+    AsyncStorage.getItem(ONBOARDING_KEY).then(val => {
+      if (!val) {
+        // Delay slightly so the layout is fully settled before we measure
+        setTimeout(() => measureAllTargets(), 650);
+      }
+    });
+  }, []);
+
+  const measureRef = (ref: React.RefObject<View>, key: TourStepKey) => {
+    return new Promise<void>((resolve) => {
+      if (!ref.current) {
+        console.warn(`Ref for ${key} is not available`);
+        resolve();
+        return;
+      }
+      ref.current.measure((x, y, width, height, pageX, pageY) => {
+        setTourTargets((prev) => ({
+          ...prev,
+          [key]: { key, x: pageX, y: pageY, width, height } as TourTarget,
+        }));
+        resolve();
+      });
+    });
+  };
+
+  const measureAllTargets = async () => {
+    try {
+      await Promise.all([
+        measureRef(fabRef, 'fab'),
+        measureRef(playBtnRef, 'play'),
+        measureRef(menuBtnRef, 'menu'),
+      ]);
+      // statusTab arrives separately via the event listener below
+    } catch (error) {
+      console.error('Error measuring targets:', error);
+    }
+  };
+
+  const handleTourFinished = () => {
+    setTourVisible(false);
+    AsyncStorage.setItem(ONBOARDING_KEY, 'true');
+  };
+
+  // 1. Listen for the status tab's real position (sent from MainTabs)
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('status_tab_measured', (data) => {
+      setTourTargets(prev => ({
+        ...prev,
+        statusTab: { key: 'statusTab', x: data.x, y: data.y, width: data.width, height: data.height },
+      }));
+    });
+    return () => sub.remove();
+  }, []);
+
+  // 2. Once all 4 targets are measured, show the tour
+  useEffect(() => {
+    const allReady = (['fab', 'play', 'menu', 'statusTab'] as TourStepKey[]).every(k => tourTargets[k]);
+    if (allReady && !tourVisible) {
+      setTourVisible(true);
+    }
+  }, [tourTargets]);
 
   const handleDownloadUpdate = async (downloadUrl: string) => {
     try {
@@ -233,45 +306,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
-
-  const toggleSearch = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setShowSearch(prev => {
-      if (prev) setSearchQuery('');
-      return !prev;
-    });
-  };
-
-  const setSearchExpanded = (visible: boolean) => {
-    if (visible === showSearch) return;
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setShowSearch(visible);
-    if (!visible) setSearchQuery('');
-  };
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponderCapture: (evt, gestureState) => {
-        const dragDownToOpen = gestureState.dy > 10 && lastScrollY.current <= 10 && !showSearch;
-        const dragUpToClose = gestureState.dy < -10 && showSearch;
-        return dragDownToOpen || dragUpToClose;
-      },
-      onPanResponderMove: (evt, gestureState) => {
-        if (gestureState.dy > 45 && !showSearch) {
-          setSearchExpanded(true);
-        } else if (gestureState.dy < -30 && showSearch) {
-          setSearchExpanded(false);
-        }
-      },
-      onPanResponderRelease: (evt, gestureState) => {
-        if (gestureState.dy > 30 && !showSearch) {
-          setSearchExpanded(true);
-        } else if (gestureState.dy < -15 && showSearch) {
-          setSearchExpanded(false);
-        }
-      },
-    })
-  ).current;
 
   const [previewData, setPreviewData] = useState<{
     visible: boolean; uri: string | null; isGroup: boolean; displayName: string; sticker: string | null;
@@ -398,17 +432,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       headerShown: true,
       headerTitleAlign: 'center',
       headerTitle: () => (
-        !selectionMode ? (
-            <TouchableOpacity 
-              onPress={toggleSearch}
-              activeOpacity={0.7}
-              style={{ padding: 10 }}
-            >
-                <Icon name={showSearch ? "chevron-up" : "chevron-down"} size={20} color="#8212c7" />
-            </TouchableOpacity>
-        ) : (
-            <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
-        )
+        selectionMode ? (
+          <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
+        ) : null
       ),
       headerLeft: () => (
         selectionMode ? (
@@ -433,20 +459,37 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </TouchableOpacity>
           ) : (
              <>
-                <TouchableOpacity
-                  onPress={() => {
-                    if (activeRoomCode) {
-                      DeviceEventEmitter.emit('minimize_music_room', false);
-                    } else {
-                      navigation.navigate('YouTubeDiscovery', {});
-                    }
-                  }}
-                  style={{ marginRight: 16 }}
-                >
-                  {activeRoomCode ? (
-                    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                <View ref={playBtnRef} collapsable={false}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (activeRoomCode) {
+                        DeviceEventEmitter.emit('minimize_music_room', false);
+                      } else {
+                        navigation.navigate('YouTubeDiscovery', {});
+                      }
+                    }}
+                    style={{ marginRight: 16 }}
+                  >
+                    {activeRoomCode ? (
+                      <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                        <LinearGradient
+                          colors={['#FF007F', '#00FFFF', '#FFD700', '#7F00FF']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 14,
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Icon name="disc" size={15} color="#fff" />
+                        </LinearGradient>
+                      </Animated.View>
+                    ) : (
                       <LinearGradient
-                        colors={['#FF007F', '#00FFFF', '#FFD700', '#7F00FF']}
+                        colors={['#FF007F', '#7F00FF']}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 1 }}
                         style={{
@@ -457,39 +500,26 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                           alignItems: 'center',
                         }}
                       >
-                        <Icon name="disc" size={15} color="#fff" />
+                        <Icon name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
                       </LinearGradient>
-                    </Animated.View>
-                  ) : (
-                    <LinearGradient
-                      colors={['#FF007F', '#7F00FF']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: 14,
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <Icon name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
-                    </LinearGradient>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setMenuVisible(true)}>
-                    <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
-                </TouchableOpacity>
+                    )}
+                  </TouchableOpacity>
+                </View>
+                <View ref={menuBtnRef} collapsable={false}>
+                  <TouchableOpacity onPress={() => setMenuVisible(true)}>
+                      <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+                  </TouchableOpacity>
+                </View>
              </>
           )}
         </View>
       ),
       headerStyle: { backgroundColor: selectionMode ? '#F8F0FF' : '#fff', elevation: 0, shadowOpacity: 0, borderBottomWidth: 0 },
     });
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete, showSearch, activeRoomCode]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode]);
 
   return (
-    <View style={styles.container} {...panResponder.panHandlers}>
+    <View style={styles.container}>
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -557,26 +587,23 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           </View>
         </View>
       </Modal>
-      {showSearch && (
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8, paddingHorizontal: 12 }}>
-            <Icon name="search" size={20} color="#888" />
-            <TextInput
-              style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
-              placeholder="Search by name..."
-              placeholderTextColor="#888"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Icon name="close-circle" size={20} color="#888" />
-              </TouchableOpacity>
-            )}
-          </View>
+      <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8, paddingHorizontal: 12 }}>
+          <Icon name="search" size={20} color="#888" />
+          <TextInput
+            style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
+            placeholder="Search by name..."
+            placeholderTextColor="#888"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Icon name="close-circle" size={20} color="#888" />
+            </TouchableOpacity>
+          )}
         </View>
-      )}
-
+      </View>
 
       <FlatList
         ListHeaderComponent={
@@ -664,15 +691,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           }
           return true;
         })}
-        onScroll={(e) => {
-          const currentY = e.nativeEvent.contentOffset.y;
-          // Detect scroll down (swiping up on list)
-          if (currentY > 30 && currentY > lastScrollY.current) {
-             setSearchExpanded(false);
-          }
-          lastScrollY.current = currentY;
-        }}
-        scrollEventThrottle={16}
+  
+       
         renderItem={({ item }) => {
           const isSelected = selectedIds.includes(item.id);
           const userId = item.is_group ? null : item.other_user?.id;
@@ -764,6 +784,17 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         keyExtractor={(item) => item.id.toString()}
         extraData={conversations}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadConversations} tintColor={THEME_COLOR} />}
+        ListEmptyComponent={
+          !isLoading ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 220 }}>
+              <Icon name="chatbubble-ellipses-outline" size={44} color="#E0D0F5" />
+              <Text style={{ fontSize: 16, fontWeight: '400', color: '#c2c2c2', marginTop: 6 }}>
+                No conversations yet
+              </Text>
+              
+            </View>
+          ) : null
+        }
       />
       <Modal visible={previewData.visible} transparent={true} animationType="none">
         <TouchableOpacity 
@@ -783,9 +814,18 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </View>
         </TouchableOpacity>
       </Modal>
-      <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
-        <Icon name="person-add-outline" size={25} color="#FFF" />
-      </TouchableOpacity>
+      <View ref={fabRef} collapsable={false} style={styles.fabWrapper}>
+        <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
+          <Icon name="person-add-outline" size={25} color="#FFF" />
+        </TouchableOpacity>
+      </View>
+
+      {tourVisible && (
+        <OnboardingTour
+          targets={tourTargets}
+          onFinished={handleTourFinished}
+        />
+      )}
     </View>
   );
 };
@@ -829,7 +869,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  composeButton: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl, width: 60, height: 50,  borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10,  backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  fabWrapper: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl },
+  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+
   onlineDot: {
     position: 'absolute',
     right: 0,

@@ -152,7 +152,7 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
 
 const styles = StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 1000 },
-  container: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '60%', backgroundColor: '#111', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
+  container: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '60%', backgroundColor: '#000000', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   title: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#222', borderRadius: 12, paddingHorizontal: 12, height: 45, marginBottom: 15 },

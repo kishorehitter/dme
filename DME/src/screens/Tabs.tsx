@@ -324,6 +324,7 @@ export const StatusTabScreen = () => {
             </View>
           ) : (
             <View style={styles.empty}>
+              <Icon name="person-outline" size={38} color="#ddd" />
               <Text style={styles.emptyText}>No recent updates</Text>
             </View>
           )
@@ -602,7 +603,7 @@ export const CallLogTabScreen = () => {
             </View>
           ) : (
             <View style={styles.empty}>
-              <Icon name="call-outline" size={48} color="#ddd" />
+              <Icon name="call-outline" size={38} color="#ddd" />
               <Text style={styles.emptyText}>No call history</Text>
             </View>
           )
@@ -826,7 +827,7 @@ const styles = StyleSheet.create({
     flex:           1,
     alignItems:     'center',
     justifyContent: 'center',
-    paddingTop:     60,
+    paddingTop:     0,
   },
   centerLoading: {
     flex: 1,

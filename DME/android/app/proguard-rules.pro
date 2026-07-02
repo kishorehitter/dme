@@ -82,8 +82,8 @@
 # Vector Icons
 -keep class com.oblador.vectoricons.** { *; }
 
-# Keep models/serializers if you have any custom Java models
-# -keep class com.DME.models.** { *; }
+# Keep all custom native modules, packages, and MainActivity code
+-keep class com.DME.** { *; }
 
 # General safety
 -keepattributes EnclosingMethod

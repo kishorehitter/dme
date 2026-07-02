@@ -27,6 +27,7 @@ import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useAuth } from '../context/AuthContext';
 import { resolveImageUrl } from '../utils/image';
 import { MediaPickerModal } from '../components/MediaPickerModal';
+import { chatAPI } from '../services/api';
 import {
   StatusService,
   CallService,
@@ -176,11 +177,31 @@ export const StatusTabScreen = () => {
   const loadStatuses = useCallback(async () => {
     setRefreshing(true);
     try {
-      const all = await StatusService.getStatuses();
+      const [all, convs] = await Promise.all([
+        StatusService.getStatuses(),
+        chatAPI.getConversations(),
+      ]);
+
+      let conversationsArray: any[] = [];
+      if (Array.isArray(convs)) {
+        conversationsArray = convs;
+      } else if (convs?.results) {
+        conversationsArray = convs.results;
+      }
+
+      const conversationUserIds = new Set<number>();
+      conversationsArray.forEach(c => {
+        if (!c.is_group && c.other_user?.id) {
+          conversationUserIds.add(c.other_user.id);
+        }
+      });
+
       const mine   = all.filter(s => s.user_id === currentUser?.id);
-      const others = all.filter(s => s.user_id !== currentUser?.id);
+      const others = all.filter(s => s.user_id !== currentUser?.id && conversationUserIds.has(s.user_id));
       setMyStatuses(mine);
       setFriendGroups(StatusService.groupByUser(others));
+    } catch (err) {
+      console.error('[Tabs] Error loading statuses:', err);
     } finally {
       setRefreshing(false);
     }

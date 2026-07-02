@@ -35,7 +35,7 @@ async function compressAndTrimVideo(uri: string): Promise<string> {
     const { FFmpegKit, ReturnCode } = await import('ffmpeg-kit-react-native');
     const cleanPath = uri.replace('file://', '');
     const outPath    = `${RNFS.CachesDirectoryPath}/status_${Date.now()}.mp4`;
-    const cmd = `-i "${uri}" -t ${MAX_VIDEO_SECONDS} -vcodec libx264 -crf 28 -preset ultrafast -acodec aac -b:a 96k "${outPath}" -y`;
+    const cmd = `-i "${cleanPath}" -t ${MAX_VIDEO_SECONDS} -vcodec libx264 -crf 28 -preset ultrafast -acodec aac -b:a 96k "${outPath}" -y`;
     const session = await FFmpegKit.execute(cmd);
     const code = await session.getReturnCode();
     return ReturnCode.isSuccess(code) ? `file://${outPath}` : uri;
@@ -161,9 +161,34 @@ const StatusEditorScreen: React.FC = () => {
   const handleUpload = async () => {
     if (!mediaUri) return;
     setUploading(true);
+    setProcessing(true);
+    let finalUri = mediaUri;
+    let tempPathToCleanup: string | null = null;
+    let compressedPathToCleanup: string | null = null;
+
     try {
+      const RNFS = require('react-native-fs');
+      
+      // 1. Copy content:// URI to local cache directory to prevent SecurityException
+      if (finalUri.startsWith('content://')) {
+        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+        const tempPath = `${RNFS.CachesDirectoryPath}/status_temp_${Date.now()}.${ext}`;
+        await RNFS.copyFile(finalUri, tempPath);
+        finalUri = `file://${tempPath}`;
+        tempPathToCleanup = tempPath;
+      }
+
+      // 2. Compress and trim if it's a video
+      if (mediaType === 'video') {
+        const processedUri = await compressAndTrimVideo(finalUri);
+        if (processedUri !== finalUri) {
+          finalUri = processedUri;
+          compressedPathToCleanup = processedUri.replace('file://', '');
+        }
+      }
+
       await StatusService.saveStatus(
-        mediaUri, 
+        finalUri, 
         caption, 
         mediaType, 
         restrictedTo,
@@ -172,10 +197,27 @@ const StatusEditorScreen: React.FC = () => {
         scale.value,
         rotation.value
       );
+
       navigation.goBack();
     } catch (err: any) {
-      setUploading(false);
+      console.error('[StatusUpload] failed:', err);
       Toast.show({ type: 'error', text1: 'Upload failed' });
+    } finally {
+      // Cleanup temporary files
+      if (tempPathToCleanup) {
+        try {
+          const RNFS = require('react-native-fs');
+          await RNFS.unlink(tempPathToCleanup);
+        } catch {}
+      }
+      if (compressedPathToCleanup) {
+        try {
+          const RNFS = require('react-native-fs');
+          await RNFS.unlink(compressedPathToCleanup);
+        } catch {}
+      }
+      setUploading(false);
+      setProcessing(false);
     }
   };
 
@@ -208,11 +250,11 @@ const StatusEditorScreen: React.FC = () => {
           onChangeText={setCaption}
         />
         <TouchableOpacity 
-          style={[s.sendBtn, uploading && { opacity: 0.7 }]} 
+          style={[s.sendBtn, (uploading || processing) && { opacity: 0.7 }]} 
           onPress={handleUpload}
-          disabled={uploading}
+          disabled={uploading || processing}
         >
-          {uploading ? (
+          {uploading || processing ? (
             <ActivityIndicator color="#8100D1" size="small" />
           ) : (
             <Icon name="send" size={26} color="#8100D1" />

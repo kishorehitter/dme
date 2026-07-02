@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Platform,
+  Keyboard,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
@@ -33,6 +34,30 @@ const ChatInputArea = memo(({
     const prevInputText = useRef(inputText);
     const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
     const [localClearKey, setLocalClearKey] = useState(0);
+    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+    const isTypingRef = useRef(false);
+
+    const handleTypingInternal = useCallback((text: string) => {
+      isTypingRef.current = true;
+      handleTyping?.(text);
+    }, [handleTyping]);
+
+    useEffect(() => {
+      const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+      const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+      const showSubscription = Keyboard.addListener(showEvent, () => {
+        setKeyboardVisible(true);
+      });
+      const hideSubscription = Keyboard.addListener(hideEvent, () => {
+        setKeyboardVisible(false);
+      });
+
+      return () => {
+        showSubscription.remove();
+        hideSubscription.remove();
+      };
+    }, []);
 
     // Register clear function with parent on mount
     useEffect(() => {
@@ -49,6 +74,11 @@ const ChatInputArea = memo(({
     }, [inputClearKey]);
 
     useEffect(() => {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        prevInputText.current = inputText;
+        return;
+      }
       // Edit mode: parent pushed text into field
       if (inputText !== '' && prevInputText.current === '') {
         inputRef.current?.setText(inputText);
@@ -88,12 +118,14 @@ const ChatInputArea = memo(({
               >
                 <Icon name="add-outline" size={22} color="#666" />
               </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.attachmentButton}
-                onPress={handleCameraCapture}
-              >
-                <Icon name="camera" size={24} color="#666" />
-              </TouchableOpacity>
+              {!isKeyboardVisible && (
+                <TouchableOpacity
+                  style={styles.attachmentButton}
+                  onPress={handleCameraCapture}
+                >
+                  <Icon name="camera" size={24} color="#666" />
+                </TouchableOpacity>
+              )}
             </>
           )}
 
@@ -106,7 +138,7 @@ const ChatInputArea = memo(({
               placeholder={placeholder}
               placeholderTextColor="#999"
               autoFocus={localClearKey > 0}            
-              onChangeText={handleTyping}  // ✅ direct, no wrapper
+              onChangeText={handleTypingInternal}
               onContentSizeChange={handleContentSizeChange}
               multiline
               maxLength={2000}
@@ -114,21 +146,23 @@ const ChatInputArea = memo(({
             />
           )}
 
-          <Animated.View
-            style={[
-              styles.micButton,
-              isRecording && styles.micButtonRecording,
-              { transform: [{ scale: isRecording ? 1 : micButtonScale }] },
-            ]}
-            {...micPanResponder.panHandlers}
-            collapsable={false}
-          >
-            <Icon
-              name="mic"
-              size={22}
-              color={isRecording ? '#FFF' : '#666'}
-            />
-          </Animated.View>
+          {!isKeyboardVisible && (
+            <Animated.View
+              style={[
+                styles.micButton,
+                isRecording && styles.micButtonRecording,
+                { transform: [{ scale: isRecording ? 1 : micButtonScale }] },
+              ]}
+              {...micPanResponder.panHandlers}
+              collapsable={false}
+            >
+              <Icon
+                name="mic"
+                size={22}
+                color={isRecording ? '#FFF' : '#666'}
+              />
+            </Animated.View>
+          )}
 
           {!isRecording && (
             <TouchableOpacity

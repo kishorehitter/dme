@@ -22,7 +22,7 @@ import {
   StatusBar, TextInput,
   Dimensions, Keyboard, Platform, ScrollView,
   KeyboardAvoidingView, Modal, BackHandler,
-  Animated, PanResponder, DeviceEventEmitter, AppState,
+  Animated, PanResponder, DeviceEventEmitter, AppState, Vibration,
 } from 'react-native';
 import DrivePlayer from '../components/DrivePlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
@@ -258,18 +258,6 @@ const VideoControls: React.FC<ControlsProps> = ({
         </TouchableOpacity>
       )}
 
-      {isEnded && (
-        <TouchableOpacity
-          style={[cv.centreBtn, { position: 'absolute', zIndex: 1000, opacity: 0 }]}
-          onPress={() => {}}
-          disabled={!canControl}
-        >
-          <View style={cv.centreBtnInner}>
-            <Icon name="refresh" size={32} color="#fff" />
-          </View>
-        </TouchableOpacity>
-      )}
-
       {isFullscreen ? (
         // ── FULLSCREEN: unchanged from the original behavior — entire
         // bar (track + time row) only appears on tap, governed by the
@@ -277,17 +265,11 @@ const VideoControls: React.FC<ControlsProps> = ({
         // where it has always sat (above the bottom, with its existing
         // padding) — not pinned to bottom:0.
         <View style={[cv.bottomBar, { paddingHorizontal: 0, paddingBottom: 0 }]}>
-          <View style={[cv.timeRow, { paddingHorizontal: 16, marginBottom: 8 }]}>
+          <View style={[cv.timeRow, { paddingHorizontal: 16, marginBottom: 20 }]}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
             <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {!canControl && (
-                <View style={cv.watchBadge}>
-                  <Icon name="eye-outline" size={11} color="rgba(255,255,255,0.5)" />
-                  <Text style={cv.watchText}>Watching</Text>
-                </View>
-              )}
               {canControl && (
-                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 8 }}>
                   <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
@@ -320,14 +302,8 @@ const VideoControls: React.FC<ControlsProps> = ({
           <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
             <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {!canControl && (
-                <View style={cv.watchBadge}>
-                  <Icon name="eye-outline" size={11} color="rgba(255,255,255,0.5)" />
-                  <Text style={cv.watchText}>Watching</Text>
-                </View>
-              )}
               {canControl && (
-                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 8 }}>
                   <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
@@ -392,17 +368,17 @@ const cv = StyleSheet.create({
   },
   bottomEdgeTrack: {
     width: '100%',
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(41, 41, 41, 0.67)',
     justifyContent: 'center',
   },
   timeRowFloating: {
     position: 'absolute',
     left: 2,
     right: 8,
-    bottom: 4, // slightly lower — closer to the always-visible progress track
+    bottom: 6, // slightly lower — closer to the always-visible progress track
   },
-  track:            { height: 2, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 1, justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#c4c4c4', borderRadius: 1 },
+  track:            { height: 2, backgroundColor: 'rgba(41, 41, 41, 0.67)', borderRadius: 1, justifyContent: 'center' },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#4d4d4d', borderRadius: 1 },
   knob:             { position: 'absolute', top: -2, marginLeft: -5, width: 6, height: 6, borderRadius: 6, backgroundColor: '#fff' },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
   timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
@@ -490,7 +466,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       clearTimeout(scrollTimeoutRef.current);
     }
     scrollTimeoutRef.current = setTimeout(() => {
-      chatListRef.current?.scrollToEnd({ animated });
+      chatListRef.current?.scrollToOffset({ offset: 0, animated });
     }, 150);
   }, []);
 
@@ -523,6 +499,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const handleTextChange = (text: string) => {
     setChatMessage(text);
     handleTyping(text);
+
+    const match = text.match(/(^|\s)@([a-zA-Z0-9_]*)$/);
+    if (match) {
+      setMentionListVisible(true);
+      setMentionFilter(match[2].toLowerCase());
+    } else {
+      setMentionListVisible(false);
+    }
+  };
+
+  const handleMentionSelect = (participantName: string) => {
+    const newText = chatMessage.replace(/(^|\s)@([a-zA-Z0-9_]*)$/, `$1@${participantName} `);
+    setChatMessage(newText);
+    setMentionListVisible(false);
+    richInputRef.current?.focus();
   };
 
   // State management
@@ -535,6 +526,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [playerState, setPlayerState] = useState<string>('unstarted');
+  const [mentionListVisible, setMentionListVisible] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
   const [chatMessage, setChatMessage] = useState('');
   const [inputClearKey, setInputClearKey] = useState(0);
   const [inputHeight, setInputHeight] = useState(40);
@@ -559,6 +552,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
+  const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
   // ✅ NEW: bumped by an explicit replay action to force the audio load
   // effect to re-run even when currentSong?.videoId is unchanged (replaying
   // the SAME video). Distinct from videoId itself so normal playback,
@@ -613,11 +607,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       };
       const res = await musicAPI.toggleLike(videoData);
       setIsLiked(res.liked);
-      Toast.show({
-        type: 'success',
-        text1: res.liked ? 'Added to Likes' : 'Removed from Likes',
-        position: 'bottom',
-      });
+
     } catch (e) {
       console.error('Error toggling like:', e);
     }
@@ -726,7 +716,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [fullscreen, setFullscreen] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
-  const [showRoomInfo, setShowRoomInfo] = useState(true);
+  const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
   const [roomScreenReady, setRoomScreenReady] = useState(false);
   const roomRevealedOnceRef = useRef(false);
@@ -735,30 +725,66 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     const showSub = Keyboard.addListener('keyboardDidShow', () => {
       setKeyboardVisible(true);
-      setShowRoomInfo(false);
+      scrollToBottom(true);
     });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardVisible(false);
-      setShowRoomInfo(true);
       if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
       lastTypingState.current = false;
       musicWebSocketService.sendTyping(false);
+      scrollToBottom(true);
     });
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, []);
+  }, [scrollToBottom]);
 
+
+  const handleRateVideo = (videoId: string, rating: number) => {
+    setVideoRatings(prev => {
+      const current = prev[videoId] || { total: 0, count: 0 };
+      const newTotal = current.total + rating - (current.myRating || 0);
+      const newCount = current.myRating ? current.count : current.count + 1;
+      return {
+        ...prev,
+        [videoId]: { total: newTotal, count: newCount, myRating: rating }
+      };
+    });
+  };
 
   const renderNpBar = () => {
     if (!currentSong) return null;
+
+    const ratingData = videoRatings[currentSong.videoId] || { total: 0, count: 0 };
+    const avgRating = ratingData.count > 0 ? (ratingData.total / ratingData.count).toFixed(1) : '-';
+    const myRating = ratingData.myRating || 0;
+
     return (
       <View style={s.npBar}>
         <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={s.npTitle} numberOfLines={1}>{currentSong.title}</Text>
-          <Text style={s.npChannel} numberOfLines={1}>{currentSong.channelTitle}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              {[1, 2, 3, 4, 5].map((star) => (
+                <TouchableOpacity 
+                  key={star} 
+                  onPress={() => handleRateVideo(currentSong.videoId, star)}
+                  style={{ paddingRight: 4 }}
+                >
+                  <Icon 
+                    name={star <= myRating ? 'star' : 'star-outline'} 
+                    size={14} 
+                    color="#ffffff" 
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, marginLeft: 6 }}>
+              {avgRating}/5.0
+            </Text>
+          </View>
         </View>
         <TouchableOpacity onPress={handleToggleLike} style={s.likeBtn}>
           <Icon 
@@ -817,6 +843,20 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     (global as any).keepMusicRoomAlive = false;
+    
+    // Force navigation bar to black instantly and after transition settles
+    pinNavBarColor('#000000');
+    const t1 = setTimeout(() => {
+      pinNavBarColor('#000000');
+    }, 200);
+    const t2 = setTimeout(() => {
+      pinNavBarColor('#000000');
+    }, 600);
+    
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, []);
 
   // Refs
@@ -1748,6 +1788,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
       if (msg.type === 'chat_message') {
+        if (msg.data.text && user?.display_name && msg.data.text.includes(`@${user.display_name}`)) {
+          Vibration.vibrate();
+        }
         setMessages(prev => [...prev, msg.data]);
         scrollToBottom(true);
       } else if (msg.type === 'typing') {
@@ -1824,6 +1867,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // panel — callers decide when (see call sites below).
   const fetchRelated = useCallback(async () => {
     setIsLoadingRelated(true);
+    setRelatedVideos([]);
     try {
       const queuedIds = new Set(roomStateQueueRef.current.map(q => q.song.videoId));
 
@@ -1930,12 +1974,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           passAux();
         } else {
           fetchRelated();
-          setTimeout(() => {
-            setPlayerState(curr => {
-              if (curr === 'ended') setShowRelated(true);
-              return curr;
-            });
-          }, 3000);
+          setShowRelated(true);
         }
       }
       return;
@@ -2121,6 +2160,8 @@ const sendChatMessage = () => {
     );
   }
 
+  const reversedMessages = [...messages].reverse();
+
   return (
     <View style={s.root}>
       <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
@@ -2133,7 +2174,7 @@ const sendChatMessage = () => {
           <View style={[StyleSheet.absoluteFill, { backgroundColor: '#0D0D0D' }]} />
         )}
         {/* Glassy dark overlay instead of flat black scrim */}
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(20,20,30,0.55)' }]} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.82)' }]} />
       </View>
 
       <KeyboardAvoidingView
@@ -2408,20 +2449,6 @@ const sendChatMessage = () => {
               isDrivePlayer={currentSong?.source === 'drive'}
             />
 
-            {/* Persistent Replay Button */}
-            {playerState === 'ended' && (
-              <TouchableOpacity
-                style={{ position: 'absolute', width: 100, height: 100, top: (VIDEO_HEIGHT / 2) - 50, left: (width / 2) - 50, zIndex: 1000 }}
-                onPress={async () => {
-                  if (currentSong) {
-                    await handleSelectSong(currentSong, true);
-                    playerRef.current?.seekTo(0, true);
-                    syncPlay(0);
-                  }
-                }}
-              />
-            )}
-
             {/* Ad overlay — only for YouTube, Drive has no ads. Pure black,
                 no thumbnail — a translucent thumbnail here was sitting on
                 top of the live (possibly already-playing) WebView frame
@@ -2469,7 +2496,7 @@ const sendChatMessage = () => {
                 </TouchableOpacity>
                 {isLoadingRelated && relatedVideos.length === 0 && (
                   <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }]}>
-                    <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
+                    <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" animating={true} />
                   </View>
                 )}
                 <RelatedVideosGrid
@@ -2492,41 +2519,39 @@ const sendChatMessage = () => {
             )}
           </View>
 
-          {!fullscreen && (
+          {!fullscreen && !isKeyboardVisible && (
             <View>
-              <TouchableOpacity style={s.toggleBtn} onPress={() => setShowRoomInfo(!showRoomInfo)}>
-                <Text style={s.toggleText}>{showRoomInfo ? 'Hide Room Info' : 'Show Info'}</Text>
-                <Icon name={showRoomInfo ? 'chevron-up' : 'chevron-down'} size={16} color="rgba(255,255,255,0.5)" />
-              </TouchableOpacity>
+              {renderNpBar()}
 
               {showRoomInfo && (
-                <>
-                  {renderNpBar()}
-
-                  <View style={s.participantsRow}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.participantsContent}>
-                      {participants.map(p => (
-                        <View key={p.user_id} style={s.participantItem}>
-                          <AvatarWithFallback 
-                            uri={p.avatar} 
-                            displayName={p.name} 
-                            sticker={p.avatar_sticker} 
-                            style={s.pAvatar} 
-                          />
-                          {p.is_dj && (
-                            <View style={{ position: 'absolute', top: -6, right: -4, zIndex: 10 }}>
-                              <Icon name="star" size={16} color="#ffffff" />
-                            </View>
-                          )}
-                        </View>
-                      ))}
-                      <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
-                        <Icon name="person-add-outline" size={16} color="#fdfdfd" />
-                      </TouchableOpacity>
-                    </ScrollView>
-                  </View>
-                </>
+                <View style={s.participantsRow}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.participantsContent}>
+                    {participants.map(p => (
+                      <View key={p.user_id} style={s.participantItem}>
+                        <AvatarWithFallback 
+                          uri={p.avatar} 
+                          displayName={p.name} 
+                          sticker={p.avatar_sticker} 
+                          style={s.pAvatar} 
+                        />
+                        {p.is_dj && (
+                          <View style={{ position: 'absolute', top: -6, right: -4, zIndex: 10 }}>
+                            <Icon name="star" size={16} color="#ffffff" />
+                          </View>
+                        )}
+                      </View>
+                    ))}
+                    <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
+                      <Icon name="person-add-outline" size={16} color="#fdfdfd" />
+                    </TouchableOpacity>
+                  </ScrollView>
+                </View>
               )}
+
+              <TouchableOpacity style={s.toggleBtn} onPress={() => setShowRoomInfo(!showRoomInfo)}>
+                <Text style={s.toggleText}>{showRoomInfo ? 'Hide Participants' : 'Show Participants'}</Text>
+                <Icon name={showRoomInfo ? 'chevron-up' : 'chevron-down'} size={14} color="rgba(255,255,255,0.5)" />
+              </TouchableOpacity>
             </View>
           )}
 
@@ -2536,26 +2561,47 @@ const sendChatMessage = () => {
                 <>
                   <FlatList
                     ref={chatListRef}
-                    data={messages}
-                    keyExtractor={(item, i) => item.id || i.toString()}
+                    data={reversedMessages}
+                    inverted
+                    keyExtractor={(item, i) => item.id?.toString() || i.toString()}
                     style={{ flex: 1 }}
-                    contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}
+                    contentContainerStyle={{ paddingHorizontal: 8, paddingTop: 0, paddingBottom: 10 }}
                     keyboardShouldPersistTaps="handled"
-                    onContentSizeChange={() => scrollToBottom(true)}
-                    onLayout={() => scrollToBottom(false)}
                     ListEmptyComponent={<Text style={s.emptyText}>No messages yet. Say hi! 👋</Text>}
                     renderItem={({ item, index }) => {
-                      if (item.message_type === 'system') {
-                        return (
-                          <View style={s.systemMsgContainer}>
-                            <Text style={s.systemMsgText}>{item.text}</Text>
-                          </View>
-                        );
-                      }
-                      const isMe = item.user === (user?.display_name || user?.email);
-                      const prevMsg = index > 0 ? messages[index - 1] : null;
-                      const showAvatar = !prevMsg || prevMsg.message_type === 'system' || prevMsg.user !== item.user;
-                      const sender = participants.find(p => p.name === item.user);
+                      const myName = user?.display_name || user?.email || '';
+                      
+                      const getParsedMessage = (msg: any) => {
+                        if (!msg) return { msgUser: null, msgText: '' };
+                        let msgUser = msg.user;
+                        let msgText = msg.text;
+                        if (msg.message_type === 'system') {
+                          if (myName && msg.text.startsWith(myName)) {
+                            msgUser = myName;
+                            msgText = msg.text.replace(myName, 'You')
+                              .replace('You has ', 'You have ')
+                              .replace('You is ', 'You are ');
+                          } else {
+                            const pMatch = participants.find(p => msg.text.startsWith(p.name));
+                            if (pMatch) {
+                              msgUser = pMatch.name;
+                            } else if (msg.text.includes(' joined ') || msg.text.includes(' left ')) {
+                              msgUser = msg.text.split(' ')[0];
+                            } else {
+                              msgUser = 'System';
+                            }
+                          }
+                        }
+                        return { msgUser, msgText };
+                      };
+
+                      const { msgUser: messageUser, msgText: displayText } = getParsedMessage(item);
+                      const prevRawMsg = index < reversedMessages.length - 1 ? reversedMessages[index + 1] : null;
+                      const { msgUser: prevMessageUser } = getParsedMessage(prevRawMsg);
+
+                      const isMe = messageUser === myName;
+                      const showAvatar = !prevRawMsg || prevMessageUser !== messageUser;
+                      const sender = participants.find(p => p.name === messageUser);
                       const reactions = item.reactions ? Object.values(item.reactions) as string[] : [];
                       const isMedia = item.message_type === 'image' || item.message_type === 'gif' || item.message_type === 'sticker';
                       const isSticker = item.message_type === 'sticker';
@@ -2569,10 +2615,10 @@ const sendChatMessage = () => {
                             ]}>
                               {!isMe && (
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                  <View style={{ position: 'relative', marginRight: 8 }}>
+                                  <View style={{ position: 'relative', marginRight: 4 }}>
                                     <AvatarWithFallback 
                                       uri={sender?.avatar} 
-                                      displayName={item.user} 
+                                      displayName={messageUser} 
                                       sticker={sender?.avatar_sticker} 
                                       style={s.messageAvatar} 
                                     />
@@ -2586,10 +2632,10 @@ const sendChatMessage = () => {
                               )}
                               {isMe && (
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                  <View style={{ position: 'relative', marginLeft: 8 }}>
+                                  <View style={{ position: 'relative', marginLeft: 4 }}>
                                     <AvatarWithFallback 
                                       uri={user?.profile_picture}
-                                      displayName={item.user}
+                                      displayName={messageUser}
                                       style={s.messageAvatar} 
                                     />
                                   </View>
@@ -2597,48 +2643,85 @@ const sendChatMessage = () => {
                               )}
                             </View>
                           )}
-                          <TouchableOpacity onPress={(e) => handlePress(item, e)} onLongPress={() => handleMessageLongPress(item)} activeOpacity={1}>
-                            <View style={[
-                              s.msgContainer,
-                              isMe ? s.msgContainerMe : s.msgContainerThem,
-                              isMedia && s.mediaMsgContainer,
-                              isSticker && { backgroundColor: 'transparent' },
-                              !isMe && !showAvatar && { marginLeft: 32 },
-                            ]}>
-                              {item.reply_to && (
-                                <View style={s.replyBubble}>
-                                  <Text style={s.replyUser}>{item.reply_to.user}</Text>
-                                  <Text style={s.replyText} numberOfLines={1}>{item.reply_to.text}</Text>
-                                </View>
-                              )}
-                              {isMedia ? (
-                                <View style={{ position: 'relative' }}>
-                                  <ScaledImage
-                                    uri={resolveImageUrl(item.media_url)}
-                                    isAnimated={item.message_type === 'gif' || item.message_type === 'sticker'}
-                                    style={[
-                                      isSticker ? s.stickerImage : s.messageImage,
-                                      { backgroundColor: isSticker ? 'transparent' : 'rgba(255,255,255,0.05)' },
-                                    ]}
-                                    resizeMode="contain"
-                                  />
-                                  {item.message_type === 'image' &&
-                                    !item.media_url.toLowerCase().includes('sticker') &&
-                                    !item.media_url.toLowerCase().includes('gif') &&
-                                    !item.media_url.toLowerCase().includes('webp') && (
-                                    <View />
-                                  )}
-                                </View>
-                              ) : (
-                                <Text style={s.bubbleMsg}>{item.text}</Text>
-                              )}
-                              {reactions.filter(r => !!r).length > 0 && (
-                                <View style={[s.reactionContainer, isMe ? s.reactionContainerMe : s.reactionContainerThem]}>
-                                  <Text style={s.reactionEmoji}>{reactions.filter(r => !!r)[0]}</Text>
-                                </View>
-                              )}
-                            </View>
-                          </TouchableOpacity>
+                          <View style={{ flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+                            <TouchableOpacity onPress={(e) => handlePress(item, e)} onLongPress={() => handleMessageLongPress(item)} activeOpacity={1}>
+                              <View style={[
+                                s.msgContainer,
+                                isMe ? s.msgContainerMe : s.msgContainerThem,
+                                isMedia && s.mediaMsgContainer,
+                                isSticker && { backgroundColor: 'transparent' },
+                                !isMe && !showAvatar && { marginLeft: 36 },
+                                isMe && !showAvatar && { marginRight: 36 },
+                              ]}>
+                                {item.reply_to && (
+                                  <View style={[s.replyBubble, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minWidth: 120, paddingRight: 6 }]}>
+                                    <View style={{ flex: 1, marginRight: 8 }}>
+                                      <Text style={s.replyUser}>{item.reply_to.user === (user?.display_name || user?.email) ? 'You' : item.reply_to.user}</Text>
+                                      <Text style={s.replyText} numberOfLines={1}>
+                                        {item.reply_to.text && item.reply_to.text.trim() ? item.reply_to.text : 
+                                         (item.reply_to.message_type === 'image' ? '📷 Image' :
+                                          item.reply_to.message_type === 'gif' ? '👾 GIF' :
+                                          item.reply_to.message_type === 'sticker' ? '🖼️ Sticker' : '📁 Attachment')}
+                                      </Text>
+                                    </View>
+                                    {item.reply_to.media_url && (
+                                      <Image
+                                        source={{ uri: resolveImageUrl(item.reply_to.media_url) }}
+                                        style={{ width: 28, height: 28, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.05)' }}
+                                        resizeMode="cover"
+                                      />
+                                    )}
+                                  </View>
+                                )}
+                                {isMedia ? (
+                                  <View style={{ position: 'relative' }}>
+                                    <ScaledImage
+                                      uri={resolveImageUrl(item.media_url)}
+                                      isAnimated={item.message_type === 'gif' || item.message_type === 'sticker'}
+                                      style={[
+                                        isSticker ? s.stickerImage : s.messageImage,
+                                        { backgroundColor: isSticker ? 'transparent' : 'rgba(255,255,255,0.05)' },
+                                      ]}
+                                      resizeMode="contain"
+                                    />
+                                    {item.message_type === 'image' &&
+                                      !item.media_url.toLowerCase().includes('sticker') &&
+                                      !item.media_url.toLowerCase().includes('gif') &&
+                                      !item.media_url.toLowerCase().includes('webp') && (
+                                      <View />
+                                    )}
+                                  </View>
+                                ) : (
+                                  <Text style={s.bubbleMsg}>{displayText}</Text>
+                                )}
+                              </View>
+                            </TouchableOpacity>
+
+                            {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).length > 0 && (
+                              <View style={[
+                                s.reactionContainer,
+                                isMe ? s.reactionContainerMe : s.reactionContainerThem,
+                                !isMe && !showAvatar && { marginLeft: 36 },
+                                isMe && !showAvatar && { marginRight: 36 }
+                              ]}>
+                                {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).map(([reactorName, emoji], idx) => {
+                                  const reactor = participants.find(p => p.name === reactorName);
+                                  const isMyReaction = reactorName === myName;
+                                  const reactorPic = isMyReaction ? user?.profile_picture : reactor?.avatar;
+                                  return (
+                                    <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                      <AvatarWithFallback
+                                        uri={reactorPic}
+                                        displayName={reactorName}
+                                        style={{ width: 18, height: 18, borderRadius: 9 }}
+                                      />
+                                      <Text style={s.reactionEmoji}>{String(emoji)}</Text>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            )}
+                          </View>
                         </View>
                       );
                     }}
@@ -2653,20 +2736,75 @@ const sendChatMessage = () => {
                   )}
 
                   {replyingTo && (
-                    <View style={s.replyBar}>
-                      <View style={s.replyBarContent}>
-                        <Icon name="arrow-undo-outline" size={16} color="#8100D1" />
-                        <View style={{ flex: 1, marginLeft: 8 }}>
-                          <Text style={s.replyBarUser}>Replying to {replyingTo.user}</Text>
-                          <Text style={s.replyBarText} numberOfLines={1}>{replyingTo.text}</Text>
-                        </View>
-                        <TouchableOpacity onPress={() => setReplyingTo(null)}>
-                          <Icon name="close-circle" size={20} color="rgba(255,255,255,0.4)" />
-                        </TouchableOpacity>
+                    <>
+                      {/* Quick Reactions Row */}
+                      <View style={s.quickReactionsRow}>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.quickReactionsContent}>
+                          {['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏', '🎉', '💯', '💩', '👀', '✨', '🤔'].map(emoji => (
+                            <TouchableOpacity
+                              key={emoji}
+                              style={s.quickReactionBtn}
+                              onPress={() => {
+                                const myName = user?.display_name || user?.email;
+                                const currentReactions = replyingTo.reactions || {};
+                                const alreadyReacted = currentReactions[myName] === emoji;
+                                const emojiToSend = alreadyReacted ? '' : emoji;
+                                if (replyingTo.id) {
+                                  musicWebSocketService.sendReaction(replyingTo.id, emojiToSend);
+                                }
+                                setReplyingTo(null);
+                              }}
+                            >
+                              <Text style={s.quickReactionEmoji}>{emoji}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
                       </View>
-                    </View>
+
+                      {/* Reply Bar */}
+                      <View style={s.replyBar}>
+                        <View style={s.replyBarContent}>
+                          <Icon name="arrow-undo-outline" size={16} color="#ffffff" />
+                          <View style={{ flex: 1, marginLeft: 8 }}>
+                            <Text style={s.replyBarUser}>Replying to {replyingTo.user === (user?.display_name || user?.email) ? 'You' : replyingTo.user}</Text>
+                            <Text style={s.replyBarText} numberOfLines={1}>
+                              {replyingTo.text && replyingTo.text.trim() ? replyingTo.text : 
+                               (replyingTo.message_type === 'image' ? '📷 Image' :
+                                replyingTo.message_type === 'gif' ? '👾 GIF' :
+                                replyingTo.message_type === 'sticker' ? '🖼️ Sticker' : '📁 Attachment')}
+                            </Text>
+                          </View>
+                          {replyingTo.media_url && (
+                            <Image
+                              source={{ uri: resolveImageUrl(replyingTo.media_url) }}
+                              style={{ width: 36, height: 36, borderRadius: 4, marginRight: 8, backgroundColor: 'rgba(255,255,255,0.1)' }}
+                              resizeMode="cover"
+                            />
+                          )}
+                          <TouchableOpacity onPress={() => setReplyingTo(null)}>
+                            <Icon name="close-circle" size={20} color="rgba(255,255,255,0.4)" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </>
                   )}
 
+                  {mentionListVisible && (
+                    <View style={s.mentionListContainer}>
+                      <FlatList
+                        data={participants.filter(p => p.name !== user?.display_name && p.name.toLowerCase().includes(mentionFilter))}
+                        keyExtractor={p => p.id.toString()}
+                        keyboardShouldPersistTaps="always"
+                        renderItem={({ item }) => (
+                          <TouchableOpacity style={s.mentionItem} onPress={() => handleMentionSelect(item.name)}>
+                            <AvatarWithFallback uri={item.avatar} displayName={item.name} style={{ width: 24, height: 24, borderRadius: 12 }} />
+                            <Text style={s.mentionName}>{item.name}</Text>
+                          </TouchableOpacity>
+                        )}
+                        style={{ maxHeight: 150 }}
+                      />
+                    </View>
+                  )}
                   <View style={s.chatBar}>
                     <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
                       <Icon name="add" size={24} color="#8100D1" />
@@ -2832,10 +2970,10 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 15 },
+  relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000', zIndex: 15 },
   relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
   root:              { flex: 1, backgroundColor: '#000' },
-  inner:             { flex: 1, backgroundColor: '#000' },
+  inner:             { flex: 1, backgroundColor: 'transparent' },
   loadingContainer:  { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   loadingText:       { color: '#fff', marginTop: 12 },
   header:            { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 10 },
@@ -2850,21 +2988,21 @@ const s = StyleSheet.create({
   dot:               { width: 6, height: 6, borderRadius: 3 },
   videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative' },
   videoWrapFullscreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 99 },
-  npBar:             { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#0D0D0D', borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  npBar:             { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 6, backgroundColor: 'transparent' },
   npThumb:           { width: 50, height: 28, borderRadius: 3 },
   npThumbEmpty:      { backgroundColor: '#1A1A1A', justifyContent: 'center', alignItems: 'center' },
   npTitle:           { color: '#fff', fontSize: 13, fontWeight: '700' },
   npChannel:         { color: 'rgba(255,255,255,0.4)', fontSize: 10, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.5 },
   likeBtn:           { padding: 4, marginLeft: 8 },
-  djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
+  djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 8, paddingVertical: 1, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
   djBadgeText:       { color: '#8100D1', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  participantsRow:   { backgroundColor: 'rgba(0,0,0,0.5)', borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.03)' },
-  participantsContent: { paddingHorizontal: 14, paddingVertical: 12, gap: 8 },
+  participantsRow:   { backgroundColor: 'transparent' },
+  participantsContent: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, gap: 6 },
   participantItem:   { position: 'relative' },
-  pAvatar:           { width: 38, height: 38, borderRadius: 19, borderWidth: 0.5, borderColor: '#ffffff', overflow: 'hidden' },
-  messageAvatar:     { width: 32, height: 32, borderRadius: 16, borderWidth: 0.5, borderColor: '#ffffff' },
+  pAvatar:           { width: 32, height: 32, borderRadius: 16, borderWidth: 0.5, borderColor: '#ffffff', overflow: 'hidden' },
+  messageAvatar:     { width: 30, height: 30, borderRadius: 15, borderWidth: 0.5, borderColor: '#ffffff' },
   djDot:             { position: 'absolute', bottom: 0, right: 0, width: 12, height: 12, borderRadius: 6, backgroundColor: '#8100D1', borderWidth: 1, borderColor: '#cc00ff' },
-  addAvatar:         { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgb(0, 0, 0)', borderWidth: 0.5, borderColor: '#ffffff', borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center' },
+  addAvatar:         { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   queueHeader:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,0,0,0.3)' },
   queueTitle:        { color: '#fff', fontSize: 14, fontWeight: '700' },
   queueCloseBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
@@ -2873,37 +3011,66 @@ const s = StyleSheet.create({
   bubble:            { marginBottom: 12, maxWidth: '85%', alignSelf: 'flex-start', position: 'relative', flexDirection: 'row', alignItems: 'flex-start' },
   bubbleMe:          { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
   bubbleUser:        { color: '#8100D1', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
-  msgContainer:      { paddingHorizontal: 8, paddingVertical: 8, paddingBottom: 10, borderRadius: 18, position: 'relative' },
+  msgContainer:      { paddingHorizontal: 12, paddingVertical: 8, paddingBottom: 10, borderRadius: 18, position: 'relative', backgroundColor: 'rgba(255, 255, 255, 0.05)' },
   msgContainerThem:  { borderTopLeftRadius: 4 },
   msgContainerMe:    { borderTopRightRadius: 4 },
   bubbleMsg:         { color: '#fff', fontSize: 13 },
-  replyBubble:       { padding: 4, borderRadius: 8, marginBottom: 2, borderLeftWidth: 3, borderLeftColor: '#8100D1' },
+  replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.06)' },
   replyUser:         { color: '#8100D1', fontSize: 10, fontWeight: '700' },
   replyText:         { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
   reactionContainer: { 
-    marginTop: 0,
+    marginTop: 2,
     alignSelf: 'flex-start',
-    padding: 2, 
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 10, 
     borderWidth: 1, 
     borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: '#000'
+    backgroundColor: '#000',
+    zIndex: 5
   },
   reactionContainerThem: { alignSelf: 'flex-start' },
   reactionContainerMe: { alignSelf: 'flex-end' },
-  reactionEmoji:     { fontSize: 12 },
-  replyBar:          { backgroundColor: '#111', borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.1)' },
+  reactionEmoji:     { fontSize: 16 },
+  replyBar:          { backgroundColor: 'transparent' },
   replyBarContent:   { flexDirection: 'row', alignItems: 'center', padding: 10 },
   replyBarUser:      { color: '#8100D1', fontSize: 12, fontWeight: '700' },
   replyBarText:      { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
+  quickReactionsRow: {
+    backgroundColor: 'transparent',
+    borderTopWidth: 0.5,
+    borderTopColor: 'rgba(255,255,255,0.07)',
+    paddingVertical: 6,
+  },
+  quickReactionsContent: {
+    paddingHorizontal: 12,
+    gap: 12,
+  },
+  quickReactionBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickReactionEmoji: {
+    fontSize: 16,
+  },
   doubleTapOverlay:  { ...StyleSheet.absoluteFillObject, zIndex: 9999, pointerEvents: 'none' },
   doubleTapReaction: { position: 'absolute', width: 50, height: 50, marginLeft: -25, marginTop: -25, justifyContent: 'center', alignItems: 'center' },
   doubleTapHeart:    { fontSize: 40, textAlign: 'center' },
-  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.07)', gap: 10, backgroundColor: '#000' },
+  mentionListContainer: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 12, borderTopRightRadius: 12, maxHeight: 150, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderBottomWidth: 0 },
+  mentionItem:       { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  mentionName:       { color: '#fff', fontSize: 14, marginLeft: 10, fontWeight: '500' },
+  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 8, borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.07)', gap: 4, backgroundColor: 'transparent' },
   chatInput:         { flex: 1, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 22, paddingHorizontal: 16, paddingVertical: Platform.OS === 'ios' ? 10 : 8, minHeight: 40, maxHeight: 150, color: '#fff', fontSize: 14, textAlignVertical: 'top' },
-  sendBtn:           { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(129,0,209,0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  sendBtn:           { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   plusBtn:           { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
-  mediaMsgContainer: { padding: 0, borderRadius: 12, overflow: 'hidden' },
+  mediaMsgContainer: { padding: 0, paddingHorizontal: 0, paddingVertical: 0, paddingBottom: 0, borderRadius: 12, overflow: 'hidden' },
   messageImage:      { width: width * 0.4, height: width * 0.3, borderRadius: 12 },
   stickerImage:      { width: width * 0.22, height: width * 0.22 },
   qRow:              { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.05)' },
@@ -2927,9 +3094,9 @@ const s = StyleSheet.create({
   syncText:          { marginTop: 20, color: '#8100D1', fontSize: 15, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   coverOverlay:      { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', zIndex: 5 },
   coverContent:      { alignItems: 'center', gap: 15 },
-  coverText:         { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '600' },
-  toggleBtn:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.5)', gap: 5 },
-  toggleText:        { color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: '600' },
+  coverText:         { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '500' },
+  toggleBtn:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent', gap: 4, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  toggleText:        { color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: '600' },
   systemMsgContainer: { alignSelf: 'center', marginVertical: 8, backgroundColor: 'rgba(255,255,255,0.05)', paddingHorizontal: 16, paddingVertical: 4, borderRadius: 12 },
   systemMsgText:     { color: 'rgba(255,255,255,0.4)', fontSize: 11, fontStyle: 'italic' },
   typingContainer:    { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: 'transparent' },

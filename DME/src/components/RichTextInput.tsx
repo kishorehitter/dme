@@ -36,13 +36,26 @@ const NativeRichTextInput = requireNativeComponent<any>('RichTextInput');
 const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
   const { onTextChange, onChangeText, onContentSizeChange, text, ...rest } = props;
   const nativeRef = useRef<any>(null);
-
   useImperativeHandle(ref, () => ({
     clear: () => {
-      nativeRef.current?.setNativeProps({ text: '' });
+      const handle = findNodeHandle(nativeRef.current);
+      if (handle) {
+        UIManager.dispatchViewManagerCommand(
+          handle,
+          UIManager.getViewManagerConfig('RichTextInput')?.Commands?.clear ?? 1,
+          []
+        );
+      }
     },
     setText: (newText: string) => {
-      nativeRef.current?.setNativeProps({ text: newText });
+      const handle = findNodeHandle(nativeRef.current);
+      if (handle) {
+        UIManager.dispatchViewManagerCommand(
+          handle,
+          UIManager.getViewManagerConfig('RichTextInput')?.Commands?.setText ?? 2,
+          [newText]
+        );
+      }
     },
   }));
 

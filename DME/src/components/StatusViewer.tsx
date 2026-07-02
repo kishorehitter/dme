@@ -385,7 +385,7 @@ const StatusViewerScreen: React.FC = () => {
       style={s.container}
       {...panResponder.panHandlers}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#000000" translucent={false} />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
 
       {/* ── Media ── */}
       {isVideo ? (

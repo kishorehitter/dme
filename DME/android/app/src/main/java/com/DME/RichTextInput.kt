@@ -37,9 +37,6 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
                 event.putString("text", s.toString())
                 (context as ReactContext).getJSModule(RCTEventEmitter::class.java)
                     .receiveEvent(id, "topTextChange", event)
-                
-                // Trigger layout refresh so parent can grow
-                requestLayout()
             }
             override fun afterTextChanged(s: Editable?) {}
         })

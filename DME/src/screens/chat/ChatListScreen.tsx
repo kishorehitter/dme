@@ -152,7 +152,7 @@ const renderLastMessage = (lastMessage: Conversation['last_message']) => {
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
-  const [activeTab, setActiveTab] = useState<'all' | 'groups'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'chats' | 'groups'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -322,8 +322,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       if (Array.isArray(convs)) conversationsArray = convs;
       else if (convs?.results) conversationsArray = convs.results;
       conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
+      const directUserIds = new Set(
+        conversationsArray
+          .filter(c => !c.is_group && c.other_user?.id)
+          .map(c => c.other_user!.id)
+      );
       setConversations(conversationsArray);
-      setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id)));
+      setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id && directUserIds.has(s.user_id))));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -588,43 +593,47 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         </View>
       </Modal>
       <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8, paddingHorizontal: 12 }}>
-          <Icon name="search" size={20} color="#888" />
-          <TextInput
-            style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
-            placeholder="Search by name..."
-            placeholderTextColor="#888"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Icon name="close-circle" size={20} color="#888" />
-            </TouchableOpacity>
-          )}
-        </View>
+        <LinearGradient
+          colors={['#FF007F', '#7F00FF']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ padding: 1.5, borderRadius: 24 }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 22.5, paddingHorizontal: 12 }}>
+            <Icon name="search" size={20} color="#888" />
+            <TextInput
+              style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
+              placeholder="Search by name..."
+              placeholderTextColor="#888"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Icon name="close-circle" size={20} color="#888" />
+              </TouchableOpacity>
+            )}
+          </View>
+        </LinearGradient>
       </View>
 
       <FlatList
         ListHeaderComponent={
           <View style={[styles.tabContainer, { backgroundColor: '#fff', paddingBottom: 8 }]}>
+            {/* All Tab */}
             {activeTab === 'all' ? (
-              <TouchableOpacity style={{ flex: 1, marginHorizontal: 4 }} onPress={() => setActiveTab('all')}>
-                <LinearGradient
-                  colors={['#FF007F', '#7F00FF']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ padding: 1.5, borderRadius: borderRadius.lg || 8 }}
-                >
-                  <View style={{
-                    backgroundColor: '#FFFFFF',
-                    paddingVertical: (spacing.sm || 8) - 1.5,
-                    alignItems: 'center',
-                    borderRadius: (borderRadius.lg || 8) - 1.5,
-                  }}>
-                    <Text style={[styles.tabText, styles.activeTabText]}>Chats</Text>
-                  </View>
-                </LinearGradient>
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    backgroundColor: '#E0E0E0', 
+                    marginHorizontal: 4,
+                    paddingVertical: spacing.sm || 8,
+                  }
+                ]} 
+                onPress={() => setActiveTab('all')}
+              >
+                <Text style={[styles.tabText, styles.activeTabText]}>All</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -639,27 +648,56 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 ]} 
                 onPress={() => setActiveTab('all')}
               >
+                <Text style={styles.tabText}>All</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Chats Tab */}
+            {activeTab === 'chats' ? (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    backgroundColor: '#E0E0E0', 
+                    marginHorizontal: 4,
+                    paddingVertical: spacing.sm || 8,
+                  }
+                ]} 
+                onPress={() => setActiveTab('chats')}
+              >
+                <Text style={[styles.tabText, styles.activeTabText]}>Chats</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    borderWidth: 1, 
+                    borderColor: '#CCCCCC', 
+                    marginHorizontal: 4,
+                    paddingVertical: (spacing.sm || 8) - 1,
+                  }
+                ]} 
+                onPress={() => setActiveTab('chats')}
+              >
                 <Text style={styles.tabText}>Chats</Text>
               </TouchableOpacity>
             )}
 
+            {/* Groups Tab */}
             {activeTab === 'groups' ? (
-              <TouchableOpacity style={{ flex: 1, marginHorizontal: 4 }} onPress={() => setActiveTab('groups')}>
-                <LinearGradient
-                  colors={['#FF007F', '#7F00FF']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ padding: 1.5, borderRadius: borderRadius.lg || 8 }}
-                >
-                  <View style={{
-                    backgroundColor: '#FFFFFF',
-                    paddingVertical: (spacing.sm || 8) - 1.5,
-                    alignItems: 'center',
-                    borderRadius: (borderRadius.lg || 8) - 1.5,
-                  }}>
-                    <Text style={[styles.tabText, styles.activeTabText]}>Groups</Text>
-                  </View>
-                </LinearGradient>
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    backgroundColor: '#E0E0E0', 
+                    marginHorizontal: 4,
+                    paddingVertical: spacing.sm || 8,
+                  }
+                ]} 
+                onPress={() => setActiveTab('groups')}
+              >
+                <Text style={[styles.tabText, styles.activeTabText]}>Groups</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -680,7 +718,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           </View>
         }
         data={conversations.filter(c => {
-          const matchesTab = activeTab === 'all' || c.is_group;
+          let matchesTab = true;
+          if (activeTab === 'chats') {
+            matchesTab = !c.is_group;
+          } else if (activeTab === 'groups') {
+            matchesTab = c.is_group;
+          }
           if (!matchesTab) return false;
           
           if (searchQuery.trim()) {
@@ -842,8 +885,8 @@ const styles = StyleSheet.create({
   content: { flex: 1, justifyContent: 'center', marginLeft: spacing.md },
   name: { fontSize: fontSize.lg, fontWeight: '600', color: '#000' },
   lastMessage: { fontSize: fontSize.md, color: '#666' },
-  tabContainer: { flexDirection: 'row', padding: spacing.sm },
-  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
+  tabContainer: { flexDirection: 'row', padding: spacing.sm, justifyContent: 'space-evenly' },
+  tabButton: { width: 90, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
   activeTabText: { color: THEME_COLOR, fontWeight: '700' },

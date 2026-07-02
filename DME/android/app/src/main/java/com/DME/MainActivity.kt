@@ -17,6 +17,15 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(null)
     WindowCompat.setDecorFitsSystemWindows(window, true)
+    
+    // Listen for layout changes to prevent the OS/GBoard from resetting the pinned navbar color back to white on keyboard dismiss
+    window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+      pinnedNavBarColor?.let { color ->
+        if (window.navigationBarColor != color) {
+          window.navigationBarColor = color
+        }
+      }
+    }
   }
 
   companion object {

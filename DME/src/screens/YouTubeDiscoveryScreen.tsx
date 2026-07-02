@@ -9,7 +9,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import {
   View, StyleSheet, TouchableOpacity,
   StatusBar, Text, DeviceEventEmitter,
-  TextInput, Keyboard, KeyboardAvoidingView,
+  TextInput, Keyboard, BackHandler,
   Platform, Dimensions, Image, FlatList, ActivityIndicator,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
@@ -18,6 +18,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { musicAPI } from '../services/api';
 import Toast from 'react-native-toast-message';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 const { width } = Dimensions.get('window');
 
@@ -52,6 +53,17 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [isYtSearching, setIsYtSearching] = useState(false);
 
   const isNavigating = useRef(false);
+
+  useEffect(() => {
+    if (!showOverlay) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      Keyboard.dismiss();
+      setShowOverlay(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [showOverlay]);
+
 
   useEffect(() => {
     isNavigating.current = false;
@@ -210,10 +222,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    if (typeof navigation.setOptions === 'function') {
-      navigation.setOptions({ animationEnabled: false });
-    }
-    navigation.goBack();
     DeviceEventEmitter.emit('open_music_room', {
       roomCode: newRoomCode,
       isDJMode: true,
@@ -223,6 +231,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       initialTitle: finalTitle,
       initialThumbnail: initThumbnail,
     });
+
+    setTimeout(() => {
+      if (typeof navigation.setOptions === 'function') {
+        navigation.setOptions({ animationEnabled: false });
+      }
+      navigation.goBack();
+    }, 150);
 
   };
 
@@ -341,7 +356,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   return (
     <View style={styles.container}>
       <StatusBar 
-        barStyle={showOverlay && selectedVideoId ? "light-content" : "dark-content"} 
+        barStyle="dark-content" 
         backgroundColor="transparent" 
         translucent={true}
       />
@@ -623,25 +638,17 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         </View>
       </View>
 
-      {/* Selection Overlay */}
       {showOverlay && selectedVideoId && (
-        <View style={styles.fullscreenOverlay}>
-          <Image
-            source={{ uri: overlayThumb }}
-            style={StyleSheet.absoluteFill}
-            blurRadius={20}
-          />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.75)' }]} />
-
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.overlayInner}
-          >
+        <View style={[styles.fullscreenOverlay, { backgroundColor: '#EBEBEB' }]}>
+          <View style={styles.overlayInner}>
             <TouchableOpacity
               style={styles.closeOverlay}
-              onPress={() => setShowOverlay(false)}
+              onPress={() => {
+                Keyboard.dismiss();
+                setShowOverlay(false);
+              }}
             >
-              <Icon name="close" size={28} color="#fff" />
+              <Icon name="close" size={28} color="#000" />
             </TouchableOpacity>
 
             {/* Flow 1 — Start new party */}
@@ -651,7 +658,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 <TextInput
                   style={styles.namingInput}
                   placeholder="e.g. Fun Time..."
-                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  placeholderTextColor="rgba(0,0,0,0.4)"
                   value={roomName}
                   onChangeText={setRoomName}
                   maxLength={25}
@@ -694,7 +701,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             )}
 
             {!isFlow2 && <View style={styles.bottomSpacer} />}
-          </KeyboardAvoidingView>
+          </View>
         </View>
       )}
     </View>
@@ -736,14 +743,14 @@ const styles = StyleSheet.create({
   overlayInner:      { flex: 1, justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 40 },
   closeOverlay:      { position: 'absolute', top: 50, right: 20, padding: 10 },
   topSection:        { width: '100%', alignItems: 'center' },
-  namingTitle:       { color: '#fff', fontSize: 24, fontWeight: '800', marginBottom: 20 },
-  namingInput:       { width: '100%', height: 60, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 15, paddingHorizontal: 20, color: '#fff', fontSize: 18, textAlign: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  namingTitle:       { color: '#000', fontSize: 24, fontWeight: '800', marginBottom: 20 },
+  namingInput:       { width: '100%', height: 44, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: 15, paddingHorizontal: 20, color: '#000', fontSize: 16, textAlign: 'center', borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' },
   submitBtn:         { marginTop: 20, backgroundColor: '#8100D1', paddingHorizontal: 30, paddingVertical: 12, borderRadius: 25 },
   submitBtnDisabled: { opacity: 0.5 },
   submitBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
   centerSection:     { alignItems: 'center', gap: 15 },
-  videoSelectedText: { color: '#4ade80', fontSize: 20, fontWeight: '800' },
-  videoSourceText:   { color: 'rgba(255,255,255,0.6)', fontSize: 13, fontWeight: '600' },
+  videoSelectedText: { color: '#16a34a', fontSize: 20, fontWeight: '800' },
+  videoSourceText:   { color: 'rgba(0,0,0,0.6)', fontSize: 13, fontWeight: '600' },
   bottomSection:     { width: '100%', alignItems: 'center', paddingBottom: 40 },
   actionBtn:         { flexDirection: 'row', backgroundColor: '#8100D1', paddingHorizontal: 24, paddingVertical: 14, borderRadius: 25, alignItems: 'center' },
   actionBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },

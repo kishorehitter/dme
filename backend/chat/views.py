@@ -996,32 +996,45 @@ class MessageReactionView(APIView):
             return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
+EDIT_WINDOW_MINUTES = 15          # How long a message can be edited after sending
+UNSEND_WINDOW_HOURS = 24          # How long a sender can unsend (delete for everyone)
+
+
 class MessageEditView(APIView):
-    """Edit a message (sender only)."""
+    """Edit a message (sender only, within 15 minutes of sending)."""
     permission_classes = [permissions.IsAuthenticated]
 
     def put(self, request, message_id):
         try:
             message = Message.objects.get(pk=message_id)
-            
+
             # Only sender can edit
             if message.sender != request.user:
                 return Response(
                     {'error': 'Only sender can edit message'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
+            # Enforce 15-minute edit window
+            from datetime import timedelta
+            age = timezone.now() - message.created_at
+            if age > timedelta(minutes=EDIT_WINDOW_MINUTES):
+                return Response(
+                    {'error': 'This message can no longer be edited. Messages can only be edited within 15 minutes of being sent.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             new_content = request.data.get('content')
             if not new_content:
                 return Response(
                     {'error': 'Content is required'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             message.content = new_content
             message.edited_at = timezone.now()
             message.save()
-            
+
             serializer = MessageSerializer(message)
             return Response(serializer.data)
         except Message.DoesNotExist:
@@ -1053,19 +1066,28 @@ class MessageDeleteView(APIView):
                 )
             
             if is_sender:
+                # Enforce 24-hour unsend window for senders
+                from datetime import timedelta
+                age = timezone.now() - message.created_at
+                if age > timedelta(hours=UNSEND_WINDOW_HOURS):
+                    return Response(
+                        {'error': 'This message can no longer be unsent. Messages can only be unsent within 24 hours of being sent.'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
                 # If message has media, delete from Cloudinary
                 if message.media_file:
                     try:
                         # Path: v1779254828/chat_media/1000087081.jpg
                         path = message.media_file.name
-                        
+
                         # 1. Remove the version prefix if present (e.g., 'v12345/')
                         import re
                         clean_path = re.sub(r'^v\d+/', '', path)
-                        
+
                         # 2. Remove extension
                         public_id = clean_path.rsplit('.', 1)[0]
-                        
+
                         print(f"DEBUG: Attempting to delete from Cloudinary. Original: {path}, Clean: {clean_path}, Public ID: {public_id}")
                         result = cloudinary.uploader.destroy(public_id, invalidate=True)
                         print(f"DEBUG: Cloudinary deletion result: {result}")
@@ -1079,8 +1101,7 @@ class MessageDeleteView(APIView):
                 message.save()
                 return Response({'message': 'Message unsent for everyone'})
             else:
-                # Receiver can only delete for themselves (soft delete)
-                # For now, mark as deleted
+                # Receiver deletes for themselves only (soft delete)
                 message.is_deleted = True
                 message.save()
                 return Response({'message': 'Message deleted for you'})

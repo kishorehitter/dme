@@ -32,6 +32,7 @@ interface Props {
   onSend: (uri: string, mimeType: string, caption: string, isSticker?: boolean) => void;
   /** Nav bar color to restore on close. Defaults to '#FFFFFF' (light screens). */
   restoreNavBarColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 const TEXT_COLORS = ['#ffffff', '#000000', '#ff3b30', '#ffcc00', '#34c759', '#007aff', '#af52de'];
@@ -135,7 +136,24 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
 // ─────────────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
-const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onClose, onSend, restoreNavBarColor = '#FFFFFF' }) => {
+const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onClose, onSend, restoreNavBarColor = '#FFFFFF', theme = 'light' }) => {
+  const isDark = theme === 'dark';
+  const themeStyles = {
+    bottomSheet: { backgroundColor: isDark ? '#111' : '#fff' },
+    iconBtn: { backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' },
+    colorDotActive: { borderColor: isDark ? '#fff' : '#000' },
+    sizeBtn: { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' },
+    sizeBtnText: { color: isDark ? '#fff' : '#000' },
+    mediaContainer: { backgroundColor: isDark ? '#0d0d0d' : '#f5f5f5' },
+    hint: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.4)' },
+    bottomBar: { backgroundColor: isDark ? '#0d0d0d' : '#fff' },
+    textInput: {
+      backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+      color: isDark ? '#fff' : '#000',
+    },
+  };
+  const iconColor = isDark ? '#fff' : '#000';
+
   // 'view' | 'draw' | 'text'
   const [mode,       setMode]       = useState<'view' | 'text' | 'draw'>('view');
   const [textColor,  setTextColor]  = useState('#ffffff');
@@ -159,7 +177,11 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
 
   useEffect(() => {
     if (visible && Platform.OS === 'android') {
-      try { changeNavigationBarColor('#111111', false); } catch {}
+      try {
+        const barColor = theme === 'dark' ? '#111111' : '#ffffff';
+        const isLight = theme !== 'dark';
+        changeNavigationBarColor(barColor, isLight);
+      } catch {}
     }
     if (!visible) {
       if (Platform.OS === 'android') {
@@ -168,7 +190,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
       }
       resetState();
     }
-  }, [visible]);
+  }, [visible, theme, restoreNavBarColor]);
 
   // Resolve natural image dimensions as soon as mediaUri is known
   useEffect(() => {
@@ -344,7 +366,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
             <TouchableOpacity
               key={c}
               onPress={() => setTextColor(c)}
-              style={[ms.colorDot, { backgroundColor: c }, textColor === c && ms.colorDotActive]}
+              style={[ms.colorDot, { backgroundColor: c }, textColor === c && [ms.colorDotActive, themeStyles.colorDotActive]]}
             />
           ))}
         </ScrollView>
@@ -362,9 +384,9 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
             <TouchableOpacity
               key={s}
               onPress={() => setFontSize(s)}
-              style={[ms.sizeBtn, fontSize === s && ms.sizeBtnActive]}
+              style={[ms.sizeBtn, themeStyles.sizeBtn, fontSize === s && ms.sizeBtnActive]}
             >
-              <Text style={[ms.sizeBtnText, { fontSize: 9 + (s - 16) / 4 }]}>A</Text>
+              <Text style={[ms.sizeBtnText, themeStyles.sizeBtnText, { fontSize: 9 + (s - 16) / 4 }, fontSize === s && { color: '#fff' }]}>A</Text>
             </TouchableOpacity>
           ))}
           {/* Color row below font sizes — stacked inside middle slot */}
@@ -372,7 +394,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
             <TouchableOpacity
               key={`col-${c}`}
               onPress={() => setTextColor(c)}
-              style={[ms.colorDot, { backgroundColor: c, marginLeft: 4 }, textColor === c && ms.colorDotActive]}
+              style={[ms.colorDot, { backgroundColor: c, marginLeft: 4 }, textColor === c && [ms.colorDotActive, themeStyles.colorDotActive]]}
             />
           ))}
         </ScrollView>
@@ -387,15 +409,15 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
       <GestureHandlerRootView style={{ flex: 1 }}>
         <View style={ms.backdrop}>
           <TouchableOpacity style={StyleSheet.absoluteFill} onPress={handleClose} />
-          <View style={ms.bottomSheet}>
+          <View style={[ms.bottomSheet, themeStyles.bottomSheet]}>
 
             {/* ══════════════════════════════════════════
                 HEADER — close | [middle slot] | sketch text undo
             ══════════════════════════════════════════ */}
             <View style={ms.topBar}>
               {/* Close */}
-              <TouchableOpacity onPress={handleClose} style={ms.iconBtn}>
-                <Icon name="close" size={22} color="#fff" />
+              <TouchableOpacity onPress={handleClose} style={[ms.iconBtn, themeStyles.iconBtn]}>
+                <Icon name="close" size={22} color={iconColor} />
               </TouchableOpacity>
 
               {/* Middle slot — fills all available space */}
@@ -404,19 +426,19 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
               {/* Right cluster: sketch · text · undo */}
               <View style={ms.rightCluster}>
                 <TouchableOpacity
-                  style={[ms.iconBtn, mode === 'draw' && ms.activeIconBtn]}
+                  style={[ms.iconBtn, themeStyles.iconBtn, mode === 'draw' && ms.activeIconBtn]}
                   onPress={toggleDraw}
                 >
-                  <Icon name="brush-outline" size={18} color="#fff" />
+                  <Icon name="brush-outline" size={18} color={mode === 'draw' ? '#fff' : iconColor} />
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[ms.iconBtn, mode === 'text' && ms.activeIconBtn]}
+                  style={[ms.iconBtn, themeStyles.iconBtn, mode === 'text' && ms.activeIconBtn]}
                   onPress={toggleText}
                 >
-                  <Icon name="text" size={17} color="#fff" />
+                  <Icon name="text" size={17} color={mode === 'text' ? '#fff' : iconColor} />
                 </TouchableOpacity>
-                <TouchableOpacity style={ms.iconBtn} onPress={handleUndo}>
-                  <Icon name="arrow-undo" size={18} color="#fff" />
+                <TouchableOpacity style={[ms.iconBtn, themeStyles.iconBtn]} onPress={handleUndo}>
+                  <Icon name="arrow-undo" size={18} color={iconColor} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -425,7 +447,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
                 MEDIA AREA — fixed, never resizes
             ══════════════════════════════════════════ */}
             <View
-              style={ms.mediaContainer}
+              style={[ms.mediaContainer, themeStyles.mediaContainer]}
               onLayout={e => {
                 const { width: w, height: h } = e.nativeEvent.layout;
                 setContainerSize({ width: w, height: h });
@@ -480,7 +502,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
               )}
 
               {overlays.length > 0 && mode === 'view' && (
-                <Text style={ms.hint}>Drag • Pinch • Rotate  |  Long-press to remove</Text>
+                <Text style={[ms.hint, themeStyles.hint]}>Drag • Pinch • Rotate  |  Long-press to remove</Text>
               )}
             </View>
 
@@ -489,18 +511,18 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
                 — text mode:  [  Type here...  ] [Done]
                 — otherwise:  [        Send        ]
             ══════════════════════════════════════════ */}
-            <View style={ms.bottomBar}>
+            <View style={[ms.bottomBar, themeStyles.bottomBar]}>
               {mode === 'text' ? (
                 <View style={ms.textInputRow}>
                   <TextInput
                     ref={inputRef}
-                    style={ms.textInput}
+                    style={[ms.textInput, themeStyles.textInput]}
                     value={draftText}
                     onChangeText={setDraftText}
                     autoFocus
                     multiline={false}
                     placeholder="Type here..."
-                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    placeholderTextColor={isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)'}
                     textAlign="left"
                     underlineColorAndroid="transparent"
                     returnKeyType="done"
@@ -543,7 +565,7 @@ const ms = StyleSheet.create({
   backdrop:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
   bottomSheet:  {
     height: height * 0.62,
-    backgroundColor: '#111',
+    backgroundColor: '#fff',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: 'hidden',
@@ -562,23 +584,23 @@ const ms = StyleSheet.create({
   },
   rightCluster: { flexDirection: 'row', gap: 6 },
 
-  iconBtn:       { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.12)', justifyContent: 'center', alignItems: 'center' },
+  iconBtn:       { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.06)', justifyContent: 'center', alignItems: 'center' },
   activeIconBtn: { backgroundColor: '#8100D1' },
 
   colorRow:    { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 8 },
   colorDot:    { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: 'transparent' },
-  colorDotActive: { borderColor: '#fff', transform: [{ scale: 1.15 }] },
+  colorDotActive: { borderColor: '#000', transform: [{ scale: 1.15 }] },
 
   fontSizeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 6 },
-  sizeBtn:     { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center' },
+  sizeBtn:     { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.06)', justifyContent: 'center', alignItems: 'center' },
   sizeBtnActive: { backgroundColor: '#8100D1' },
-  sizeBtnText: { color: '#fff', fontWeight: 'bold' },
+  sizeBtnText: { color: '#000', fontWeight: 'bold' },
 
   // ── Media ──
   mediaContainer: {
     flex: 1,
     width: '100%',
-    backgroundColor: '#0d0d0d',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -598,10 +620,10 @@ const ms = StyleSheet.create({
     minWidth: 40,
   },
 
-  hint: { position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', color: 'rgba(255,255,255,0.3)', fontSize: 10 },
+  hint: { position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', color: 'rgba(0,0,0,0.4)', fontSize: 10 },
 
   // ── Bottom bar ──
-  bottomBar: { paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#0d0d0d' },
+  bottomBar: { paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#fff' },
 
   // Send button
   sendBtn:     { flexDirection: 'row', height: 48, borderRadius: 24, backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
@@ -613,9 +635,9 @@ const ms = StyleSheet.create({
     flex: 1,
     height: 48,
     borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(0,0,0,0.06)',
     paddingHorizontal: 18,
-    color: '#fff',
+    color: '#000',
     fontSize: 16,
     fontWeight: '600',
   },

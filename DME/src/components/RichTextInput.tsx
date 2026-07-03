@@ -39,22 +39,22 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
   useImperativeHandle(ref, () => ({
     clear: () => {
       const handle = findNodeHandle(nativeRef.current);
-      if (handle) {
-        UIManager.dispatchViewManagerCommand(
-          handle,
-          UIManager.getViewManagerConfig('RichTextInput')?.Commands?.clear ?? 1,
-          []
-        );
+      if (handle != null) {
+        try {
+          UIManager.dispatchViewManagerCommand(handle, 'clear', []);
+        } catch (e) {
+          UIManager.updateView(handle, 'RichTextInput', { text: '' });
+        }
       }
     },
     setText: (newText: string) => {
       const handle = findNodeHandle(nativeRef.current);
-      if (handle) {
-        UIManager.dispatchViewManagerCommand(
-          handle,
-          UIManager.getViewManagerConfig('RichTextInput')?.Commands?.setText ?? 2,
-          [newText]
-        );
+      if (handle != null) {
+        try {
+          UIManager.dispatchViewManagerCommand(handle, 'setText', [newText]);
+        } catch (e) {
+          UIManager.updateView(handle, 'RichTextInput', { text: newText });
+        }
       }
     },
   }));
@@ -72,7 +72,6 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
     <NativeRichTextInput
       {...rest}
       ref={nativeRef}
-      // ✅ Don't pass text prop — uncontrolled, native handles its own state
       onTextChange={_onTextChange}
       onContentSizeChange={onContentSizeChange}
       onContentCommitted={_onContentCommitted}

@@ -756,43 +756,44 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const renderNpBar = () => {
     if (!currentSong) return null;
 
-    const ratingData = videoRatings[currentSong.videoId] || { total: 0, count: 0 };
-    const avgRating = ratingData.count > 0 ? (ratingData.total / ratingData.count).toFixed(1) : '-';
-    const myRating = ratingData.myRating || 0;
+    const pinnerName = currentSong.addedBy || 'Someone';
+    const pinner = participants.find(p => p.name === currentSong.addedBy) || user;
+    const likers = isLiked ? [user] : [];
 
     return (
       <View style={s.npBar}>
         <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={s.npTitle} numberOfLines={1}>{currentSong.title}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              {[1, 2, 3, 4, 5].map((star) => (
-                <TouchableOpacity 
-                  key={star} 
-                  onPress={() => handleRateVideo(currentSong.videoId, star)}
-                  style={{ paddingRight: 4 }}
-                >
-                  <Icon 
-                    name={star <= myRating ? 'star' : 'star-outline'} 
-                    size={14} 
-                    color="#ffffff" 
-                  />
-                </TouchableOpacity>
-              ))}
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 10 }}>
+            {/* Pinner Container */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 14 }}>
+              <AvatarWithFallback 
+                uri={pinner?.avatar || pinner?.profile_picture} 
+                displayName={pinnerName} 
+                style={{ width: 16, height: 16, borderRadius: 8, marginRight: 6 }} 
+              />
+              <Text style={{ fontSize: 12 }}>🎧</Text>
             </View>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, marginLeft: 6 }}>
-              {avgRating}/5.0
-            </Text>
+
+            {/* Likers Container */}
+            <TouchableOpacity 
+              onPress={handleToggleLike} 
+              style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 14 }}
+              activeOpacity={0.7}
+            >
+              <Text style={{ fontSize: 12, marginRight: likers.length > 0 ? 6 : 0 }}>❤️</Text>
+              {likers.map((liker, i) => (
+                <AvatarWithFallback 
+                  key={i}
+                  uri={liker?.avatar || liker?.profile_picture} 
+                  displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
+                  style={{ width: 16, height: 16, borderRadius: 8, marginLeft: i > 0 ? -6 : 0, borderWidth: 1, borderColor: '#1E1E1E' }} 
+                />
+              ))}
+            </TouchableOpacity>
           </View>
         </View>
-        <TouchableOpacity onPress={handleToggleLike} style={s.likeBtn}>
-          <Icon 
-            name={isLiked ? "heart" : "heart-outline"} 
-            size={24} 
-            color={isLiked ? "#FF3B30" : "rgba(255,255,255,0.6)"} 
-          />
-        </TouchableOpacity>
       </View>
     );
   };
@@ -2906,6 +2907,8 @@ const sendChatMessage = () => {
           mediaUri={stickerPreview?.uri ?? ''}
           mimeType={stickerPreview?.mimeType ?? ''}
           onClose={() => setStickerPreview(null)}
+          theme="dark"
+          restoreNavBarColor="#000000"
           onSend={async (uri, mimeType, caption) => {
             setStickerPreview(null);
             const ext = mimeType.split('/')[1] || 'png';

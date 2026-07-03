@@ -32,6 +32,7 @@ import { resolveImageUrl } from '../utils/image';
 import {
   StatusService, Status, StatusViewer as ViewerType, LikedUser
 } from '../services/StatusService';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 const { width: W, height: H } = Dimensions.get('window');
 const PHOTO_DURATION = 5000;
@@ -184,10 +185,16 @@ const StatusViewerScreen: React.FC = () => {
   const insets     = useSafeAreaInsets();
 
   useLayoutEffect(() => {
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+    if (Platform.OS === 'android') {
+      pinNavBarColor('#000000');
+      if (NativeModules.SystemBar) {
+        NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+      }
       return () => {
-        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+        pinNavBarColor('#FFFFFF');
+        if (NativeModules.SystemBar) {
+          NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+        }
       };
     }
   }, []);
@@ -212,6 +219,11 @@ const StatusViewerScreen: React.FC = () => {
   const [replySending,setReplySending]= useState(false);
 
   const [saving, setSaving] = useState(false);
+  const [videoLoaded, setVideoLoaded] = useState(false);
+
+  useEffect(() => {
+    setVideoLoaded(false);
+  }, [index]);
 
   const progress  = useRef(new Animated.Value(0)).current;
   const animation = useRef<Animated.CompositeAnimation | null>(null);
@@ -389,23 +401,31 @@ const StatusViewerScreen: React.FC = () => {
 
       {/* ── Media ── */}
       {isVideo ? (
-        <Video
-          source={{ uri: resolveImageUrl(current.media_url || current.media_file) }}
-          style={StyleSheet.absoluteFill}
-          resizeMode="contain"
-          paused={videoPaused || showViewers || replyFocused}
-          repeat={false}
-          onLoad={({ duration }) => {
-            const ms = (duration || 10) * 1000;
-            setVideoDuration(ms);
-            startProgress(ms);
-          }}
-          onEnd={() => setIndex(i => {
-            if (i < statuses.length - 1) return i + 1;
-            setTimeout(closeViewer, 0);
-            return i;
-          })}
-        />
+        <>
+          <Video
+            source={{ uri: resolveImageUrl(current.media_url || current.media_file) }}
+            style={[StyleSheet.absoluteFill, { opacity: videoLoaded ? 1 : 0 }]}
+            resizeMode="contain"
+            paused={videoPaused || showViewers || replyFocused}
+            repeat={false}
+            onLoad={({ duration }) => {
+              const ms = (duration || 10) * 1000;
+              setVideoDuration(ms);
+              setVideoLoaded(true);
+              startProgress(ms);
+            }}
+            onEnd={() => setIndex(i => {
+              if (i < statuses.length - 1) return i + 1;
+              setTimeout(closeViewer, 0);
+              return i;
+            })}
+          />
+          {!videoLoaded && (
+            <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center' }]}>
+              <ActivityIndicator size="large" color="#ffffff" />
+            </View>
+          )}
+        </>
       ) : (
         <Image
           source={{ uri: resolveImageUrl(current.media_url || current.media_file) }}

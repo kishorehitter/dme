@@ -993,7 +993,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         // Update the message in the list
         setMessages(prev =>
           prev.map(m =>
-            m.id === editingMessageId ? { ...m, content: text } : m,
+            m.id === editingMessageId ? { ...m, content: text, edited_at: new Date().toISOString() } : m,
           ),
         );
         setInputText(''); 
@@ -2413,7 +2413,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   />
                   {item.reply_to && renderReplyIndicator(item.reply_to, true)}
                   {!!item.edited_at && (
-                    <Text style={{ fontSize: 11, color: 'rgba(255, 0, 0, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                    <Text style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                   )}
                   <Text style={[styles.messageText, { color: '#FFFFFF' }]}>
                     {String(item.content || '')}
@@ -2818,6 +2818,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             const screenHeight = Dimensions.get('window').height;
             const positionStyle: any = { position: 'absolute', width: 280 };
             
+            const isTemp = selectedMessage.id > 1000000000;
+            const msgTime = new Date(selectedMessage.created_at).getTime();
+            const now = Date.now();
+            const diffMin = (now - msgTime) / (1000 * 60);
+            const canEdit = !isTemp && diffMin <= 15;
+            const canUnsend = !isTemp && diffMin <= 1440; // 24 hours
+            
             if (menuPosition.y < screenHeight * 0.45) {
               positionStyle.top = Math.max(70, menuPosition.y + 10);
             } else {
@@ -2904,20 +2911,22 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   {isMe ? (
                     <>
                       {/* Edit */}
-                      <TouchableOpacity
-                        style={styles.actionMenuItem}
-                        onPress={handleEditMessage}
-                      >
-                        <View style={styles.actionMenuItemContent}>
-                          <Icon
-                            name="create-outline"
-                            size={20}
-                            color="#333"
-                            style={{ marginRight: 12 }}
-                          />
-                          <Text style={styles.actionMenuItemText}>Edit</Text>
-                        </View>
-                      </TouchableOpacity>
+                      {canEdit && (
+                        <TouchableOpacity
+                          style={styles.actionMenuItem}
+                          onPress={handleEditMessage}
+                        >
+                          <View style={styles.actionMenuItemContent}>
+                            <Icon
+                              name="create-outline"
+                              size={20}
+                              color="#333"
+                              style={{ marginRight: 12 }}
+                            />
+                            <Text style={styles.actionMenuItemText}>Edit</Text>
+                          </View>
+                        </TouchableOpacity>
+                      )}
 
                       {/* Copy */}
                       <TouchableOpacity
@@ -2936,22 +2945,24 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                       </TouchableOpacity>
 
                       {/* Unsend */}
-                      <TouchableOpacity
-                        style={styles.actionMenuItem}
-                        onPress={handleDeleteMessage}
-                      >
-                        <View style={styles.actionMenuItemContent}>
-                          <Icon
-                            name="trash-outline"
-                            size={20}
-                            color="#FF4444"
-                            style={{ marginRight: 12 }}
-                          />
-                          <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
-                            Unsend
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
+                      {canUnsend && (
+                        <TouchableOpacity
+                          style={styles.actionMenuItem}
+                          onPress={handleDeleteMessage}
+                        >
+                          <View style={styles.actionMenuItemContent}>
+                            <Icon
+                              name="trash-outline"
+                              size={20}
+                              color="#FF4444"
+                              style={{ marginRight: 12 }}
+                            />
+                            <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
+                              Unsend
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      )}
                     </>
                   ) : (
                     <>
@@ -3215,6 +3226,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         mediaUri={stickerPreview?.uri ?? ''}
         mimeType={stickerPreview?.mimeType ?? ''}
         onClose={() => setStickerPreview(null)}
+        theme="light"
+        restoreNavBarColor="#ffffff"
         onSend={async (uri, mimeType, caption) => {
           setStickerPreview(null);
           await sendImageMessage({ uri, type: mimeType });
@@ -3606,8 +3619,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     backgroundColor: '#FFFFFF',
     alignItems: 'flex-end',
-    borderTopWidth: 1,
-    borderTopColor: '#EEE',
     minHeight: 56,
   },
   recordingContainerInline: {

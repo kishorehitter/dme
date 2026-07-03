@@ -68,27 +68,21 @@ const ChatInputArea = memo(({
       });
     }, [onRegisterClear]);
 
-    // Reset height when key changes (media send remount)
+    const prevEditingId = useRef(editingMessageId);
+    // EDIT MODE: When editingMessageId changes to a truthy value,
+    // force-push inputText into the native field. This runs independently
+    // of the typing guard and guarantees the edit text always appears.
     useEffect(() => {
-      setInputHeight(MIN_HEIGHT);
-    }, [inputClearKey]);
-
-    useEffect(() => {
-      if (isTypingRef.current) {
-        isTypingRef.current = false;
-        prevInputText.current = inputText;
-        return;
-      }
-      // Edit mode: parent pushed text into field
-      if (inputText !== '' && prevInputText.current === '') {
+      if (editingMessageId && inputText) {
         inputRef.current?.setText(inputText);
-      }
-      // Reset: edit cancelled/confirmed, or any other parent-driven clear
-      if (inputText === '' && prevInputText.current !== '') {
+        prevInputText.current = inputText;
+      } else if (prevEditingId.current && !editingMessageId) {
+        // If we stopped editing, clear the text
         inputRef.current?.clear();
+        prevInputText.current = '';
       }
-      prevInputText.current = inputText;
-    }, [inputText]);
+      prevEditingId.current = editingMessageId;
+    }, [editingMessageId]);
 
     const handleContentSizeChange = useCallback((event: any) => {
       const h = event.nativeEvent?.contentSize?.height;
@@ -96,6 +90,8 @@ const ChatInputArea = memo(({
         setInputHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.ceil(h))));
       }
     }, []);
+
+
 
     const handleContentCommitted = useCallback((event: any) => {
         const { uri, mimeType } = event.nativeEvent;
@@ -130,7 +126,6 @@ const ChatInputArea = memo(({
           )}
 
           {!isRecording && (
-            // ✅ No wrapper memo — just pass directly, no text prop binding
             <RichTextInput
               key={inputClearKey} 
               ref={inputRef}
@@ -215,6 +210,8 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     color: '#000',
     textAlignVertical: 'top',
+    minHeight: MIN_HEIGHT,
+    maxHeight: MAX_HEIGHT,
   },
   micButton: {
     width: 38,

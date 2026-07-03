@@ -11,6 +11,7 @@ import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 // Note: CameraRoll is often imported differently depending on the version.
 // Trying to access the save method directly if available.
 const saveAsset = CameraRoll.saveAsset || CameraRoll.save;
+import { pinNavBarColor } from '../utils/navBarPin';
 
 
 const { SystemBar } = NativeModules;
@@ -25,6 +26,7 @@ const MediaViewerScreen: React.FC = () => {
   const [paused, setPaused] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoLoaded, setVideoLoaded] = useState(false);
 
   // Helper to format time (e.g., 0:00)
   const formatTime = (secs: number) => {
@@ -53,10 +55,16 @@ const MediaViewerScreen: React.FC = () => {
   };
 
   useLayoutEffect(() => {
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+    if (Platform.OS === 'android') {
+      pinNavBarColor('#000000');
+      if (NativeModules.SystemBar) {
+        NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+      }
       return () => {
-        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+        pinNavBarColor('#FFFFFF');
+        if (NativeModules.SystemBar) {
+          NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
+        }
       };
     }
   }, []);
@@ -66,16 +74,26 @@ const MediaViewerScreen: React.FC = () => {
       <StatusBar barStyle="light-content" backgroundColor="#000000" />
       
       {mediaType === 'video' ? (
-        <Video
-          source={{ uri: mediaUrl }}
-          style={styles.media}
-          controls={false}
-          resizeMode="contain"
-          paused={paused}
-          onLoad={(data) => setDuration(data.duration)}
-          onProgress={(data) => setCurrentTime(data.currentTime)}
-          repeat
-        />
+        <View style={styles.media}>
+          <Video
+            source={{ uri: mediaUrl }}
+            style={[styles.media, { opacity: videoLoaded ? 1 : 0 }]}
+            controls={false}
+            resizeMode="contain"
+            paused={paused}
+            onLoad={(data) => {
+              setDuration(data.duration);
+              setVideoLoaded(true);
+            }}
+            onProgress={(data) => setCurrentTime(data.currentTime)}
+            repeat
+          />
+          {!videoLoaded && (
+            <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center' }]}>
+              <ActivityIndicator size="large" color="#ffffff" />
+            </View>
+          )}
+        </View>
       ) : (
         <ImageViewer
           imageUrls={[{ url: mediaUrl }]}

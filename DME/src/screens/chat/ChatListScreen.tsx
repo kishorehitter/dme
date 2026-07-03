@@ -21,6 +21,7 @@ import {
   PanResponder,
   Linking,
   Animated,
+  Share,
 } from 'react-native';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -56,11 +57,11 @@ interface ChatListScreenProps {
 }
 
 const PopoverMenu = ({ 
-  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect, onSettings, onAppUpdate
+  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect, onSettings, onAppUpdate, onShareApp
 }: { 
   visible: boolean, onClose: () => void, onNewGroup: () => void, onClearAll: () => void,
   onProfile: () => void, onLogout: () => void, onSelect: () => void,
-  onSettings: () => void, onAppUpdate: () => void
+  onSettings: () => void, onAppUpdate: () => void, onShareApp: () => void
 }) => {
   const { hasUpdate } = useUpdateInfo();
   return (
@@ -91,6 +92,10 @@ const PopoverMenu = ({
           <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
             <Icon name="checkbox-outline" size={20} color="#333" />
             <Text style={styles.popoverText}>Select and clear</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onShareApp(); }}>
+            <Icon name="share-social-outline" size={20} color="#333" />
+            <Text style={styles.popoverText}>Share App</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSettings(); }}>
             <Icon name="settings-outline" size={20} color="#333" />
@@ -152,7 +157,7 @@ const renderLastMessage = (lastMessage: Conversation['last_message']) => {
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
-  const [activeTab, setActiveTab] = useState<'all' | 'chats' | 'groups'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'chats' | 'groups' | 'unread'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -523,11 +528,23 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     });
   }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode]);
 
+  const handleShareApp = async () => {
+    try {
+      const shareUrl = 'https://dme-19zq.onrender.com/invite';
+      await Share.share({
+        message: `Join me on DME Chat! It's a fast, private messaging app. Download it here: ${shareUrl}`,
+      });
+    } catch (error) {
+      console.warn('Error sharing app', error);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
+        onShareApp={handleShareApp}
         onNewGroup={() => { setMenuVisible(false); navigation.navigate('CreateGroup'); }}
         onClearAll={() => { setMenuVisible(false); handleClearAll(); }}
         onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        
@@ -715,6 +732,38 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 <Text style={styles.tabText}>Groups</Text>
               </TouchableOpacity>
             )}
+
+            {/* Unread Tab */}
+            {activeTab === 'unread' ? (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    backgroundColor: '#E0E0E0', 
+                    marginHorizontal: 4,
+                    paddingVertical: spacing.sm || 8,
+                  }
+                ]} 
+                onPress={() => setActiveTab('unread')}
+              >
+                <Text style={[styles.tabText, styles.activeTabText]}>Unread</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={[
+                  styles.tabButton, 
+                  { 
+                    borderWidth: 1, 
+                    borderColor: '#CCCCCC', 
+                    marginHorizontal: 4,
+                    paddingVertical: (spacing.sm || 8) - 1,
+                  }
+                ]} 
+                onPress={() => setActiveTab('unread')}
+              >
+                <Text style={styles.tabText}>Unread</Text>
+              </TouchableOpacity>
+            )}
           </View>
         }
         data={conversations.filter(c => {
@@ -723,6 +772,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             matchesTab = !c.is_group;
           } else if (activeTab === 'groups') {
             matchesTab = c.is_group;
+          } else if (activeTab === 'unread') {
+            matchesTab = (c.unread_count || 0) > 0;
           }
           if (!matchesTab) return false;
           
@@ -830,9 +881,23 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         ListEmptyComponent={
           !isLoading ? (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 220 }}>
-              <Icon name="chatbubble-ellipses-outline" size={44} color="#E0D0F5" />
+              <Icon 
+                name={
+                  activeTab === 'groups' 
+                    ? 'people-outline' 
+                    : activeTab === 'unread' 
+                    ? 'mail-unread-outline' 
+                    : 'chatbubble-ellipses-outline'
+                } 
+                size={44} 
+                color="#E0D0F5" 
+              />
               <Text style={{ fontSize: 16, fontWeight: '400', color: '#c2c2c2', marginTop: 6 }}>
-                No conversations yet
+                {activeTab === 'groups' 
+                  ? 'No Groups yet' 
+                  : activeTab === 'unread' 
+                  ? 'No unread messages' 
+                  : 'No conversations yet'}
               </Text>
               
             </View>
@@ -886,7 +951,7 @@ const styles = StyleSheet.create({
   name: { fontSize: fontSize.lg, fontWeight: '600', color: '#000' },
   lastMessage: { fontSize: fontSize.md, color: '#666' },
   tabContainer: { flexDirection: 'row', padding: spacing.sm, justifyContent: 'space-evenly' },
-  tabButton: { width: 90, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
+  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
   activeTabText: { color: THEME_COLOR, fontWeight: '700' },

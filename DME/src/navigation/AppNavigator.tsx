@@ -179,8 +179,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
   useEffect(() => {
     if (musicRoom.roomCode && !musicRoom.isMinimized) {
       pinNavBarColor('#000000');
-    } else if (!musicRoom.roomCode) {
-      // Only reset to white when room is fully closed, not on minimize
+    } else {
       pinNavBarColor('#FFFFFF');
     }
   }, [musicRoom.roomCode, musicRoom.isMinimized]);

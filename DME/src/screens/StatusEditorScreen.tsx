@@ -23,6 +23,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
 import api from '../services/api';
 import { StatusService } from '../services/StatusService';
+import { pinNavBarColor } from '../utils/navBarPin';
 import { VisibilityModal } from '../components/VisibilityModal';
 
 const { width, height } = Dimensions.get('window');
@@ -106,16 +107,22 @@ const StatusEditorScreen: React.FC = () => {
   }));
 
   useLayoutEffect(() => {
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      // Set to dark
-      NativeModules.SystemBar.setNavigationBarColor('#000000', false);
-      NativeModules.SystemBar.setStatusBarColor('#000000', false);
+    if (Platform.OS === 'android') {
+      pinNavBarColor('#000000');
+      if (NativeModules.SystemBar) {
+        // Set to dark
+        NativeModules.SystemBar.setNavigationBarColor('#000000', false);
+        NativeModules.SystemBar.setStatusBarColor('#000000', false);
+      }
     }
     return () => {
-      if (Platform.OS === 'android' && NativeModules.SystemBar) {
-        // Reset to default light
-        NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', true);
-        NativeModules.SystemBar.setStatusBarColor('#FFFFFF', true);
+      if (Platform.OS === 'android') {
+        pinNavBarColor('#FFFFFF');
+        if (NativeModules.SystemBar) {
+          // Reset to default light
+          NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', true);
+          NativeModules.SystemBar.setStatusBarColor('#FFFFFF', true);
+        }
       }
     };
   }, []);

@@ -5,6 +5,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from myproject import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -14,6 +15,11 @@ urlpatterns = [
     path('api/calls/', include('calls.urls')),
     path('api/youtube/', include('youtube_search.urls')),
     path('api/music/', include('music.urls')),
+    
+    # Share / Download routes
+    path('invite', views.download_app, name='download_app'),
+    path('invite/', views.download_app, name='download_app_slash'),
+    path('.well-known/assetlinks.json', views.assetlinks_json, name='assetlinks'),
 ]
 
 if settings.DEBUG:

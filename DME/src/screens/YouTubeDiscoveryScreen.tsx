@@ -316,9 +316,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             <Text style={styles.gridTitle} numberOfLines={2}>
               {title}
             </Text>
-            <Text style={styles.gridSub}>
-              {channel || (isDrive ? 'Google Drive' : '')}
-            </Text>
+            {type === 'youtube' && channel ? (
+              <Text style={styles.gridSub}>
+                {channel}
+              </Text>
+            ) : null}
           </View>
         </TouchableOpacity>
         {canRemove && (

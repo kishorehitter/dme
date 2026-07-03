@@ -50,7 +50,7 @@ def assetlinks_json(request):
             # ── PASTE YOUR RELEASE SHA-256 HERE ──────────────────────────────
             # Format: "AB:CD:EF:..." (colon-separated uppercase hex)
             "sha256_cert_fingerprints": [
-                "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C"
+                "41:E6:4D:35:A7:31:B7:5F:4A:12:0D:D7:74:2E:78:1C:9D:E1:DD:95:32:69:C9:44:81:43:2F:68:F7:E7:92:B4"
             ]
         }
     }]

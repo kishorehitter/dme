@@ -92,7 +92,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   return (
     <Modal visible={visible} transparent animationType="fade">
       <TouchableOpacity style={styles.overlay} onPress={onClose} activeOpacity={1}>
-        <View style={[styles.popover, { top, bottom, right, left }]}>
+        <View style={[styles.popover, { top, bottom, right, left, width: mode === 'attachment' ? 240 : 160 }]}>
           {mode === 'camera' ? (
             <>
               <TouchableOpacity style={styles.popoverItem} onPress={() => handleCapture('image')}>
@@ -105,16 +105,32 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
               </TouchableOpacity>
             </>
           ) : (
-            <>
-              <TouchableOpacity style={styles.popoverItem} onPress={handlePickGallery}>
-                <Icon name="images" size={24} color="#000000" />
-                <Text style={styles.popoverText}>Gallery</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              <TouchableOpacity style={styles.gridItem} onPress={() => handleCapture('image')}>
+                <View style={[styles.iconCircle, { backgroundColor: '#FF4081' }]}>
+                  <Icon name="camera" size={24} color="#FFF" />
+                </View>
+                <Text style={styles.gridText}>Camera</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.popoverItem} onPress={handleDocumentPick}>
-                <Icon name="document-text" size={24} color="#000000" />
-                <Text style={styles.popoverText}>Document</Text>
+              <TouchableOpacity style={styles.gridItem} onPress={() => handleCapture('video')}>
+                <View style={[styles.iconCircle, { backgroundColor: '#F44336' }]}>
+                  <Icon name="videocam" size={24} color="#FFF" />
+                </View>
+                <Text style={styles.gridText}>Video</Text>
               </TouchableOpacity>
-            </>
+              <TouchableOpacity style={styles.gridItem} onPress={handlePickGallery}>
+                <View style={[styles.iconCircle, { backgroundColor: '#E040FB' }]}>
+                  <Icon name="images" size={24} color="#FFF" />
+                </View>
+                <Text style={styles.gridText}>Gallery</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.gridItem} onPress={handleDocumentPick}>
+                <View style={[styles.iconCircle, { backgroundColor: '#536DFE' }]}>
+                  <Icon name="document-text" size={24} color="#FFF" />
+                </View>
+                <Text style={styles.gridText}>Document</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </TouchableOpacity>
@@ -125,10 +141,13 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'transparent' },
   popover: { 
-    position: 'absolute', width: 160, backgroundColor: '#fff', 
-    borderRadius: 8, padding: 4, elevation: 5, shadowColor: '#000', 
+    position: 'absolute', backgroundColor: '#fff', 
+    borderRadius: 16, padding: 8, elevation: 5, shadowColor: '#000', 
     shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 9999 
   },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 16 },
   popoverText: { fontSize: 16, color: '#333' },
+  gridItem: { width: '50%', paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  iconCircle: { width: 50, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  gridText: { fontSize: 13, color: '#333', fontWeight: '500' },
 });

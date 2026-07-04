@@ -36,6 +36,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import Clipboard from '@react-native-clipboard/clipboard';
 import Toast from 'react-native-toast-message';
 import { chatAPI } from '../../services/api';
+import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
@@ -760,10 +761,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const loadMessages = async () => {
-    // Skip loading if chat was cleared
     if (shouldSkipLoad) {
       console.log('Skipping message load - chat cleared');
       return;
+    }
+
+    // Load from local SQLite cache first for instant offline rendering
+    try {
+      const cached = localDatabase.getMessages(conversationId);
+      if (cached && cached.length > 0) {
+        setOldestMessageId(cached[0].id || null);
+        setHasMoreMessages(cached.length >= 50);
+        // Reverse because inverted FlatList expects index 0 to be the newest message (at the bottom)
+        setMessages([...cached].reverse());
+        setIsLoading(false); // Can hide loading indicator early
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to load cached messages:', e);
     }
 
     try {
@@ -775,9 +789,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         setHasMoreMessages(arr.length >= 50);
       }
 
-      // FIX 1: Reverse for inverted FlatList
-      // inverted FlatList renders last item at visual bottom
-      // So we reverse: newest message at index 0 = shown at bottom
+      // Cache fresh messages in SQLite
+      localDatabase.saveMessages(arr, conversationId);
+
       setMessages([...arr].reverse());
 
       if (chatIsActiveRef.current) {
@@ -786,8 +800,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         );
         if (hasUnread) markAsRead();
       }
-    } catch {
-      setMessages([]);
+    } catch (e) {
+      console.error('❌ Failed to fetch messages from API:', e);
+      // If we don't have cached messages and API failed, fallback to empty
+      setMessages(prev => (prev.length > 0 ? prev : []));
     } finally {
       setIsLoading(false);
     }
@@ -856,6 +872,20 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             ? wsMsg.data.delivered_at || new Date().toISOString()
             : wsMsg.data.delivered_at,
         };
+
+        // Cache the incoming message locally in SQLite
+        if (isOwn) {
+          const senderName = currentUser?.display_name || currentUser?.email || '';
+          const localId = localDatabase.findSendingMessage(nm.content, senderName);
+          if (localId) {
+            localDatabase.updateMessageServerId(localId, nm.id, 'sent');
+          } else {
+            localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
+          }
+        } else {
+          localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
+        }
+
         setMessages(prev => {
           const arr = Array.isArray(prev) ? prev : [];
           if (isOwn) {
@@ -902,14 +932,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         }
         break;
       case 'delivered':
-        setMessages(prev =>
-          (Array.isArray(prev) ? prev : []).map(m =>
-            wsMsg.data.message_ids?.includes(m.id) &&
-            m.sender.id === currentUser?.id
-              ? { ...m, delivered_at: new Date().toISOString() }
-              : m,
-          ),
-        );
+        setMessages(prev => {
+          const updated = (Array.isArray(prev) ? prev : []).map(m => {
+            if (wsMsg.data.message_ids?.includes(m.id) && m.sender.id === currentUser?.id) {
+              const updatedMsg = { ...m, delivered_at: new Date().toISOString() };
+              const localId = m.local_id || m.id.toString();
+              localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId, 'delivered');
+              return updatedMsg;
+            }
+            return m;
+          });
+          return updated;
+        });
         break;
       case 'read_receipt':
         const readerId = wsMsg.data.user_id;
@@ -935,28 +969,62 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             };
           });
         }
-        setMessages(prev =>
-          (Array.isArray(prev) ? prev : []).map(m =>
-            wsMsg.data.message_ids?.includes(m.id)
-              ? { ...m, is_read: true }
-              : m,
-          ),
-        );
+        setMessages(prev => {
+          const updated = (Array.isArray(prev) ? prev : []).map(m => {
+            if (wsMsg.data.message_ids?.includes(m.id)) {
+              const updatedMsg = { ...m, is_read: true };
+              const localId = m.local_id || m.id.toString();
+              localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId, 'read');
+              return updatedMsg;
+            }
+            return m;
+          });
+          return updated;
+        });
         break;
       case 'reaction':
         console.log('💬 WebSocket reaction received:', wsMsg.data);
-        setMessages(prev =>
-          (Array.isArray(prev) ? prev : []).map(m =>
-            m.id === wsMsg.data.message_id
-              ? { ...m, reactions: wsMsg.data.reactions || {} }
-              : m,
-          ),
-        );
+        setMessages(prev => {
+          const updated = (Array.isArray(prev) ? prev : []).map(m => {
+            if (m.id === wsMsg.data.message_id) {
+              const updatedMsg = { ...m, reactions: wsMsg.data.reactions || {} };
+              const localId = m.local_id || m.id.toString();
+              localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId);
+              return updatedMsg;
+            }
+            return m;
+          });
+          return updated;
+        });
         console.log(
           '💬 Reaction state updated for message:',
           wsMsg.data.message_id,
         );
         break;
+      case 'message_edit': {
+        const { message_id, content, edited_at } = wsMsg.data;
+        setMessages(prev =>
+          (Array.isArray(prev) ? prev : []).map(m =>
+            m.id === message_id ? { ...m, content, edited_at } : m
+          )
+        );
+        const target = messagesRef.current.find(m => m.id === message_id);
+        const localId = target?.local_id || message_id.toString();
+        localDatabase.updateMessageText(localId, content, edited_at || new Date().toISOString());
+        break;
+      }
+      case 'message_delete': {
+        const { message_id, content } = wsMsg.data;
+        setMessages(prev =>
+          (Array.isArray(prev) ? prev : []).map(m =>
+            m.id === message_id ? { ...m, is_deleted: true, content } : m
+          )
+        );
+        const target = messagesRef.current.find(m => m.id === message_id);
+        const localId = target?.local_id || message_id.toString();
+        localDatabase.softDeleteMessage(localId);
+        break;
+      }
       case 'group_call':
         console.log('📞 Group call event received:', wsMsg.data);
         if (
@@ -990,10 +1058,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     if (editingMessageId) {
       try {
         await chatAPI.editMessage(editingMessageId, text);
+        const editedAt = new Date().toISOString();
+        const target = messagesRef.current.find(m => m.id === editingMessageId);
+        const localId = target?.local_id || editingMessageId.toString();
+        localDatabase.updateMessageText(localId, text, editedAt);
+
         // Update the message in the list
         setMessages(prev =>
           prev.map(m =>
-            m.id === editingMessageId ? { ...m, content: text, edited_at: new Date().toISOString() } : m,
+            m.id === editingMessageId ? { ...m, content: text, edited_at: editedAt } : m,
           ),
         );
         setInputText(''); 
@@ -1017,8 +1090,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     setHighlightMessageId(null); // Clear any active highlight when sending a new message
 
     if (websocketService.getConnectionState()) {
+      const localId = Date.now().toString();
       const optimistic: any = {
-        id: Date.now(),
+        id: Date.now(), // temp ID for UI indexing compatibility
+        local_id: localId,
         conversation: conversationId,
         sender: {
           id: currentUser!.id,
@@ -1044,6 +1119,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }
           : null,
       };
+
+      // Save to SQLite
+      localDatabase.saveMessage(optimistic, localId, 'sending');
+
       // FIX 1: Prepend to reversed array
       setMessages(prev => [optimistic, ...(Array.isArray(prev) ? prev : [])]);
       websocketService.sendMessage(text, replyToMessage?.id);
@@ -1891,6 +1970,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     try {
       await chatAPI.deleteMessage(selectedMessage.id);
+      const localId = selectedMessage.local_id || selectedMessage.id.toString();
+      localDatabase.softDeleteMessage(localId);
 
       // Update the message in the list to show as deleted
       setMessages(prev =>
@@ -2045,7 +2126,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   // ── RENDER MESSAGE ───────────────────────────────
   const renderMessage = useCallback(({ item, index }: { item: Message; index: number }) => {
-    console.log('RENDER MSG:', item.id, item.message_type, item.content, item.created_at);
     const isMe = item.sender.id === currentUser?.id;
     const sName =
       item.sender?.display_name ||

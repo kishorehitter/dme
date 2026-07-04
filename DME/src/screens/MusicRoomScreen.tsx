@@ -53,6 +53,7 @@ import FullScreenMediaViewer from '../components/FullScreenMediaViewer';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import StickerPreviewModal from '../components/StickerPreviewModal';
 import FastImage from 'react-native-fast-image';
+import { checkGoogleDriveAuth } from '../utils/driveAuth';
 
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
@@ -512,6 +513,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const handleMentionSelect = (participantName: string) => {
     const newText = chatMessage.replace(/(^|\s)@([a-zA-Z0-9_]*)$/, `$1@${participantName} `);
     setChatMessage(newText);
+    richInputRef.current?.setText(newText);
     setMentionListVisible(false);
     richInputRef.current?.focus();
   };
@@ -553,6 +555,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
+  const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (currentSong?.source === 'drive') {
+      checkGoogleDriveAuth().then(isAuth => setIsDriveAuthenticated(isAuth));
+    } else {
+      setIsDriveAuthenticated(null);
+    }
+  }, [currentSong?.videoId, currentSong?.source]);
   // ✅ NEW: bumped by an explicit replay action to force the audio load
   // effect to re-run even when currentSong?.videoId is unchanged (replaying
   // the SAME video). Distinct from videoId itself so normal playback,
@@ -765,32 +776,81 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={s.npTitle} numberOfLines={1}>{currentSong.title}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 10 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
             {/* Pinner Container */}
             <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 14 }}>
+              <Icon name="play-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
               <AvatarWithFallback 
                 uri={pinner?.avatar || pinner?.profile_picture} 
                 displayName={pinnerName} 
-                style={{ width: 16, height: 16, borderRadius: 8, marginRight: 6 }} 
+                style={{ width: 16, height: 16, borderRadius: 8 }} 
               />
-              <Text style={{ fontSize: 12 }}>🎧</Text>
             </View>
 
-            {/* Likers Container */}
+            {/* Likers Container - Right aligned, grows from right to left */}
             <TouchableOpacity 
               onPress={handleToggleLike} 
-              style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 14 }}
+              style={{ 
+                flexDirection: 'row-reverse', 
+                alignItems: 'center', 
+                backgroundColor: 'rgba(255,255,255,0.08)', 
+                paddingHorizontal: 8, 
+                paddingVertical: 4, 
+                borderRadius: 14,
+                flexShrink: 0
+              }}
               activeOpacity={0.7}
             >
-              <Text style={{ fontSize: 12, marginRight: likers.length > 0 ? 6 : 0 }}>❤️</Text>
-              {likers.map((liker, i) => (
-                <AvatarWithFallback 
-                  key={i}
-                  uri={liker?.avatar || liker?.profile_picture} 
-                  displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
-                  style={{ width: 16, height: 16, borderRadius: 8, marginLeft: i > 0 ? -6 : 0, borderWidth: 1, borderColor: '#1E1E1E' }} 
-                />
-              ))}
+              <Icon 
+                name={isLiked ? "heart" : "heart-outline"} 
+                size={16} 
+                color={isLiked ? "#fff" : "rgba(255,255,255,0.6)"} 
+                style={{ marginLeft: likers.length > 0 ? 6 : 0 }} 
+              />
+              {likers.length > 0 && (
+                likers.length <= 4 ? (
+                  <View style={{ flexDirection: 'row-reverse', alignItems: 'center' }}>
+                    {likers.map((liker, i) => (
+                      <AvatarWithFallback 
+                        key={i}
+                        uri={liker?.avatar || liker?.profile_picture} 
+                        displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
+                        style={{ 
+                          width: 16, 
+                          height: 16, 
+                          borderRadius: 8, 
+                          marginRight: i > 0 ? -6 : 0, 
+                          borderWidth: 1, 
+                          borderColor: '#1E1E1E' 
+                        }} 
+                      />
+                    ))}
+                  </View>
+                ) : (
+                  <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ flexDirection: 'row-reverse', alignItems: 'center' }}
+                    style={{ maxHeight: 20, flexShrink: 1, maxWidth: 80 }}
+                  >
+                    {likers.map((liker, i) => (
+                      <AvatarWithFallback 
+                        key={i}
+                        uri={liker?.avatar || liker?.profile_picture} 
+                        displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
+                        style={{ 
+                          width: 16, 
+                          height: 16, 
+                          borderRadius: 8, 
+                          marginRight: i > 0 ? -6 : 0, 
+                          borderWidth: 1, 
+                          borderColor: '#1E1E1E' 
+                        }} 
+                      />
+                    ))}
+                  </ScrollView>
+                )
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -918,6 +978,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
+
+  const participantsRef = useRef(participants);
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
 
   const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1789,8 +1854,33 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
       if (msg.type === 'chat_message') {
-        if (msg.data.text && user?.display_name && msg.data.text.includes(`@${user.display_name}`)) {
-          Vibration.vibrate();
+        // Check if current user is mentioned by name or ID (e.g., @Name, @EmailPrefix, or @ID)
+        const myParticipant = participantsRef.current.find(p => Number(p.user_id) === Number(user?.id));
+        const myParticipantName = myParticipant?.name;
+        const myUserId = user?.id;
+        const myDisplayName = user?.display_name;
+        const myEmailPrefix = user?.email?.split('@')[0];
+
+        const text = msg.data.text || '';
+        let hasMention = false;
+
+        if (text) {
+          if (myUserId && (text.includes(`@${myUserId} `) || text.endsWith(`@${myUserId}`))) {
+            hasMention = true;
+          }
+          if (myParticipantName && (text.includes(`@${myParticipantName} `) || text.endsWith(`@${myParticipantName}`))) {
+            hasMention = true;
+          }
+          if (myDisplayName && (text.includes(`@${myDisplayName} `) || text.endsWith(`@${myDisplayName}`))) {
+            hasMention = true;
+          }
+          if (myEmailPrefix && (text.includes(`@${myEmailPrefix} `) || text.endsWith(`@${myEmailPrefix}`))) {
+            hasMention = true;
+          }
+        }
+
+        if (hasMention) {
+          Vibration.vibrate([0, 500, 200, 500]);
         }
         setMessages(prev => [...prev, msg.data]);
         scrollToBottom(true);
@@ -2405,19 +2495,39 @@ const sendChatMessage = () => {
                 <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, textAlign: 'center' }}>
                   {playerError === 'embed_not_allowed'
                     ? 'The video owner has restricted playback outside YouTube'
-                    : 'Video Unplayable'}
+                    : (currentSong?.source === 'drive' && isDriveAuthenticated === false
+                        ? 'Google Drive Sign-in Required'
+                        : 'Video Unplayable')}
                 </Text>
-                {(isDJ || isDJMode) && (
+                
+                {currentSong?.source === 'drive' && isDriveAuthenticated === false ? (
                   <TouchableOpacity
                     onPress={() => {
                       if (autoSkipTimer.current) clearTimeout(autoSkipTimer.current);
-                      setPlayerError(null);
-                      setShowDiscovery(true);
+                      navigation.navigate('YouTubeDiscovery', { 
+                        requireDriveAuth: true, 
+                        pendingDriveVideo: currentSong,
+                        roomCode: roomCode
+                      });
                     }}
-                    style={{ marginTop: 8, backgroundColor: '#31313100', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
+                    style={{ marginTop: 8, backgroundColor: '#4285F4', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10, flexDirection: 'row', alignItems: 'center' }}
                   >
-                    <Text style={{ color: '#fff', fontWeight: '700' }}>Pick Another Video</Text>
+                    <Icon name="logo-google" size={16} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={{ color: '#fff', fontWeight: '700' }}>Sign In to Google Drive to continue</Text>
                   </TouchableOpacity>
+                ) : (
+                  (isDJ || isDJMode) && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (autoSkipTimer.current) clearTimeout(autoSkipTimer.current);
+                        setPlayerError(null);
+                        setShowDiscovery(true);
+                      }}
+                      style={{ marginTop: 8, backgroundColor: '#31313100', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
+                    >
+                      <Text style={{ color: '#fff', fontWeight: '700' }}>Choose Another Video</Text>
+                    </TouchableOpacity>
+                  )
                 )}
               </View>
             )}
@@ -2571,7 +2681,119 @@ const sendChatMessage = () => {
                     ListEmptyComponent={<Text style={s.emptyText}>No messages yet. Say hi! 👋</Text>}
                     renderItem={({ item, index }) => {
                       const myName = user?.display_name || user?.email || '';
-                      
+
+                      const renderParsedMessageText = (text: string) => {
+                        if (!text) return null;
+
+                        const currentParticipants = participantsRef.current || [];
+                        const mentionsList: { searchStr: string; participant: any }[] = [];
+
+                        currentParticipants.forEach(p => {
+                          if (p.name) {
+                            mentionsList.push({ searchStr: `@${p.name}`, participant: p });
+                          }
+                          if (p.user_id) {
+                            mentionsList.push({ searchStr: `@${p.user_id}`, participant: p });
+                          }
+                        });
+
+                        if (user) {
+                          const myDisplayName = user.display_name;
+                          const myId = user.id;
+                          if (myDisplayName && !mentionsList.some(m => m.searchStr === `@${myDisplayName}`)) {
+                            mentionsList.push({
+                              searchStr: `@${myDisplayName}`,
+                              participant: { user_id: Number(myId), name: myDisplayName, avatar: user.profile_picture }
+                            });
+                          }
+                          if (myId && !mentionsList.some(m => m.searchStr === `@${myId}`)) {
+                            mentionsList.push({
+                              searchStr: `@${myId}`,
+                              participant: { user_id: Number(myId), name: myDisplayName || 'You', avatar: user.profile_picture }
+                            });
+                          }
+                        }
+
+                        mentionsList.sort((a, b) => b.searchStr.length - a.searchStr.length);
+
+                        if (mentionsList.length === 0) {
+                          return <Text style={s.bubbleMsg}>{text}</Text>;
+                        }
+
+                        const elements: React.ReactNode[] = [];
+                        let remainingText = text;
+                        let keyIdx = 0;
+
+                        while (remainingText.length > 0) {
+                          let earliestIndex = -1;
+                          let selectedMention: typeof mentionsList[0] | null = null;
+
+                          for (const mention of mentionsList) {
+                            const idx = remainingText.indexOf(mention.searchStr);
+                            if (idx !== -1) {
+                              if (earliestIndex === -1 || idx < earliestIndex) {
+                                earliestIndex = idx;
+                                selectedMention = mention;
+                              }
+                            }
+                          }
+
+                          if (selectedMention && earliestIndex !== -1) {
+                            if (earliestIndex > 0) {
+                              elements.push(remainingText.substring(0, earliestIndex));
+                            }
+
+                            const part = selectedMention.participant;
+                            const avatarUri = part.avatar;
+
+                            elements.push(
+                              <View 
+                                key={`mention-${keyIdx++}`} 
+                                style={{ 
+                                  flexDirection: 'row', 
+                                  alignItems: 'center', 
+                                  backgroundColor: 'rgba(129, 0, 209, 0.15)',
+                                  borderRadius: 12,
+                                  paddingHorizontal: 6,
+                                  paddingVertical: 1.5,
+                                  marginHorizontal: 2,
+                                  borderWidth: 0.5,
+                                  borderColor: 'rgba(129, 0, 209, 0.3)',
+                                  alignSelf: 'center'
+                                }}
+                              >
+                                <View style={{ width: 14, height: 14, borderRadius: 7, marginRight: 4, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
+                                  <AvatarWithFallback
+                                    uri={avatarUri}
+                                    displayName={part.name}
+                                    style={{ width: 14, height: 14, borderRadius: 7 }}
+                                  />
+                                </View>
+                                <Text style={{ color: '#D6A4FF', fontWeight: '600', fontSize: 12 }}>
+                                  {selectedMention.searchStr}
+                                </Text>
+                              </View>
+                            );
+
+                            remainingText = remainingText.substring(earliestIndex + selectedMention.searchStr.length);
+                          } else {
+                            elements.push(remainingText);
+                            break;
+                          }
+                        }
+
+                        return (
+                          <Text style={s.bubbleMsg}>
+                            {elements.map((el, i) => {
+                              if (typeof el === 'string') {
+                                return <Text key={`text-${i}`}>{el}</Text>;
+                              }
+                              return el;
+                            })}
+                          </Text>
+                        );
+                      };
+
                       const getParsedMessage = (msg: any) => {
                         if (!msg) return { msgUser: null, msgText: '' };
                         let msgUser = msg.user;
@@ -2693,7 +2915,7 @@ const sendChatMessage = () => {
                                     )}
                                   </View>
                                 ) : (
-                                  <Text style={s.bubbleMsg}>{displayText}</Text>
+                                  renderParsedMessageText(displayText)
                                 )}
                               </View>
                             </TouchableOpacity>
@@ -2794,7 +3016,7 @@ const sendChatMessage = () => {
                     <View style={s.mentionListContainer}>
                       <FlatList
                         data={participants.filter(p => p.name !== user?.display_name && p.name.toLowerCase().includes(mentionFilter))}
-                        keyExtractor={p => p.id.toString()}
+                        keyExtractor={(p, idx) => p.user_id?.toString() || idx.toString()}
                         keyboardShouldPersistTaps="always"
                         renderItem={({ item }) => (
                           <TouchableOpacity style={s.mentionItem} onPress={() => handleMentionSelect(item.name)}>

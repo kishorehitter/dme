@@ -13,7 +13,9 @@ export type WebSocketMessage = {
     | 'delivered'
     | 'reaction'
     | 'new_message_summary'
-    | 'connection_established';
+    | 'connection_established'
+    | 'message_edit'
+    | 'message_delete';
   data: any;
 };
 

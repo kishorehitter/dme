@@ -265,6 +265,77 @@ class FCMService:
         return FCMService.send_to_user(recipient, None, data)
 
     @staticmethod
+    def send_edit_notification(
+        recipient,
+        sender_name,
+        message_content,
+        conversation_id,
+        message_id,
+        sender_avatar=None
+    ):
+        """Send a message edit notification to a user."""
+        if len(message_content) > 100:
+            message_content = message_content[:97] + '...'
+
+        data = {
+            'type': 'message_edit',
+            'conv_id': str(conversation_id),
+            'sender': sender_name,
+            'msg_id': str(message_id),
+            'ts': timezone.now().isoformat(),
+            'notif_title': sender_name,
+            'notif_body': message_content,
+        }
+        if sender_avatar:
+            data['sender_avatar'] = sender_avatar
+
+        return FCMService.send_to_user(recipient, None, data)
+
+    @staticmethod
+    def send_delete_notification(
+        recipient,
+        conversation_id,
+        message_id
+    ):
+        """Send a message delete notification to a user to dismiss/cancel it."""
+        data = {
+            'type': 'message_delete',
+            'conv_id': str(conversation_id),
+            'msg_id': str(message_id),
+            'ts': timezone.now().isoformat(),
+        }
+        return FCMService.send_to_user(recipient, None, data)
+
+    @staticmethod
+    def send_reaction_notification(
+        recipient,
+        sender_name,
+        emoji,
+        message_preview,
+        conversation_id,
+        message_id,
+        sender_avatar=None
+    ):
+        """Send a reaction notification to a user."""
+        body_text = f"Reacted {emoji} to: {message_preview}"
+        if len(body_text) > 100:
+            body_text = body_text[:97] + '...'
+
+        data = {
+            'type': 'reaction',
+            'conv_id': str(conversation_id),
+            'sender': sender_name,
+            'msg_id': str(message_id),
+            'ts': timezone.now().isoformat(),
+            'notif_title': sender_name,
+            'notif_body': body_text,
+        }
+        if sender_avatar:
+            data['sender_avatar'] = sender_avatar
+
+        return FCMService.send_to_user(recipient, None, data)
+
+    @staticmethod
     def send_missed_call_notification(recipient, caller_name, caller_id, call_id, call_type, conversation_id=None, caller_avatar=None):
         """Send missed call notification to receiver with callback button."""
         # DATA-ONLY message for missed call

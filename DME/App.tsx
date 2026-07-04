@@ -24,6 +24,7 @@ import websocketService from './src/services/websocket';
 import messaging from '@react-native-firebase/messaging';
 import notifee, { EventType } from '@notifee/react-native';
 import { UpdateProvider } from './src/context/UpdateContext';
+import localDatabase from './src/services/LocalDatabase';
 
 export let navigationRef: NavigationContainerRef<any> | null = null;
 
@@ -158,14 +159,19 @@ export default function App() {
   const pendingNavigation = useRef<FCMData | null>(null);
   const navigationReadyRef = useRef(false);
 
+  useEffect(() => {
+    localDatabase.initDb();
+  }, []);
+
   const checkPendingActions = useCallback(async () => {
     if (!navigationReadyRef.current) return;
 
     try {
-      const allKeys = await AsyncStorage.getAllKeys();
-      console.log('[App] AsyncStorage keys:', allKeys);
-      
-      const pendingCallback = await AsyncStorage.getItem('pending_callback_call');
+      const keys = ['pending_callback_call', 'pending_music_invite', 'pending_call_answer'];
+      const pairs = await AsyncStorage.multiGet(keys);
+      const results = Object.fromEntries(pairs);
+
+      const pendingCallback = results['pending_callback_call'];
       if (pendingCallback) {
         const parsed = JSON.parse(pendingCallback);
         console.log('[App] Found pending callback on resume:', parsed);
@@ -174,18 +180,16 @@ export default function App() {
         return;
       }
 
-      const pendingInvite = await AsyncStorage.getItem('pending_music_invite');
-      console.log('[App] pending_music_invite value:', pendingInvite);
+      const pendingInvite = results['pending_music_invite'];
       if (pendingInvite) {
         const parsed = JSON.parse(pendingInvite);
         console.log('[App] Found pending music invite on resume.');
-        
-        AsyncStorage.removeItem('pending_music_invite');
+        await AsyncStorage.removeItem('pending_music_invite');
         handleNotificationNavigation(parsed);
         return;
       }
 
-      const pendingAnswer = await AsyncStorage.getItem('pending_call_answer');
+      const pendingAnswer = results['pending_call_answer'];
       if (pendingAnswer) {
         const parsed = JSON.parse(pendingAnswer);
         if (parsed._action === ACTIONS.ANSWER) {

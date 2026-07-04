@@ -29,6 +29,8 @@ interface Props {
 export interface RichTextInputRef {
   clear: () => void;
   setText: (text: string) => void;
+  focus: () => void;
+  blur: () => void;
 }
 
 const NativeRichTextInput = requireNativeComponent<any>('RichTextInput');
@@ -56,6 +58,12 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
           UIManager.updateView(handle, 'RichTextInput', { text: newText });
         }
       }
+    },
+    focus: () => {
+      nativeRef.current?.focus?.();
+    },
+    blur: () => {
+      nativeRef.current?.blur?.();
     },
   }));
 

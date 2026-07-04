@@ -445,6 +445,8 @@ class ConversationListSerializer(serializers.ModelSerializer):
                 'message_type': last_msg.message_type,
                 'created_at': last_msg.created_at,
                 'sender_id': last_msg.sender_id,
+                'is_read': last_msg.is_read,
+                'delivered_at': last_msg.delivered_at.isoformat() if last_msg.delivered_at else None,
             }
         return None
 

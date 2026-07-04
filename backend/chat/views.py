@@ -1036,6 +1036,58 @@ class MessageEditView(APIView):
             message.save()
 
             serializer = MessageSerializer(message)
+
+            # Broadcast edit over WebSocket
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            
+            channel_layer = get_channel_layer()
+            room_group_name = f'chat_{message.conversation_id}'
+            
+            # 1. Update message list in active ChatRoom
+            async_to_sync(channel_layer.group_send)(
+                room_group_name,
+                {
+                    'type': 'message_edit',
+                    'data': {
+                        'message_id': message.id,
+                        'conversation_id': message.conversation_id,
+                        'content': message.content,
+                        'edited_at': message.edited_at.isoformat() if message.edited_at else None
+                    }
+                }
+            )
+            
+            # 2. Update chatlist previews (last message preview)
+            participants = message.conversation.participants.values_list('user_id', flat=True)
+            for p_id in participants:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_updates_{p_id}',
+                    {
+                        'type': 'new_message_summary',
+                        'data': serializer.data
+                    }
+                )
+
+            # 3. Trigger FCM for message edit
+            try:
+                from notifications.fcm_service import FCMService
+                fcm_recipients = message.conversation.participants.exclude(user=request.user)
+                sender_name = request.user.display_name or request.user.email
+                sender_avatar = request.user.clean_profile_picture_url if hasattr(request.user, 'clean_profile_picture_url') else None
+                
+                for participant in fcm_recipients:
+                    FCMService.send_edit_notification(
+                        recipient=participant.user,
+                        sender_name=sender_name,
+                        message_content=message.content,
+                        conversation_id=message.conversation_id,
+                        message_id=message.id,
+                        sender_avatar=sender_avatar
+                    )
+            except Exception as fcm_err:
+                print(f"Warning: Edit FCM send failed: {fcm_err}")
+
             return Response(serializer.data)
         except Message.DoesNotExist:
             return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -1099,6 +1151,54 @@ class MessageDeleteView(APIView):
                 message.content = 'The message was removed'
                 message.media_file = None  # Clear the reference
                 message.save()
+
+                serializer = MessageSerializer(message)
+
+                # Broadcast delete over WebSocket
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                
+                channel_layer = get_channel_layer()
+                room_group_name = f'chat_{message.conversation_id}'
+                
+                # 1. Update message list in active ChatRoom
+                async_to_sync(channel_layer.group_send)(
+                    room_group_name,
+                    {
+                        'type': 'message_delete',
+                        'data': {
+                            'message_id': message.id,
+                            'conversation_id': message.conversation_id,
+                            'content': message.content
+                        }
+                    }
+                )
+                
+                # 2. Update chatlist previews (last message preview)
+                participants = message.conversation.participants.values_list('user_id', flat=True)
+                for p_id in participants:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_updates_{p_id}',
+                        {
+                            'type': 'new_message_summary',
+                            'data': serializer.data
+                        }
+                    )
+
+                # 3. Trigger FCM for message delete
+                try:
+                    from notifications.fcm_service import FCMService
+                    fcm_recipients = message.conversation.participants.exclude(user=request.user)
+                    
+                    for participant in fcm_recipients:
+                        FCMService.send_delete_notification(
+                            recipient=participant.user,
+                            conversation_id=message.conversation_id,
+                            message_id=message.id
+                        )
+                except Exception as fcm_err:
+                    print(f"Warning: Delete FCM send failed: {fcm_err}")
+
                 return Response({'message': 'Message unsent for everyone'})
             else:
                 # Receiver deletes for themselves only (soft delete)

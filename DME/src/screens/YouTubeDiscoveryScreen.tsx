@@ -20,6 +20,8 @@ import { musicAPI } from '../services/api';
 import Toast from 'react-native-toast-message';
 import { pinNavBarColor } from '../utils/navBarPin';
 
+import { checkGoogleDriveAuth } from '../utils/driveAuth';
+
 const { width } = Dimensions.get('window');
 
 type TabType = 'youtube' | 'drive' | 'likes' | 'history';
@@ -29,14 +31,15 @@ type TabType = 'youtube' | 'drive' | 'likes' | 'history';
 let selectedSource: 'youtube' | 'drive' = 'youtube';
 
 const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
-  const { roomCode } = route.params || {};
+  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo } = route.params || {};
   const isFlow2 = !!roomCode;
 
   const youtubeWebViewRef = useRef<WebView>(null);
   const driveWebViewRef   = useRef<WebView>(null);
+  const pendingDriveVideoRef = useRef<any>(initialPendingVideo || null);
   const insets = useSafeAreaInsets();
 
-  const [activeTab, setActiveTab]       = useState<TabType>('youtube');
+  const [activeTab, setActiveTab]       = useState<TabType>(requireDriveAuth ? 'drive' : 'youtube');
   const [roomName, setRoomName]         = useState('');
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
@@ -134,6 +137,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     const { url } = navState;
     console.log('DRIVE URL:', url);
 
+    if (pendingDriveVideoRef.current && url.includes('drive.google.com/drive')) {
+      const item = pendingDriveVideoRef.current;
+      pendingDriveVideoRef.current = null;
+      handleSelectMedia(item, 'drive');
+      return;
+    }
+
     // Pattern 1: /file/d/{fileId}/view  or  /file/d/{fileId}/edit
     // Pattern 2: open?id={fileId}
     const driveFileMatch =
@@ -158,7 +168,21 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   };
 
   // ─── History / Likes grid item selection ──────────────────────────────────
-  const handleSelectMedia = (item: any, source: 'youtube' | 'drive') => {
+  const handleSelectMedia = async (item: any, source: 'youtube' | 'drive') => {
+    if (source === 'drive') {
+      const isAuth = await checkGoogleDriveAuth();
+      if (!isAuth) {
+        pendingDriveVideoRef.current = item;
+        setActiveTab('drive');
+        Toast.show({
+          type: 'info',
+          text1: 'Sign in required',
+          text2: 'Please sign in to Google Drive to play this video.',
+        });
+        return;
+      }
+    }
+
     selectedSource = source;
     setSelectedItem(item);
     if (source === 'youtube') {

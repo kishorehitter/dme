@@ -46,6 +46,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { downloadAndInstallAPK } from '../../services/updateDownloader';
 import { useAuth } from '../../context/AuthContext';
 import { chatAPI } from '../../services/api';
+import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { StatusService, Status, UserStatusGroup } from '../../services/StatusService';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
@@ -134,7 +135,7 @@ const formatMessageTime = (dateString: string | undefined | null) => {
   }
 };
 
-const renderLastMessage = (lastMessage: Conversation['last_message']) => {
+const renderLastMessageContent = (lastMessage: Conversation['last_message']) => {
   if (!lastMessage) return 'No messages yet';
   
   const { message_type, content } = lastMessage;
@@ -151,6 +152,58 @@ const renderLastMessage = (lastMessage: Conversation['last_message']) => {
     case 'text':
     default:
       return content || '';
+  }
+};
+
+const renderMessageTicks = (lastMessage: any) => {
+  const status = lastMessage.status || (lastMessage.is_read ? 'read' : (lastMessage.delivered_at ? 'delivered' : 'sent'));
+  
+  switch (status) {
+    case 'read':
+      return (
+        <Icon 
+          name="checkmark-done" 
+          size={16} 
+          color="#8100D1" 
+          style={{ 
+            marginRight: 3,
+            textShadowColor: '#8100D1',
+            textShadowOffset: { width: 0.1, height: 0.1 },
+            textShadowRadius: 1,
+          }} 
+        />
+      );
+    case 'delivered':
+      return (
+        <Icon 
+          name="checkmark-done" 
+          size={16} 
+          color="#A0A0A0" 
+          style={{ 
+            marginRight: 3,
+            textShadowColor: '#A0A0A0',
+            textShadowOffset: { width: 0.1, height: 0.1 },
+            textShadowRadius: 1,
+          }} 
+        />
+      );
+    case 'sending':
+      return <Icon name="time-outline" size={14} color="#A0A0A0" style={{ marginRight: 3 }} />;
+    case 'sent':
+    default:
+      return (
+        <Icon 
+          name="checkmark" 
+          size={16} 
+          color="#A0A0A0" 
+          style={{ 
+            marginRight: 3,
+            textShadowColor: '#A0A0A0',
+            textShadowOffset: { width: 0.1, height: 0.1 },
+            textShadowRadius: 1,
+          }} 
+        />
+      );
   }
 };
 
@@ -319,6 +372,16 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   });
 
   const loadConversations = useCallback(async () => {
+    // Load from local database first for instant offline render
+    try {
+      const cached = localDatabase.getConversations();
+      if (cached && cached.length > 0) {
+        setConversations(cached.filter(c => !deletedConversationIdsRef.current.has(c.id)));
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to load cached conversations:', e);
+    }
+
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     try {
@@ -327,6 +390,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       if (Array.isArray(convs)) conversationsArray = convs;
       else if (convs?.results) conversationsArray = convs.results;
       conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
+      
+      // Cache fresh data to local DB
+      localDatabase.saveConversations(conversationsArray);
+
       const directUserIds = new Set(
         conversationsArray
           .filter(c => !c.is_group && c.other_user?.id)
@@ -352,6 +419,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 const existing = prev.find(c => c.id === newMessage.conversation);
                 if (existing) {
                     const isOwnMessage = newMessage.sender.id === user?.id;
+                    const isEdit = existing.last_message?.id === newMessage.id;
+                    const isReaction = newMessage.is_reaction === true;
                     const updated = { 
                         ...existing, 
                         last_message: {
@@ -359,22 +428,67 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                             content: newMessage.content,
                             message_type: newMessage.message_type,
                             created_at: newMessage.created_at,
-                            sender_id: newMessage.sender.id
+                            sender_id: newMessage.sender.id,
+                            status: newMessage.is_read ? 'read' : (newMessage.delivered_at ? 'delivered' : 'sent')
                         },
-                        unread_count: isOwnMessage ? (existing.unread_count || 0) : (existing.unread_count || 0) + 1 
+                        unread_count: (isEdit || isReaction)
+                          ? (existing.unread_count || 0)
+                          : (isOwnMessage ? (existing.unread_count || 0) : (existing.unread_count || 0) + 1)
                     };
+                    // Save to local cache
+                    localDatabase.saveConversation(updated);
                     return [updated, ...prev.filter(c => c.id !== newMessage.conversation)];
                 }
                 loadConversations();
                 return prev;
             });
+        } else if (message.type === 'delivered') {
+            const { message_ids } = message.data;
+            if (message_ids && Array.isArray(message_ids)) {
+                setConversations(prev => {
+                    return prev.map(c => {
+                        if (c.last_message && message_ids.includes(c.last_message.id) && c.last_message.sender_id === user?.id) {
+                            const updated = {
+                                ...c,
+                                last_message: { ...c.last_message, status: 'delivered' as const }
+                            };
+                            localDatabase.saveConversation(updated);
+                            return updated;
+                        }
+                        return c;
+                    });
+                });
+            }
+        } else if (message.type === 'read_receipt') {
+            const { message_ids } = message.data;
+            if (message_ids && Array.isArray(message_ids)) {
+                setConversations(prev => {
+                    return prev.map(c => {
+                        if (c.last_message && message_ids.includes(c.last_message.id) && c.last_message.sender_id === user?.id) {
+                            const updated = {
+                                ...c,
+                                last_message: { ...c.last_message, status: 'read' as const }
+                            };
+                            localDatabase.saveConversation(updated);
+                            return updated;
+                        }
+                        return c;
+                    });
+                });
+            }
         }
     });
 
     const readSub = DeviceEventEmitter.addListener('conversation_read', ({ conversationId }) => {
-        setConversations(prev => prev.map(c => 
-            c.id === parseInt(conversationId, 10) ? { ...c, unread_count: 0 } : c
-        ));
+        const cId = parseInt(conversationId, 10);
+        setConversations(prev => prev.map(c => {
+            if (c.id === cId) {
+                const updated = { ...c, unread_count: 0 };
+                localDatabase.saveConversation(updated);
+                return updated;
+            }
+            return c;
+        }));
     });
 
     return () => { 
@@ -862,7 +976,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               </View>
               <View style={styles.content}>
                 <Text style={styles.name}>{String(item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || item.other_user?.email || 'User') || '')}</Text>
-                <Text style={styles.lastMessage} numberOfLines={1}>{renderLastMessage(item.last_message)}</Text>
+                <View style={styles.lastMessageRow}>
+                  {item.last_message && item.last_message.sender_id === user?.id && renderMessageTicks(item.last_message)}
+                  <Text style={styles.lastMessage} numberOfLines={1}>
+                    {renderLastMessageContent(item.last_message)}
+                  </Text>
+                </View>
               </View>
               <View style={styles.rightContent}>
                 <Text style={styles.time}>{formatMessageTime(item.last_message?.created_at)}</Text>
@@ -949,7 +1068,8 @@ const styles = StyleSheet.create({
   conversationItem: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: spacing.md },
   content: { flex: 1, justifyContent: 'center', marginLeft: spacing.md },
   name: { fontSize: fontSize.lg, fontWeight: '600', color: '#000' },
-  lastMessage: { fontSize: fontSize.md, color: '#666' },
+  lastMessageRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  lastMessage: { fontSize: fontSize.md, color: '#666', flex: 1 },
   tabContainer: { flexDirection: 'row', padding: spacing.sm, justifyContent: 'space-evenly' },
   tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },

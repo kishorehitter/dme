@@ -312,13 +312,32 @@ class FCMService {
     const displayed = await notifee.getDisplayedNotifications();
     const existing = displayed.find((n) => n.id === notifId);
 
-    let messages: any[] = (existing?.notification?.android?.style as any)?.messages ?? [];
+    let messages: any[] = [];
+    let msgIds: string[] = [];
+    if (existing) {
+      if ((existing.notification?.android?.style as any)?.messages) {
+        messages = [...(existing.notification.android.style as any).messages];
+      }
+      if (existing.notification?.data?.msg_ids) {
+        try {
+          msgIds = JSON.parse(existing.notification.data.msg_ids);
+        } catch (e) {
+          msgIds = [];
+        }
+      }
+    }
+
     messages.push({
       text: data.notif_body || '',
       timestamp: Date.now(),
       person: { name: data.sender || 'Someone' },
     });
-    if (messages.length > 10) messages = messages.slice(-10);
+    msgIds.push(String(data.msg_id || ''));
+
+    if (messages.length > 10) {
+      messages.shift();
+      msgIds.shift();
+    }
 
     const largeIcon = (data.sender_avatar && typeof data.sender_avatar === 'string' && data.sender_avatar.startsWith('http')) 
       ? data.sender_avatar 
@@ -328,7 +347,10 @@ class FCMService {
       id: notifId,
       title: data.sender || 'New Message',
       body: data.notif_body || '',
-      data: data as { [key: string]: string },
+      data: {
+        ...(data as { [key: string]: string }),
+        msg_ids: JSON.stringify(msgIds),
+      },
       android: {
         channelId: CHANNELS.MESSAGE,
         importance: AndroidImportance.HIGH,
@@ -419,6 +441,95 @@ class FCMService {
     await notifee.displayNotification(notificationPayload);
   }
 
+  async handleMessageEditNotification(data: FCMData): Promise<void> {
+    const convId = data.conv_id || data.conversation_id;
+    const msgId = data.msg_id;
+    if (!convId || !msgId) return;
+
+    const notificationId = `chat_notif_${convId}`;
+    const displayedNotifications = await notifee.getDisplayedNotifications();
+    const existingNotification = displayedNotifications.find(
+      (n) => n.id === notificationId
+    );
+
+    if (existingNotification && existingNotification.notification.android?.style?.messages) {
+      let messages = [...(existingNotification.notification.android.style as any).messages];
+      let msgIds: string[] = [];
+      if (existingNotification.notification.data?.msg_ids) {
+        try {
+          msgIds = JSON.parse(existingNotification.notification.data.msg_ids);
+        } catch (e) {}
+      }
+
+      const targetIndex = msgIds.indexOf(String(msgId));
+      if (targetIndex >= 0 && targetIndex < messages.length) {
+        messages[targetIndex].text = data.notif_body || '';
+        
+        const payload: any = {
+          ...existingNotification.notification,
+          android: {
+            ...existingNotification.notification.android,
+            onlyAlertOnce: true,
+            style: {
+              ...existingNotification.notification.android.style,
+              messages: messages,
+            }
+          }
+        };
+        await notifee.displayNotification(payload);
+      }
+    }
+  }
+
+  async handleMessageDeleteNotification(data: FCMData): Promise<void> {
+    const convId = data.conv_id || data.conversation_id;
+    const msgId = data.msg_id;
+    if (!convId || !msgId) return;
+
+    const notificationId = `chat_notif_${convId}`;
+    const displayedNotifications = await notifee.getDisplayedNotifications();
+    const existingNotification = displayedNotifications.find(
+      (n) => n.id === notificationId
+    );
+
+    if (existingNotification && existingNotification.notification.android?.style?.messages) {
+      let messages = [...(existingNotification.notification.android.style as any).messages];
+      let msgIds: string[] = [];
+      if (existingNotification.notification.data?.msg_ids) {
+        try {
+          msgIds = JSON.parse(existingNotification.notification.data.msg_ids);
+        } catch (e) {}
+      }
+
+      const targetIndex = msgIds.indexOf(String(msgId));
+      if (targetIndex >= 0) {
+        messages.splice(targetIndex, 1);
+        msgIds.splice(targetIndex, 1);
+
+        if (messages.length === 0) {
+          await notifee.cancelNotification(notificationId).catch(() => {});
+        } else {
+          const payload: any = {
+            ...existingNotification.notification,
+            data: {
+              ...existingNotification.notification.data,
+              msg_ids: JSON.stringify(msgIds),
+            },
+            android: {
+              ...existingNotification.notification.android,
+              onlyAlertOnce: true,
+              style: {
+                ...existingNotification.notification.android.style,
+                messages: messages,
+              }
+            }
+          };
+          await notifee.displayNotification(payload);
+        }
+      }
+    }
+  }
+
   async routeMessage(remoteMessage: FirebaseMessagingTypes.RemoteMessage): Promise<void> {
     const data = (remoteMessage.data ?? {}) as FCMData;
     
@@ -483,10 +594,21 @@ class FCMService {
           break;
         }
 
+        case 'reaction':
         case 'new_message': {
           const convId = data.conv_id || data.conversation_id;
           if (convId && this._activeConversationId === String(convId)) return;
           await this.displayGroupedMessageNotification(data);
+          break;
+        }
+
+        case 'message_edit': {
+          await this.handleMessageEditNotification(data);
+          break;
+        }
+
+        case 'message_delete': {
+          await this.handleMessageDeleteNotification(data);
           break;
         }
 

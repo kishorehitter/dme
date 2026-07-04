@@ -91,8 +91,6 @@ const ChatInputArea = memo(({
       }
     }, []);
 
-
-
     const handleContentCommitted = useCallback((event: any) => {
         const { uri, mimeType } = event.nativeEvent;
         if (uri) setStickerPreview({ uri, mimeType });
@@ -107,22 +105,12 @@ const ChatInputArea = memo(({
     return (
         <View style={styles.inputContainer}>
           {!isRecording && (
-            <>
-              <TouchableOpacity
-                style={styles.attachmentButton}
-                onPress={handleAttachment}
-              >
-                <Icon name="add-outline" size={22} color="#666" />
-              </TouchableOpacity>
-              {!isKeyboardVisible && (
-                <TouchableOpacity
-                  style={styles.attachmentButton}
-                  onPress={handleCameraCapture}
-                >
-                  <Icon name="camera" size={24} color="#666" />
-                </TouchableOpacity>
-              )}
-            </>
+            <TouchableOpacity
+              style={styles.attachmentButton}
+              onPress={handleAttachment}
+            >
+              <Icon name="add-outline" size={22} color="#666" />
+            </TouchableOpacity>
           )}
 
           {!isRecording && (
@@ -141,7 +129,7 @@ const ChatInputArea = memo(({
             />
           )}
 
-          {!isKeyboardVisible && (
+          {(!inputText || inputText.trim() === '' || isRecording) ? (
             <Animated.View
               style={[
                 styles.micButton,
@@ -157,9 +145,7 @@ const ChatInputArea = memo(({
                 color={isRecording ? '#FFF' : '#666'}
               />
             </Animated.View>
-          )}
-
-          {!isRecording && (
+          ) : (
             <TouchableOpacity
               style={[
                 styles.sendButton,
@@ -187,7 +173,7 @@ const ChatInputArea = memo(({
 const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     paddingBottom: 2,
   },
   attachmentButton: {

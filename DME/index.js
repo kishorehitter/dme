@@ -239,9 +239,15 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
     await notifee.cancelNotification('incoming_call_notification').catch(() => {});
   }
 
-  // 4. Handle New Message (WhatsApp Style Grouping)
-  else if (data.type === 'new_message') {
+  // 4. Handle New Message, Reaction, Edit, or Delete
+  else if (data.type === 'new_message' || data.type === 'reaction') {
     await displayGroupedNotification(data);
+  }
+  else if (data.type === 'message_edit') {
+    await handleMessageEditNotification(data);
+  }
+  else if (data.type === 'message_delete') {
+    await handleMessageDeleteNotification(data);
   }
 
   // 5. Handle Music Invite
@@ -298,11 +304,18 @@ async function displayGroupedNotification(data) {
   );
 
   let messages = [];
-  if (
-    existingNotification &&
-    existingNotification.notification.android?.style?.messages
-  ) {
-    messages = [...existingNotification.notification.android.style.messages];
+  let msgIds = [];
+  if (existingNotification) {
+    if (existingNotification.notification.android?.style?.messages) {
+      messages = [...existingNotification.notification.android.style.messages];
+    }
+    if (existingNotification.notification.data?.msg_ids) {
+      try {
+        msgIds = JSON.parse(existingNotification.notification.data.msg_ids);
+      } catch (e) {
+        msgIds = [];
+      }
+    }
   }
 
   // Add the new message to the list
@@ -313,10 +326,12 @@ async function displayGroupedNotification(data) {
       name: data.sender || 'Someone',
     },
   });
+  msgIds.push(String(data.msg_id || ''));
 
   // Keep only the last 10 messages for display
   if (messages.length > 10) {
     messages.shift();
+    msgIds.shift();
   }
 
   await notifee.createChannel({
@@ -333,7 +348,10 @@ async function displayGroupedNotification(data) {
     id: notificationId,
     title: data.sender || 'New Message',
     body: data.notif_body || '',
-    data: data,
+    data: {
+      ...data,
+      msg_ids: JSON.stringify(msgIds),
+    },
     android: {
       channelId: CHANNELS.MESSAGE,
       importance: AndroidImportance.HIGH,
@@ -561,5 +579,94 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     }
   }
 });
+
+async function handleMessageEditNotification(data) {
+  const convId = data.conv_id || data.conversation_id;
+  const msgId = data.msg_id;
+  if (!convId || !msgId) return;
+
+  const notificationId = `chat_notif_${convId}`;
+  const displayedNotifications = await notifee.getDisplayedNotifications();
+  const existingNotification = displayedNotifications.find(
+    n => n.id === notificationId,
+  );
+
+  if (existingNotification && existingNotification.notification.android?.style?.messages) {
+    let messages = [...existingNotification.notification.android.style.messages];
+    let msgIds = [];
+    if (existingNotification.notification.data?.msg_ids) {
+      try {
+        msgIds = JSON.parse(existingNotification.notification.data.msg_ids);
+      } catch (e) {}
+    }
+
+    const targetIndex = msgIds.indexOf(String(msgId));
+    if (targetIndex >= 0 && targetIndex < messages.length) {
+      messages[targetIndex].text = data.notif_body || '';
+      
+      const payload = {
+        ...existingNotification.notification,
+        android: {
+          ...existingNotification.notification.android,
+          onlyAlertOnce: true,
+          style: {
+            ...existingNotification.notification.android.style,
+            messages: messages,
+          }
+        }
+      };
+      await notifee.displayNotification(payload);
+    }
+  }
+}
+
+async function handleMessageDeleteNotification(data) {
+  const convId = data.conv_id || data.conversation_id;
+  const msgId = data.msg_id;
+  if (!convId || !msgId) return;
+
+  const notificationId = `chat_notif_${convId}`;
+  const displayedNotifications = await notifee.getDisplayedNotifications();
+  const existingNotification = displayedNotifications.find(
+    n => n.id === notificationId,
+  );
+
+  if (existingNotification && existingNotification.notification.android?.style?.messages) {
+    let messages = [...existingNotification.notification.android.style.messages];
+    let msgIds = [];
+    if (existingNotification.notification.data?.msg_ids) {
+      try {
+        msgIds = JSON.parse(existingNotification.notification.data.msg_ids);
+      } catch (e) {}
+    }
+
+    const targetIndex = msgIds.indexOf(String(msgId));
+    if (targetIndex >= 0) {
+      messages.splice(targetIndex, 1);
+      msgIds.splice(targetIndex, 1);
+
+      if (messages.length === 0) {
+        await notifee.cancelNotification(notificationId).catch(() => {});
+      } else {
+        const payload = {
+          ...existingNotification.notification,
+          data: {
+            ...existingNotification.notification.data,
+            msg_ids: JSON.stringify(msgIds),
+          },
+          android: {
+            ...existingNotification.notification.android,
+            onlyAlertOnce: true,
+            style: {
+              ...existingNotification.notification.android.style,
+              messages: messages,
+            }
+          }
+        };
+        await notifee.displayNotification(payload);
+      }
+    }
+  }
+}
 
 AppRegistry.registerComponent(appName, () => App);

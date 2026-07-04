@@ -384,8 +384,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         print(f"   ❤️ Reaction: message {message_id}, emoji {emoji} by user {self.user.id}")
 
-        # Save to DB and get all reactions for this message
-        reactions = await self.save_message_reaction(message_id, emoji)
+        # Save to DB and get info
+        res = await self.save_message_reaction(message_id, emoji)
+        if not res:
+            return
+
+        reactions = res['reactions']
+        conversation_id = res['conversation_id']
+        message_content = res['message_content']
+        recipient = res['recipient']
+        recipient_id = res['recipient_id']
 
         print(f"   📡 Broadcasting reaction to room {self.room_group_name}: message={message_id}, reactions={reactions}")
 
@@ -400,9 +408,54 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         print(f"   ✅ Reaction broadcast sent")
 
+        # Send new_message_summary to participants' chatlist updates (without incrementing badge)
+        participants = await self.get_conversation_participants_async()
+        for p_id in participants:
+            await self.channel_layer.group_send(
+                f'user_updates_{p_id}',
+                {
+                    'type': 'new_message_summary',
+                    'data': {
+                        'id': message_id,
+                        'conversation': conversation_id,
+                        'content': "Reacted to a message" if emoji else "Removed reaction",
+                        'message_type': 'text',
+                        'created_at': timezone.now().isoformat(),
+                        'sender': {
+                            'id': self.user.id,
+                            'email': self.user.email,
+                            'display_name': self.user.display_name or self.user.email,
+                            'profile_picture': self.user.clean_profile_picture_url if hasattr(self.user, 'clean_profile_picture_url') else None
+                        },
+                        'is_reaction': True
+                    }
+                }
+            )
+
+        # Send FCM notification to original message sender if they are not the reactor
+        if recipient_id != self.user.id and emoji:
+            try:
+                from notifications.fcm_service import FCMService
+                from asgiref.sync import sync_to_async
+                
+                sender_name = self.user.display_name or self.user.email
+                sender_avatar = self.user.clean_profile_picture_url if hasattr(self.user, 'clean_profile_picture_url') else None
+                
+                await sync_to_async(FCMService.send_reaction_notification)(
+                    recipient=recipient,
+                    sender_name=sender_name,
+                    emoji=emoji,
+                    message_preview=message_content,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    sender_avatar=sender_avatar
+                )
+            except Exception as fcm_err:
+                print(f"Warning: Reaction FCM send failed: {fcm_err}")
+
     @database_sync_to_async
     def save_message_reaction(self, message_id, emoji):
-        """Save reaction to database and return all reactions for the message."""
+        """Save reaction to database and return info for reaction update & FCM."""
         from .models import Message, MessageReaction
         try:
             message = Message.objects.get(id=message_id)
@@ -423,10 +476,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             # Get all reactions for this message
             all_reactions = MessageReaction.objects.filter(message=message)
-            return {str(r.user_id): r.emoji for r in all_reactions}
+            reactions_dict = {str(r.user_id): r.emoji for r in all_reactions}
+            
+            recipient = message.sender
+            recipient_id = recipient.id
+            
+            return {
+                'reactions': reactions_dict,
+                'conversation_id': message.conversation_id,
+                'message_content': message.content,
+                'recipient': recipient,
+                'recipient_id': recipient_id
+            }
         except Exception as e:
             print(f"Error saving reaction: {e}")
-            return {}
+            return None
 
     async def broadcast_reaction(self, event):
         """Send reaction update to WebSocket."""
@@ -465,6 +529,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'message_ids': event['message_ids'],
                 'user_id': event['user_id']
             }
+        }))
+
+    async def message_edit(self, event):
+        """Handle message edit notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_edit',
+            'data': event['data']
+        }))
+
+    async def message_delete(self, event):
+        """Handle message delete notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_delete',
+            'data': event['data']
         }))
 
     async def chat_message(self, event):

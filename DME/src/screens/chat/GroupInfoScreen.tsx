@@ -20,25 +20,7 @@ import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useAuth } from '../../context/AuthContext';
 import Icon from 'react-native-vector-icons/Ionicons';
 
-const AvatarWithFallback = ({ uri, displayName, style }: any) => {
-  const [error, setError] = useState(false);
-  if (!uri || error) {
-    return (
-      <View style={[style, { backgroundColor: '#E8DEF8', justifyContent: 'center', alignItems: 'center' }]}>
-        <Text style={{ color: '#8100D1', fontWeight: '600', fontSize: 16 }}>
-          {(displayName || 'U').charAt(0).toUpperCase()}
-        </Text>
-      </View>
-    );
-  }
-  return (
-    <Image
-      source={{ uri: resolveImageUrl(uri) }}
-      style={style}
-      onError={() => setError(true)}
-    />
-  );
-};
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 
 export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   const { conversationId } = route.params;

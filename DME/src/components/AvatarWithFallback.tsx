@@ -10,6 +10,21 @@ const getInitials = (name: string) => {
   return match ? match[0].toUpperCase() : null;
 };
 
+const AVATAR_COLORS = [
+  '#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', 
+  '#2196F3', '#03A9F4', '#00BCD4', '#009688', '#4CAF50', 
+  '#8BC34A', '#FF9800', '#FF5722', '#795548', '#607D8B'
+];
+
+const getAvatarColor = (name: string) => {
+  if (!name) return AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+};
+
 interface AvatarProps {
   uri?:         string | null;
   displayName:  string;
@@ -83,9 +98,10 @@ const AvatarWithFallback = ({
 
     const initial = getInitials(displayName);
     if (initial) {
+      const bgColor = getAvatarColor(displayName);
       return (
-        <View style={[styles.fill, styles.placeholder, { backgroundColor: colors.primary + '20' }]}>
-          <Text style={{ fontSize: derivedFontSize, color: colors.primary, fontWeight: 'bold' }}>
+        <View style={[styles.fill, styles.placeholder, { backgroundColor: bgColor }]}>
+          <Text style={{ fontSize: derivedFontSize, color: '#FFFFFF', fontWeight: 'bold' }}>
             {initial}
           </Text>
         </View>

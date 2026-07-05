@@ -66,54 +66,7 @@ const FEMALE_STICKERS = [
   { id: 'f6', emoji: '👩‍🚀', label: 'Astronaut' },
 ];
 
-// Helper to get alphabetic initials safely
-const getInitials = (name: string) => {
-  if (typeof name !== 'string') return null;
-  const match = name.trim().match(/[a-zA-Z]/);
-  return match ? match[0].toUpperCase() : null;
-};
-
-const AvatarWithFallback = ({ uri, displayName, sticker, style }: any) => {
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    setError(false);
-  }, [uri]);
-
-  if (!uri || error) {
-    if (sticker) {
-      return (
-        <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
-            <Text style={{ fontSize: style.width * 0.5 }}>{sticker}</Text>
-        </View>
-      );
-    }
-    
-    const initial = getInitials(displayName);
-    if (initial) {
-        return (
-          <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center', backgroundColor: colors.primary + '20' }]}>
-            <Text style={{ fontSize: style.width * 0.4, color: colors.primary, fontWeight: 'bold' }}>{initial}</Text>
-          </View>
-        );
-    }
-
-    return (
-      <View style={[style, styles.friendAvatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Icon name="person" size={style.width / 2} color={colors.primary} />
-      </View>
-    );
-  }
-
-  return (
-    <Image
-      key={uri}
-      source={{ uri: resolveImageUrl(uri) }}
-      style={style}
-      onError={() => setError(true)}
-    />
-  );
-};
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   navigation,

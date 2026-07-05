@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity,
   ActivityIndicator, Alert, Image, StatusBar,
 } from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
 import {
   GoogleOneTapSignIn, isSuccessResponse,
   isNoSavedCredentialFoundResponse, isCancelledResponse,
@@ -23,19 +24,20 @@ const GoogleLoginScreen = () => {
 
   useEffect(() => {
     StatusBar.setBarStyle('dark-content');
-    try { changeNavigationBarColor('#ffffff', true, false); } catch (e) {}
+    try { changeNavigationBarColor('transparent', true, false); } catch (e) {}
+    
+    // Reset to solid white when leaving the login screen so other screens don't get messed up
+    return () => {
+      try { changeNavigationBarColor('#ffffff', true, false); } catch (e) {}
+    };
   }, []);
 
   const enterLoadingState = () => {
     setLoading(true);
-    StatusBar.setBarStyle('light-content');
-    try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
   };
 
   const exitLoadingState = () => {
     setLoading(false);
-    StatusBar.setBarStyle('dark-content');
-    try { changeNavigationBarColor('#ffffff', true, false); } catch (e) {}
   };
 
   const handleGoogleLogin = async () => {
@@ -71,9 +73,14 @@ const GoogleLoginScreen = () => {
   };
 
   return (
-    <View style={styles.container}>
+    <LinearGradient
+      colors={['#000000', '#111418', '#111820', '#173050', '#1D5875', '#5592B1', '#96C5DC', '#B9DCED', '#7EB9D8', '#4F9FC2', '#2B78A2', '#1A5570', '#1A2B3F', '#161b20', '#111111']}
+      useAngle={true}
+      angle={355}
+      style={styles.container}
+    >
       <StatusBar
-        barStyle={loading ? 'light-content' : 'dark-content'}
+        barStyle="dark-content"
         backgroundColor="transparent"
         translucent={true}
       />
@@ -83,7 +90,7 @@ const GoogleLoginScreen = () => {
       ]}>
         <Image
           source={require('../assets/logo.png')}
-          style={{ width: 100, height: 100, borderRadius: 5 }}
+          style={{ width: 120, height: 120, borderRadius: 5 }}
         />
         <Text style={styles.appName}>DME</Text>
 
@@ -91,7 +98,7 @@ const GoogleLoginScreen = () => {
           style={styles.googleButton}
           onPress={handleGoogleLogin}
           disabled={loading}
-          activeOpacity={0.8}
+          activeOpacity={0.9}
         >
           <View style={styles.buttonContent}>
             <Image
@@ -108,18 +115,23 @@ const GoogleLoginScreen = () => {
       </View>
 
       {loading && (
-        <View style={styles.fullScreenLoader} pointerEvents="auto">
-          <ActivityIndicator color="#ffffff" size="large" />
-        </View>
+        <LinearGradient
+          colors={['#000000', '#111418', '#111820', '#173050', '#1D5875', '#5592B1', '#96C5DC', '#B9DCED', '#7EB9D8', '#4F9FC2', '#2B78A2', '#1A5570', '#1A2B3F', '#161b20', '#111111']}
+          useAngle={true}
+          angle={355}
+          style={styles.fullScreenLoader}
+          pointerEvents="auto"
+        >
+          <ActivityIndicator color="#fafafa" size="large" />
+        </LinearGradient>
       )}
-    </View>
+    </LinearGradient>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
   },
   content: {
     flex: 1,
@@ -142,12 +154,11 @@ const styles = StyleSheet.create({
   },
   googleButtonText: { color: '#242424', fontSize: 16, fontWeight: '600' },
   footer: {
-    fontSize: 12, color: '#999',
+    fontSize: 12, color: '#000000',
     textAlign: 'center', marginTop: 20, paddingHorizontal: 20,
   },
   fullScreenLoader: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#111111',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 999,

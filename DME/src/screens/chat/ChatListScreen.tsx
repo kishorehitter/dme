@@ -567,10 +567,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           </TouchableOpacity>
         ) : (
           <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}>
-              <Image
-                  source={require('../../assets/logo.png')}
-                  style={{ width: 35, height: 35, borderRadius: 14, marginRight: 8 }}
-              />
               <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
           </View>
         )

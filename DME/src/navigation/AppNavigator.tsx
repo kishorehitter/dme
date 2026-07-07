@@ -26,6 +26,7 @@ import {
   CallLogTabScreen,
   StatusPrivacyScreen,
   SettingsScreen,
+  TriviaSoloScreen,
 } from '../screens';
 import { colors, spacing } from '../utils/theme';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
@@ -108,7 +109,7 @@ const MainTabs = () => {
             <Pressable {...props} android_ripple={{ color: 'transparent' }} />
           );
         },
-        tabBarActiveTintColor: '#8100D1',
+        tabBarActiveTintColor: '#4597f5f6',
         tabBarInactiveTintColor: 'gray',
         tabBarHideOnKeyboard: true,
         tabBarLabelStyle: { fontSize: 12 },
@@ -194,11 +195,11 @@ const ChatStack: React.FC<any> = ({ logout }) => {
           elevation: 0,
           shadowOpacity: 0,
         },
-        headerTintColor: '#8100D1',
+        headerTintColor: '#4597f5f6',
         headerTitleStyle: {
           fontWeight: 'bold',
           fontSize: 20,
-          color: '#8100D1',
+          color: '#4597f5f6',
         },
       }}
     >
@@ -239,6 +240,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       <Stack.Screen name="YouTubeDiscovery" component={YouTubeDiscoveryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusPrivacy" component={StatusPrivacyScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="TriviaSolo" component={TriviaSoloScreen} options={{ headerShown: false }} />
     </Stack.Navigator>
       {musicRoom.roomCode && (
         <View

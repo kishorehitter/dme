@@ -68,6 +68,13 @@ export const localDatabase = {
         );
       `);
 
+      // Migration: Add sender_id column to messages table if it doesn't exist
+      try {
+        db.execute('ALTER TABLE messages ADD COLUMN sender_id INTEGER;');
+      } catch (err) {
+        // Column already exists, safe to ignore
+      }
+
       console.log('📂 Offline Database initialized successfully.');
     } catch (error) {
       console.error('❌ Failed to initialize offline database:', error);
@@ -187,8 +194,8 @@ export const localDatabase = {
     try {
       db.execute(
         `INSERT OR REPLACE INTO messages (
-          local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         [
           localId,
           msg.id || null, // Can be NULL for optimistic messages
@@ -203,6 +210,7 @@ export const localDatabase = {
           status,
           0, // is_deleted = 0
           msg.edited_at || null,
+          msg.sender?.id || null,
         ]
       );
     } catch (error) {
@@ -221,8 +229,8 @@ export const localDatabase = {
           const localId = msg.local_id || msg.id.toString();
           tx.execute(
             `INSERT OR REPLACE INTO messages (
-              local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+              local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
             [
               localId,
               msg.id,
@@ -237,6 +245,7 @@ export const localDatabase = {
               msg.is_read ? 'read' : 'sent',
               msg.is_deleted ? 1 : 0,
               msg.edited_at || null,
+              msg.sender?.id || null,
             ]
           );
         }
@@ -263,7 +272,7 @@ export const localDatabase = {
         local_id: row.local_id,
         id: row.id,
         sender: {
-          id: 0, // Not strictly required for bubble rendering if we only need display_name
+          id: row.sender_id || 0,
           display_name: row.user,
           email: row.user,
         },

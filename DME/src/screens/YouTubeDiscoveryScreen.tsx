@@ -89,7 +89,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       }
     } catch (e) {
       console.error('YouTube search failed', e);
-      Toast.show({ type: 'error', text1: 'Search failed' });
     } finally {
       setIsYtSearching(false);
     }
@@ -709,7 +708,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 size={40}
                 color={selectedSource === 'drive' ? '#4285F4' : '#FF0000'}
               />
-              <Icon name="play-circle" size={60} color="#8100D1" />
+              <Icon name="play-circle" size={60} color="#4597f5f6" />
               <Text style={styles.videoSelectedText}>Ready to Play!</Text>
               <Text style={styles.videoSourceText}>
                 {selectedSource === 'drive' ? '📁 Google Drive' : '▶️ YouTube'}
@@ -771,14 +770,14 @@ const styles = StyleSheet.create({
   topSection:        { width: '100%', alignItems: 'center' },
   namingTitle:       { color: '#000', fontSize: 24, fontWeight: '800', marginBottom: 20 },
   namingInput:       { width: '100%', height: 44, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: 15, paddingHorizontal: 20, color: '#000', fontSize: 16, textAlign: 'center', borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' },
-  submitBtn:         { marginTop: 20, backgroundColor: '#8100D1', paddingHorizontal: 30, paddingVertical: 12, borderRadius: 25 },
+  submitBtn:         { marginTop: 20, backgroundColor: '#4597f5f6', paddingHorizontal: 30, paddingVertical: 12, borderRadius: 25 },
   submitBtnDisabled: { opacity: 0.5 },
   submitBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
   centerSection:     { alignItems: 'center', gap: 15 },
   videoSelectedText: { color: '#16a34a', fontSize: 20, fontWeight: '800' },
   videoSourceText:   { color: 'rgba(0,0,0,0.6)', fontSize: 13, fontWeight: '600' },
   bottomSection:     { width: '100%', alignItems: 'center', paddingBottom: 40 },
-  actionBtn:         { flexDirection: 'row', backgroundColor: '#8100D1', paddingHorizontal: 24, paddingVertical: 14, borderRadius: 25, alignItems: 'center' },
+  actionBtn:         { flexDirection: 'row', backgroundColor: '#4597f5f6', paddingHorizontal: 24, paddingVertical: 14, borderRadius: 25, alignItems: 'center' },
   actionBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
   bottomSpacer:      { height: 100 },
 });

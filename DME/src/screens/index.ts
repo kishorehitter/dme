@@ -25,3 +25,7 @@ export { default as IncomingCallScreen } from './IncomingCallScreen';
 
 // Settings Screen
 export { SettingsScreen } from './chat/SettingsScreen';
+
+// Trivia Screen
+export { TriviaSoloScreen } from './TriviaSoloScreen';
+

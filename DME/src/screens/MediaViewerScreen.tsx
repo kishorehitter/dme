@@ -139,7 +139,7 @@ const styles = StyleSheet.create({
   iconBtn: { padding: 10, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 25 },
   playPauseBtn: { padding: 10 },
   progressContainer: { flex: 1, height: 4, backgroundColor: '#444', marginHorizontal: 15, borderRadius: 2 },
-  progressBar: { height: '100%', backgroundColor: '#8100D1', borderRadius: 2 },
+  progressBar: { height: '100%', backgroundColor: '#4597f5f6', borderRadius: 2 },
   timeText: { color: '#fff', fontSize: 12, minWidth: 60, textAlign: 'right' },
 });
 

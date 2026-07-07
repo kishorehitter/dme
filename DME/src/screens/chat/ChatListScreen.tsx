@@ -164,10 +164,10 @@ const renderMessageTicks = (lastMessage: any) => {
         <Icon 
           name="checkmark-done" 
           size={16} 
-          color="#8100D1" 
+          color="#4597f5f6" 
           style={{ 
             marginRight: 3,
-            textShadowColor: '#8100D1',
+            textShadowColor: '#4597f5f6',
             textShadowOffset: { width: 0.1, height: 0.1 },
             textShadowRadius: 1,
           }} 
@@ -208,10 +208,24 @@ const renderMessageTicks = (lastMessage: any) => {
 };
 
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    try {
+      const cached = localDatabase.getConversations();
+      return cached && cached.length > 0 ? cached : [];
+    } catch {
+      return [];
+    }
+  });
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
   const [activeTab, setActiveTab] = useState<'all' | 'chats' | 'groups' | 'unread'>('all');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    try {
+      const cached = localDatabase.getConversations();
+      return !cached || cached.length === 0;
+    } catch {
+      return true;
+    }
+  });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const { user, logout } = useAuth();
@@ -372,16 +386,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   });
 
   const loadConversations = useCallback(async () => {
-    // Load from local database first for instant offline render
-    try {
-      const cached = localDatabase.getConversations();
-      if (cached && cached.length > 0) {
-        setConversations(cached.filter(c => !deletedConversationIdsRef.current.has(c.id)));
-      }
-    } catch (e) {
-      console.warn('⚠️ Failed to load cached conversations:', e);
-    }
-
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     try {
@@ -558,7 +562,16 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       headerTitle: () => (
         selectionMode ? (
           <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
-        ) : null
+        ) : (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('TriviaSolo')}
+          >
+            <View style={{ alignItems: 'center' }}>
+              <Icon name="book-outline" size={30} color="#000000" />
+              
+            </View>
+          </TouchableOpacity>
+        )
       ),
       headerLeft: () => (
         selectionMode ? (
@@ -566,9 +579,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
           </TouchableOpacity>
         ) : (
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}>
-              <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#8212c7' }}>DME</Text>
-          </View>
+          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#4597f5f6', marginLeft: 16 }}>DME</Text>
         )
       ),
       headerRight: () => (
@@ -627,7 +638,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 </View>
                 <View ref={menuBtnRef} collapsable={false}>
                   <TouchableOpacity onPress={() => setMenuVisible(true)}>
-                      <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+                      <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
                   </TouchableOpacity>
                 </View>
              </>
@@ -692,7 +703,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             shadowRadius: 4,
             elevation: 5,
           }}>
-            <ActivityIndicator size="large" color="#8100D1" style={{ marginBottom: 16 }} />
+            <ActivityIndicator size="large" color="#4597f5f6" style={{ marginBottom: 16 }} />
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 8 }}>
               Downloading Update
             </Text>
@@ -710,10 +721,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               <View style={{
                 width: `${downloadProgress}%`,
                 height: '100%',
-                backgroundColor: '#8100D1',
+                backgroundColor: '#4597f5f6',
               }} />
             </View>
-            <Text style={{ fontSize: 14, fontWeight: '600', color: '#8100D1' }}>
+            <Text style={{ fontSize: 14, fontWeight: '600', color: '#4597f5f6' }}>
               {downloadProgress}%
             </Text>
           </View>
@@ -721,7 +732,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       </Modal>
       <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
         <LinearGradient
-          colors={['#FF007F', '#7F00FF']}
+          colors={['#424242f6', '#4597f5f6']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={{ padding: 1.5, borderRadius: 24 }}
@@ -932,7 +943,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             >
               {selectionMode && (
                 <View style={styles.checkboxContainer}>
-                  <Icon name={isSelected ? "checkbox" : "square-outline"} size={22} color="#8100D1" />
+                  <Icon name={isSelected ? "checkbox" : "square-outline"} size={22} color="#4597f5f6" />
                 </View>
               )}
               <View style={{ position: 'relative' }}>
@@ -947,7 +958,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                     width:        50,
                     height:       50,
                     borderRadius: 25,
-                    ...(hasStatus && { borderWidth: 2.5, borderColor: '#8100D1', }),
+                    ...(hasStatus && { borderWidth: 2.5, borderColor: '#4597f5f6', }),
                   }}
                   onPress={() => {
                     if (hasStatus) {
@@ -1053,7 +1064,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   );
 };
 
-const THEME_COLOR = '#8100D1';
+const THEME_COLOR = '#4597f5f6';
 const BG_COLOR = '#E8DEF8';
 
 const styles = StyleSheet.create({
@@ -1070,7 +1081,7 @@ const styles = StyleSheet.create({
   tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
-  activeTabText: { color: THEME_COLOR, fontWeight: '700' },
+  activeTabText: { color: '#4597f5f6', fontWeight: '700' },
   logItemSelected: {
     backgroundColor: '#F8F0FF',
   },
@@ -1094,7 +1105,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   fabWrapper: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl },
-  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
 
   onlineDot: {
     position: 'absolute',
@@ -1114,7 +1125,7 @@ const styles = StyleSheet.create({
   previewText: {fontSize: 180, fontWeight: 'bold', color: THEME_COLOR },
   previewName: { fontSize: 20, fontWeight: 'bold' },
   unreadBadge: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     borderRadius: 12,
     minWidth: 24,
     height: 24,

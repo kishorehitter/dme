@@ -8,8 +8,9 @@ import Icon from 'react-native-vector-icons/Ionicons';
 interface MediaPickerModalProps {
   visible: boolean;
   onClose: () => void;
-  onMediaSelected: (asset: any, type: 'image' | 'video') => void;
-  onDocumentSelected?: (doc: any) => void;
+  onMediaSelected: (assets: any[]) => void;
+  onDocumentSelected?: (docs: any[]) => void;
+  onOpenGallery?: () => void;
   top?: number;
   bottom?: number;
   right?: number;
@@ -18,7 +19,7 @@ interface MediaPickerModalProps {
 }
 
 export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({ 
-    visible, onClose, onMediaSelected, onDocumentSelected, top, bottom, right, left, mode = 'camera' 
+    visible, onClose, onMediaSelected, onDocumentSelected, onOpenGallery, top, bottom, right, left, mode = 'camera' 
 }) => {
   
   const handleCapture = async (mode: 'image' | 'video') => {
@@ -39,9 +40,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             : { mediaType: 'video', videoQuality: 'high', durationLimit: 60, saveToPhotos: false };
 
         const result = await launchCamera(options);
-        if (result.didCancel || result.errorCode || !result.assets?.[0]?.uri) return;
+        if (result.didCancel || result.errorCode || !result.assets?.length) return;
         
-        onMediaSelected(result.assets[0], mode);
+        onMediaSelected(result.assets);
         onClose();
     } catch (error) {
         console.error('Camera error:', error);
@@ -51,11 +52,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   const handlePickGallery = async () => {
     try {
-        const result = await launchImageLibrary({ mediaType: 'mixed', quality: 0.85 });
-        if (result.didCancel || result.errorCode || !result.assets?.[0]?.uri) return;
+        const result = await launchImageLibrary({ mediaType: 'mixed', quality: 0.85, selectionLimit: 0 });
+        if (result.didCancel || result.errorCode || !result.assets?.length) return;
         
-        const asset = result.assets[0];
-        onMediaSelected(asset, asset.type?.startsWith('video') ? 'video' : 'image');
+        onMediaSelected(result.assets);
         onClose();
     } catch (error) {
         console.error('Gallery error:', error);
@@ -78,10 +78,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 'com.rarlab.rar-archive', // RAR
                 'application/x-zip-compressed' // ZIP
             ], 
-            allowMultiSelection: false 
+            allowMultiSelection: true 
         });
-        if (results?.[0]) {
-            onDocumentSelected?.(results[0]);
+        if (results && results.length > 0) {
+            onDocumentSelected?.(results);
             onClose();
         }
     } catch (err: any) {
@@ -118,7 +118,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 </View>
                 <Text style={styles.gridText}>Video</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.gridItem} onPress={handlePickGallery}>
+              <TouchableOpacity style={styles.gridItem} onPress={() => {
+                onClose();
+                onOpenGallery ? onOpenGallery() : handlePickGallery();
+              }}>
                 <View style={[styles.iconCircle, { backgroundColor: '#E040FB' }]}>
                   <Icon name="images" size={24} color="#FFF" />
                 </View>

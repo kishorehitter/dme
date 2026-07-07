@@ -224,7 +224,7 @@ export const ProfileSetupScreen: React.FC = () => {
       <View style={styles.profilePictureContainer}>
         {isSubmitting ? (
           <View style={[styles.previewImage, styles.previewPlaceholder, styles.uploadingContainer]}>
-            <ActivityIndicator size="large" color="#8100D1" />
+            <ActivityIndicator size="large" color="#4597f5f6" />
           </View>
         ) : imagePreviewUrl ? (
           <Image source={{ uri: imagePreviewUrl }} style={styles.previewImage} />
@@ -409,7 +409,7 @@ const styles = StyleSheet.create({
   container: { padding: 24, backgroundColor: '#FFF' },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 24, textAlign: 'center' },
   input: { borderBottomWidth: 1, borderColor: '#DDD', marginBottom: 16, padding: 8, fontSize: 16 },
-  nextButton: { backgroundColor: '#8100D1', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
+  nextButton: { backgroundColor: '#4597f5f6', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
   nextButtonDisabled: { backgroundColor: '#B080D1'},
   nextButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
   errorText: { color: 'red', fontSize: 12 },
@@ -436,7 +436,7 @@ const styles = StyleSheet.create({
   },
   profilePictureText: {
     fontSize: 48,
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: 'bold',
   },
   stickerAvatar: {
@@ -456,13 +456,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#8100D1',
+    borderColor: '#4597f5f6',
   },
   cameraIconText: {
     fontSize: 18,
   },
   changePhotoText: {
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: '600',
     marginBottom: 24,
     textAlign: 'center',
@@ -525,7 +525,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   genderTabActive: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
   },
   genderTabText: {
     fontSize: 16,
@@ -561,12 +561,12 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#8100D1',
+    borderColor: '#4597f5f6',
     borderRadius: 8,
   },
   uploadImageButtonText: {
     fontSize: 16,
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: '600',
   },
   reactionSection: {
@@ -593,7 +593,7 @@ const styles = StyleSheet.create({
   reactionItemActive: {
     backgroundColor: '#E8DEF8',
     borderWidth: 1,
-    borderColor: '#8100D1',
+    borderColor: '#4597f5f6',
   },
   reactionText: {
     fontSize: 24,

@@ -123,7 +123,7 @@ const ViewerSheet: React.FC<{
       <View style={[vs.sheet, { paddingBottom: insets.bottom + 16 }]}>
         <View style={vs.handle} />
         <Text style={vs.title}>{type === 'views' ? 'Viewers' : 'Likers'}</Text>
-        {loading ? <ActivityIndicator color="#8100D1" style={{ marginTop: 24 }} /> : 
+        {loading ? <ActivityIndicator color="#4597f5f6" style={{ marginTop: 24 }} /> : 
          <FlatList data={data} keyExtractor={i => String(i.user_id || i.viewer_id)} renderItem={renderItem} />}
       </View>
     </Modal>
@@ -145,7 +145,7 @@ const vs = StyleSheet.create({
     borderBottomColor: 'transparent',
   },
   toggleActive: {
-    borderBottomColor: '#8100D1',
+    borderBottomColor: '#4597f5f6',
   },
   toggleText: {
     fontSize: 14,
@@ -153,7 +153,7 @@ const vs = StyleSheet.create({
     fontWeight: '500',
   },
   toggleTextActive: {
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: '600',
   },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
@@ -649,7 +649,7 @@ const s = StyleSheet.create({
   likeBtn:   { alignItems: 'center', minWidth: 36 },
   replyWrap: { flex: 1, flexDirection:   'row', alignItems:      'center', backgroundColor: 'rgba(255,255,255,0.18)', borderRadius:    24, marginHorizontal: 12, paddingLeft:     14, paddingRight:    6, minHeight:       42 },
   replyInput: { flex: 1, color: '#fff', fontSize: 14, paddingVertical: 8, maxHeight: 80 },
-  sendBtn: { width:           32, height:          32, borderRadius:    16, backgroundColor: '#8100D1', justifyContent:  'center', alignItems:      'center', marginLeft:      6 },
+  sendBtn: { width:           32, height:          32, borderRadius:    16, backgroundColor: '#4597f5f6', justifyContent:  'center', alignItems:      'center', marginLeft:      6 },
   saveBtn: { alignItems: 'center', minWidth: 36 },
 });
 

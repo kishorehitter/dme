@@ -1,7 +1,7 @@
 // DME app color scheme - Purple theme
 export const colors = {
   // Primary colors - Purple theme
-  primary: '#8100D1',
+  primary: '#4597f5f6',
   primaryDark: '#5C0099',
   primaryLight: '#A64DF5',
 
@@ -43,7 +43,7 @@ export const colors = {
   iconLight: '#8696a0',
 
   // Message status colors
-  messageRead: '#8100D1',
+  messageRead: '#4597f5f6',
   messageSent: '#8696a0',
   messageDelivered: '#8696a0',
 };

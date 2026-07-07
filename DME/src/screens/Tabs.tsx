@@ -293,7 +293,7 @@ export const StatusTabScreen = () => {
             <Icon name="camera-outline" size={24} color="#333" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
-            <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+            <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
           </TouchableOpacity>
         </View>
       ),
@@ -341,7 +341,7 @@ export const StatusTabScreen = () => {
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color="#8100D1" />
+              <ActivityIndicator size="large" color="#4597f5f6" />
             </View>
           ) : (
             <View style={styles.empty}>
@@ -448,7 +448,7 @@ const CallLogPopoverMenu = ({
 
 const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => (
   <TouchableOpacity onPress={onPress} style={{ marginRight: 16 }}>
-    <Icon name="ellipsis-vertical" size={24} color="#8100D1" />
+    <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
   </TouchableOpacity>
 );
 
@@ -535,7 +535,7 @@ export const CallLogTabScreen = () => {
         ),
         headerTitleAlign: 'center',
         headerStyle: { backgroundColor: '#F8F0FF', elevation: 0, shadowOpacity: 0 },
-        headerTitleStyle: { color: '#8100D1', fontWeight: 'bold' }
+        headerTitleStyle: { color: '#4597f5f6', fontWeight: 'bold' }
       });
     } else {
       navigation.setOptions({
@@ -544,7 +544,7 @@ export const CallLogTabScreen = () => {
         headerRight: () => <CallLogMenuButton onPress={() => setMenuVisible(true)} />,
         headerTitleAlign: 'left',
         headerStyle: { backgroundColor: '#fff', elevation: 2, shadowOpacity: 0.1 },
-        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#8100D1' }
+        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#4597f5f6' }
       });
     }
   }, [navigation, selectionMode, selectedIds, handleBatchDelete]);
@@ -620,7 +620,7 @@ export const CallLogTabScreen = () => {
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color="#8100D1" />
+              <ActivityIndicator size="large" color="#4597f5f6" />
             </View>
           ) : (
             <View style={styles.empty}>
@@ -682,7 +682,7 @@ export const CallLogTabScreen = () => {
                   <Icon 
                     name={isSelected ? "checkbox" : "square-outline"} 
                     size={22} 
-                    color="#8100D1" 
+                    color="#4597f5f6" 
                   />
                 </View>
               )}
@@ -726,7 +726,7 @@ export const CallLogTabScreen = () => {
                   >
                     <Icon
                       name={item.call_type === 'video' ? 'videocam' : 'call'}
-                      size={22} color="#8100D1"
+                      size={22} color="#4597f5f6"
                     />
                   </TouchableOpacity>
                 </View>
@@ -772,9 +772,9 @@ const styles = StyleSheet.create({
     borderWidth:  RING_WIDTH,
   },
   ringUnseen: {
-    borderColor:    '#8100D1',
+    borderColor:    '#4597f5f6',
     // Glow effect via shadow
-    shadowColor:    '#8100D1',
+    shadowColor:    '#4597f5f6',
     shadowOffset:   { width: 0, height: 0 },
     shadowOpacity:  0.8,
     shadowRadius:   6,
@@ -794,7 +794,7 @@ const styles = StyleSheet.create({
     alignItems:      'center',
   },
   avatarInitial: {
-    color:      '#8100D1',
+    color:      '#4597f5f6',
     fontSize:   20,
     fontWeight: '600',
   },
@@ -808,7 +808,7 @@ const styles = StyleSheet.create({
     width:           20,
     height:          20,
     borderRadius:    10,
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     justifyContent:  'center',
     alignItems:      'center',
     borderWidth:     2,
@@ -881,7 +881,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logAvatarInitial: {
-    color: '#8100D1', fontSize: 18, fontWeight: '600',
+    color: '#4597f5f6', fontSize: 18, fontWeight: '600',
   },
   logName: {
     fontSize: 15, fontWeight: '600', color: '#111',
@@ -910,7 +910,7 @@ const styles = StyleSheet.create({
   selectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#8100D1',
+    color: '#4597f5f6',
   },
   selectionDelete: {
     color: '#F44336',

@@ -262,9 +262,9 @@ const StatusEditorScreen: React.FC = () => {
           disabled={uploading || processing}
         >
           {uploading || processing ? (
-            <ActivityIndicator color="#8100D1" size="small" />
+            <ActivityIndicator color="#4597f5f6" size="small" />
           ) : (
-            <Icon name="send" size={26} color="#8100D1" />
+            <Icon name="send" size={26} color="#4597f5f6" />
           )}
         </TouchableOpacity>
       </View>

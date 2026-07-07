@@ -139,7 +139,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 24,
   },
-  appName: { fontSize: 50, fontWeight: 'bold', color: '#7b00c7', marginBottom: 8 },
+  appName: { fontSize: 50, fontWeight: 'bold', color: '#4597f5f6', marginBottom: 8 },
   googleButton: {
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#ffffff', paddingVertical: 16, paddingHorizontal: 32,

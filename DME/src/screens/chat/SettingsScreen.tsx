@@ -457,7 +457,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       </View>
 
       {isSearchingUsers ? (
-        <ActivityIndicator size="large" color="#8100D1" style={{ marginTop: 24 }} />
+        <ActivityIndicator size="large" color="#4597f5f6" style={{ marginTop: 24 }} />
       ) : blockSearchQuery.length > 0 ? (
         <FlatList
           data={blockSearchResults}
@@ -607,7 +607,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={goBack}>
-          <Icon name="arrow-back" size={24} color="#8100D1" />
+          <Icon name="arrow-back" size={24} color="#4597f5f6" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{getTitle()}</Text>
         <View style={{ width: 40 }} />
@@ -639,7 +639,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       <Modal visible={isDownloadingUpdate} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <ActivityIndicator size="large" color="#8100D1" style={{ marginBottom: 16 }} />
+            <ActivityIndicator size="large" color="#4597f5f6" style={{ marginBottom: 16 }} />
             <Text style={styles.modalTitle}>Downloading Update</Text>
             <Text style={{ fontSize: 14, color: '#666', marginBottom: 16, textAlign: 'center' }}>
               Please wait while the new version is being downloaded...
@@ -655,10 +655,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
               <View style={{
                 width: `${downloadProgress}%`,
                 height: '100%',
-                backgroundColor: '#8100D1',
+                backgroundColor: '#4597f5f6',
               }} />
             </View>
-            <Text style={{ fontSize: 14, fontWeight: '600', color: '#8100D1' }}>
+            <Text style={{ fontSize: 14, fontWeight: '600', color: '#4597f5f6' }}>
               {downloadProgress}%
             </Text>
           </View>
@@ -689,7 +689,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#8100D1',
+    color: '#4597f5f6',
   },
   scroll: {
     flex: 1,
@@ -746,7 +746,7 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   selectedText: {
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: '600',
   },
   infoRow: {
@@ -806,7 +806,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   blockButton: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     paddingHorizontal: 16,
     justifyContent: 'center',
     borderRadius: 8,
@@ -882,7 +882,7 @@ const styles = StyleSheet.create({
   },
   modalCloseBtn: {
     width: '100%',
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',

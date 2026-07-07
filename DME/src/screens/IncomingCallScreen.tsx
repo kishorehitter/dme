@@ -273,7 +273,7 @@ const styles = StyleSheet.create({
   },
   avatarImage:    { width: '100%', height: '100%' },
   avatarFallback: {
-    flex: 1, backgroundColor: '#8100D1',
+    flex: 1, backgroundColor: '#4597f5f6',
     justifyContent: 'center', alignItems: 'center',
   },
   avatarInitial:  { fontSize: 48, color: '#fff', fontWeight: '600' },
@@ -300,7 +300,7 @@ const styles = StyleSheet.create({
     borderColor: '#E8DEF8',
   },
   answerBtn: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     borderRadius: 50,
     paddingVertical: 16, paddingHorizontal: 40,
     minWidth: 130, alignItems: 'center',

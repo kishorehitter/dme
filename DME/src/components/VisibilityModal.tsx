@@ -94,14 +94,14 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
             <Icon 
               name={allSelected ? "checkbox" : "square-outline"} 
               size={22} 
-              color="#8100D1" 
+              color="#4597f5f6" 
             />
             <Text style={styles.selectAllText}>{allSelected ? ' Deselect All' : ' Select All'}</Text>
           </TouchableOpacity>
         )}
 
         {loading ? (
-          <ActivityIndicator style={{ marginTop: 20 }} color="#8100D1" />
+          <ActivityIndicator style={{ marginTop: 20 }} color="#4597f5f6" />
         ) : (
           <FlatList
             data={filteredContacts}
@@ -122,7 +122,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
                   <Text style={styles.name}>{item.display_name || item.username}</Text>
                   <Text style={styles.username}>@{item.username}</Text>
                 </View>
-                <Icon name={selected.includes(item.id) ? "checkbox" : "square-outline"} size={24} color="#8100D1" />
+                <Icon name={selected.includes(item.id) ? "checkbox" : "square-outline"} size={24} color="#4597f5f6" />
               </TouchableOpacity>
             )}
           />
@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', marginTop: 100 },
   header: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, alignItems: 'center' },
   title: { fontSize: 18, fontWeight: 'bold' },
-  done: { color: '#8100D1', fontWeight: 'bold' },
+  done: { color: '#4597f5f6', fontWeight: 'bold' },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, marginLeft: 10, fontSize: 15 },
   selectAllBtn: { paddingHorizontal: 20, marginBottom: 10 },
-  selectAllText: { color: '#8100D1', fontWeight: '600' },
+  selectAllText: { color: '#4597f5f6', fontWeight: '600' },
   item: { flexDirection: 'row', alignItems: 'center', padding: 15, gap: 15 },
   name: { fontSize: 16, fontWeight: '500' },
   username: { fontSize: 12, color: '#666' },

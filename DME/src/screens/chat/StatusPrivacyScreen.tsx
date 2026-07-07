@@ -77,7 +77,7 @@ export const StatusPrivacyScreen = () => {
         </TouchableOpacity>
         <Text style={styles.title}>Status Privacy</Text>
         <TouchableOpacity onPress={onSave} disabled={saving}>
-          {saving ? <ActivityIndicator size="small" color="#8100D1" /> : <Text style={styles.done}>Done</Text>}
+          {saving ? <ActivityIndicator size="small" color="#4597f5f6" /> : <Text style={styles.done}>Done</Text>}
         </TouchableOpacity>
       </View>
       
@@ -90,7 +90,7 @@ export const StatusPrivacyScreen = () => {
         )}
       </View>
       
-      {loading ? <ActivityIndicator style={{marginTop: 40}} color="#8100D1" /> : (
+      {loading ? <ActivityIndicator style={{marginTop: 40}} color="#4597f5f6" /> : (
         <FlatList
           data={contacts}
           keyExtractor={item => item.id.toString()}
@@ -117,7 +117,7 @@ export const StatusPrivacyScreen = () => {
               <Icon 
                 name={selected.includes(item.id) ? "checkbox" : "square-outline"} 
                 size={24} 
-                color="#8100D1" 
+                color="#4597f5f6" 
               />
             </TouchableOpacity>
           )}
@@ -131,11 +131,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   header: { flexDirection: 'row', padding: 20, justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee' },
   title: { fontSize: 18, fontWeight: 'bold' },
-  done: { color: '#8100D1', fontWeight: 'bold', fontSize: 16 },
+  done: { color: '#4597f5f6', fontWeight: 'bold', fontSize: 16 },
   topActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#f9f9f9' },
   desc: { padding: 15, color: '#666', fontSize: 14, flex: 1 },
   selectAllBtn: { padding: 15 },
-  selectAllText: { color: '#8100D1', fontWeight: '600', fontSize: 14 },
+  selectAllText: { color: '#4597f5f6', fontWeight: '600', fontSize: 14 },
   list: { flex: 1 },
   listContent: { paddingBottom: 20 },
   item: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 15, gap: 15, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },

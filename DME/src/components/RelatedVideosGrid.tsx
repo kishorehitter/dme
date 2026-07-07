@@ -147,7 +147,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   avatarBadgeImg: { width: '100%', height: '100%' },
-  avatarBadgeFallback: { backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
+  avatarBadgeFallback: { backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
   avatarBadgeFallbackText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   cancelBadge: {
     position: 'absolute',

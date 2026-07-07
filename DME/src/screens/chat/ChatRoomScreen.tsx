@@ -58,8 +58,13 @@ import { resolveImageUrl } from '../../utils/image';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
 import StickerPreviewModal from '../../components/StickerPreviewModal';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+import { MultiMediaPreviewModal, SelectedMedia } from '../../components/MultiMediaPreviewModal';
+import { ChatMediaGrid } from '../../components/ChatMediaGrid';
+import { MediaGroupListModal } from '../../components/MediaGroupListModal';
+import { CustomGalleryPicker } from '../../components/CustomGalleryPicker';
 
-const THEME_COLOR = '#8100D1';
+
+const THEME_COLOR = '#4597f5f6';
 const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
 
@@ -101,7 +106,7 @@ const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, convers
 
   const avatarStyle = {
     ...style,
-    ...(hasStatus && { borderWidth: 2, borderColor: '#8100D1', padding: 2 }),
+    ...(hasStatus && { borderWidth: 2, borderColor: '#4597f5f6', padding: 2 }),
   };
 
   return (
@@ -140,6 +145,14 @@ const getMessagePreviewText = (message: Message | null | undefined, messagesList
   if (!message) return '';
   let msgType = message.message_type;
   let msgContent = message.content;
+
+  // Handle synthetic media_group
+  if ((message as any).type === 'media_group' || (message as any).messages) {
+    const messages = (message as any).messages || [];
+    const hasVideo = messages.some((m: any) => m.message_type === 'video');
+    return hasVideo ? 'Video' : 'Image';
+  }
+
   if (!msgType && messagesList) {
     const fullMsg = messagesList.find(m => m.id === message.id);
     if (fullMsg) {
@@ -163,6 +176,15 @@ const getMessagePreviewText = (message: Message | null | undefined, messagesList
 };
 
 const getReplyMediaUrl = (reply: Message, messagesList?: Message[]) => {
+  // Handle synthetic media_group
+  if ((reply as any).type === 'media_group' || (reply as any).messages) {
+    const firstMsg = (reply as any).messages?.[0];
+    if (firstMsg) {
+      const mediaFile = firstMsg.media_file || firstMsg.media_url;
+      return mediaFile ? resolveImageUrl(mediaFile) : null;
+    }
+  }
+
   let mediaFile = reply.media_file || (reply as any).media_url;
   if (!mediaFile && messagesList) {
     const fullMsg = messagesList.find(m => m.id === reply.id);
@@ -174,6 +196,11 @@ const getReplyMediaUrl = (reply: Message, messagesList?: Message[]) => {
 };
 
 const getReplyMessageType = (reply: Message, messagesList?: Message[]) => {
+  if ((reply as any).type === 'media_group' || (reply as any).messages) {
+    const firstMsg = (reply as any).messages?.[0];
+    return firstMsg?.message_type || 'image';
+  }
+
   let type = reply.message_type;
   if (!type && messagesList) {
     const fullMsg = messagesList.find(m => m.id === reply.id);
@@ -299,7 +326,7 @@ const formatSeparatorDate = (dateStr: string) => {
 
 
 const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
-  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 150, height: 150 });
 
   useEffect(() => {
     if (url) {
@@ -332,14 +359,6 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
     }
   }, [url, isSticker]);
 
-  if (!dimensions) {
-    return (
-        <View style={[styles.imageContainer, { alignSelf: isMe ? 'flex-end' : 'flex-start', width: 100, height: 100, justifyContent: 'center', alignItems: 'center' }]}>
-            <ActivityIndicator size="small" color={THEME_COLOR} />
-        </View>
-    );
-  }
-
   return (
     <TouchableOpacity 
       style={[
@@ -370,6 +389,8 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
     </TouchableOpacity>
   );
 };
+
+let uniqueCounter = 0;
 
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
@@ -443,6 +464,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null); // Message being edited
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
+  const [multiPreviewVisible, setMultiPreviewVisible] = useState(false);
+  const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
+  const [selectedMultiMedia, setSelectedMultiMedia] = useState<SelectedMedia[]>([]);
+  const [groupListVisible, setGroupListVisible] = useState(false);
+  const [selectedGroupMessages, setSelectedGroupMessages] = useState<Message[]>([]);
   const [highlightMessageId, setHighlightMessageId] = useState<number | null>(null); // Message to highlight
   const [searchMode, setSearchMode] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -477,6 +503,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatIsActiveRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
+  const activeUploadsRef = useRef<{ [localId: string]: AbortController }>({});
 
   // Recording refs
   const recordingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -770,10 +797,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     try {
       const cached = localDatabase.getMessages(conversationId);
       if (cached && cached.length > 0) {
-        setOldestMessageId(cached[0].id || null);
-        setHasMoreMessages(cached.length >= 50);
+        // Fallback for pre-existing cached messages (where sender_id was stored as 0)
+        const mappedCached = cached.map(msg => {
+          if (!msg.sender?.id && currentUser) {
+            const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
+            if (isMe) {
+              msg.sender = {
+                ...msg.sender,
+                id: currentUser.id
+              };
+            }
+          }
+          return msg;
+        });
+        setOldestMessageId(mappedCached[0].id || null);
+        setHasMoreMessages(mappedCached.length >= 50);
         // Reverse because inverted FlatList expects index 0 to be the newest message (at the bottom)
-        setMessages([...cached].reverse());
+        setMessages([...mappedCached].reverse());
         setIsLoading(false); // Can hide loading indicator early
       }
     } catch (e) {
@@ -1318,96 +1358,184 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
      setAttachmentMenuVisible(true);
   };
 
-  const sendDocumentMessage = async (doc: any) => {
-    setIsSending(true);
+  const sendDocumentMessage = async (doc: any, caption: string = '') => {
+    // 1. Optimistic UI
+    uniqueCounter++;
+    const localId = `doc_${Date.now()}_${uniqueCounter}_${Math.random().toString(36).substr(2, 5)}`;
+    const tempId = Date.now() + uniqueCounter + 1000000000;
+    const optimisticMsg: any = {
+      id: tempId,
+      local_id: localId,
+      conversation: conversationId,
+      sender: { id: currentUser!.id, email: currentUser!.email || '', display_name: currentUser!.display_name || currentUser!.first_name || '', profile_picture: null, avatar_sticker: null },
+      content: caption,
+      message_type: 'document',
+      media_file: doc.uri, // Use local URI temporarily
+      is_read: false, delivered_at: null, created_at: new Date().toISOString(),
+      reactions: {}, reply_to: null, status: 'sending',
+    };
+    localDatabase.saveMessage(optimisticMsg, localId, 'sending');
+    setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
+
+    const controller = new AbortController();
+    activeUploadsRef.current[localId] = controller;
+
+    // 2. Background Upload (No setIsSending lock)
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
-      fd.append('content', '');
+      fd.append('content', caption);
       fd.append('message_type', 'document');
-      fd.append('media_file', {
-        uri: doc.uri,
-        type: doc.type || 'application/octet-stream',
-        name: doc.name || 'document',
-      } as any);
-
-      const res = await fetch(
-        `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
-        {
-          method: 'POST',
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            'Content-Type': 'multipart/form-data',
-          },
-          body: fd,
-        },
-      );
+      fd.append('media_file', { uri: doc.uri, type: doc.type || 'application/octet-stream', name: doc.name || 'document' } as any);
+      
+      const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
+        method: 'POST',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'multipart/form-data' },
+        body: fd,
+        signal: controller.signal,
+      });
 
       if (res.ok) {
         const nm = await res.json();
-        setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
+        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...nm, local_id: localId, status: 'sent' } : m));
+        localDatabase.saveMessage(nm, localId, 'sent');
       } else {
         throw new Error('Upload failed');
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        console.log('Document upload aborted:', localId);
+        return;
+      }
       console.error('Document upload error:', e);
-      Toast.show({ type: 'error', text1: 'Failed to send document' });
+      setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...m, status: 'failed' } : m));
+      localDatabase.updateMessageStatus(localId, 'failed');
     } finally {
-      setIsSending(false);
+      delete activeUploadsRef.current[localId];
     }
   };
 
-  const sendImageMessage = async (asset: any) => {
-    setIsSending(true);
+  const sendImageMessage = async (asset: any, caption: string = '') => {
+    const isVideo = asset.type?.startsWith('video') || asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov');
+    const messageType = isVideo ? 'video' : 'image';
     
+    // 1. Optimistic UI
+    uniqueCounter++;
+    const localId = `img_${Date.now()}_${uniqueCounter}_${Math.random().toString(36).substr(2, 5)}`;
+    const tempId = Date.now() + uniqueCounter + 1000000000;
+    const optimisticMsg: any = {
+      id: tempId,
+      local_id: localId,
+      conversation: conversationId,
+      sender: { id: currentUser!.id, email: currentUser!.email || '', display_name: currentUser!.display_name || currentUser!.first_name || '', profile_picture: null, avatar_sticker: null },
+      content: caption,
+      message_type: messageType,
+      media_file: asset.uri, // Use local URI temporarily
+      is_read: false, delivered_at: null, created_at: new Date().toISOString(),
+      reactions: {}, reply_to: null, status: 'sending',
+    };
+    localDatabase.saveMessage(optimisticMsg, localId, 'sending');
+    setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
+
+    const controller = new AbortController();
+    activeUploadsRef.current[localId] = controller;
+
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
-      fd.append('content', '');
-      
-      const isVideo = asset.type?.startsWith('video') || asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov');
-      const messageType = isVideo ? 'video' : 'image';
-      
+      fd.append('content', caption);
       fd.append('message_type', messageType);
-      fd.append('media_file', {
-        uri: asset.uri,
-        type: asset.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
-        name: asset.fileName || `${messageType}_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}`,
-      } as any);
+      fd.append('media_file', { uri: asset.uri, type: asset.type || (isVideo ? 'video/mp4' : 'image/jpeg'), name: asset.fileName || `${messageType}_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}` } as any);
 
-      console.log(`[Chat] Sending ${messageType} message:`, asset.uri);
-      
-      const res = await fetch(
-        `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
-        {
-          method: 'POST',
-          headers: { 
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            'Content-Type': 'multipart/form-data',
-          },
-          body: fd,
-        },
-      );
+      const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
+        method: 'POST',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'multipart/form-data' },
+        body: fd,
+        signal: controller.signal,
+      });
 
       if (res.ok) {
         const nm = await res.json();
-        setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
-        setInputClearKey(k => k + 1);
+        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...nm, local_id: localId, status: 'sent' } : m));
+        localDatabase.saveMessage(nm, localId, 'sent');
       } else {
-        const errorText = await res.text();
-        console.error('[Chat] Upload failed:', res.status, errorText);
         throw new Error(`Upload failed: ${res.status}`);
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        console.log('Image/Video upload aborted:', localId);
+        return;
+      }
       console.error('[Chat] Exception during upload:', e);
-      Toast.show({
-        type: 'error',
-        text1: 'Failed to send media',
-        text2: 'Please check your connection and try again',
-        position: 'bottom',
-      });
+      setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...m, status: 'failed' } : m));
+      localDatabase.updateMessageStatus(localId, 'failed');
     } finally {
-      setIsSending(false);
+      delete activeUploadsRef.current[localId];
+    }
+  };
+
+  const retryMessage = async (msg: Message) => {
+    const localId = msg.local_id || msg.id.toString();
+    const tempId = msg.id;
+
+    // Reset status to 'sending'
+    setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'sending' } : m));
+    localDatabase.updateMessageStatus(localId, 'sending');
+
+    const controller = new AbortController();
+    activeUploadsRef.current[localId] = controller;
+
+    try {
+      const token = await AsyncStorage.getItem('access_token');
+      const fd = new FormData();
+      fd.append('content', msg.content || '');
+      fd.append('message_type', msg.message_type);
+
+      const isVideo = msg.message_type === 'video';
+      const isDocument = msg.message_type === 'document';
+      
+      let mimeType = 'image/jpeg';
+      let fileName = `media_${Date.now()}.jpg`;
+      if (isVideo) {
+        mimeType = 'video/mp4';
+        fileName = `media_${Date.now()}.mp4`;
+      } else if (isDocument) {
+        mimeType = 'application/octet-stream';
+        fileName = `doc_${Date.now()}`;
+      }
+
+      fd.append('media_file', {
+        uri: msg.media_file,
+        type: mimeType,
+        name: fileName,
+      } as any);
+
+      const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
+        method: 'POST',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'multipart/form-data' },
+        body: fd,
+        signal: controller.signal,
+      });
+
+      if (res.ok) {
+        const nm = await res.json();
+        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...nm, local_id: localId, status: 'sent' } : m));
+        localDatabase.saveMessage(nm, localId, 'sent');
+      } else {
+        throw new Error('Upload failed');
+      }
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        console.log('Upload aborted:', localId);
+        return;
+      }
+      console.error('[Chat] Exception during retry:', e);
+      setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...m, status: 'failed' } : m));
+      localDatabase.updateMessageStatus(localId, 'failed');
+    } finally {
+      delete activeUploadsRef.current[localId];
     }
   };
 
@@ -1793,7 +1921,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         doubleTapTimeoutRef.current = null;
         
         // OPEN MEDIA (Only for media messages)
-        if (item.message_type === 'image') {
+        if ((item as any).type === 'media_group') {
+            // Single-tap on grouped media → open the scrollable list
+            setSelectedGroupMessages((item as any).messages || []);
+            setGroupListVisible(true);
+        } else if (item.message_type === 'image') {
             navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'image' });
         } else if (item.message_type === 'video') {
             navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'video' });
@@ -1804,8 +1936,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const handleDoubleTapReaction = (item: Message, x: number = 0, y: number = 0) => {
+    const targetId = (item as any).type === 'media_group' ? (item as any).messages[0].id : item.id;
     // Show the heart animation at tap location
-    setDoubleTapReaction({ visible: true, x, y, messageId: item.id });
+    setDoubleTapReaction({ visible: true, x, y, messageId: targetId });
 
     // Run the pop animation
     Animated.sequence([
@@ -1841,7 +1974,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     // Toggle the user's quick reaction (add if not present, remove if present)
     const reactionEmoji = currentUser?.quick_reaction || '❤️';
-    toggleReaction(item.id, reactionEmoji);
+    toggleReaction(targetId, reactionEmoji);
   };
 
   const handleSearchTextChange = (text: string) => {
@@ -1943,14 +2076,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       return [emoji, ...filtered].slice(0, 5);
     });
 
-    await sendReaction(selectedMessage.id, emoji);
+    const targetId = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0].id : selectedMessage.id;
+    await sendReaction(targetId, emoji);
     setShowMessageActions(false);
     setSelectedMessage(null);
   };
 
   const handleReplyFromMenu = () => {
     if (!selectedMessage) return;
-    setReplyToMessage(selectedMessage);
+    const targetMsg = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0] : selectedMessage;
+    setReplyToMessage(targetMsg);
     setShowMessageActions(false);
     setSelectedMessage(null);
   };
@@ -1965,40 +2100,66 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     setSelectedMessage(null);
   };
 
-  const handleDeleteMessage = async () => {
+  const handleDeleteMessage = () => {
     if (!selectedMessage) return;
 
-    try {
-      await chatAPI.deleteMessage(selectedMessage.id);
-      const localId = selectedMessage.local_id || selectedMessage.id.toString();
-      localDatabase.softDeleteMessage(localId);
+    const msgToDelete = selectedMessage;
+    const isGroup = (msgToDelete as any).type === 'media_group';
+    const isMe = msgToDelete.sender?.id === currentUser?.id;
 
-      // Update the message in the list to show as deleted
+    // ── 1. INSTANT optimistic UI update ──────────────────────────────────────
+    if (isGroup) {
+      setMessages(prev => prev.filter(m => m.id !== msgToDelete.id));
+    } else {
       setMessages(prev =>
         prev.map(m =>
-          m.id === selectedMessage.id
+          m.id === msgToDelete.id
             ? { ...m, is_deleted: true, content: 'The message was removed' }
             : m,
         ),
       );
-
-      setShowMessageActions(false);
-      setSelectedMessage(null);
-      Toast.show({
-        type: 'success',
-        text1:
-          selectedMessage.sender.id === currentUser?.id
-            ? 'Message unsent'
-            : 'Message deleted',
-        position: 'bottom',
-      });
-    } catch (error) {
-      Toast.show({
-        type: 'error',
-        text1: 'Failed to delete',
-        position: 'bottom',
-      });
+      const localId = msgToDelete.local_id || msgToDelete.id.toString();
+      localDatabase.softDeleteMessage(localId);
     }
+
+    // ── 2. Close menu instantly ───────────────────────────────────────────────
+    setShowMessageActions(false);
+    setSelectedMessage(null);
+    Toast.show({
+      type: 'success',
+      text1: isMe ? 'Message unsent' : 'Message deleted',
+      position: 'bottom',
+    });
+
+    // ── 3. Fire API in background (no await) ─────────────────────────────────
+    const doDelete = async () => {
+      try {
+        if (isGroup) {
+          const groupMessages: any[] = (msgToDelete as any).messages || [];
+          await Promise.all(
+            groupMessages
+              .filter((m: any) => m.id && m.id < 1000000000)
+              .map((m: any) => chatAPI.deleteMessage(m.id))
+          );
+        } else {
+          await chatAPI.deleteMessage(msgToDelete.id);
+        }
+      } catch (error) {
+        console.error('[Chat] Delete API error (restoring):', error);
+        // Silently restore the message if API failed
+        if (isGroup) {
+          setMessages(prev => [msgToDelete, ...prev]);
+        } else {
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === msgToDelete.id ? msgToDelete : m,
+            ),
+          );
+        }
+        Toast.show({ type: 'error', text1: 'Could not delete, please try again', position: 'bottom' });
+      }
+    };
+    doDelete();
   };
 
   const handleCopyMessage = () => {
@@ -2124,8 +2285,94 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     );
   };
 
+  const groupedMessages = useMemo(() => {
+    const seenIds = new Set<string | number>();
+    const deduplicated = (Array.isArray(messages) ? messages : []).filter(msg => {
+      if (!msg) return false;
+      const uid = msg.local_id || msg.id;
+      if (seenIds.has(uid)) {
+        return false;
+      }
+      seenIds.add(uid);
+      return true;
+    });
+
+    const result: any[] = [];
+    let currentGroup: Message[] = [];
+    
+    for (let i = deduplicated.length - 1; i >= 0; i--) {
+       const msg = deduplicated[i];
+       const isMedia = ['image', 'video'].includes(msg.message_type);
+       
+       if (isMedia && !msg.is_deleted && (msg as any).status !== 'failed') {
+          if (currentGroup.length === 0) {
+             currentGroup.push(msg);
+          } else {
+             const prevMsg = currentGroup[currentGroup.length - 1];
+             const timeDiff = Math.abs(new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime());
+             const sameSender = msg.sender.id === prevMsg.sender.id;
+             
+             if (sameSender && timeDiff < 60000) {
+                currentGroup.push(msg);
+             } else {
+                if (currentGroup.length > 1) {
+                   result.push({
+                      type: 'media_group',
+                      messages: [...currentGroup],
+                      id: 'group_' + currentGroup[0].id,
+                      sender: currentGroup[0].sender,
+                      created_at: currentGroup[0].created_at,
+                      reactions: currentGroup.reduce((acc, m) => ({ ...acc, ...(m.reactions || {}) }), {}),
+                      content: currentGroup.find(m => m.content && m.content.trim())?.content || ''
+                   });
+                } else {
+                   result.push(currentGroup[0]);
+                }
+                currentGroup = [msg];
+             }
+          }
+       } else {
+          if (currentGroup.length > 0) {
+             if (currentGroup.length > 1) {
+                result.push({
+                   type: 'media_group',
+                   messages: [...currentGroup],
+                   id: 'group_' + currentGroup[0].id,
+                   sender: currentGroup[0].sender,
+                   created_at: currentGroup[0].created_at,
+                   reactions: currentGroup.reduce((acc, m) => ({ ...acc, ...(m.reactions || {}) }), {}),
+                   content: currentGroup.find(m => m.content && m.content.trim())?.content || ''
+                });
+             } else {
+                result.push(currentGroup[0]);
+             }
+             currentGroup = [];
+          }
+          result.push(msg);
+       }
+    }
+    
+    if (currentGroup.length > 0) {
+       if (currentGroup.length > 1) {
+          result.push({
+             type: 'media_group',
+             messages: [...currentGroup],
+             id: 'group_' + currentGroup[0].id,
+             sender: currentGroup[0].sender,
+             created_at: currentGroup[0].created_at,
+             reactions: currentGroup.reduce((acc, m) => ({ ...acc, ...(m.reactions || {}) }), {}),
+             content: currentGroup.find(m => m.content && m.content.trim())?.content || ''
+          });
+       } else {
+          result.push(currentGroup[0]);
+       }
+    }
+    
+    return result.reverse();
+  }, [messages]);
+
   // ── RENDER MESSAGE ───────────────────────────────
-  const renderMessage = useCallback(({ item, index }: { item: Message; index: number }) => {
+  const renderMessage = useCallback(({ item, index }: { item: any; index: number }) => {
     const isMe = item.sender.id === currentUser?.id;
     const sName =
       item.sender?.display_name ||
@@ -2143,13 +2390,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     // The chronologically previous message is messages[index + 1].
     // So the current message is the first of a consecutive block from the sender if:
     // the previous message (index + 1) is from a different sender (or doesn't exist).
-    const isFirstInGroup = !isMe && (!messages[index + 1] || messages[index + 1].sender.id !== item.sender.id);
+    const isFirstInGroup = !isMe && (!groupedMessages[index + 1] || (groupedMessages[index + 1].sender?.id !== item.sender?.id));
 
     // Handle deleted messages
     if (item.is_deleted) {
       return (
         <View style={{ flexDirection: 'column', width: '100%' }}>
-          {shouldShowDateSeparator(index, messages) && (
+          {shouldShowDateSeparator(index, groupedMessages) && (
             <View style={styles.dateSeparator}>
               <Text style={styles.dateSeparatorText}>
                 {formatSeparatorDate(item.created_at)}
@@ -2201,7 +2448,36 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     if (item.is_deleted) return null;
     
     // ONLY process media messages
-    if (!['image', 'video', 'audio', 'document'].includes(item.message_type)) return null;
+    if (!['image', 'video', 'audio', 'document'].includes(item.message_type) && item.type !== 'media_group') return null;
+
+    if (item.type === 'media_group') {
+      return (
+        <ChatMediaGrid
+          messages={item.messages}
+          onCancelUpload={() => {
+            // Cancel all messages in this group
+            item.messages.forEach((msg: any) => {
+              const localId = msg.local_id || msg.id.toString();
+              if (activeUploadsRef.current[localId]) {
+                activeUploadsRef.current[localId].abort();
+                delete activeUploadsRef.current[localId];
+              }
+              // Set status to failed in UI and DB
+              setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'failed' } : m));
+              localDatabase.updateMessageStatus(localId, 'failed');
+            });
+          }}
+          onRetryUpload={() => {
+            // Retry all failed messages in this group
+            item.messages.forEach((msg: any) => {
+              if (msg.status === 'failed' || msg.status === 'sending') {
+                retryMessage(msg);
+              }
+            });
+          }}
+        />
+      );
+    }
 
     const isMe = item.sender.id === currentUser?.id;
     const rawUrl = (item as any).media_url || item.media_file;
@@ -2283,13 +2559,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               </Text>
             </View>
 
-            {/* Right side: Green circular download button */}
+            {/* Right side: Green circular download button or Spinner */}
             <TouchableOpacity 
               style={styles.documentDownloadButton}
-              onPress={() => downloadAndOpenFile(url, fileName)}
+              onPress={() => item.status !== 'sending' && downloadAndOpenFile(url, fileName)}
               activeOpacity={0.7}
+              disabled={item.status === 'sending'}
             >
-              <Icon name="arrow-down" size={16} color="#FFF" />
+              {item.status === 'sending' ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Icon name="arrow-down" size={16} color="#FFF" />
+              )}
             </TouchableOpacity>
           </View>
         );
@@ -2300,26 +2581,93 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const isSticker = item.media_file?.toLowerCase().endsWith('.webp');
 
-    if (isImage)
+    if (isImage) {
+      // While sending, use the local URI directly from item.media_file so we show the actual image
+      const displayUrl = (item as any).status === 'sending' ? (item.media_file || url) : url;
       return (
-        <ChatImage 
-          url={url}
-          isMe={isMe}
-          onPress={(e: any) => handleMessagePress(item, e)}
-          onLongPress={(e: any) => handleMessageLongPress(item, e)}
-          isSticker={isSticker}
-        />
+        <View style={{ position: 'relative' }}>
+          <ChatImage 
+            url={displayUrl}
+            isMe={isMe}
+            onPress={(e: any) => handleMessagePress(item, e)}
+            onLongPress={(e: any) => handleMessageLongPress(item, e)}
+            isSticker={isSticker}
+          />
+          {(item as any).status === 'sending' && (
+            <View style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.45)',
+                justifyContent: 'center', alignItems: 'center',
+                borderRadius: isSticker ? 0 : 12,
+                gap: 10,
+            }}>
+              <ActivityIndicator size="large" color="#FFF" />
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  borderWidth: 1.5,
+                  borderColor: 'rgba(255,255,255,0.8)',
+                  borderRadius: 16,
+                  paddingHorizontal: 12,
+                  paddingVertical: 5,
+                }}
+                onPress={() => {
+                  const localId = item.local_id || item.id.toString();
+                  if (activeUploadsRef.current[localId]) {
+                    activeUploadsRef.current[localId].abort();
+                    delete activeUploadsRef.current[localId];
+                  }
+                  setMessages(prev => prev.map(m => m.id === item.id ? { ...m, status: 'failed' } : m));
+                  localDatabase.updateMessageStatus(localId, 'failed');
+                }}
+              >
+                <Icon name="close" size={14} color="#FFF" />
+                <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {(item as any).status === 'failed' && (
+            <TouchableOpacity
+              style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.6)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderRadius: isSticker ? 0 : 12,
+                gap: 6,
+              }}
+              onPress={() => retryMessage(item)}
+              activeOpacity={0.85}
+            >
+              <Icon name="refresh" size={32} color="#FFF" />
+              <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>Tap to retry</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       );
+    }
 
     if (item.message_type === 'audio') {
       return (
-        <View style={[styles.audioContainer, alignmentStyle]}>
+        <View style={[styles.audioContainer, alignmentStyle, { position: 'relative' }]}>
           <AudioPlayer
             mediaUrl={url}
             themeColor={THEME_COLOR}
             duration={item.audio_duration}
             messageId={item.id}
           />
+          {item.status === 'sending' && (
+            <View style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                backgroundColor: 'rgba(255,255,255,0.7)',
+                justifyContent: 'center', alignItems: 'center',
+                borderRadius: 20,
+            }}>
+              <ActivityIndicator size="small" color={THEME_COLOR} />
+            </View>
+          )}
         </View>
       );
     }
@@ -2332,9 +2680,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           onLongPress={(e) => handleMessageLongPress(item, e)}
           activeOpacity={0.9}
           delayLongPress={500}
+          disabled={item.status === 'sending'}
         >
           <View style={{ justifyContent: 'center', alignItems: 'center', flex: 1, width: '100%' }}>
-            <Icon name="play-circle" size={48} color="rgba(255,255,255,0.9)" />
+            {item.status === 'sending' ? (
+                <ActivityIndicator size="large" color="#FFF" />
+            ) : (
+                <Icon name="play-circle" size={48} color="rgba(255,255,255,0.9)" />
+            )}
           </View>
         </TouchableOpacity>
       );
@@ -2343,7 +2696,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       return null;
     };
 
-    const isMediaMessage = ['image', 'video'].includes(item.message_type);
+    const isMediaMessage = ['image', 'video'].includes(item.message_type) || item.type === 'media_group';
 
     const renderReplyIndicator = (reply: Message, isSender: boolean) => {
       const hasThumbnail = ['image', 'video', 'document'].includes(getReplyMessageType(reply, messages) || '');
@@ -2400,7 +2753,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     return (
       <View style={{ flexDirection: 'column', width: '100%' }}>
-        {shouldShowDateSeparator(index, messages) && (
+        {shouldShowDateSeparator(index, groupedMessages) && (
           <View style={styles.dateSeparator}>
             <Text style={styles.dateSeparatorText}>
               {formatSeparatorDate(item.created_at)}
@@ -2430,42 +2783,67 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             )
           )}
 
-          {['image', 'video', 'audio', 'document'].includes(item.message_type) ? (
-            <TouchableOpacity
-              style={[
-                styles.messageBubble,
-                isMe ? styles.myMessageBubble : styles.theirMessageBubble,
-                { alignItems: isMe ? 'flex-end' : 'flex-start' },
-                isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
-                !isMediaMessage && { minWidth: 50 },
-                highlightMessageId === item.id && { 
-                  backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
-                  borderWidth: 2,
-                  borderColor: THEME_COLOR 
-                }
-              ]}
-              onPress={(e) => {
-                 // Only trigger message press if NOT media (media has its own internal handlers)
-                 // and specifically ignore if it's an unavailable media
-                 const isMedia = ['image', 'video', 'audio'].includes(item.message_type);
-                 const isUnavailable = !resolveImageUrl((item as any).media_url || item.media_file) || mediaErrorIds.includes(item.id);
+          {['image', 'video', 'audio', 'document'].includes(item.message_type) || item.type === 'media_group' ? (
+            (() => {
+              const hasCaption = !!(item.content && item.content.trim());
+              return (
+                <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '80%', position: 'relative' }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.messageBubble,
+                      isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+                      { alignItems: isMe ? 'flex-end' : 'flex-start' },
+                      isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
+                      !isMediaMessage && { minWidth: 50 },
+                      highlightMessageId === item.id && { 
+                        backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
+                        borderWidth: 2,
+                        borderColor: THEME_COLOR 
+                      }
+                    ]}
+                    onPress={(e) => {
+                       // Only trigger message press if NOT media (media has its own internal handlers)
+                       // and specifically ignore if it's an unavailable media
+                       const isMedia = ['image', 'video', 'audio'].includes(item.message_type) || item.type === 'media_group';
+                       const isUnavailable = item.type === 'media_group' ? false : (!resolveImageUrl((item as any).media_url || item.media_file) || mediaErrorIds.includes(item.id));
 
-                 if (isMedia && isUnavailable) return;
-                 handleMessagePress(item, e);
-                 }}
-              onLongPress={(e) => handleMessageLongPress(item, e)}
-              activeOpacity={0.8}
-              delayLongPress={500}
-            >
-              {item.reply_to && renderReplyIndicator(item.reply_to, isMe)}
-              {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
-              <View>
-                <View style={{ position: 'relative' }}>
-                  {renderMedia()}
+                       if (isMedia && isUnavailable) return;
+                       handleMessagePress(item, e);
+                       }}
+                    onLongPress={(e) => handleMessageLongPress(item, e)}
+                    activeOpacity={0.8}
+                    delayLongPress={500}
+                  >
+                    {item.reply_to && renderReplyIndicator(item.reply_to, isMe)}
+                    {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+                    <View>
+                      <View style={{ position: 'relative' }}>
+                        {renderMedia()}
+                      </View>
+                      {hasCaption && (
+                        <View style={{
+                          maxWidth: 240,
+                          paddingHorizontal: 8,
+                          paddingTop: 6,
+                          paddingBottom: 4,
+                          alignSelf: isMe ? 'flex-end' : 'flex-start',
+                        }}>
+                          <Text style={{
+                            fontSize: 14,
+                            color: '#1A1A1A',
+                            lineHeight: 18,
+                            textAlign: isMe ? 'right' : 'left',
+                          }}>
+                            {String(item.content)}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                  {hasReactions && renderReactionsBadge(isMe)}
                 </View>
-                {hasReactions && renderReactionsBadge(isMe)}
-              </View>
-            </TouchableOpacity>
+              );
+            })()
           ) : (
             isMe ? (
               <View style={{ maxWidth: '80%', minWidth: 50, alignSelf: 'flex-end' }}>
@@ -2596,7 +2974,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
            style={styles.headerBackButton}
            onPress={() => navigation.goBack()}
         >
-          <Icon name="arrow-back" size={24} color={THEME_COLOR} />
+          <Icon name="arrow-back" size={24} color={'#111111'} />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.headerCenter}
@@ -2662,7 +3040,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }}
             activeOpacity={0.7}
           >
-            <Icon name="videocam" size={22} color={THEME_COLOR} />
+            <Icon name="videocam" size={22} color={'#111111'} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.callIcon}
@@ -2686,7 +3064,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }}
             activeOpacity={0.7}
           >
-            <Icon name="call" size={20} color={THEME_COLOR} />
+            <Icon name="call" size={20} color={'#111111'} />
           </TouchableOpacity>
         </View>
       </View>
@@ -2697,9 +3075,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       {/* FIX 1: inverted FlatList - always starts at bottom, no scrollToEnd needed */}
       <FlatList
         ref={flatListRef}
-        data={messages}
+        data={groupedMessages}
         renderItem={renderMessage}
-        keyExtractor={item => item.id.toString()}
+        keyExtractor={item => (item.local_id || item.id).toString()}
         contentContainerStyle={[styles.messagesList, { paddingBottom: 8 }]}
         inverted={true}
         // Load older messages when user scrolls to top (= onEndReached in inverted list)
@@ -2819,9 +3197,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 <TouchableOpacity
                   key={e}
                   style={styles.emojiButton}
-                  onPress={() =>
-                    selectedMessage && sendReaction(selectedMessage.id, e)
-                  }
+                  onPress={() => {
+                    if (selectedMessage) {
+                      const targetId = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0].id : selectedMessage.id;
+                      sendReaction(targetId, e);
+                    }
+                  }}
                 >
                   <Text style={styles.emoji}>{e}</Text>
                 </TouchableOpacity>
@@ -2833,7 +3214,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   style={styles.actionButton}
                   onPress={() => {
                     if (selectedMessage) {
-                      setReplyToMessage(selectedMessage);
+                      const targetMsg = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0] : selectedMessage;
+                      setReplyToMessage(targetMsg);
                       setShowEmojiPicker(false);
                       setSelectedMessage(null);
                     }
@@ -3319,8 +3701,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           mode="camera"
           bottom={Platform.OS === 'ios' ? 70 : 60}
           left={60}
-          onMediaSelected={async (asset, type) => {
-              await sendImageMessage(asset);
+          onMediaSelected={async (assets: any[]) => {
+              if (assets.length > 0) {
+                  setSelectedMultiMedia(assets.map(asset => ({
+                      uri: asset.uri,
+                      type: asset.type || 'image/jpeg',
+                      fileName: asset.fileName
+                  })));
+                  setMultiPreviewVisible(true);
+              }
           }}
       />
       <MediaPickerModal 
@@ -3329,16 +3718,73 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           mode="attachment"
           bottom={Platform.OS === 'ios' ? 70 : 60}
           left={20}
-          onMediaSelected={async (asset, type) => {
-              if (type === 'image') {
-                  setStickerPreview({ uri: asset.uri, mimeType: asset.type || 'image/jpeg' });
-              } else {
-                  await sendImageMessage(asset);
+          onMediaSelected={async (assets: any[]) => {
+              // This handler is now only for camera captures from attachment menu
+              if (assets.length > 0) {
+                  setSelectedMultiMedia(assets.map(asset => ({
+                      uri: asset.uri,
+                      type: asset.type || (asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov') ? 'video/mp4' : 'image/jpeg'),
+                      fileName: asset.fileName
+                  })));
+                  setMultiPreviewVisible(true);
               }
           }}
-          onDocumentSelected={async (doc) => {
-              await sendDocumentMessage(doc);
+          onDocumentSelected={async (docs: any[]) => {
+              if (docs && docs.length > 0) {
+                  docs.forEach(doc => sendDocumentMessage(doc));
+              }
           }}
+          onOpenGallery={() => {
+              setAttachmentMenuVisible(false);
+              setGalleryPickerVisible(true);
+          }}
+      />
+      <CustomGalleryPicker
+        visible={galleryPickerVisible}
+        onClose={() => setGalleryPickerVisible(false)}
+        themeColor={THEME_COLOR}
+        onSelect={(assets) => {
+          if (assets.length > 0) {
+            setSelectedMultiMedia(assets.map(asset => ({
+              uri: asset.uri,
+              type: asset.type,
+              fileName: asset.fileName,
+            })));
+            setMultiPreviewVisible(true);
+          }
+        }}
+      />
+      <MultiMediaPreviewModal
+        visible={multiPreviewVisible}
+        mediaItems={selectedMultiMedia}
+        onClose={() => {
+          setMultiPreviewVisible(false);
+          setSelectedMultiMedia([]);
+        }}
+        onSend={(items) => {
+          items.forEach(item => {
+            sendImageMessage(item, item.caption);
+          });
+        }}
+        themeColor={THEME_COLOR}
+      />
+      <MediaGroupListModal
+        visible={groupListVisible}
+        messages={selectedGroupMessages}
+        onClose={() => {
+          setGroupListVisible(false);
+          setSelectedGroupMessages([]);
+        }}
+        onSelectMedia={(msg) => {
+          // Keep list open or close it? The user said "when i click it should show scrollable list and when i select a 1 image it should show full screen"
+          // We navigate to MediaViewer. When the user backs out of MediaViewer, they'll land back in ChatRoomScreen (the modal will have closed).
+          setGroupListVisible(false); 
+          navigation.navigate('MediaViewer', { 
+            mediaUrl: resolveImageUrl((msg as any).media_url || msg.media_file), 
+            mediaType: msg.message_type === 'video' ? 'video' : 'image' 
+          });
+        }}
+        themeColor={THEME_COLOR}
       />
       </KeyboardAvoidingView>
       );
@@ -3362,7 +3808,7 @@ const styles = StyleSheet.create({
     height: 60,
   },
   headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 28, color: '#8100D1', fontWeight: '300' },
+  backIcon: { fontSize: 28, color: '#181818', fontWeight: '300' },
   headerBackButton: {
     marginRight: spacing.sm,
     padding: spacing.xs,
@@ -3407,7 +3853,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'center',
   },
   headerTextContainer: { flex: 1 },
-  headerName: { fontSize: fontSize.lg, fontWeight: '600', color: THEME_COLOR },
+  headerName: { fontSize: fontSize.lg, fontWeight: '600', color: 'black' },
   headerStatus: { fontSize: fontSize.xs, color: '#666' },
   activeText: { color: '#25D366', fontWeight: '500' },
   messagesList: { padding: spacing.md },

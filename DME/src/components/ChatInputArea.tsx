@@ -117,7 +117,7 @@ const ChatInputArea = memo(({
             <RichTextInput
               key={inputClearKey} 
               ref={inputRef}
-              style={[styles.input, { height: inputHeight }]}
+              style={styles.input}
               placeholder={placeholder}
               placeholderTextColor="#999"
               autoFocus={localClearKey > 0}            

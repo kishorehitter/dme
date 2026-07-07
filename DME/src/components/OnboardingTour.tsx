@@ -249,7 +249,7 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
           ]}
         >
           <LinearGradient
-            colors={['#8100D1', '#FF007F']}
+            colors={['#4597f5f6', '#FF007F']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.cardHeader}
@@ -272,7 +272,7 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
               </TouchableOpacity>
               <TouchableOpacity activeOpacity={0.85} onPress={handleNext}>
                 <LinearGradient
-                  colors={['#8100D1', '#FF007F']}
+                  colors={['#4597f5f6', '#FF007F']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.nextBtn}
@@ -303,8 +303,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     backgroundColor: 'rgba(129, 0, 209, 0.18)',
     borderWidth: 3,
-    borderColor: '#8100D1',
-    shadowColor: '#8100D1',
+    borderColor: '#4597f5f6',
+    shadowColor: '#4597f5f6',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 25,
@@ -372,7 +372,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#ddd',
   },
   dotActive: {
-    backgroundColor: '#8100D1',
+    backgroundColor: '#4597f5f6',
     width: 20,
   },
   btnRow: {

@@ -344,7 +344,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   );
 };
 
-const THEME_COLOR = '#8100D1';
+const THEME_COLOR = '#4597f5f6';
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8F8F8' },
@@ -360,7 +360,7 @@ const styles = StyleSheet.create({
   avatar: { width: 100, height: 100, borderRadius: 50 },
   editBadge: {
     position: 'absolute', bottom: 8, right: 0,
-    backgroundColor: '#FFF', padding: 1, borderRadius: 2, borderColor: '#8100D1', borderWidth: 1
+    backgroundColor: '#FFF', padding: 1, borderRadius: 2, borderColor: '#4597f5f6', borderWidth: 1
   },
   editBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   avatarPlaceholder: { 
@@ -444,7 +444,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: '#8100D1',
+    borderColor: '#4597f5f6',
     borderRadius: 8,
     alignItems: 'center',
     marginHorizontal: 5,
@@ -454,7 +454,7 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     fontSize: 14,
-    color: '#8100D1',
+    color: '#4597f5f6',
     fontWeight: '600',
   },
   removeButtonText: {

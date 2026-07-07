@@ -14,7 +14,7 @@ interface AudioPlayerProps {
 // Global ref to track currently playing audio
 let currentlyPlayingAudioRef: { stop: () => void; id?: string } | null = null;
 
-const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#8100D1', messageId, duration = 0 }) => {
+const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597f5f6', messageId, duration = 0 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [audioDuration, setAudioDuration] = useState(duration || 0);

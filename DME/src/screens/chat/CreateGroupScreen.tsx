@@ -320,7 +320,7 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   );
 };
 
-const THEME_COLOR = '#8100D1';
+const THEME_COLOR = '#4597f5f6';
 
 const styles = StyleSheet.create({
   container: {

@@ -683,7 +683,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               style={styles.messageButtonCircle}
               onPress={() => navigation.navigate('ChatRoom', { conversationId: route.params.conversationId, name: displayName })}
             >
-              <Icon name="chatbox" size={28} color="#8100D1" />
+              <Icon name="chatbox" size={28} color="#4597f5f6" />
             </TouchableOpacity><Text style={styles.messageButtonLabel}>Message</Text>
           </View>
 

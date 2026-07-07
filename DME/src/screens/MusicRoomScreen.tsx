@@ -2321,7 +2321,7 @@ const sendChatMessage = () => {
                   <Icon name="person-add" size={22} color="#fff" />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} style={s.headerIconBtn}>
-                  <Icon name="list" size={22} color={activeTab === 'queue' ? '#8100D1' : '#fff'} />
+                  <Icon name="list" size={22} color={activeTab === 'queue' ? '#4597f5f6' : '#fff'} />
                   {queue.length > 0 && (
                     <View style={s.badge}>
                       <Text style={s.badgeText}>{queue.length}</Text>
@@ -3030,7 +3030,7 @@ const sendChatMessage = () => {
                   )}
                   <View style={s.chatBar}>
                     <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
-                      <Icon name="add" size={24} color="#8100D1" />
+                      <Icon name="add" size={24} color="#4597f5f6" />
                     </TouchableOpacity>
                     <RichTextInput
                       key={inputClearKey}
@@ -3055,9 +3055,9 @@ const sendChatMessage = () => {
                     />
                     <TouchableOpacity style={s.sendBtn} onPress={sendChatMessage} disabled={isSendingMedia}>
                       {isSendingMedia ? (
-                        <ActivityIndicator size="small" color="#8100D1" />
+                        <ActivityIndicator size="small" color="#4597f5f6" />
                       ) : (
-                        <Icon name="send" size={18} color="#8100D1" />
+                        <Icon name="send" size={18} color="#4597f5f6" />
                       )}
                     </TouchableOpacity>
                   </View>
@@ -3204,11 +3204,11 @@ const s = StyleSheet.create({
   header:            { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 10 },
   headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 4 },
   headerIconBtn:     { padding: 6, position: 'relative' },
-  badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#8100D1', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
+  badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
   badgeText:         { color: '#fff', fontSize: 9, fontWeight: '800' },
   headerTitleContainer: { flex: 1, flexDirection: 'row', gap: 8, marginHorizontal: 8 },
   headerTitleTouch:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 5 },
-  headerTitleInput:  { color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#8100D1', padding: 0, minWidth: 100 },
+  headerTitleInput:  { color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0, minWidth: 100 },
   headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5 },
   dot:               { width: 6, height: 6, borderRadius: 3 },
   videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative' },
@@ -3220,13 +3220,13 @@ const s = StyleSheet.create({
   npChannel:         { color: 'rgba(255,255,255,0.4)', fontSize: 10, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.5 },
   likeBtn:           { padding: 4, marginLeft: 8 },
   djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 8, paddingVertical: 1, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
-  djBadgeText:       { color: '#8100D1', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  djBadgeText:       { color: '#4597f5f6', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   participantsRow:   { backgroundColor: 'transparent' },
   participantsContent: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, gap: 6 },
   participantItem:   { position: 'relative' },
   pAvatar:           { width: 32, height: 32, borderRadius: 16, borderWidth: 0.5, borderColor: '#ffffff', overflow: 'hidden' },
   messageAvatar:     { width: 30, height: 30, borderRadius: 15, borderWidth: 0.5, borderColor: '#ffffff' },
-  djDot:             { position: 'absolute', bottom: 0, right: 0, width: 12, height: 12, borderRadius: 6, backgroundColor: '#8100D1', borderWidth: 1, borderColor: '#cc00ff' },
+  djDot:             { position: 'absolute', bottom: 0, right: 0, width: 12, height: 12, borderRadius: 6, backgroundColor: '#4597f5f6', borderWidth: 1, borderColor: '#cc00ff' },
   addAvatar:         { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   queueHeader:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,0,0,0.3)' },
   queueTitle:        { color: '#fff', fontSize: 14, fontWeight: '700' },
@@ -3235,13 +3235,13 @@ const s = StyleSheet.create({
   emptyText:         { color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: 30, fontSize: 13 },
   bubble:            { marginBottom: 12, maxWidth: '85%', alignSelf: 'flex-start', position: 'relative', flexDirection: 'row', alignItems: 'flex-start' },
   bubbleMe:          { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
-  bubbleUser:        { color: '#8100D1', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
+  bubbleUser:        { color: '#4597f5f6', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
   msgContainer:      { paddingHorizontal: 12, paddingVertical: 8, paddingBottom: 10, borderRadius: 18, position: 'relative', backgroundColor: 'rgba(255, 255, 255, 0.05)' },
   msgContainerThem:  { borderTopLeftRadius: 4 },
   msgContainerMe:    { borderTopRightRadius: 4 },
   bubbleMsg:         { color: '#fff', fontSize: 13 },
   replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.06)' },
-  replyUser:         { color: '#8100D1', fontSize: 10, fontWeight: '700' },
+  replyUser:         { color: '#4597f5f6', fontSize: 10, fontWeight: '700' },
   replyText:         { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
   reactionContainer: { 
     marginTop: 2,
@@ -3262,7 +3262,7 @@ const s = StyleSheet.create({
   reactionEmoji:     { fontSize: 16 },
   replyBar:          { backgroundColor: 'transparent' },
   replyBarContent:   { flexDirection: 'row', alignItems: 'center', padding: 10 },
-  replyBarUser:      { color: '#8100D1', fontSize: 12, fontWeight: '700' },
+  replyBarUser:      { color: '#4597f5f6', fontSize: 12, fontWeight: '700' },
   replyBarText:      { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
   quickReactionsRow: {
     backgroundColor: 'transparent',
@@ -3309,14 +3309,14 @@ const s = StyleSheet.create({
   confirmButtons:    { flexDirection: 'row', gap: 15, width: '100%' },
   pillButton:        { flex: 1, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center' },
   cancelButton:      { backgroundColor: '#333' },
-  leaveButton:       { backgroundColor: '#8100D1' },
+  leaveButton:       { backgroundColor: '#4597f5f6' },
   buttonText:        { color: '#fff', fontWeight: 'bold' },
   previewContainer:  { flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: '#111', borderTopWidth: 1, borderColor: '#333' },
   previewImage:      { width: 60, height: 60, borderRadius: 8 },
-  sendPendingBtn:    { marginLeft: 'auto', backgroundColor: '#8100D1', padding: 10, borderRadius: 20 },
+  sendPendingBtn:    { marginLeft: 'auto', backgroundColor: '#4597f5f6', padding: 10, borderRadius: 20 },
   closePendingBtn:   { marginLeft: 10, backgroundColor: '#333', padding: 5, borderRadius: 15 },
   syncOverlay:       { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,10,0.95)', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
-  syncText:          { marginTop: 20, color: '#8100D1', fontSize: 15, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
+  syncText:          { marginTop: 20, color: '#4597f5f6', fontSize: 15, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   coverOverlay:      { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', zIndex: 5 },
   coverContent:      { alignItems: 'center', gap: 15 },
   coverText:         { color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '500' },

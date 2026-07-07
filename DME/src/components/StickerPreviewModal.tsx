@@ -455,7 +455,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
             >
               {!canRender ? (
                 // Hold space with spinner until dimensions resolved — prevents blur/wrong-AR flash
-                <ActivityIndicator color="#8100D1" size="large" />
+                <ActivityIndicator color="#4597f5f6" size="large" />
               ) : (
                 <ViewShot
                   ref={viewShotRef}
@@ -585,7 +585,7 @@ const ms = StyleSheet.create({
   rightCluster: { flexDirection: 'row', gap: 6 },
 
   iconBtn:       { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.06)', justifyContent: 'center', alignItems: 'center' },
-  activeIconBtn: { backgroundColor: '#8100D1' },
+  activeIconBtn: { backgroundColor: '#4597f5f6' },
 
   colorRow:    { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 8 },
   colorDot:    { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: 'transparent' },
@@ -593,7 +593,7 @@ const ms = StyleSheet.create({
 
   fontSizeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 6 },
   sizeBtn:     { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.06)', justifyContent: 'center', alignItems: 'center' },
-  sizeBtnActive: { backgroundColor: '#8100D1' },
+  sizeBtnActive: { backgroundColor: '#4597f5f6' },
   sizeBtnText: { color: '#000', fontWeight: 'bold' },
 
   // ── Media ──
@@ -626,7 +626,7 @@ const ms = StyleSheet.create({
   bottomBar: { paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#fff' },
 
   // Send button
-  sendBtn:     { flexDirection: 'row', height: 48, borderRadius: 24, backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
+  sendBtn:     { flexDirection: 'row', height: 48, borderRadius: 24, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
   // Text-mode row: [input .....] [Done]
@@ -641,7 +641,7 @@ const ms = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  doneBtn:     { height: 48, paddingHorizontal: 20, borderRadius: 24, backgroundColor: '#8100D1', justifyContent: 'center', alignItems: 'center' },
+  doneBtn:     { height: 48, paddingHorizontal: 20, borderRadius: 24, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
   doneBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
 

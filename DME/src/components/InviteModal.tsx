@@ -107,7 +107,7 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
         </View>
 
         {loading ? (
-          <ActivityIndicator style={{ flex: 1 }} color="#8100D1" />
+          <ActivityIndicator style={{ flex: 1 }} color="#4597f5f6" />
         ) : (
           <FlatList
             data={friends}
@@ -127,7 +127,7 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
                 <Icon 
                   name={selectedIds.includes(item.id) ? "checkbox" : "square-outline"} 
                   size={24} 
-                  color="#8100D1" 
+                  color="#4597f5f6" 
                 />
               </TouchableOpacity>
             )}
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
   friendItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#222' },
   avatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12 },
   name: { flex: 1, color: '#fff', fontSize: 16 },
-  sendBtn: { backgroundColor: '#8100D1', height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  sendBtn: { backgroundColor: '#4597f5f6', height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
   sendText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
 });
 

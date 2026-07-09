@@ -3,7 +3,6 @@ import { StyleSheet, Animated, Dimensions, StatusBar } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
-const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
 
 interface AppSplashProps {
   onFinish: () => void;
@@ -38,19 +37,20 @@ const AppSplash: React.FC<AppSplashProps> = ({ onFinish, startFadeOut }) => {
   }, [zoomFinished, startFadeOut, opacityValue, onFinish]);
 
   return (
-    <AnimatedLinearGradient
-      colors={['transparent', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
-      useAngle={true}
-      angle={355}
-      style={[styles.container, { opacity: opacityValue }]}
-    >
+    <Animated.View style={[styles.container, { opacity: opacityValue }]}>
+      <LinearGradient
+        colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
+        useAngle={true}
+        angle={355}
+        style={StyleSheet.absoluteFill}
+      />
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
       <Animated.Image
         source={require('../assets/logo.png')}
         style={[styles.logo, { transform: [{ scale: scaleValue }] }]}
         resizeMode="contain"
       />
-    </AnimatedLinearGradient>
+    </Animated.View>
   );
 };
 

@@ -415,7 +415,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               >
                 {isActive ? (
                   <LinearGradient
-                    colors={['#FF007F', '#7F00FF']}
+                    colors={['#000000', '#fd0000']}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                     style={styles.tab}
@@ -706,7 +706,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               <Icon
                 name={selectedSource === 'drive' ? 'logo-google' : 'logo-youtube'}
                 size={40}
-                color={selectedSource === 'drive' ? '#4285F4' : '#FF0000'}
+                color={selectedSource === 'drive' ? '#000000' : '#FF0000'}
               />
               <Icon name="play-circle" size={60} color="#4597f5f6" />
               <Text style={styles.videoSelectedText}>Ready to Play!</Text>

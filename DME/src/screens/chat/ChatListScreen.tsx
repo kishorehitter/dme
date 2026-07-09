@@ -22,6 +22,8 @@ import {
   Linking,
   Animated,
   Share,
+  Keyboard,
+  Dimensions,
 } from 'react-native';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -46,11 +48,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { downloadAndInstallAPK } from '../../services/updateDownloader';
 import { useAuth } from '../../context/AuthContext';
 import { chatAPI } from '../../services/api';
+import { getApiUrl } from '../../config/network';
 import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { StatusService, Status, UserStatusGroup } from '../../services/StatusService';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
-import { Conversation } from '../../types';
+import { Conversation, User } from '../../types';
 import { resolveImageUrl } from '../../utils/image';
 
 interface ChatListScreenProps {
@@ -237,6 +240,51 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [initialContainerHeight, setInitialContainerHeight] = useState<number | null>(null);
+  const [exactMatchedUser, setExactMatchedUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setExactMatchedUser(null);
+      return;
+    }
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        const token = await AsyncStorage.getItem('access_token');
+        const query = searchQuery.trim();
+        const response = await fetch(
+          getApiUrl(`chat/users/search/?q=${encodeURIComponent(query)}`),
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          // Find if there is an exact case-insensitive match for username, display_name, or email
+          const exactUser = data.find((u: any) => 
+            (u.username || '').toLowerCase() === query.toLowerCase() ||
+            (u.display_name || '').toLowerCase() === query.toLowerCase() ||
+            (u.email || '').toLowerCase() === query.toLowerCase()
+          );
+
+          if (exactUser) {
+            // Check if we already have a conversation with this user
+            const hasConv = conversations.some(c => !c.is_group && c.other_user?.id === exactUser.id);
+            if (!hasConv) {
+              setExactMatchedUser(exactUser);
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching user for exact match:', err);
+      }
+      setExactMatchedUser(null);
+    }, 500);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, conversations]);
 
   // ── Onboarding tour ────────────────────────────────────────────────────────
   const ONBOARDING_KEY = 'dme_onboarding_done_v1';
@@ -245,7 +293,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const fabRef = useRef<View>(null);
   const playBtnRef = useRef<View>(null);
   const menuBtnRef = useRef<View>(null);
-
+  const triviaBtnRef = useRef<View>(null);
 
   // Check if first launch
   useEffect(() => {
@@ -280,6 +328,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         measureRef(fabRef, 'fab'),
         measureRef(playBtnRef, 'play'),
         measureRef(menuBtnRef, 'menu'),
+        measureRef(triviaBtnRef, 'trivia'),
       ]);
       // statusTab arrives separately via the event listener below
     } catch (error) {
@@ -303,9 +352,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     return () => sub.remove();
   }, []);
 
-  // 2. Once all 4 targets are measured, show the tour
+  // 2. Once all 5 targets are measured, show the tour
   useEffect(() => {
-    const allReady = (['fab', 'play', 'menu', 'statusTab'] as TourStepKey[]).every(k => tourTargets[k]);
+    const allReady = (['fab', 'play', 'menu', 'statusTab', 'trivia'] as TourStepKey[]).every(k => tourTargets[k]);
     if (allReady && !tourVisible) {
       setTourVisible(true);
     }
@@ -563,14 +612,16 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         selectionMode ? (
           <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
         ) : (
-          <TouchableOpacity
-            onPress={() => navigation.navigate('TriviaSolo')}
-          >
-            <View style={{ alignItems: 'center' }}>
-              <Icon name="book-outline" size={30} color="#000000" />
-              
-            </View>
-          </TouchableOpacity>
+          <View ref={triviaBtnRef} collapsable={false}>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('TriviaSolo')}
+            >
+              <View style={{ alignItems: 'center' }}>
+                <Icon name="book-outline" size={30} color="#000000" />
+                
+              </View>
+            </TouchableOpacity>
+          </View>
         )
       ),
       headerLeft: () => (
@@ -604,7 +655,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                     {activeRoomCode ? (
                       <Animated.View style={{ transform: [{ rotate: spin }] }}>
                         <LinearGradient
-                          colors={['#FF007F', '#00FFFF', '#FFD700', '#7F00FF']}
+                          colors={['#FF007F', '#000000', '#b10000', '#333333']}
                           start={{ x: 0, y: 0 }}
                           end={{ x: 1, y: 1 }}
                           style={{
@@ -620,7 +671,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                       </Animated.View>
                     ) : (
                       <LinearGradient
-                        colors={['#FF007F', '#7F00FF']}
+                        colors={['#000000', '#fd0000']}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 1 }}
                         style={{
@@ -660,8 +711,50 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     }
   };
 
+  const filteredConversations = conversations.filter(c => {
+    let matchesTab = true;
+    if (activeTab === 'chats') {
+      matchesTab = !c.is_group;
+    } else if (activeTab === 'groups') {
+      matchesTab = c.is_group;
+    } else if (activeTab === 'unread') {
+      matchesTab = (c.unread_count || 0) > 0;
+    }
+    if (!matchesTab) return false;
+    
+    if (searchQuery.trim()) {
+      const displayName = c.is_group 
+        ? (c.name || 'Group') 
+        : (c.other_user?.display_name || c.other_user?.email || 'User');
+      return displayName.toLowerCase().startsWith(searchQuery.trim().toLowerCase());
+    }
+    return true;
+  });
+
+  const listData = [...filteredConversations];
+  if (exactMatchedUser) {
+    listData.push({
+      id: `exact_match_${exactMatchedUser.id}`,
+      isVirtual: true,
+      is_group: false,
+      other_user: exactMatchedUser,
+      last_message: null,
+      unread_count: 0,
+    } as any);
+  }
+
   return (
-    <View style={styles.container}>
+    <View 
+      style={styles.container}
+      onLayout={(e) => {
+        if (initialContainerHeight === null) {
+          const { height: layoutHeight } = e.nativeEvent.layout;
+          if (layoutHeight > 0) {
+            setInitialContainerHeight(layoutHeight);
+          }
+        }
+      }}
+    >
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -887,28 +980,48 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             )}
           </View>
         }
-        data={conversations.filter(c => {
-          let matchesTab = true;
-          if (activeTab === 'chats') {
-            matchesTab = !c.is_group;
-          } else if (activeTab === 'groups') {
-            matchesTab = c.is_group;
-          } else if (activeTab === 'unread') {
-            matchesTab = (c.unread_count || 0) > 0;
-          }
-          if (!matchesTab) return false;
-          
-          if (searchQuery.trim()) {
-            const displayName = c.is_group 
-              ? (c.name || 'Group') 
-              : (c.other_user?.display_name || c.other_user?.email || 'User');
-            return displayName.toLowerCase().startsWith(searchQuery.trim().toLowerCase());
-          }
-          return true;
-        })}
+        data={listData}
   
        
         renderItem={({ item }) => {
+          if ((item as any).isVirtual) {
+            const extUser = item.other_user;
+            const displayName = extUser?.display_name || extUser?.username || extUser?.email || 'User';
+            return (
+              <TouchableOpacity
+                style={styles.conversationItem}
+                activeOpacity={0.7}
+                onPress={async () => {
+                  try {
+                    const conversation = await chatAPI.getOrCreateDirectChat(extUser.id);
+                    navigation.navigate('ChatRoom', {
+                      conversationId: conversation.id,
+                      name: displayName,
+                    });
+                  } catch (error) {
+                    Alert.alert('Error', 'Failed to start conversation');
+                  }
+                }}
+              >
+                <AvatarWithFallback
+                  uri={extUser?.profile_picture}
+                  sticker={extUser?.avatar_sticker}
+                  displayName={displayName}
+                  style={styles.avatar}
+                />
+                <View style={styles.content}>
+                  <Text style={styles.name}>{displayName}</Text>
+                  <Text style={styles.lastMessage} numberOfLines={1}>
+                    Not in chats. Tap to start messaging.
+                  </Text>
+                </View>
+                <View style={styles.rightContent}>
+                  <Icon name="chatbubble-ellipses" size={22} color="#4597f5f6" />
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
           const isSelected = selectedIds.includes(item.id);
           const userId = item.is_group ? null : item.other_user?.id;
           const userStatuses = userId ? statusGroups.find(g => g.user_id === userId)?.statuses : [];
@@ -1048,7 +1161,17 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </View>
         </TouchableOpacity>
       </Modal>
-      <View ref={fabRef} collapsable={false} style={styles.fabWrapper}>
+      <View 
+        ref={fabRef} 
+        collapsable={false} 
+        style={[
+          styles.fabWrapper,
+          initialContainerHeight !== null ? {
+            bottom: undefined,
+            top: initialContainerHeight - 50 - (spacing.xxl || 32) - 16,
+          } : null
+        ]}
+      >
         <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
           <Icon name="person-add-outline" size={25} color="#FFF" />
         </TouchableOpacity>

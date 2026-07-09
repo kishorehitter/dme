@@ -24,6 +24,7 @@ interface Props {
   autoFocus?: boolean;
   onSubmitEditing?: () => void;
   returnKeyType?: string;
+  underlineColorAndroid?: string;
 }
 
 export interface RichTextInputRef {

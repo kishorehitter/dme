@@ -58,12 +58,23 @@ const SharedMediaScreen: React.FC = () => {
     fetchMedia();
   }, [fetchMedia]);
 
-  const renderGridItem = ({ item }: { item: any }) => {
+  const renderGridItem = ({ item, index }: { item: any; index: number }) => {
     const url = resolveImageUrl(item.media_url || item.media_file);
+    const mediaList = media.map(m => ({
+      mediaUrl: resolveImageUrl(m.media_url || m.media_file),
+      mediaType: activeTab as 'image' | 'video',
+      id: m.id,
+      caption: m.content || '',
+    }));
     return (
       <TouchableOpacity 
         style={styles.gridItem} 
-        onPress={() => navigation.navigate('MediaViewer', { mediaUrl: url, mediaType: activeTab })}
+        onPress={() => navigation.navigate('MediaViewer', { 
+          mediaUrl: url, 
+          mediaType: activeTab,
+          mediaList,
+          initialIndex: index,
+        })}
       >
         {activeTab === 'image' ? (
           <Image source={{ uri: url }} style={styles.mediaImage} />
@@ -132,7 +143,7 @@ const SharedMediaScreen: React.FC = () => {
           data={media}
           numColumns={isGridLayout ? 3 : 1}
           keyExtractor={item => item.id.toString()}
-          renderItem={isGridLayout ? renderGridItem : renderListItem}
+          renderItem={isGridLayout ? ({ item, index }) => renderGridItem({ item, index }) : renderListItem}
           contentContainerStyle={media.length === 0 ? styles.emptyContainer : styles.listContent}
           ListEmptyComponent={
             <View style={styles.emptyView}>

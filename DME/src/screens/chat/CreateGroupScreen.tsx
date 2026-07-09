@@ -57,43 +57,67 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
     });
   }, [navigation, step]);
 
+  const [chattedUsers, setChattedUsers] = useState<User[]>([]);
+
   useEffect(() => {
-    // Fetch initial list of users
-    searchUsers('');
+    const loadChattedUsers = async () => {
+      setIsLoading(true);
+      try {
+        const convs = await chatAPI.getConversations();
+        let conversationsArray: any[] = [];
+        if (Array.isArray(convs)) {
+          conversationsArray = convs;
+        } else if (convs?.results) {
+          conversationsArray = convs.results;
+        }
+        
+        const chatted: User[] = [];
+        const seenUserIds = new Set<number>();
+        
+        conversationsArray.forEach((c: any) => {
+          if (!c.is_group && c.other_user && c.other_user.id) {
+            if (!seenUserIds.has(c.other_user.id)) {
+              seenUserIds.add(c.other_user.id);
+              chatted.push({
+                id: c.other_user.id,
+                username: c.other_user.username,
+                email: c.other_user.email,
+                display_name: c.other_user.display_name,
+                profile_picture: c.other_user.profile_picture,
+                avatar_sticker: c.other_user.avatar_sticker,
+              } as User);
+            }
+          }
+        });
+        
+        setChattedUsers(chatted);
+        setUsers(chatted);
+      } catch (error) {
+        console.error('Error fetching conversations for group:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadChattedUsers();
   }, []);
 
   useEffect(() => {
-    if (step === 1 && searchQuery) {
-      const delayDebounceFn = setTimeout(() => {
-        searchUsers(searchQuery);
-      }, 500);
-      return () => clearTimeout(delayDebounceFn);
-    } else if (step === 1) {
-      setUsers([]);
-    }
-  }, [searchQuery, step]);
-
-  const searchUsers = async (query: string) => {
-    setIsLoading(true);
-    try {
-      const token = await AsyncStorage.getItem('access_token');
-      const response = await fetch(
-        getApiUrl(`chat/users/search/?q=${encodeURIComponent(query)}`),
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        setUsers(data);
+    if (step === 1) {
+      if (!searchQuery.trim()) {
+        setUsers(chattedUsers);
+      } else {
+        const query = searchQuery.toLowerCase();
+        const filtered = chattedUsers.filter(user => {
+          const name = (user.display_name || '').toLowerCase();
+          const email = (user.email || '').toLowerCase();
+          const username = (user.username || '').toLowerCase();
+          return name.includes(query) || email.includes(query) || username.includes(query);
+        });
+        setUsers(filtered);
       }
-    } catch (error) {
-      console.error('Error searching users:', error);
-    } finally {
-      setIsLoading(false);
     }
-  };
+  }, [searchQuery, chattedUsers, step]);
 
   const toggleUserSelection = (user: User) => {
     if (selectedUsers.some(u => u.id === user.id)) {
@@ -234,8 +258,8 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           )}
           ListEmptyComponent={() => (
             <View style={styles.emptyList}>
-              <Text>
-                {searchQuery ? 'No users found' : 'Search for participants'}
+              <Text style={{ color: '#888' }}>
+                {searchQuery ? 'No matching contacts found' : 'No recent chats found'}
               </Text>
             </View>
           )}

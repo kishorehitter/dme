@@ -26,6 +26,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useAuth } from '../context/AuthContext';
 import { resolveImageUrl } from '../utils/image';
+import AvatarWithFallback from '../components/AvatarWithFallback';
 import { MediaPickerModal } from '../components/MediaPickerModal';
 import { chatAPI } from '../services/api';
 import {
@@ -65,8 +66,6 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
 }) => {
   const hasStatus = statuses.length > 0;
   const allSeen   = hasStatus && statuses.every(s => s.is_viewed);
-  const [imgError, setImgError] = useState(false);
-
 
   return (
     <View style={styles.statusRow}>
@@ -83,21 +82,12 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
             ]} />
           )}
           
-          {avatarSticker ? (
-            <View style={[styles.avatar, styles.avatarFallback]}>
-              <Text style={styles.stickerAvatar}>{avatarSticker}</Text>
-            </View>
-          ) : (avatar && !imgError) ? (
-            <Image 
-              source={{ uri: resolveImageUrl(avatar) }} 
-              style={styles.avatar} 
-              onError={() => setImgError(true)}
-            />
-          ) : (
-            <View style={[styles.avatar, styles.avatarFallback]}>
-              <Icon name="person" size={24} color="#fff" />
-            </View>
-          )}
+          <AvatarWithFallback
+            uri={avatar}
+            sticker={avatarSticker}
+            displayName={username}
+            style={styles.avatar}
+          />
 
           <TouchableOpacity style={styles.addBadge} onPress={onAdd}>
             <Icon name="add" size={14} color="#fff" />
@@ -125,8 +115,6 @@ interface FriendStatusRowProps {
 }
 
 const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => {
-  const [imgError, setImgError] = useState(false);
-
   return (
     <TouchableOpacity style={styles.statusRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.avatarWrapper}>
@@ -134,23 +122,12 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
           styles.statusRing,
           group.has_unseen ? styles.ringUnseen : styles.ringViewed,
         ]} />
-        {group.user_avatar_sticker ? (
-          <View style={[styles.avatar, styles.avatarFallback]}>
-            <Text style={styles.stickerAvatar}>{group.user_avatar_sticker}</Text>
-          </View>
-        ) : (group.user_avatar && !imgError) ? (
-          <Image 
-            source={{ uri: resolveImageUrl(group.user_avatar) }} 
-            style={styles.avatar} 
-            onError={() => setImgError(true)}
-          />
-        ) : (
-          <View style={[styles.avatar, styles.avatarFallback]}>
-            <Text style={styles.avatarInitial}>
-              {(group.username || '?').charAt(0).toUpperCase()}
-            </Text>
-          </View>
-        )}
+        <AvatarWithFallback
+          uri={group.user_avatar}
+          sticker={group.user_avatar_sticker}
+          displayName={group.username || 'Unknown User'}
+          style={styles.avatar}
+        />
       </View>
 
       <View style={{ flex: 1 }}>
@@ -287,13 +264,14 @@ export const StatusTabScreen = () => {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerTitle: 'Status',
+      headerTitleStyle: { color: '#1A1A1A', fontWeight: 'bold', fontSize: 20 },
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity onPress={() => { console.log('Camera button pressed'); setCameraMenuVisible(true); }} style={{ marginRight: 20 }}>
             <Icon name="camera-outline" size={24} color="#333" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
-            <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
+            <Icon name="ellipsis-vertical" size={24} color="#333" />
           </TouchableOpacity>
         </View>
       ),
@@ -364,33 +342,13 @@ export const StatusTabScreen = () => {
 // ─── Call log ───────────────────────────────────────────────────────────────
 
 const CallLogItemAvatar = ({ avatar, sticker, name }: { avatar: string | null, sticker: string | null, name: string }) => {
-  const [error, setError] = useState(false);
-  const resolvedUrl = resolveImageUrl(avatar);
-
-  if (sticker) {
-    return (
-      <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
-        <Text style={{ fontSize: 24 }}>{sticker}</Text>
-      </View>
-    );
-  }
-
-  if (resolvedUrl && !error) {
-    return (
-      <Image 
-        source={{ uri: resolvedUrl }} 
-        style={styles.logAvatarImg} 
-        onError={() => setError(true)}
-      />
-    );
-  }
-
   return (
-    <View style={[styles.logAvatarImg, styles.logAvatarFallback]}>
-      <Text style={styles.logAvatarInitial}>
-        {(name || 'U').charAt(0).toUpperCase()}
-      </Text>
-    </View>
+    <AvatarWithFallback
+      uri={avatar}
+      sticker={sticker}
+      displayName={name}
+      style={styles.logAvatarImg}
+    />
   );
 };
 
@@ -448,7 +406,7 @@ const CallLogPopoverMenu = ({
 
 const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => (
   <TouchableOpacity onPress={onPress} style={{ marginRight: 16 }}>
-    <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
+    <Icon name="ellipsis-vertical" size={24} color="#333" />
   </TouchableOpacity>
 );
 
@@ -544,7 +502,7 @@ export const CallLogTabScreen = () => {
         headerRight: () => <CallLogMenuButton onPress={() => setMenuVisible(true)} />,
         headerTitleAlign: 'left',
         headerStyle: { backgroundColor: '#fff', elevation: 2, shadowOpacity: 0.1 },
-        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#4597f5f6' }
+        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#1A1A1A' }
       });
     }
   }, [navigation, selectionMode, selectedIds, handleBatchDelete]);

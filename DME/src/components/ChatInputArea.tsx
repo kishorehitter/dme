@@ -11,7 +11,7 @@ import {
 import Icon from 'react-native-vector-icons/Ionicons';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import { spacing, borderRadius, fontSize } from '../utils/theme';
-const MIN_HEIGHT = 40;
+const MIN_HEIGHT = 45;
 const MAX_HEIGHT = 180;
 const ChatInputArea = memo(({
     isRecording,
@@ -32,6 +32,7 @@ const ChatInputArea = memo(({
 
     const inputRef = useRef<RichTextInputRef>(null);
     const prevInputText = useRef(inputText);
+    const [localInputText, setLocalInputText] = useState(inputText || '');
     const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
     const [localClearKey, setLocalClearKey] = useState(0);
     const [isKeyboardVisible, setKeyboardVisible] = useState(false);
@@ -39,6 +40,7 @@ const ChatInputArea = memo(({
 
     const handleTypingInternal = useCallback((text: string) => {
       isTypingRef.current = true;
+      setLocalInputText(text);
       handleTyping?.(text);
     }, [handleTyping]);
 
@@ -64,6 +66,7 @@ const ChatInputArea = memo(({
       onRegisterClear?.(() => {
         setLocalClearKey(k => k + 1);
         setInputHeight(MIN_HEIGHT);
+        setLocalInputText('');
         inputRef.current?.clear();
       });
     }, [onRegisterClear]);
@@ -74,10 +77,12 @@ const ChatInputArea = memo(({
     // of the typing guard and guarantees the edit text always appears.
     useEffect(() => {
       if (editingMessageId && inputText) {
+        setLocalInputText(inputText);
         inputRef.current?.setText(inputText);
         prevInputText.current = inputText;
       } else if (prevEditingId.current && !editingMessageId) {
         // If we stopped editing, clear the text
+        setLocalInputText('');
         inputRef.current?.clear();
         prevInputText.current = '';
       }
@@ -87,9 +92,10 @@ const ChatInputArea = memo(({
     const handleContentSizeChange = useCallback((event: any) => {
       const h = event.nativeEvent?.contentSize?.height;
       if (h) {
-        setInputHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.ceil(h))));
+        setInputHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, h)));
       }
     }, []);
+
 
     const handleContentCommitted = useCallback((event: any) => {
         const { uri, mimeType } = event.nativeEvent;
@@ -97,8 +103,8 @@ const ChatInputArea = memo(({
     }, [setStickerPreview]);
 
     const handleSend = useCallback(() => {
-        sendMessage();
-    }, [sendMessage]);
+        sendMessage(localInputText);
+    }, [sendMessage, localInputText]);
 
     const placeholder = editingMessageId ? 'Edit your message...' : 'Message';
 
@@ -117,7 +123,7 @@ const ChatInputArea = memo(({
             <RichTextInput
               key={inputClearKey} 
               ref={inputRef}
-              style={styles.input}
+              style={[styles.input, { height: inputHeight }]}
               placeholder={placeholder}
               placeholderTextColor="#999"
               autoFocus={localClearKey > 0}            
@@ -129,7 +135,7 @@ const ChatInputArea = memo(({
             />
           )}
 
-          {(!inputText || inputText.trim() === '' || isRecording) ? (
+          {(!localInputText || localInputText.trim() === '' || isRecording) ? (
             <Animated.View
               style={[
                 styles.micButton,
@@ -173,7 +179,7 @@ const ChatInputArea = memo(({
 const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     paddingBottom: 2,
   },
   attachmentButton: {
@@ -191,9 +197,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
     borderRadius: borderRadius.xl,
     paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'ios' ? 10 : 8,
-    paddingBottom: Platform.OS === 'ios' ? 10 : 8,
-    fontSize: fontSize.md,
+    paddingTop: Platform.OS === 'ios' ? 8 : 6,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+    fontSize: 17.8,
     color: '#000',
     textAlignVertical: 'top',
     minHeight: MIN_HEIGHT,

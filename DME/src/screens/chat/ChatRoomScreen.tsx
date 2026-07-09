@@ -1197,13 +1197,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           setReplyToMessage(null);
           setInputText('');
           clearInputRef.current?.();  
-          // Auto-scroll to bottom after sending reply
           setTimeout(() => {
             flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
           }, 100);
         }
       } catch {
-        setInputText(text);
+        clearInputRef.current?.(text);
       } finally {
         setIsSending(false);
       }
@@ -3776,12 +3775,24 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           setSelectedGroupMessages([]);
         }}
         onSelectMedia={(msg) => {
-          // Keep list open or close it? The user said "when i click it should show scrollable list and when i select a 1 image it should show full screen"
-          // We navigate to MediaViewer. When the user backs out of MediaViewer, they'll land back in ChatRoomScreen (the modal will have closed).
+          // Close the vertical list modal
           setGroupListVisible(false); 
+          
+          // Map all messages in the group to a compatible MediaItem format
+          const mediaList = selectedGroupMessages.map(m => ({
+            mediaUrl: resolveImageUrl((m as any).media_url || m.media_file),
+            mediaType: m.message_type === 'video' ? 'video' : 'image' as 'image' | 'video',
+            id: m.id,
+            caption: m.content || '',
+          }));
+          
+          const initialIndex = selectedGroupMessages.findIndex(m => m.id === msg.id);
+          
           navigation.navigate('MediaViewer', { 
             mediaUrl: resolveImageUrl((msg as any).media_url || msg.media_file), 
-            mediaType: msg.message_type === 'video' ? 'video' : 'image' 
+            mediaType: msg.message_type === 'video' ? 'video' : 'image',
+            mediaList,
+            initialIndex: initialIndex >= 0 ? initialIndex : 0,
           });
         }}
         themeColor={THEME_COLOR}

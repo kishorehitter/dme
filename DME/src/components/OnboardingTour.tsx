@@ -22,7 +22,7 @@ export interface TourTarget {
   height: number;
 }
 
-export type TourStepKey = 'fab' | 'play' | 'menu' | 'statusTab';
+export type TourStepKey = 'fab' | 'play' | 'menu' | 'statusTab' | 'trivia';
 
 const STEPS: {
   key: TourStepKey;
@@ -41,8 +41,8 @@ const STEPS: {
   {
     key: 'play',
     icon: 'play-circle-outline',
-    title: 'Music Room',
-    description: 'Open the Music Room to discover and listen to YouTube tracks together with your friends in real-time.',
+    title: 'Watch Together',
+    description: 'Create/Join a room to discover new content, learn, listen to music, and watch videos with your friends in real time.',
     tipPosition: 'bottom',
   },
   {
@@ -58,6 +58,13 @@ const STEPS: {
     title: 'Status Tab',
     description: 'Switch to the Status tab to upload photos or videos as your status and see updates from friends.',
     tipPosition: 'top',
+  },
+  {
+    key: 'trivia',
+    icon: 'help-circle-outline',
+    title: 'Knowledge Quest',
+    description: 'Challenge yourself with general knowledge questions! Tap here to start a solo quiz and test your knowledge across topics.',
+    tipPosition: 'bottom',
   },
 ];
 
@@ -151,6 +158,8 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   const cx = target.x + target.width / 2;
   const cy = target.y + target.height / 2;
 
+  const isTopPointer = target.y < 150;
+
   const baseW = target.width + RING_PADDING * 2;
   const baseH = target.height + RING_PADDING * 2;
   const baseLeft = cx - baseW / 2;
@@ -162,8 +171,9 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   const cardX = (SCREEN_W - CARD_W) / 2;
   const CARD_H = 230;
 
-  const cardAboveY = target.y - CARD_H - 30;
-  const cardBelowY = target.y + target.height + 40;
+  const isBottomStep = step.key === 'statusTab' || step.key === 'fab';
+  const cardAboveY = target.y - CARD_H - (isBottomStep ? 60 : 30);
+  const cardBelowY = target.y + target.height + (isTopPointer ? 75 : 40);
 
   let cardY: number;
 
@@ -177,63 +187,64 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   const handleNext = () => (isLast ? onFinished() : setStepIdx(i => i + 1));
   const handleSkip = () => onFinished();
 
+  const emoji = isTopPointer ? '👆' : '👇';
+
+  // Bouncing translateY calculation from the pulseScale
+  // Bounces up towards target for top items, bounces down towards target for bottom items
+  const bounceY = pulseScale.interpolate({
+    inputRange: [1, 1.15],
+    outputRange: [0, isTopPointer ? -12 : 12],
+  });
+
+  const emojiSize = 46;
+  // Helper to adjust horizontal offsets for each tour step pointer individually
+  const getHorizontalOffset = (key: TourStepKey) => {
+    switch (key) {
+      case 'play':
+        return 0;      // Music Room pointer offset (positive = right, negative = left)
+      case 'trivia':
+        return 4;      // Trivia pointer offset
+      case 'menu':
+        return 4;      // Menu pointer offset
+      case 'fab':
+        return -12;    // New Chat pointer offset
+      case 'statusTab':
+        return -12;    // Status Tab pointer offset
+      default:
+        return 0;
+    }
+  };
+
+  const fingerLeft = cx - emojiSize / 2 + getHorizontalOffset(step.key);
+  const fingerTop = isTopPointer
+    ? target.y + target.height + 4 // Below the target pointing up
+    : target.y - emojiSize - (isBottomStep ? 18 : 4);    // Above the target pointing down, shifted up for bottom steps
+
   return (
     <Modal visible transparent animationType="none" statusBarTranslucent>
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]} pointerEvents="box-none">
         <View style={styles.fullScrim} />
 
-        {/* Outer soft halo */}
+        {/* Finger pointer emoji only — replaces all circular glow outlines */}
         <Animated.View
           pointerEvents="none"
           style={[
-            styles.glowOuter,
+            styles.fingerPointer,
             {
-              left: baseLeft,
-              top: baseTop,
-              width: baseW,
-              height: baseH,
-              borderRadius: baseRadius,
-              transform: [{ scale: pulseScale }],
+              left: fingerLeft,
+              top: fingerTop,
+              transform: [
+                { translateY: bounceY },
+              ],
               opacity: pulseOpacity.interpolate({
                 inputRange: [0, 0.6],
-                outputRange: [0, 0.18],
+                outputRange: [0.6, 1],
               }),
             },
           ]}
-        />
-
-        {/* Main pulsing ring — sits exactly on the button outline */}
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.glowRing,
-            {
-              left: baseLeft,
-              top: baseTop,
-              width: baseW,
-              height: baseH,
-              borderRadius: baseRadius,
-              transform: [{ scale: pulseScale }],
-              opacity: pulseOpacity,
-            },
-          ]}
-        />
-
-        {/* Static crisp ring directly on the button, no pulse — keeps a
-            stable anchor even while the animated rings scale outward */}
-        <View
-          pointerEvents="none"
-          style={[
-            styles.glowStatic,
-            {
-              left: baseLeft,
-              top: baseTop,
-              width: baseW,
-              height: baseH,
-              borderRadius: baseRadius,
-            },
-          ]}
-        />
+        >
+          <Text style={{ fontSize: emojiSize }}>{emoji}</Text>
+        </Animated.View>
 
         {/* Tooltip card */}
         <Animated.View
@@ -294,28 +305,14 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.75)',
   },
-  glowOuter: {
+  fingerPointer: {
     position: 'absolute',
-    backgroundColor: 'rgba(129, 0, 209, 0.12)',
-    zIndex: 3,
-  },
-  glowRing: {
-    position: 'absolute',
-    backgroundColor: 'rgba(129, 0, 209, 0.18)',
-    borderWidth: 3,
-    borderColor: '#4597f5f6',
-    shadowColor: '#4597f5f6',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 25,
-    elevation: 10,
-    zIndex: 5,
-  },
-  glowStatic: {
-    position: 'absolute',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.9)',
-    zIndex: 6,
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 1, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 12,
   },
   card: {
     position: 'absolute',

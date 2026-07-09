@@ -100,7 +100,16 @@ export const NewChatScreen: React.FC<NewChatScreenProps> = ({
 
       if (response.ok) {
         const data = await response.json();
-        setUsers(data);
+        if (query.trim()) {
+          const exactMatches = data.filter((u: any) =>
+            (u.username || '').toLowerCase() === query.trim().toLowerCase() ||
+            (u.display_name || '').toLowerCase() === query.trim().toLowerCase() ||
+            (u.email || '').toLowerCase() === query.trim().toLowerCase()
+          );
+          setUsers(exactMatches);
+        } else {
+          setUsers(isAdding || isInvitingToCall ? data : []);
+        }
       } else {
         console.error('Search failed:', response.status);
         setUsers([]);

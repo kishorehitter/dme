@@ -192,6 +192,15 @@ export const localDatabase = {
    */
   saveMessage(msg: any, localId: string, status: 'sending' | 'sent' | 'delivered' | 'read' | 'failed' = 'sent') {
     try {
+      const conversationId = msg.conversation;
+      if (conversationId) {
+        // Ensure conversation exists in conversations table to satisfy FOREIGN KEY constraint
+        db.execute(
+          'INSERT OR IGNORE INTO conversations (id, name) VALUES (?, ?);',
+          [conversationId, msg.sender?.display_name || msg.sender?.email || msg.user || 'Chat']
+        );
+      }
+
       db.execute(
         `INSERT OR REPLACE INTO messages (
           local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id
@@ -199,7 +208,7 @@ export const localDatabase = {
         [
           localId,
           msg.id || null, // Can be NULL for optimistic messages
-          msg.conversation || null,
+          conversationId || null,
           msg.sender?.display_name || msg.sender?.email || msg.user || null,
           msg.content || null,
           msg.message_type || 'text',
@@ -224,6 +233,12 @@ export const localDatabase = {
   saveMessages(msgs: any[], conversationId: number) {
     try {
       db.transaction((tx) => {
+        // Ensure conversation exists in conversations table to satisfy FOREIGN KEY constraint
+        tx.execute(
+          'INSERT OR IGNORE INTO conversations (id, name) VALUES (?, ?);',
+          [conversationId, 'Chat']
+        );
+
         for (const msg of msgs) {
           // For server-synced messages, local_id can just match the server id.
           const localId = msg.local_id || msg.id.toString();

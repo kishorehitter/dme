@@ -16,6 +16,7 @@ export interface YoutubePlayerRef {
   setVolume:       (volume: number) => void;
   getVolume:       () => Promise<number>;
   setRealDuration: (duration: number) => void;
+  setPlaybackQuality: (quality: string) => void;
 }
 
 interface Props {
@@ -29,6 +30,7 @@ interface Props {
   onAdEnded?:     () => void;
   onError?:       (error: any) => void;
   onVideoData?:   (title: string, author: string) => void; // ✅ Callback for auto-extracted metadata
+  quality?:       string;
   style?:         any;
 }
 
@@ -42,6 +44,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     onReady, onStateChange, onProgress,
     onAdStarted, onAdEnded, onError,
     onVideoData,
+    quality = 'highres',
     style,
   } = props;
 
@@ -64,7 +67,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   <style>
     * { margin:0; padding:0; }
     html, body { width:100%; height:100%; background:#000; overflow:hidden; }
-    #player { width:100%; height:100%; }
+    #player { position: absolute; top: 0; left: 0; width:100%; height:100%; }
 
     /* ── Hide ALL YouTube UI chrome ─────────────────────────────────── */
     .ytp-chrome-top, .ytp-gradient-top, .ytp-title, .ytp-title-channel,
@@ -100,6 +103,93 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   var skipInterval = null;
   var progressInt  = null;
   window.userPaused = false; 
+  var selectedQuality = '${quality}';
+
+  function adjustPlayerSize(quality) {
+    var p = document.getElementById('player');
+    if (!p) return;
+    
+    var containerWidth = window.innerWidth;
+    var containerHeight = window.innerHeight;
+    if (!containerWidth || !containerHeight) {
+      setTimeout(function() { adjustPlayerSize(quality); }, 100);
+      return;
+    }
+    
+    var dpr = window.devicePixelRatio || 1;
+    var W, H;
+    switch(quality) {
+      case 'tiny': // 144p
+        W = 160 / dpr; H = 90 / dpr;
+        break;
+      case 'small': // 240p
+        W = 320 / dpr; H = 180 / dpr;
+        break;
+      case 'medium': // 360p
+        W = 480 / dpr; H = 270 / dpr;
+        break;
+      case 'large': // 480p
+        W = 720 / dpr; H = 405 / dpr;
+        break;
+      case 'hd720': // 720p
+        W = 1280 / dpr; H = 720 / dpr;
+        break;
+      case 'hd1080': // 1080p
+      case 'highres': // 4K/highres
+        W = 1920 / dpr; H = 1080 / dpr;
+        break;
+      case 'auto':
+      default:
+        p.style.width = '100%';
+        p.style.height = '100%';
+        p.style.transform = 'none';
+        return;
+    }
+    
+    var scaleX = containerWidth / W;
+    var scaleY = containerHeight / H;
+    var scale = Math.min(scaleX, scaleY);
+    
+    var offsetX = (containerWidth - (W * scale)) / 2;
+    var offsetY = (containerHeight - (H * scale)) / 2;
+    
+    p.style.width = W + 'px';
+    p.style.height = H + 'px';
+    p.style.transform = 'translate(' + offsetX + 'px, ' + offsetY + 'px) scale(' + scale + ')';
+    p.style.transformOrigin = 'top left';
+    
+    if (player && typeof player.setPlaybackQuality === 'function') {
+      player.setPlaybackQuality(quality);
+    }
+  }
+  window.adjustPlayerSize = adjustPlayerSize;
+
+  function updatePlayerSizeByState() {
+    if (!player) return;
+    var state = 'paused';
+    try {
+      var s = player.getPlayerState();
+      if (s === 1) state = 'playing'; // Only 1 = playing (avoid buffering state 3 to prevent giant loading spinners)
+    } catch(e) {}
+    
+    if (state === 'playing') {
+      // If we are still waiting for play overlays to fade out, keep it at 1080p viewport
+      if (window.playResizeTimeout) {
+        adjustPlayerSize('hd1080');
+      } else {
+        adjustPlayerSize(selectedQuality);
+      }
+    } else {
+      adjustPlayerSize('hd1080'); // small overlays when paused/buffering
+    }
+  }
+  window.updatePlayerSizeByState = updatePlayerSizeByState;
+
+  var resizeTimeout;
+  window.addEventListener('resize', function() {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(updatePlayerSizeByState, 150);
+  });
 
   function toRN(obj) {
     try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
@@ -255,11 +345,23 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         fs:             0,
         disablekb:      1,
         origin:         'https://localhost',
-        suggestedQuality: 'highres',
+        suggestedQuality: '${quality}',
       },
       events: {
         onReady:       function(e) {
-          e.target.setPlaybackQuality('highres');
+          var p = e.target;
+          var originalPlay = p.playVideo;
+          p.playVideo = function() {
+            adjustPlayerSize('hd1080');
+            originalPlay.apply(p, arguments);
+          };
+          var originalPause = p.pauseVideo;
+          p.pauseVideo = function() {
+            adjustPlayerSize('hd1080');
+            originalPause.apply(p, arguments);
+          };
+
+          updatePlayerSizeByState();
           toRN({ type: 'playerReady' });
           startAdEngine();
           startProgress();
@@ -270,9 +372,38 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         onStateChange: function(e) {
           var map = {'-1':'unstarted','0':'ended','1':'playing','2':'paused','3':'buffering','5':'cued'};
           var state = map[String(e.data)] || 'unstarted';
+          
+          if (state === 'playing') {
+            if (window.playResizeTimeout) clearTimeout(window.playResizeTimeout);
+            window.playResizeTimeout = setTimeout(function() {
+              window.playResizeTimeout = null; // Clear timeout reference
+              try {
+                if (player && player.getPlayerState() === 1) {
+                  adjustPlayerSize(selectedQuality);
+                }
+              } catch(e) {}
+            }, 4500); // 4.5s delay to ensure overlays have fully faded out
+          } else {
+            if (window.playResizeTimeout) {
+              clearTimeout(window.playResizeTimeout);
+              window.playResizeTimeout = null;
+            }
+            adjustPlayerSize('hd1080'); // keep it 1080p viewport when buffering/paused/etc.
+          }
+          
           toRN({ type: 'stateChange', state: state });
           postVideoData();
           setTimeout(hideYouTubeUI, 200);
+        },
+        onPlaybackQualityChange: function(e) {
+          try {
+            var state = player.getPlayerState();
+            if (state === 1) {
+              toRN({ type: 'playbackQualityChange', quality: e.data });
+            }
+          } catch(err) {
+            toRN({ type: 'playbackQualityChange', quality: e.data });
+          }
         },
         onError: function(e) {
           toRN({ type: 'playerError', code: e.data });
@@ -280,6 +411,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       }
     });
     window.player = player;
+    adjustPlayerSize('hd1080'); // Tiny on load
   }
 
   document.addEventListener('message', handleCmd);
@@ -348,6 +480,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           }
           pendingCT.current = false;
           break;
+        case 'playbackQualityChange':
+          console.log(`📺 [YouTubePlayer] YouTube player successfully switched stream quality to: ${msg.quality}`);
+          break;
         case 'duration':
           if (resolversRef.current[msg.id]) {
             resolversRef.current[msg.id](msg.value);
@@ -408,6 +543,18 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     setRealDuration: (d) => {
       inject(`window.postMessage(JSON.stringify({action:'setRealDuration',duration:${d}}),'*')`);
     },
+    setPlaybackQuality: (q) => {
+      console.log(`⚡ [YouTubePlayer] Requesting quality switch to: ${q}`);
+      inject(`
+        selectedQuality = '${q}';
+        if (window.updatePlayerSizeByState) {
+          window.updatePlayerSizeByState();
+        }
+        if (window.player && window.player.setPlaybackQuality) {
+          window.player.setPlaybackQuality('${q}');
+        }
+      `);
+    }
   }), []);
 
   // ✅ Memoize WebView source to prevent reload flashing when parent component re-renders

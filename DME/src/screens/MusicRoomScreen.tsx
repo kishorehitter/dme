@@ -112,6 +112,7 @@ interface ControlsProps {
   onNext: () => void;
   onToggleFullscreen: () => void;
   onShowRelated: () => void;
+  onSettings?: () => void;
   isFullscreen: boolean;
   isDrivePlayer?: boolean;
 }
@@ -119,9 +120,10 @@ interface ControlsProps {
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
   position, duration,
-  onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, isFullscreen,
+  onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, onSettings, isFullscreen,
   isDrivePlayer,
 }) => {
+  const insets = useSafeAreaInsets();
   const canControlRef = useRef(canControl);
   const durationRef = useRef(duration);
 
@@ -206,13 +208,13 @@ const VideoControls: React.FC<ControlsProps> = ({
       <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
       <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
 
-      <Animated.View style={[{ position: 'absolute', top: 2, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? 8 : 2, left: isFullscreen ? 16 : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
         <TouchableOpacity style={cv.relatedBtn} onPress={onShowRelated}>
           <Icon name="layers-outline" size={18} color="#fff" />
         </TouchableOpacity>
       </Animated.View>
 
-      <Animated.View style={[{ position: 'absolute', top: 2, right: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? 8 : 2, right: isFullscreen ? 16 : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
         <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
           <Icon name="expand" size={18} color="#fff" />
         </TouchableOpacity>
@@ -265,13 +267,20 @@ const VideoControls: React.FC<ControlsProps> = ({
         // same `opacity` as play/pause/skip/expand, positioned exactly
         // where it has always sat (above the bottom, with its existing
         // padding) — not pinned to bottom:0.
-        <View style={[cv.bottomBar, { paddingHorizontal: 0, paddingBottom: 0 }]}>
-          <View style={[cv.timeRow, { paddingHorizontal: 16, marginBottom: 20 }]}>
+        <View style={[
+          cv.bottomBar, 
+          { 
+            paddingLeft: isFullscreen ? 16 : 16, 
+            paddingRight: isFullscreen ? 16 : 16,
+            paddingBottom: isFullscreen ? 8 : 12 
+          }
+        ]}>
+          <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 20 }]}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
             <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {canControl && (
-                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 8 }}>
-                  <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
+              {!isDrivePlayer && onSettings && (
+                <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 12 }}>
+                  <Icon name="settings-sharp" size={20} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
             </View>
@@ -303,9 +312,9 @@ const VideoControls: React.FC<ControlsProps> = ({
           <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
             <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {canControl && (
-                <TouchableOpacity onPress={onNext} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 8 }}>
-                  <Icon name="play-skip-forward" size={20} color="rgba(255,255,255,0.85)" />
+              {!isDrivePlayer && onSettings && (
+                <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 12 }}>
+                  <Icon name="settings-sharp" size={20} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
             </View>
@@ -556,6 +565,42 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isLiked, setIsLiked] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
   const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
+  const [videoQuality, setVideoQuality] = useState('highres');
+  const [showQualityOptions, setShowQualityOptions] = useState(false);
+  const [previewData, setPreviewData] = useState<{
+    visible: boolean;
+    uri?: string;
+    sticker?: string;
+    displayName?: string;
+  }>({ visible: false });
+
+  const handleAvatarPress = (uri?: string, sticker?: string, displayName?: string) => {
+    setPreviewData({
+      visible: true,
+      uri,
+      sticker,
+      displayName
+    });
+  };
+
+  const bufferingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    if (isBuffering && videoQuality !== 'auto' && isPlayerReady) {
+      bufferingTimerRef.current = setTimeout(() => {
+        console.log('📶 [NETWORK] Buffering detected. Silently switching quality to auto...');
+        setVideoQuality('auto');
+        playerRef.current?.setPlaybackQuality('auto');
+      }, 6000);
+    } else {
+      if (bufferingTimerRef.current) {
+        clearTimeout(bufferingTimerRef.current);
+        bufferingTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+    };
+  }, [isBuffering, videoQuality, isPlayerReady]);
 
   useEffect(() => {
     if (currentSong?.source === 'drive') {
@@ -773,25 +818,35 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     return (
       <View style={s.npBar}>
-        <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
+        <View style={{ width: 50, height: 28, position: 'relative' }}>
+          <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
+          <TouchableOpacity 
+            style={{ position: 'absolute', bottom: -4, right: -4 }}
+            onPress={() => handleAvatarPress(pinner?.avatar || pinner?.profile_picture, pinner?.avatar_sticker, pinnerName)}
+          >
+            <AvatarWithFallback 
+              uri={pinner?.avatar || pinner?.profile_picture} 
+              displayName={pinnerName} 
+              style={{ 
+                width: 16, 
+                height: 16, 
+                borderRadius: 8, 
+                borderWidth: 1, 
+                borderColor: '#1E1E1E' 
+              }} 
+            />
+          </TouchableOpacity>
+        </View>
         <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={s.npTitle} numberOfLines={1}>{currentSong.title}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={[s.npTitle, { flex: 1 }]} numberOfLines={1}>{currentSong.title}</Text>
+          </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
-            {/* Pinner Container */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 14 }}>
-              <Icon name="play-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
-              <AvatarWithFallback 
-                uri={pinner?.avatar || pinner?.profile_picture} 
-                displayName={pinnerName} 
-                style={{ width: 16, height: 16, borderRadius: 8 }} 
-              />
-            </View>
-
-            {/* Likers Container - Right aligned, grows from right to left */}
+            {/* Likers Container - Left aligned, normal order (heart on left, avatars next to it on right) */}
             <TouchableOpacity 
               onPress={handleToggleLike} 
               style={{ 
-                flexDirection: 'row-reverse', 
+                flexDirection: 'row', 
                 alignItems: 'center', 
                 backgroundColor: 'rgba(255,255,255,0.08)', 
                 paddingHorizontal: 8, 
@@ -805,11 +860,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                 name={isLiked ? "heart" : "heart-outline"} 
                 size={16} 
                 color={isLiked ? "#fff" : "rgba(255,255,255,0.6)"} 
-                style={{ marginLeft: likers.length > 0 ? 6 : 0 }} 
+                style={{ marginRight: likers.length > 0 ? 6 : 0 }} 
               />
               {likers.length > 0 && (
                 likers.length <= 4 ? (
-                  <View style={{ flexDirection: 'row-reverse', alignItems: 'center' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     {likers.map((liker, i) => (
                       <AvatarWithFallback 
                         key={i}
@@ -819,7 +874,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                           width: 16, 
                           height: 16, 
                           borderRadius: 8, 
-                          marginRight: i > 0 ? -6 : 0, 
+                          marginLeft: i > 0 ? -6 : 0, 
                           borderWidth: 1, 
                           borderColor: '#1E1E1E' 
                         }} 
@@ -830,7 +885,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                   <ScrollView 
                     horizontal 
                     showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={{ flexDirection: 'row-reverse', alignItems: 'center' }}
+                    contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
                     style={{ maxHeight: 20, flexShrink: 1, maxWidth: 80 }}
                   >
                     {likers.map((liker, i) => (
@@ -842,7 +897,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                           width: 16, 
                           height: 16, 
                           borderRadius: 8, 
-                          marginRight: i > 0 ? -6 : 0, 
+                          marginLeft: i > 0 ? -6 : 0, 
                           borderWidth: 1, 
                           borderColor: '#1E1E1E' 
                         }} 
@@ -851,6 +906,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                   </ScrollView>
                 )
               )}
+            </TouchableOpacity>
+
+            {/* Skip Button - Moved to the right end of the like row */}
+            <TouchableOpacity 
+              onPress={handleNext} 
+              disabled={!(isDJ || isDJMode)}
+              style={{ 
+                flexDirection: 'row', 
+                alignItems: 'center', 
+                backgroundColor: 'rgba(255,255,255,0.08)', 
+                paddingHorizontal: 12, 
+                paddingVertical: 4, 
+                borderRadius: 14,
+                opacity: (isDJ || isDJMode) ? 1 : 0.4
+              }}
+              activeOpacity={0.7}
+            >
+              <Icon name="play-skip-forward" size={16} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
@@ -1842,6 +1915,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (isMinimized) return;
 
     const backAction = () => {
+      if (previewData.visible) { setPreviewData(p => ({ ...p, visible: false })); return true; }
       if (showDiscovery) { setShowDiscovery(false); return true; }
       if (fullscreen) { setFullscreen(false); return true; }
       setShowLeaveConfirm(true);
@@ -1849,7 +1923,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized]);
+  }, [showDiscovery, fullscreen, isMinimized, previewData.visible]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -2272,7 +2346,7 @@ const sendChatMessage = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={s.inner}
       >
-        <View style={{ flex: 1, paddingTop: insets.top }}>
+        <View style={{ flex: 1, paddingTop: insets.top, paddingBottom: fullscreen ? 0 : insets.bottom }}>
           {renderLeaveModal()}
 
           {/* HEADER */}
@@ -2336,7 +2410,16 @@ const sendChatMessage = () => {
               related-videos panel (opened via the top-left icon button,
               not a swipe/PIP) renders as a separate overlay on top while
               this keeps playing underneath, unaffected. */}
-          <View style={fullscreen ? s.videoWrapFullscreen : s.videoWrap}>
+          <View style={fullscreen ? {
+            position: 'absolute',
+            left: insets.left,
+            right: insets.right,
+            top: insets.top,
+            bottom: insets.bottom,
+            backgroundColor: '#000',
+            zIndex: 99,
+            overflow: 'hidden'
+          } : s.videoWrap}>
             <View style={StyleSheet.absoluteFill} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
               {currentSong && currentSong.videoId ? (
                 
@@ -2376,6 +2459,7 @@ const sendChatMessage = () => {
                     videoId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
                     muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
+                    quality={videoQuality}
                     onVideoData={(extractedTitle, author) => {
                       if (currentSong && (currentSong.title === 'Loading...' || currentSong.title === 'Initializing...' || !currentSong.channelTitle)) {
                         console.log('🎵 [METADATA] Extracted video data from IFrame:', extractedTitle, 'by', author);
@@ -2455,6 +2539,7 @@ const sendChatMessage = () => {
                     }}
                     onAdStarted={() => { isAdPlayingRef.current = true; }}
                     onAdEnded={() => { isAdPlayingRef.current = false; }}
+                    onQualityChange={(q) => console.log('YouTube confirmed quality:', q, 'requested:', videoQuality)}
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
                       if (dur > 0 && !isNaN(dur)) setDuration(dur);
@@ -2556,9 +2641,49 @@ const sendChatMessage = () => {
               onNext={handleNext}
               onToggleFullscreen={() => setFullscreen(!fullscreen)}
               onShowRelated={() => setShowRelated(true)}
+              onSettings={() => setShowQualityOptions(true)}
               isFullscreen={fullscreen}
               isDrivePlayer={currentSong?.source === 'drive'}
             />
+
+            {showQualityOptions && (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', marginBottom: 12 }}>Video Quality</Text>
+                <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 16 }}>
+                  {[
+                    { id: 'highres', label: 'High' },
+                    { id: 'hd720', label: 'Medium' },
+                    { id: 'medium', label: 'Low' },
+                    { id: 'auto', label: 'Auto' },
+                  ].map((item) => (
+                    <TouchableOpacity
+                      key={item.id}
+                      onPress={() => {
+                        setVideoQuality(item.id);
+                        playerRef.current?.setPlaybackQuality(item.id);
+                        setShowQualityOptions(false);
+                      }}
+                      style={{
+                        backgroundColor: videoQuality === item.id ? colors.primary : 'rgba(255,255,255,0.1)',
+                        paddingHorizontal: 16,
+                        paddingVertical: 8,
+                        borderRadius: 18,
+                        minWidth: 70,
+                        alignItems: 'center'
+                      }}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{item.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <TouchableOpacity
+                  onPress={() => setShowQualityOptions(false)}
+                  style={{ marginTop: 12, padding: 8 }}
+                >
+                  <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Ad overlay — only for YouTube, Drive has no ads. Pure black,
                 no thumbnail — a translucent thumbnail here was sitting on
@@ -2638,7 +2763,11 @@ const sendChatMessage = () => {
                 <View style={s.participantsRow}>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.participantsContent}>
                     {participants.map(p => (
-                      <View key={p.user_id} style={s.participantItem}>
+                      <TouchableOpacity 
+                        key={p.user_id} 
+                        style={s.participantItem} 
+                        onPress={() => handleAvatarPress(p.avatar, p.avatar_sticker, p.name)}
+                      >
                         <AvatarWithFallback 
                           uri={p.avatar} 
                           displayName={p.name} 
@@ -2650,7 +2779,7 @@ const sendChatMessage = () => {
                             <Icon name="star" size={16} color="#ffffff" />
                           </View>
                         )}
-                      </View>
+                      </TouchableOpacity>
                     ))}
                     <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
                       <Icon name="person-add-outline" size={16} color="#fdfdfd" />
@@ -2838,7 +2967,10 @@ const sendChatMessage = () => {
                             ]}>
                               {!isMe && (
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                  <View style={{ position: 'relative', marginRight: 4 }}>
+                                  <TouchableOpacity 
+                                    style={{ position: 'relative', marginRight: 4 }}
+                                    onPress={() => handleAvatarPress(sender?.avatar, sender?.avatar_sticker, messageUser)}
+                                  >
                                     <AvatarWithFallback 
                                       uri={sender?.avatar} 
                                       displayName={messageUser} 
@@ -2850,18 +2982,21 @@ const sendChatMessage = () => {
                                         <Icon name="star" size={14} color="#FFD700" />
                                       </View>
                                     )}
-                                  </View>
+                                  </TouchableOpacity>
                                 </View>
                               )}
                               {isMe && (
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                  <View style={{ position: 'relative', marginLeft: 4 }}>
+                                  <TouchableOpacity 
+                                    style={{ position: 'relative', marginLeft: 4 }}
+                                    onPress={() => handleAvatarPress(user?.profile_picture, undefined, messageUser)}
+                                  >
                                     <AvatarWithFallback 
                                       uri={user?.profile_picture}
                                       displayName={messageUser}
                                       style={s.messageAvatar} 
                                     />
-                                  </View>
+                                  </TouchableOpacity>
                                 </View>
                               )}
                             </View>
@@ -3030,17 +3165,18 @@ const sendChatMessage = () => {
                   )}
                   <View style={s.chatBar}>
                     <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
-                      <Icon name="add" size={24} color="#4597f5f6" />
+                      <Icon name="add" size={24} color="#fffffff6" />
                     </TouchableOpacity>
                     <RichTextInput
                       key={inputClearKey}
                       ref={richInputRef}
                       style={[s.chatInput, { height: inputHeight }]}
+                      underlineColorAndroid="transparent"
                       autoFocus={inputClearKey > 0}
                       onChangeText={handleTextChange}
                       onContentSizeChange={(e) => {
                         const h = e.nativeEvent?.contentSize?.height;
-                        if (h) setInputHeight(Math.max(40, Math.min(150, Math.ceil(h))));
+                        if (h) setInputHeight(Math.max(40, Math.min(150, h)));
                       }}
                       onSubmitEditing={sendChatMessage}
                       returnKeyType="send"
@@ -3055,9 +3191,9 @@ const sendChatMessage = () => {
                     />
                     <TouchableOpacity style={s.sendBtn} onPress={sendChatMessage} disabled={isSendingMedia}>
                       {isSendingMedia ? (
-                        <ActivityIndicator size="small" color="#4597f5f6" />
+                        <ActivityIndicator size="small" color="#f5f5f5f6" />
                       ) : (
-                        <Icon name="send" size={18} color="#4597f5f6" />
+                        <Icon name="send" size={18} color="#fffffff6" />
                       )}
                     </TouchableOpacity>
                   </View>
@@ -3115,6 +3251,27 @@ const sendChatMessage = () => {
           )}
         </View>
 
+        {/* AVATAR PREVIEW OVERLAY */}
+        {previewData.visible && (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 10000 }]}>
+            <TouchableOpacity 
+              style={s.avatarModalOverlay} 
+              onPress={() => setPreviewData(p => ({ ...p, visible: false }))}
+              activeOpacity={1}
+            >
+              <View style={s.avatarPreviewContainer}>
+                <AvatarWithFallback
+                  uri={previewData.uri}
+                  sticker={previewData.sticker}
+                  displayName={previewData.displayName}
+                  style={s.avatarPreviewImage}
+                />
+                <Text style={s.avatarPreviewName}>{String(previewData.displayName || '')}</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* DISCOVERY OVERLAY */}
         <Modal visible={showDiscovery} animationType="slide" onRequestClose={() => setShowDiscovery(false)}>
           <YouTubeDiscoveryScreen
@@ -3170,6 +3327,8 @@ const sendChatMessage = () => {
             onClose={() => setFullScreenMedia(null)}
           />
         )}
+
+
 
       </KeyboardAvoidingView>
       {/* ✅ NEW: plain black cover — hides the placeholder header/np-bar/
@@ -3326,6 +3485,10 @@ const s = StyleSheet.create({
   systemMsgText:     { color: 'rgba(255,255,255,0.4)', fontSize: 11, fontStyle: 'italic' },
   typingContainer:    { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: 'transparent' },
   typingText:         { color: '#fff', fontSize: 12, fontStyle: 'italic' },
+  avatarModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  avatarPreviewContainer: { width: 220, backgroundColor: '#1C1C1E', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  avatarPreviewImage: { width: 180, height: 180, borderRadius: 90, marginBottom: 12 },
+  avatarPreviewName: { fontSize: 16, fontWeight: 'bold', color: '#fff', textAlign: 'center' },
 });
 
 export default MusicRoomScreen;

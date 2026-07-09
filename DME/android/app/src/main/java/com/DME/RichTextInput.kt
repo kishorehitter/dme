@@ -18,6 +18,29 @@ import com.facebook.react.views.textinput.ReactEditText
 class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
     private var isSettingText = false
 
+    private val exactContentHeight: Int
+        get() {
+            val textLayout = this.layout
+            return if (textLayout != null) {
+                textLayout.height + paddingTop + paddingBottom
+            } else {
+                lineCount * lineHeight + paddingTop + paddingBottom
+            }
+        }
+
+    override fun scrollTo(x: Int, y: Int) {
+        val density = context.resources.displayMetrics.density
+        val maxH = if (maxHeight != Int.MAX_VALUE && maxHeight > 0) maxHeight else (180 * density).toInt()
+        
+        // Prevent native vertical scroll if the content fits in max height.
+        // This stops the text box from hiding the top line before it expands!
+        if (exactContentHeight <= maxH) {
+            super.scrollTo(x, 0)
+        } else {
+            super.scrollTo(x, y)
+        }
+    }
+
     init {
         // Ensure standard keyboard behavior is enabled
         setSingleLine(false)
@@ -27,6 +50,7 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
                     InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE
         setHorizontallyScrolling(false)
         maxLines = 20
+        background = null // Remove default Android EditText underline (black line)
         
         addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -45,10 +69,14 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (changed) {
+            val density = context.resources.displayMetrics.density
+            val contentHeight = exactContentHeight.toDouble() / density
+            val contentWidth = (right - left).toDouble() / density
+            
             val event = Arguments.createMap()
             val contentSize = Arguments.createMap()
-            contentSize.putDouble("width", (right - left).toDouble() / context.resources.displayMetrics.density.toDouble())
-            contentSize.putDouble("height", (bottom - top).toDouble() / context.resources.displayMetrics.density.toDouble())
+            contentSize.putDouble("width", contentWidth)
+            contentSize.putDouble("height", contentHeight)
             event.putMap("contentSize", contentSize)
             
             (context as ReactContext).getJSModule(RCTEventEmitter::class.java)

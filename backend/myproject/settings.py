@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'notifications',
     'calls',
     'music',
+    'trivia',
     
 ]
 

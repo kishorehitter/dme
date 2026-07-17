@@ -23,6 +23,7 @@ import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
 import { checkForUpdate } from '../../services/updateChecker';
 import { downloadAndInstallAPK } from '../../services/updateDownloader';
+import DeviceInfo from 'react-native-device-info';
 
 interface SettingsScreenProps {
   navigation: any;
@@ -300,7 +301,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
           ]
         );
       } else {
-        Alert.alert('Up to Date', 'You are on the latest version of DME (1.0.0).');
+        Alert.alert('Up to Date', `You are on the latest version of DME (${DeviceInfo.getVersion()}).`);
       }
     } catch (e) {
       setIsCheckingUpdate(false);
@@ -551,7 +552,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
           style={styles.aboutLogo}
         />
         <Text style={styles.aboutTitle}>DME Messenger</Text>
-        <Text style={styles.aboutSubtitle}>Version 1.0.0</Text>
+        <Text style={styles.aboutSubtitle}>Version {DeviceInfo.getVersion()}</Text>
       </View>
 
       <View style={styles.section}>
@@ -607,7 +608,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={goBack}>
-          <Icon name="arrow-back" size={24} color="#4597f5f6" />
+          <Icon name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{getTitle()}</Text>
         <View style={{ width: 40 }} />
@@ -671,7 +672,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FAF7FF',
+    backgroundColor: '#FFFFFF',
   },
   header: {
     flexDirection: 'row',
@@ -689,7 +690,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#4597f5f6',
+    color: '#000000',
   },
   scroll: {
     flex: 1,
@@ -697,9 +698,7 @@ const styles = StyleSheet.create({
   section: {
     marginTop: spacing.md,
     backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#f0f0f0',
+
   },
   sectionHeader: {
     fontSize: 12,
@@ -709,7 +708,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 8,
-    backgroundColor: '#FAF7FF',
+    backgroundColor: '#ffffff',
   },
   item: {
     flexDirection: 'row',

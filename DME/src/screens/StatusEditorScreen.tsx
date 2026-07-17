@@ -24,6 +24,7 @@ import Toast from 'react-native-toast-message';
 import api from '../services/api';
 import { StatusService } from '../services/StatusService';
 import { pinNavBarColor } from '../utils/navBarPin';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { VisibilityModal } from '../components/VisibilityModal';
 
 const { width, height } = Dimensions.get('window');
@@ -43,10 +44,19 @@ async function compressAndTrimVideo(uri: string): Promise<string> {
   } catch { return uri; }
 }
 
+interface PendingMediaItem {
+  mediaUri: string;
+  mediaType: 'photo' | 'video';
+}
+
 interface RouteParams {
   mediaUri?: string;
   mediaType?: 'photo' | 'video';
   source?: 'camera' | 'gallery';
+  pendingMedia?: PendingMediaItem[];
+  // Internal: used when chaining stories
+  _storyIndex?: number;
+  _storyTotal?: number;
 }
 
 const StatusEditorScreen: React.FC = () => {
@@ -54,6 +64,11 @@ const StatusEditorScreen: React.FC = () => {
   const route = useRoute();
   const insets = useSafeAreaInsets();
   const params = (route.params as RouteParams) ?? {};
+
+  const pendingMedia: PendingMediaItem[] = params.pendingMedia ?? [];
+  const storyIndex = params._storyIndex ?? 1;
+  const storyTotal = params._storyTotal ?? (1 + pendingMedia.length);
+  const hasMore = pendingMedia.length > 0;
 
   const [mediaUri, setMediaUri] = useState<string | null>(params.mediaUri ?? null);
   const [mediaType, setMediaType] = useState<'photo' | 'video'>(params.mediaType ?? 'photo');
@@ -64,6 +79,27 @@ const StatusEditorScreen: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      pinNavBarColor('#000000');
+      try {
+        changeNavigationBarColor('#000000', false, false);
+      } catch (err) {
+        console.warn('[StatusEditorScreen] Navigation bar color error:', err);
+      }
+    }
+    return () => {
+      if (Platform.OS === 'android') {
+        pinNavBarColor('#FFFFFF');
+        try {
+          changeNavigationBarColor('#FFFFFF', true, false);
+        } catch (err) {
+          console.warn('[StatusEditorScreen] Navigation bar color restore error:', err);
+        }
+      }
+    };
+  }, []);
 
   // Gesture state
   const translationX = useSharedValue((width / 2) - 50); // Center on X
@@ -205,7 +241,20 @@ const StatusEditorScreen: React.FC = () => {
         rotation.value
       );
 
-      navigation.goBack();
+      if (hasMore) {
+        // Navigate to next story in the queue
+        const [next, ...rest] = pendingMedia;
+        navigation.replace('StatusEditor', {
+          mediaUri:     next.mediaUri,
+          mediaType:    next.mediaType,
+          source:       'gallery',
+          pendingMedia: rest,
+          _storyIndex:  storyIndex + 1,
+          _storyTotal:  storyTotal,
+        });
+      } else {
+        navigation.goBack();
+      }
     } catch (err: any) {
       console.error('[StatusUpload] failed:', err);
       Toast.show({ type: 'error', text1: 'Upload failed' });
@@ -231,6 +280,28 @@ const StatusEditorScreen: React.FC = () => {
   return (
     <GestureHandlerRootView style={s.container}>
       <StatusBar barStyle="light-content" backgroundColor="#000000" />
+
+      {/* ── Multi-story progress header ── */}
+      {storyTotal > 1 && (
+        <View style={[s.progressHeader, { paddingTop: insets.top > 0 ? insets.top + 4 : 8 }]}>
+          {Array.from({ length: storyTotal }).map((_, i) => (
+            <View
+              key={i}
+              style={[
+                s.progressSegment,
+                i < storyIndex ? s.progressDone :
+                i === storyIndex - 1 ? s.progressActive :
+                s.progressUpcoming,
+              ]}
+            />
+          ))}
+        </View>
+      )}
+
+      {/* ── Back / close button ── */}
+      <TouchableOpacity style={[s.backBtn, { top: insets.top > 0 ? insets.top + 16 : 28 }]} onPress={() => navigation.goBack()}>
+        <Icon name="arrow-back" size={24} color="#fff" />
+      </TouchableOpacity>
       
       {mediaType === 'video' ? (
         <Video source={{ uri: mediaUri! }} style={StyleSheet.absoluteFill} resizeMode="contain" repeat />
@@ -324,6 +395,45 @@ const s = StyleSheet.create({
     height: 44,
     justifyContent: 'center',
     alignItems: 'center'
+  },
+  // ── Multi-story progress bar ──────────────────────────────────────────────
+  progressHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 6,
+    gap: 4,
+    zIndex: 1000,
+  },
+  progressSegment: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+  },
+  progressDone: {
+    backgroundColor: 'rgba(255,255,255,0.9)',
+  },
+  progressActive: {
+    backgroundColor: '#4597f5',
+  },
+  progressUpcoming: {
+    backgroundColor: 'rgba(255,255,255,0.35)',
+  },
+  backBtn: {
+    position: 'absolute',
+    top: 28,
+    left: 12,
+    zIndex: 1001,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: 22,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
 });

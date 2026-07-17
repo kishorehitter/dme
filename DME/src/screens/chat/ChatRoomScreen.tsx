@@ -26,6 +26,8 @@ import {
   DeviceEventEmitter,
   Alert,
   Dimensions,
+  InteractionManager,
+  ScrollView,
 } from 'react-native';
 import RNFetchBlob from 'rn-fetch-blob';
 import FileViewer from 'react-native-file-viewer';
@@ -62,6 +64,33 @@ import { MultiMediaPreviewModal, SelectedMedia } from '../../components/MultiMed
 import { ChatMediaGrid } from '../../components/ChatMediaGrid';
 import { MediaGroupListModal } from '../../components/MediaGroupListModal';
 import { CustomGalleryPicker } from '../../components/CustomGalleryPicker';
+import StickerPickerSheet from '../../components/StickerPickerSheet';
+import LottieStickerMessage from '../../components/LottieStickerMessage';
+import LottieView from 'lottie-react-native';
+import { BUILT_IN_STICKER_PACKS, Sticker } from '../../stickers/stickerPacks';
+
+const FRESH_CHAT_STICKERS = [
+  {
+    id: 'hi',
+    name: 'Say Hi 👋',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f44b/lottie.json',
+  },
+  {
+    id: 'hello',
+    name: 'Hello! 🫶',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1faf6/lottie.json',
+  },
+  {
+    id: 'smiley',
+    name: 'Smile 😊',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f60a/lottie.json',
+  },
+  {
+    id: 'exciting',
+    name: 'Exciting 🥳',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f973/lottie.json',
+  },
+];
 
 
 const THEME_COLOR = '#4597f5f6';
@@ -325,38 +354,93 @@ const formatSeparatorDate = (dateStr: string) => {
 };
 
 
+const DIMENSIONS_CACHE_KEY = 'chat_image_dimensions_cache';
+let imageDimensionsCache = new Map<string, { width: number; height: number }>();
+
+// Load from AsyncStorage once when module is imported
+AsyncStorage.getItem(DIMENSIONS_CACHE_KEY).then(val => {
+  if (val) {
+    try {
+      const parsed = JSON.parse(val);
+      imageDimensionsCache = new Map(Object.entries(parsed));
+    } catch (e) {
+      console.warn('Failed to parse dimensions cache:', e);
+    }
+  }
+}).catch(err => {
+  console.warn('Failed to load dimensions cache from storage:', err);
+});
+
+const saveDimensionsToStorage = async () => {
+  try {
+    const obj = Object.fromEntries(imageDimensionsCache.entries());
+    await AsyncStorage.setItem(DIMENSIONS_CACHE_KEY, JSON.stringify(obj));
+  } catch (e) {
+    console.warn('Failed to save dimensions cache to storage:', e);
+  }
+};
+
 const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
-  const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 150, height: 150 });
+  const [dimensions, setDimensions] = useState<{ width: number; height: number }>(() => {
+    if (url && imageDimensionsCache.has(url)) {
+      return imageDimensionsCache.get(url)!;
+    }
+    return isSticker ? { width: 100, height: 100 } : { width: 200, height: 150 };
+  });
+  const [loading, setLoading] = useState(!imageDimensionsCache.has(url));
 
   useEffect(() => {
+    let isActive = true;
+    let task: any = null;
     if (url) {
-      Image.getSize(url, (width, height) => {
-        if (width && height) {
-          // Max bounds (smaller for stickers, larger for images)
-          const MAX_W = isSticker ? 100 : 200;
-          const MAX_H = isSticker ? 150 : 300;
+      if (imageDimensionsCache.has(url)) {
+        setLoading(false);
+        return;
+      }
+      // Defer getSize to prevent mid-transition layout shifts
+      task = InteractionManager.runAfterInteractions(() => {
+        if (!isActive) return;
+        Image.getSize(url, (width, height) => {
+          if (!isActive) return;
+          if (width && height) {
+            const MAX_W = isSticker ? 100 : 200;
+            const MAX_H = isSticker ? 150 : 300;
 
-          let dW = width;
-          let dH = height;
+            let dW = width;
+            let dH = height;
 
-          const aspectRatio = width / height;
+            const aspectRatio = width / height;
 
-          if (dW > MAX_W) {
-            dW = MAX_W;
-            dH = MAX_W / aspectRatio;
+            if (dW > MAX_W) {
+              dW = MAX_W;
+              dH = MAX_W / aspectRatio;
+            }
+
+            if (dH > MAX_H) {
+              dH = MAX_H;
+              dW = MAX_H * aspectRatio;
+            }
+
+            const resolved = { width: dW, height: dH };
+            imageDimensionsCache.set(url, resolved);
+            saveDimensionsToStorage();
+            setDimensions(resolved);
+            setLoading(false);
           }
-
-          if (dH > MAX_H) {
-            dH = MAX_H;
-            dW = MAX_H * aspectRatio;
-          }
-
-          setDimensions({ width: dW, height: dH });
-        }
-      }, () => {
-        setDimensions({ width: 150, height: 150 });
+        }, () => {
+          if (!isActive) return;
+          const fallback = isSticker ? { width: 100, height: 100 } : { width: 200, height: 150 };
+          imageDimensionsCache.set(url, fallback);
+          saveDimensionsToStorage();
+          setDimensions(fallback);
+          setLoading(false);
+        });
       });
     }
+    return () => {
+      isActive = false;
+      if (task) task.cancel();
+    };
   }, [url, isSticker]);
 
   return (
@@ -367,9 +451,11 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
             alignSelf: isMe ? 'flex-end' : 'flex-start',
             width: dimensions.width,
             height: dimensions.height,
-            backgroundColor: 'transparent',
+            backgroundColor: isSticker ? 'transparent' : '#EAEAEA',
             padding: 0,
             marginTop: 4,
+            justifyContent: 'center',
+            alignItems: 'center',
         }
       ]}
       onPress={onPress}
@@ -384,7 +470,13 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
           borderRadius: isSticker ? 0 : 12,
         }} 
         resizeMode={FastImage.resizeMode.contain}
+        onLoadEnd={() => setLoading(false)}
       />
+      {loading && !isSticker && (
+        <View style={{ position: 'absolute', justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="small" color={THEME_COLOR} />
+        </View>
+      )}
       {!isSticker && timeOverlay}
     </TouchableOpacity>
   );
@@ -428,7 +520,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [conversation, setConversation] = useState<any>(null); 
   const [liveReadTimes, setLiveReadTimes] = useState<{ [userId: number]: string }>({});
   const [selectedReceiptUser, setSelectedReceiptUser] = useState<{ id: number; name: string; seenTime: string } | null>(null);
-  const [isGroup, setIsGroup] = useState(false); 
+  const [isGroup, setIsGroup] = useState<boolean>(!!route.params?.isGroup); 
   const [groupDescription, setGroupDescription] = useState(''); 
   const [activeGroupCall, setActiveGroupCall] = useState<any>(null); 
   const [inputText, setInputText] = useState('');
@@ -441,7 +533,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
-  const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
+  const [otherUser, setOtherUser] = useState<OtherUser | null>(route.params?.otherUser || null);
+  const [friendStatus, setFriendStatus] = useState<string>(route.params?.otherUser?.friend_status || 'none'); // 'none' | 'sent_pending' | 'received_pending' | 'friends'
+  const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(null); // null | 'pending' | 'accepted' | 'rejected'
+  const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(null);
   const [isUserBlocked, setIsUserBlocked] = useState(false); // Whether current user blocked other
   const [amIBlocked, setAmIBlocked] = useState(false); // Whether other user blocked current user
   const [lastSeenPrivacy, setLastSeenPrivacy] = useState<'everyone' | 'nobody'>('everyone');
@@ -464,6 +559,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null); // Message being edited
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
+  const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
   const [multiPreviewVisible, setMultiPreviewVisible] = useState(false);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [selectedMultiMedia, setSelectedMultiMedia] = useState<SelectedMedia[]>([]);
@@ -522,6 +618,39 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const EMOJIS = ['❤️', '😂', '😮', '😢', '😡', '👍', '👎', '🎉'];
 
+  // Load from local SQLite cache immediately on mount (no InteractionManager deferral)
+  // to render messages instantly during the navigation slide transition
+  useEffect(() => {
+    if (route.params?.cleared || route.params?.deleted) {
+      return;
+    }
+    try {
+      const cached = localDatabase.getMessages(conversationId);
+      if (cached && cached.length > 0) {
+        // Only load the latest 15 messages initially to keep transition ultra-smooth and avoid thread freeze
+        const latestCached = cached.slice(-15);
+        const mappedCached = latestCached.map(msg => {
+          if (!msg.sender?.id && currentUser) {
+            const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
+            if (isMe) {
+              msg.sender = {
+                ...msg.sender,
+                id: currentUser.id
+              };
+            }
+          }
+          return msg;
+        });
+        setOldestMessageId(mappedCached[0].id || null);
+        setHasMoreMessages(cached.length >= 50);
+        setMessages([...mappedCached].reverse());
+        setIsLoading(false);
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to load cached messages on mount:', e);
+    }
+  }, [conversationId, currentUser, route.params?.cleared, route.params?.deleted]);
+
   useEffect(() => {
     // Check if chat should be cleared or deleted (from navigation params)
     const params = route?.params;
@@ -545,13 +674,19 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       console.log('Chat cleared - skipping message load');
     }
 
-    loadConversationDetails();
-    connectWebSocket();
+    const task = InteractionManager.runAfterInteractions(() => {
+      // Add a small delay (100ms) after the navigation animation settles
+      // to guarantee zero stutters or mid-animation jumps
+      setTimeout(() => {
+        loadConversationDetails();
+        connectWebSocket();
 
-    // Only load messages if not cleared
-    if (!isCleared) {
-      loadMessages();
-    }
+        // Only load messages if not cleared
+        if (!isCleared) {
+          loadMessages();
+        }
+      }, 100);
+    });
 
     // Scroll to specific message if ID provided
     const scrollToId = route.params?.scrollToMessageId;
@@ -581,10 +716,17 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const focusSub = navigation.addListener('focus', () => {
       chatIsActiveRef.current = true;
-      const unread = messagesRef.current.some(
-        m => m.sender.id !== currentUser?.id && !m.is_read,
-      );
-      if (unread) markAsRead();
+      InteractionManager.runAfterInteractions(() => {
+        // Add a slight delay to ensure the native slide transition is 100% complete
+        // before we trigger the `conversation_read` event which re-renders the heavy ChatListScreen
+        setTimeout(() => {
+          if (!chatIsActiveRef.current) return;
+          const unread = messagesRef.current.some(
+            m => m.sender.id !== currentUser?.id && !m.is_read,
+          );
+          if (unread) markAsRead();
+        }, 300);
+      });
     });
 
     const blurSub = navigation.addListener('blur', () => {
@@ -592,6 +734,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     });
 
     return () => {
+      task.cancel();
       websocketService.disconnectRoom();
       if (focusSub) focusSub();
       if (blurSub) blurSub();
@@ -716,6 +859,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               other.user.email ||
               'Unknown',
           );
+          // Set friend status if the API returns it
+          if (other.user.friend_status) {
+            setFriendStatus(other.user.friend_status);
+          }
+
+          // Track message request status for gating input (sender side)
+          if (data.message_request_status) {
+            setMessageRequestStatus(data.message_request_status);
+          }
+          if (data.message_request_sender_id) {
+            setMessageRequestSenderId(data.message_request_sender_id);
+          }
 
           // Check if user is blocked (from params or API)
           const params = route?.params;
@@ -903,6 +1058,17 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const handleWebSocketMessage = (wsMsg: WebSocketMessage) => {
     const _type = (wsMsg.type as unknown) as string;
     switch (_type) {
+      case 'error': {
+        const errorMsg = wsMsg.data?.error || 'Message could not be sent';
+        Toast.show({
+          type: 'error',
+          text1: errorMsg,
+          position: 'bottom',
+        });
+        loadConversationDetails();
+        loadMessages(); // reload to clear any failed optimistic messages
+        break;
+      }
       case 'message': {
         const isOwn = wsMsg.data.sender?.id === currentUser?.id;
         const nm: Message = {
@@ -922,6 +1088,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           } else {
             localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
           }
+          // Query backend conversation details to instantly update friendship/message-gating status
+          loadConversationDetails();
         } else {
           localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
         }
@@ -1197,6 +1365,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           setReplyToMessage(null);
           setInputText('');
           clearInputRef.current?.();  
+          // Query backend conversation details to instantly update friendship/message-gating status
+          loadConversationDetails();
           setTimeout(() => {
             flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
           }, 100);
@@ -1345,7 +1515,150 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     sendMessage();
   }, [sendMessage]);
 
+  // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
+  const sendLottieSticker = useCallback(async (sticker: Sticker) => {
+    setStickerPickerVisible(false);
+    uniqueCounter++;
+    const localId = `lsticker_${Date.now()}_${uniqueCounter}`;
+    const tempId = Date.now() + uniqueCounter + 2000000000;
+    const optimisticMsg: any = {
+      id: tempId,
+      local_id: localId,
+      conversation: conversationId,
+      sender: {
+        id: currentUser!.id,
+        email: currentUser!.email || '',
+        display_name: currentUser!.display_name || currentUser!.first_name || '',
+        profile_picture: null,
+        avatar_sticker: null,
+      },
+      content: sticker.url,   // store URL as content
+      message_type: 'lottie_sticker',
+      media_file: null,
+      is_read: false,
+      delivered_at: null,
+      created_at: new Date().toISOString(),
+      reactions: {},
+      reply_to: null,
+      status: 'sending',
+    };
+    localDatabase.saveMessage(optimisticMsg, localId, 'sending');
+    setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
+    try {
+      const token = await AsyncStorage.getItem('access_token');
+      const body = {
+        content: sticker.url,
+        message_type: 'lottie_sticker',
+      };
+      const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const nm = await res.json();
+        setMessages(prev =>
+          prev.map(m =>
+            m.local_id === localId || m.id === tempId
+              ? { ...nm, local_id: localId, status: 'sent' }
+              : m,
+          ),
+        );
+        localDatabase.saveMessage(nm, localId, 'sent');
+      } else {
+        // Non-critical: mark as failed
+        setMessages(prev =>
+          prev.map(m =>
+            m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+          ),
+        );
+      }
+    } catch (e) {
+      console.error('[Chat] Lottie sticker send error:', e);
+      setMessages(prev =>
+        prev.map(m =>
+          m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+        ),
+      );
+    }
+  }, [conversationId, currentUser, flatListRef]);
+
+  // ── Send a Remote GIF (stored in content, message_type = 'image') ────────
+  const sendGifMessage = useCallback(async (gifUrl: string) => {
+    setStickerPickerVisible(false);
+    uniqueCounter++;
+    const localId = `gif_${Date.now()}_${uniqueCounter}`;
+    const tempId = Date.now() + uniqueCounter + 1000000000;
+    const optimisticMsg: any = {
+      id: tempId,
+      local_id: localId,
+      conversation: conversationId,
+      sender: {
+        id: currentUser!.id,
+        email: currentUser!.email || '',
+        display_name: currentUser!.display_name || currentUser!.first_name || '',
+        profile_picture: null,
+        avatar_sticker: null,
+      },
+      content: gifUrl,
+      message_type: 'image',
+      media_file: null,
+      is_read: false,
+      delivered_at: null,
+      created_at: new Date().toISOString(),
+      reactions: {},
+      reply_to: null,
+      status: 'sending',
+    };
+    localDatabase.saveMessage(optimisticMsg, localId, 'sending');
+    setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
+
+    try {
+      const token = await AsyncStorage.getItem('access_token');
+      const body = {
+        content: gifUrl,
+        message_type: 'image',
+      };
+      const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const nm = await res.json();
+        setMessages(prev =>
+          prev.map(m =>
+            m.local_id === localId || m.id === tempId
+              ? { ...nm, local_id: localId, status: 'sent' }
+              : m,
+          ),
+        );
+        localDatabase.saveMessage(nm, localId, 'sent');
+      } else {
+        setMessages(prev =>
+          prev.map(m =>
+            m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+          ),
+        );
+      }
+    } catch (e) {
+      console.error('[Chat] GIF send error:', e);
+      setMessages(prev =>
+        prev.map(m =>
+          m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+        ),
+      );
+    }
+  }, [conversationId, currentUser, flatListRef]);
 
   // Replaces handleCameraCapture
 
@@ -2479,7 +2792,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     }
 
     const isMe = item.sender.id === currentUser?.id;
-    const rawUrl = (item as any).media_url || item.media_file;
+    const rawUrl = (item as any).media_url || item.media_file || (item.content?.startsWith('http') ? item.content : null);
     const url = resolveImageUrl(rawUrl);
     
     const isStatusReply = item.content?.startsWith('↩ Replied to status');
@@ -2574,6 +2887,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
         );
     }
+
 
     const isImage = item.message_type === 'image' || 
         (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
@@ -2782,7 +3096,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             )
           )}
 
-          {['image', 'video', 'audio', 'document'].includes(item.message_type) || item.type === 'media_group' ? (
+          {item.message_type === 'lottie_sticker' ? (
+            <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+              <LottieStickerMessage
+                url={item.content}
+                onLongPress={() => handleMessageLongPress(item, {} as any)}
+                onPress={() => {}}
+              />
+            </View>
+          ) : ['image', 'video', 'audio', 'document'].includes(item.message_type) || item.type === 'media_group' ? (
             (() => {
               const hasCaption = !!(item.content && item.content.trim());
               return (
@@ -2930,14 +3252,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, liveReadTimes, selectedReceiptUser]);
   
 
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={THEME_COLOR} />
-      </View>
-    );
-  }
-
   const renderGroupCallBanner = () => {
     if (!activeGroupCall || !isGroup) return null;
     return (
@@ -2989,8 +3303,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           activeOpacity={0.7}
         >
           <AvatarWithFallback
-            uri={isGroup ? conversation?.profile_picture : otherUser?.profile_picture}
-            sticker={isGroup ? null : otherUser?.avatar_sticker}
+            uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
+            sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
             displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
             isGroup={isGroup}
             style={styles.headerAvatar}
@@ -3017,8 +3331,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         </TouchableOpacity>
 
         <View style={styles.headerRight}>
+          {/* Call buttons are disabled and muted if users are not friends (except in groups) */}
           <TouchableOpacity
-            style={styles.callIcon}
+            style={[styles.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
                 navigation.navigate('Call', {
@@ -3042,7 +3358,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             <Icon name="videocam" size={22} color={'#111111'} />
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.callIcon}
+            style={[styles.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
                 navigation.navigate('Call', {
@@ -3117,7 +3434,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         windowSize={10}
         removeClippedSubviews={false}
         ListEmptyComponent={
-          !isLoading && searchText ? (
+          isLoading ? (
+            <View style={styles.listLoadingContainer}>
+              <ActivityIndicator size="large" color={THEME_COLOR} />
+            </View>
+          ) : !isLoading && searchText ? (
             <View style={styles.emptySearchContainer}>
               <Icon name="search-outline" size={48} color="#DDD" />
               <Text style={styles.emptySearchText}>No messages found</Text>
@@ -3632,56 +3953,105 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           </Text>
         </View>
       ) : (
-        <View style={styles.inputContainer}>
-          <ChatInputArea
-            isRecording={isRecording}
-            editingMessageId={editingMessageId}
-            inputText={inputText}
-            isSending={isSending}
-            handleAttachment={handleAttachmentStable}       
-            handleCameraCapture={handleCameraCaptureStable} // ✅ stable
-            handleTyping={handleTyping}                     // ✅ stable (useCallback)
-            sendMessage={sendMessageStable}                 // ✅ stable
-            setStickerPreview={setStickerPreviewStable}     // ✅ stable
-            micPanResponder={micPanResponder}
-            micButtonScale={micButtonScale}
-            THEME_COLOR={THEME_COLOR}
-            inputClearKey={inputClearKey}
-            onRegisterClear={(fn) => { clearInputRef.current = fn; }}
-          />
+        <>
+          {messages.length === 0 && !isLoading && (
+            <View style={styles.quickStickersRowWrapper}>
+              <View style={styles.quickStickersContainerEvenly}>
+                {FRESH_CHAT_STICKERS.map((st) => (
+                  <TouchableOpacity
+                    key={st.id}
+                    style={styles.quickStickerCard}
+                    onPress={() => sendLottieSticker(st)}
+                    activeOpacity={0.7}
+                  >
+                    <LottieView
+                      source={{ uri: st.url }}
+                      autoPlay
+                      loop
+                      style={styles.quickStickerLottie}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+          <View style={styles.inputContainer}>
+            {/* Waiting-for-approval banner shown to message sender when request is pending */}
+            {!isGroup && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id && (
+              <View style={{
+                backgroundColor: '#FFF8E1',
+                borderTopWidth: 1,
+                borderTopColor: '#FFD54F',
+                paddingHorizontal: 14,
+                paddingVertical: 7,
+              }}>
+                <Text style={{ fontSize: 12.5, color: '#795548', textAlign: 'center' }}>
+                  ⏳ Waiting for approval — you can only send one message until accepted
+                </Text>
+              </View>
+            )}
+            <ChatInputArea
+              isRecording={isRecording}
+              editingMessageId={editingMessageId}
+              inputText={inputText}
+              isSending={isSending}
+              handleAttachment={handleAttachmentStable}       
+              handleCameraCapture={handleCameraCaptureStable}
+              handleTyping={handleTyping}
+              sendMessage={sendMessageStable}
+              setStickerPreview={setStickerPreviewStable}
+              micPanResponder={micPanResponder}
+              micButtonScale={micButtonScale}
+              THEME_COLOR={THEME_COLOR}
+              inputClearKey={inputClearKey}
+              onRegisterClear={(fn) => { clearInputRef.current = fn; }}
+              isDisabled={!isGroup && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id}
+              onOpenStickerPicker={() => setStickerPickerVisible(true)}
+            />
 
-          {isRecording && (
-            <Animated.View
-              style={[
-                styles.recordingContainerInline,
-                { transform: [{ translateX: slideX }] },
-              ]}
-            >
+            {isRecording && (
               <Animated.View
                 style={[
-                  styles.recordingPulseSmall,
-                  { transform: [{ scale: micButtonScale }] },
+                  styles.recordingContainerInline,
+                  { transform: [{ translateX: slideX }] },
                 ]}
               >
-                <View style={styles.recordingDotSmall} />
+                <Animated.View
+                  style={[
+                    styles.recordingPulseSmall,
+                    { transform: [{ scale: micButtonScale }] },
+                  ]}
+                >
+                  <View style={styles.recordingDotSmall} />
+                </Animated.View>
+                <Text style={styles.recordingTimerInline}>
+                  {fmtRec(recordingTime)}
+                </Text>
+                <Text
+                  style={[
+                    styles.slideHint,
+                    isCancelled && styles.slideHintCancel,
+                  ]}
+                >
+                  {isCancelled ? '✕ Release to cancel' : '◀ Slide to cancel'}
+                </Text>
               </Animated.View>
-              <Text style={styles.recordingTimerInline}>
-                {fmtRec(recordingTime)}
-              </Text>
-              <Text
-                style={[
-                  styles.slideHint,
-                  isCancelled && styles.slideHintCancel,
-                ]}
-              >
-                {isCancelled ? '✕ Release to cancel' : '◀ Slide to cancel'}
-              </Text>
-            </Animated.View>
-          )}
-        </View>
+            )}
+          </View>
+        </>
       )}
 
       <Toast />
+
+      {/* ── Lottie Sticker Picker Sheet ──────────────────────────────── */}
+      <StickerPickerSheet
+        visible={stickerPickerVisible}
+        stickerPacks={BUILT_IN_STICKER_PACKS}
+        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+        onClose={() => setStickerPickerVisible(false)}
+      />
+
       <StickerPreviewModal
         visible={!!stickerPreview}
         mediaUri={stickerPreview?.uri ?? ''}
@@ -4496,6 +4866,13 @@ const styles = StyleSheet.create({
     marginTop: 100,
     transform: [{ scaleY: -1 }], // Because list is inverted
   },
+  listLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 150,
+    transform: [{ scaleY: -1 }], // Because list is inverted
+  },
   mediaWrapper: {
     marginTop: spacing.xs,
     position: 'relative',
@@ -4593,5 +4970,27 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(129, 0, 209, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  quickStickersRowWrapper: {
+    paddingVertical: 12,
+    backgroundColor: 'transparent',
+    borderTopWidth: 0,
+    width: '100%',
+  },
+  quickStickersContainerEvenly: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    width: '100%',
+  },
+  quickStickerCard: {
+    width: 64,
+    height: 64,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickStickerLottie: {
+    width: 60,
+    height: 60,
   },
 });

@@ -54,6 +54,7 @@ const ViewerSheet: React.FC<{
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const insets = useSafeAreaInsets();
+  const safeBottom = insets.bottom > 0 ? insets.bottom : (Platform.OS === 'ios' ? 34 : 12);
 
   useEffect(() => {
     if (!visible) return;
@@ -120,7 +121,7 @@ const ViewerSheet: React.FC<{
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={vs.overlay} />
       </TouchableWithoutFeedback>
-      <View style={[vs.sheet, { paddingBottom: insets.bottom + 16 }]}>
+      <View style={[vs.sheet, { paddingBottom: safeBottom + 16 }]}>
         <View style={vs.handle} />
         <Text style={vs.title}>{type === 'views' ? 'Viewers' : 'Likers'}</Text>
         {loading ? <ActivityIndicator color="#4597f5f6" style={{ marginTop: 24 }} /> : 
@@ -183,6 +184,8 @@ const StatusViewerScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const route      = useRoute();
   const insets     = useSafeAreaInsets();
+  const safeTop = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 20);
+  const safeBottom = insets.bottom > 0 ? insets.bottom : (Platform.OS === 'ios' ? 34 : 12);
 
   useLayoutEffect(() => {
     if (Platform.OS === 'android') {
@@ -390,7 +393,7 @@ const StatusViewerScreen: React.FC = () => {
   if (!current) { return null; }
 
   const displayName = isOwner ? 'My Status' : current.username;
-  const bottomBarH = BOTTOM_BAR_HEIGHT + insets.bottom;
+  const bottomBarH = BOTTOM_BAR_HEIGHT + safeBottom;
 
   return (
     <View
@@ -436,7 +439,7 @@ const StatusViewerScreen: React.FC = () => {
       )}
 
       {/* ── Progress bars ── */}
-      <View style={[s.progressRow, { top: insets.top + 6 }]} pointerEvents="none">
+      <View style={[s.progressRow, { top: safeTop + 10 }]} pointerEvents="none">
         {statuses.map((_, i) => (
           <View key={i} style={s.track}>
             <Animated.View style={[s.trackFill, {
@@ -450,7 +453,7 @@ const StatusViewerScreen: React.FC = () => {
       </View>
 
       {/* ── Header ── */}
-      <View style={[s.header, { top: insets.top + 6 }]} pointerEvents="box-none">
+      <View style={[s.header, { top: safeTop + 26 }]} pointerEvents="box-none">
         <View style={s.headerLeft}>
           {current.user_avatar_sticker ? (
             <View style={[s.avatar, s.avatarFallback]}>
@@ -511,7 +514,7 @@ const StatusViewerScreen: React.FC = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={s.kvWrapper}
       >
-        <View style={[s.bottomBar, { paddingBottom: insets.bottom + 10 }]}>
+        <View style={[s.bottomBar, { paddingBottom: safeBottom + 10 }]}>
           {isOwner ? (
             <>
               <TouchableOpacity
@@ -526,7 +529,7 @@ const StatusViewerScreen: React.FC = () => {
                 style={s.ownerLikesCenter}
                 onPress={() => { stopProgress(); setSheetType('likes'); setShowViewers(true); }}
               >
-                <Icon name="heart" size={24} color="#ff4d6d" style={s.iconShadow} />
+                <Icon name="heart" size={24} color="#ffffff" style={s.iconShadow} />
                 <Text style={s.ownerActionText}>{(current as any).like_count ?? 0}</Text>
               </TouchableOpacity>
 

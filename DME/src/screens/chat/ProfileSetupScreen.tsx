@@ -15,7 +15,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { launchImageLibrary } from 'react-native-image-picker'; // Import for image picking
+import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Assuming this is used for tokens
 // import Toast from 'react-native-toast-message'; // Assuming this is used for notifications (commented out as not used in current scope)
 import { useAuth } from '../../context/AuthContext';
@@ -31,15 +31,32 @@ const QUICK_REACTIONS = [
   '😂', '😍', '😮', '😢', '😡', '👍', '👎', '🎉', '🔥', '✨', '💯', '🙏', '👏', '😎', '🤔'
 ];
 
+const AVATAR_COLORS = [
+  '#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', 
+  '#2196F3', '#03A9F4', '#00BCD4', '#009688', '#4CAF50', 
+  '#8BC34A', '#FF9800', '#FF5722', '#795548', '#607D8B'
+];
+
+const getAvatarColor = (name: string) => {
+  if (!name) return AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+};
+
 export const ProfileSetupScreen: React.FC = () => {
-  const { user, refreshUser } = useAuth();
+  const { user, completeProfileSetup } = useAuth();
   const navigation = useNavigation(); // Add this
   const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [bio, setBio] = useState('');
+
+  const nameToHash = displayName.trim() || username.trim() || 'User';
+  const avatarBgColor = getAvatarColor(nameToHash);
   const [quickReaction, setQuickReaction] = useState('❤️');
-  const [avatarSticker, setAvatarSticker] = useState(''); // Initially empty
   // State to hold image info (base64 URL, name, type) for FormData upload
   const [selectedImageInfo, setSelectedImageInfo] = useState<{ uri: string, name: string, type: string } | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null); // State for image preview
@@ -47,8 +64,7 @@ export const ProfileSetupScreen: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
-  const [showStickerModal, setShowStickerModal] = useState(false); // State for sticker modal
-  const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('male'); // For sticker selection
+  const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
 
 
   const checkUsername = async (value: string) => {
@@ -81,57 +97,19 @@ export const ProfileSetupScreen: React.FC = () => {
     }
   };
 
-  const pickImage = async () => {
-    setShowStickerModal(false); // Close sticker modal first
-    try {
-      const result = await launchImageLibrary({
-        mediaType: 'photo',
-        maxWidth: 800,
-        maxHeight: 800,
-        quality: 0.7, 
-        includeBase64: true, // Crucial: get base64 data
-      });
-
-      if (result.didCancel) {
-        return;
-      }
-
-      if (result.errorCode) {
-        Alert.alert('Error', result.errorMessage || 'Failed to pick image');
-        return;
-      }
-
-      const asset = result.assets?.[0];
-      // Ensure base64 data and asset type are available
-      if (asset?.base64 && asset.type) {
-        const fileType = asset.type || 'image/jpeg';
-        const fileName = asset.fileName || 'profile.jpg';
-        
-        // Construct the base64 data URL
-        const base64DataUrl = `data:${fileType};base64,${asset.base64}`;
-        
-        // Store the image info object { uri: base64DataUrl, name, type }
-        setSelectedImageInfo({ uri: base64DataUrl, name: fileName, type: fileType });
-        // Use asset.uri for preview if available, otherwise fallback to data URL
-        setImagePreviewUrl(asset.uri || base64DataUrl); 
-        setAvatarSticker(''); // Clear sticker if an image is selected
-      } else if (asset?.uri) {
-        // Fallback if base64 is not available but URI is. This might not work for upload.
-        console.warn("Base64 data not available for picked image, image upload might fail.");
-        Alert.alert("Image Error", "Could not process image data. Please try again.");
-      }
-    } catch (error) {
-      console.error('Error picking image:', error);
-      Alert.alert('Error', 'Failed to pick image');
+  const handleGallerySelect = (assets: GalleryAsset[]) => {
+    if (assets && assets.length > 0) {
+      const asset = assets[0];
+      const fileType = asset.type || 'image/jpeg';
+      const fileName = asset.fileName || 'profile.jpg';
+      
+      setSelectedImageInfo({ uri: asset.uri, name: fileName, type: fileType });
+      setImagePreviewUrl(asset.uri);
     }
+    setGalleryPickerVisible(false);
   };
 
-  const selectSticker = (sticker: string) => {
-    setAvatarSticker(sticker);
-    setSelectedImageInfo(null); // Clear image info if a sticker is selected
-    setImagePreviewUrl(null); // Clear image preview
-    setShowStickerModal(false);
-  };
+
 
   const handleCompleteSetup = async () => {
     if (!username || isAvailable === false) {
@@ -148,7 +126,7 @@ export const ProfileSetupScreen: React.FC = () => {
       formData.append('display_name', displayName);
       formData.append('bio', bio);
       formData.append('quick_reaction', quickReaction);
-      formData.append('avatar_sticker', avatarSticker); // Send sticker or empty string
+      formData.append('avatar_sticker', ''); // Send empty string
 
       // Append profile_picture if image info is available
       if (selectedImageInfo) {
@@ -161,15 +139,8 @@ export const ProfileSetupScreen: React.FC = () => {
         } as any); // 'as any' to bypass potential type checking issues for the object structure
       }
 
-      // Make the API call using authAPI.
-      // ProfileSetupView is an UpdateAPIView, so PATCH is the correct method.
-      const data = await authAPI.completeProfileSetup(formData);
-
-      // Assuming the API returns updated user data upon success.
-      await refreshUser();
-      console.log('User after refresh:', user); // Add this line to debug
-      
-      // Redirect handled by AppNavigator observing AuthContext state change
+      // Make the API call using AuthContext completeProfileSetup
+      await completeProfileSetup(formData);
     } catch (error: any) {
       console.error('Profile setup error:', error);
       Alert.alert('Error', error.response?.data?.detail || error.message || 'Failed to set up profile');
@@ -178,45 +149,18 @@ export const ProfileSetupScreen: React.FC = () => {
     }
   };
 
-  // Sticker modal rendering (re-used from ProfileScreen)
-  const renderStickerItem = ({
-    item,
-  }: {
-    item: { id: string; emoji: string; label: string };
-  }) => (
-    <TouchableOpacity
-      style={styles.stickerItem}
-      onPress={() => selectSticker(item.emoji)}
-    >
-      <Text style={styles.stickerEmoji}>{item.emoji}</Text>
-      <Text style={styles.stickerLabel}>{item.label}</Text>
-    </TouchableOpacity>
-  );
-
-  // Define stickers if they are not imported from ProfileScreen
-  const MALE_STICKERS = [
-    { id: 'm1', emoji: '👨', label: 'Man' },
-    { id: 'm2', emoji: '👦', label: 'Boy' },
-    { id: 'm3', emoji: '🧔', label: 'Bearded' },
-    { id: 'm4', emoji: '👨‍🎓', label: 'Graduate' },
-    { id: 'm5', emoji: '👨‍💼', label: 'Professional' },
-    { id: 'm6', emoji: '👨‍🚀', label: 'Astronaut' },
-  ];
-
-  const FEMALE_STICKERS = [
-    { id: 'f1', emoji: '👩', label: 'Woman' },
-    { id: 'f2', emoji: '👧', label: 'Girl' },
-    { id: 'f3', emoji: '👩‍🦰', label: 'Redhead' },
-    { id: 'f4', emoji: '👩‍🎓', label: 'Graduate' },
-    { id: 'f5', emoji: '👩‍💼', label: 'Professional' },
-    { id: 'f6', emoji: '👩‍🚀', label: 'Astronaut' },
-  ];
 
 
   return (
     <ScrollView 
       style={{ backgroundColor: '#FFF' }}
-      contentContainerStyle={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + 20 }]}
+      contentContainerStyle={[
+        styles.container, 
+        { 
+          paddingTop: insets.top > 0 ? insets.top + 16 : 24, 
+          paddingBottom: (insets.bottom > 0 ? insets.bottom : 24) + 20 
+        }
+      ]}
     >
       <Text style={styles.title}>Complete your profile</Text>
       
@@ -228,22 +172,22 @@ export const ProfileSetupScreen: React.FC = () => {
           </View>
         ) : imagePreviewUrl ? (
           <Image source={{ uri: imagePreviewUrl }} style={styles.previewImage} />
-        ) : avatarSticker ? (
-          <View style={[styles.previewImage, styles.previewPlaceholder]}>
-            <Text style={styles.stickerAvatar}>{avatarSticker}</Text>
-          </View>
         ) : (
-          <View style={[styles.previewImage, styles.previewPlaceholder]}>
-            <Text style={styles.profilePictureText}>
+          <View style={[
+            styles.previewImage, 
+            styles.previewPlaceholder, 
+            { backgroundColor: avatarBgColor }
+          ]}>
+            <Text style={[styles.profilePictureText, { color: '#FFFFFF' }]}>
               {(displayName || username || 'U').charAt(0).toUpperCase()}
             </Text>
           </View>
         )}
-        <TouchableOpacity style={styles.cameraIcon} onPress={() => setShowStickerModal(true)}>
+        <TouchableOpacity style={styles.cameraIcon} onPress={() => setGalleryPickerVisible(true)}>
           <Icon name="camera" size={18} color="#000" />
         </TouchableOpacity>
       </View>
-      <Text style={styles.changePhotoText}>Tap to change photo or sticker</Text>
+      <Text style={styles.changePhotoText}>Tap to change photo</Text>
 
       <View style={styles.inputContainer}>
         <TextInput
@@ -296,21 +240,23 @@ export const ProfileSetupScreen: React.FC = () => {
 
       <View style={styles.reactionSection}>
         <Text style={styles.sectionLabel}>Double-Tap Reaction</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionScroll}>
-          {QUICK_REACTIONS.map(emoji => (
-            <TouchableOpacity
-              key={emoji}
-              style={[
-                styles.reactionItem,
-                quickReaction === emoji && styles.reactionItemActive,
-              ]}
-              onPress={() => setQuickReaction(emoji)}
-            >
-              <Text style={styles.reactionText}>{emoji}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-        <Text style={styles.hint}>Choose your default double-tap reaction</Text>
+        <View style={styles.reactionContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionScroll}>
+            {QUICK_REACTIONS.map(emoji => (
+              <TouchableOpacity
+                key={emoji}
+                style={[
+                  styles.reactionItem,
+                  quickReaction === emoji && styles.reactionItemActive,
+                ]}
+                onPress={() => setQuickReaction(emoji)}
+              >
+                <Text style={styles.reactionText}>{emoji}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <Text style={styles.hint}>Choose your default double-tap reaction</Text>
+        </View>
       </View>
 
       <TouchableOpacity
@@ -327,90 +273,27 @@ export const ProfileSetupScreen: React.FC = () => {
           <Text style={styles.nextButtonText}>Start Chatting</Text>
         )}
       </TouchableOpacity>
-
-      {/* Sticker Selection Modal */}
-      <Modal
-        visible={showStickerModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowStickerModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Choose Avatar</Text>
-              <TouchableOpacity onPress={() => setShowStickerModal(false)}>
-                <Text style={styles.modalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.stickerOptions}>
-              <TouchableOpacity
-                style={[
-                  styles.genderTab,
-                  selectedGender === 'male' && styles.genderTabActive,
-                ]}
-                onPress={() => setSelectedGender('male')}
-              >
-                <Text
-                  style={[
-                    styles.genderTabText,
-                    selectedGender === 'male' && styles.genderTabTextActive,
-                  ]}
-                >
-                  Male
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.genderTab,
-                  selectedGender === 'female' && styles.genderTabActive,
-                ]}
-                onPress={() => setSelectedGender('female')}
-              >
-                <Text
-                  style={[
-                    styles.genderTabText,
-                    selectedGender === 'female' && styles.genderTabTextActive,
-                  ]}
-                >
-                  Female
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <FlatList
-              data={
-                selectedGender === 'male' ? MALE_STICKERS : FEMALE_STICKERS
-              }
-              renderItem={renderStickerItem}
-              keyExtractor={item => item.id}
-              numColumns={3}
-              contentContainerStyle={styles.stickerGrid}
-            />
-
-            <TouchableOpacity
-              style={styles.uploadImageButton}
-              onPress={pickImage} // Call pickImage when this button is pressed
-            >
-              <Text style={styles.uploadImageButtonText}>
-                📸 Upload Photo Instead
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
+      <CustomGalleryPicker
+        visible={galleryPickerVisible}
+        onClose={() => setGalleryPickerVisible(false)}
+        onSelect={handleGallerySelect}
+        maxSelect={1}
+      />
     </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { padding: 24, backgroundColor: '#FFF' },
+  container: { 
+    paddingHorizontal: 24, 
+    paddingTop: 24, 
+    paddingBottom: 24, 
+    backgroundColor: '#FFF' 
+  },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 24, textAlign: 'center' },
   input: { borderBottomWidth: 1, borderColor: '#DDD', marginBottom: 16, padding: 8, fontSize: 16 },
   nextButton: { backgroundColor: '#4597f5f6', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
-  nextButtonDisabled: { backgroundColor: '#B080D1'},
+  nextButtonDisabled: { backgroundColor: '#A2C2F8'},
   nextButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
   errorText: { color: 'red', fontSize: 12 },
   successText: { color: 'green', fontSize: 12 },
@@ -427,10 +310,10 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: 60,
     borderWidth: 3,
-    borderColor: '#B080D1',
+    borderColor: '#4597f5f6',
   },
   previewPlaceholder: {
-    backgroundColor: '#E8DEF8',
+    backgroundColor: '#EBF3FE',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -572,6 +455,13 @@ const styles = StyleSheet.create({
   reactionSection: {
     marginVertical: 16,
   },
+  reactionContainer: {
+    borderWidth: 1,
+    borderColor: '#EAEAEA',
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: '#FAFAFA',
+  },
   sectionLabel: {
     fontSize: 14,
     fontWeight: '600',
@@ -591,7 +481,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
   },
   reactionItemActive: {
-    backgroundColor: '#E8DEF8',
+    backgroundColor: '#EBF3FE',
     borderWidth: 1,
     borderColor: '#4597f5f6',
   },

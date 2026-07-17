@@ -8,6 +8,7 @@ import {
   AppStateStatus,
   NativeModules,
   Platform,
+  Linking,
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -151,6 +152,35 @@ export function handleNotificationNavigation(data: FCMData) {
     }
     return;  // ✅ Add explicit return
   }
+
+  if (type === 'trivia_challenge') {
+    console.log('[App] ⚔️ Trivia challenge FCM detected:', data.challenge_category, data.challenge_set);
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate('TriviaSolo', {
+          challengeCategory: data.challenge_category,
+          challengeSet: data.challenge_set,
+        }),
+      );
+    } catch (e) {
+      console.error('[App] ❌ Trivia challenge navigation failed:', e);
+    }
+    return;
+  }
+
+  if (type === 'trivia_challenge_token') {
+    console.log('[App] ⚔️ Trivia challenge deep link token:', (data as any).challengeToken);
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate('TriviaSolo', {
+          challengeToken: (data as any).challengeToken,
+        }),
+      );
+    } catch (e) {
+      console.error('[App] ❌ Trivia challenge token navigation failed:', e);
+    }
+    return;
+  }
 }
 
 export default function App() {
@@ -257,12 +287,40 @@ export default function App() {
         }
     });
 
-    // ✅ NEW: Handle Notifee taps (for custom notifications)
+    // ✅ Handle Notifee taps (music invites + trivia challenges)
     const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
-      if (type === EventType.PRESS && detail.notification?.data?.type === 'music_invite') {
-        console.log('[App] 🔔 Notifee notification pressed:', detail.notification.data);
-        handleNotificationNavigation(detail.notification.data as FCMData);
+      const notifType = detail.notification?.data?.type;
+      if (type === EventType.PRESS && (notifType === 'music_invite' || notifType === 'trivia_challenge')) {
+        console.log('[App] 🔔 Notifee notification pressed:', detail.notification?.data);
+        handleNotificationNavigation(detail.notification?.data as FCMData);
       }
+    });
+
+    // ✅ Handle App Links (https://dme-19zq.onrender.com/trivia/challenge/{token})
+    const handleDeepLink = (url: string) => {
+      console.log('[App] 🔗 Deep link received:', url);
+      const match = url.match(/\/trivia\/challenge\/([a-f0-9-]{36})/);
+      if (match) {
+        const token = match[1];
+        console.log('[App] ⚔️ Trivia challenge token from deep link:', token);
+        const navigate = () => navigationRef?.dispatch(
+          CommonActions.navigate('TriviaSolo', { challengeToken: token })
+        );
+        if (navigationReadyRef.current) {
+          setTimeout(navigate, 300);
+        } else {
+          // Store and handle when navigator is ready
+          pendingNavigation.current = { type: 'trivia_challenge_token', challengeToken: token } as any;
+        }
+      }
+    };
+
+    // Handle deep link when app is already open
+    const linkingSub = Linking.addEventListener('url', ({ url }) => handleDeepLink(url));
+
+    // Handle deep link when app is launched from a link (cold start)
+    Linking.getInitialURL().then(url => {
+      if (url) handleDeepLink(url);
     });
 
     // ✅ Handle initial notification when app is launched from killed state
@@ -349,6 +407,7 @@ export default function App() {
       clearTimeout(navigationTimeout);
       unsubscribeFCM?.();
       unsubWs();
+      linkingSub.remove();
       if (deviceEventSub && typeof deviceEventSub.remove === 'function') {
         deviceEventSub.remove();
       }

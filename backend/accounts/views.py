@@ -426,3 +426,11 @@ class UserBlockedByStatusView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+from rest_framework_simplejwt.views import TokenRefreshView
+from .serializers import SafeTokenRefreshSerializer
+
+class SafeTokenRefreshView(TokenRefreshView):
+    """Custom TokenRefreshView that uses SafeTokenRefreshSerializer."""
+    serializer_class = SafeTokenRefreshSerializer

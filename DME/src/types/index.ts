@@ -12,6 +12,8 @@ export interface User {
   last_seen: string;
   is_verified: boolean;
   last_username_change: string | null;
+  friend_status?: 'none' | 'sent_pending' | 'received_pending' | 'friends';
+  is_profile_complete?: boolean;
 }
 export interface Message {
   id: number;

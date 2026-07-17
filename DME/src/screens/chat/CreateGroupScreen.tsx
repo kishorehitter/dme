@@ -53,7 +53,8 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           <Icon name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
       ),
-      headerTitle: step === 1 ? 'Add Participants' : 'New Group',
+      headerTitle: step === 1 ? 'Create Group' : 'New Group',
+      headerTitleStyle: { color: '#000' },
     });
   }, [navigation, step]);
 
@@ -63,20 +64,49 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
     const loadChattedUsers = async () => {
       setIsLoading(true);
       try {
-        const convs = await chatAPI.getConversations();
+        const [convs, friendsRes] = await Promise.all([
+          chatAPI.getConversations(),
+          chatAPI.getFriends()
+        ]);
+        
         let conversationsArray: any[] = [];
         if (Array.isArray(convs)) {
           conversationsArray = convs;
         } else if (convs?.results) {
           conversationsArray = convs.results;
         }
+
+        let friendsArray: any[] = [];
+        if (Array.isArray(friendsRes)) {
+          friendsArray = friendsRes;
+        } else if (friendsRes?.results) {
+          friendsArray = friendsRes.results;
+        }
         
         const chatted: User[] = [];
         const seenUserIds = new Set<number>();
         
+        // Add friends first
+        friendsArray.forEach((friend: any) => {
+          if (friend && friend.id && !seenUserIds.has(friend.id)) {
+            seenUserIds.add(friend.id);
+            chatted.push({
+              id: friend.id,
+              username: friend.username,
+              email: friend.email,
+              display_name: friend.display_name,
+              profile_picture: friend.profile_picture,
+              avatar_sticker: friend.avatar_sticker,
+            } as User);
+          }
+        });
+
+        // Add people who accepted the message request or have no request (e.g. established chats)
         conversationsArray.forEach((c: any) => {
           if (!c.is_group && c.other_user && c.other_user.id) {
-            if (!seenUserIds.has(c.other_user.id)) {
+            // Include only if accepted or null (meaning no request pending/rejected)
+            const isPendingOrRejected = c.message_request_status === 'pending' || c.message_request_status === 'rejected';
+            if (!isPendingOrRejected && !seenUserIds.has(c.other_user.id)) {
               seenUserIds.add(c.other_user.id);
               chatted.push({
                 id: c.other_user.id,
@@ -167,6 +197,8 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
       navigation.replace('ChatRoom', {
         conversationId: response.id,
         name: response.name,
+        avatarUri: response.profile_picture,
+        isGroup: true,
       });
     } catch (error) {
       Alert.alert('Error', 'Failed to create group');

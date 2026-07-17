@@ -15,11 +15,15 @@ urlpatterns = [
     path('api/calls/', include('calls.urls')),
     path('api/youtube/', include('youtube_search.urls')),
     path('api/music/', include('music.urls')),
+    path('api/trivia/', include('trivia.urls')),
     
     # Share / Download routes
     path('invite', views.download_app, name='download_app'),
     path('invite/', views.download_app, name='download_app_slash'),
     path('.well-known/assetlinks.json', views.assetlinks_json, name='assetlinks'),
+
+    # Trivia challenge browser landing page
+    path('trivia/challenge/<uuid:token>/', views.trivia_challenge_redirect, name='trivia-challenge-redirect'),
 ]
 
 if settings.DEBUG:

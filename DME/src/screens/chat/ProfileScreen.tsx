@@ -15,16 +15,26 @@ import {
   Image,
   Modal,
   FlatList,
+  TouchableWithoutFeedback,
+  Dimensions,
+  Linking,
+  InteractionManager,
+  Share,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import LinearGradient from 'react-native-linear-gradient';
 import { launchImageLibrary } from 'react-native-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
-import { StatusService, UserStatusGroup } from '../../services/StatusService';
+import { StatusService, UserStatusGroup, Status } from '../../services/StatusService';
+import { chatAPI } from '../../services/api';
+import { MediaPickerModal } from '../../components/MediaPickerModal';
+import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -75,19 +85,242 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const { user, logout, deleteAccount, refreshUser } = useAuth();
   const viewingOtherProfile = route?.params?.user;
   const isReadOnly = !!viewingOtherProfile;
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isEditingMode, setIsEditingMode] = useState(false);
+  const [conversationId, setConversationId] = useState<number | null>(route?.params?.conversationId || null);
+  const [profile, setProfile] = useState<UserProfile | null>(() => {
+    if (viewingOtherProfile) return viewingOtherProfile;
+    if (user) {
+      return {
+        id: user.id,
+        display_name: user.display_name || '',
+        username: user.username || '',
+        bio: user.bio || '',
+        profile_picture: user.profile_picture || null,
+        avatar_sticker: user.avatar_sticker || null,
+        quick_reaction: user.quick_reaction || '❤️',
+      } as any;
+    }
+    return null;
+  });
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
-  const [formData, setFormData] = useState({
-    display_name: '',
-    username: '',
-    bio: '',
-    quick_reaction: '❤️',
+  const [mediaPickerVisible, setMediaPickerVisible] = useState(false);
+  const [statusGalleryVisible, setStatusGalleryVisible] = useState(false);
+  const [profileGalleryVisible, setProfileGalleryVisible] = useState(false);
+  const [formData, setFormData] = useState(() => {
+    const p = viewingOtherProfile || user;
+    return {
+      display_name: p?.display_name || '',
+      username: p?.username || '',
+      bio: p?.bio || '',
+      quick_reaction: p?.quick_reaction || '❤️',
+    };
   });
   const [showStickerModal, setShowStickerModal] = useState(false);
   const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('male');
   const [isBlocked, setIsBlocked] = useState(false);
   const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [friendStatus, setFriendStatus] = useState<string>(() => {
+    return viewingOtherProfile?.friend_status || 'none';
+  });
+
+  const handleCopyUsername = () => {
+    if (profile?.username) {
+      Clipboard.setString(profile.username);
+      Toast.show({
+        type: 'success',
+        text1: 'Username copied',
+        text2: `@${profile.username} copied to clipboard`,
+        position: 'bottom',
+      });
+    }
+  };
+  const [showMenu, setShowMenu] = useState(false);
+  const [sharedMedia, setSharedMedia] = useState<any[]>([]);
+  const [activeAlbumTab, setActiveAlbumTab] = useState('image');
+
+  const ALBUM_TABS = [
+    { key: 'image', label: 'Images', icon: 'image-outline' },
+    { key: 'video', label: 'Videos', icon: 'videocam-outline' },
+    { key: 'audio', label: 'Audio', icon: 'mic-outline' },
+    { key: 'document', label: 'Docs', icon: 'document-text-outline' },
+  ];
+
+  const fetchSharedMedia = async () => {
+    if (!conversationId) return;
+    try {
+      const token = await AsyncStorage.getItem('access_token');
+      const response = await fetch(
+        getApiUrl(`chat/conversations/${conversationId}/media/?type=${activeAlbumTab}`),
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setSharedMedia(data);
+      }
+    } catch (error) {
+      console.warn('Failed to fetch shared media for profile:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (isReadOnly && conversationId) {
+      const task = InteractionManager.runAfterInteractions(() => {
+        fetchSharedMedia();
+      });
+      return () => task.cancel();
+    }
+  }, [isReadOnly, conversationId, activeAlbumTab]);
+
+  useEffect(() => {
+    navigation.setOptions({
+      title: isReadOnly ? (profile?.display_name || 'Profile') : (isEditingMode ? 'Edit Profile' : 'My Profile'),
+      headerTintColor: '#1A1A1A',
+      headerTitleStyle: {
+        color: '#1A1A1A',
+        fontWeight: 'bold',
+        fontSize: 20,
+      },
+      headerRight: (isReadOnly || !isEditingMode) ? () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16 }}>
+          {isReadOnly && conversationId ? (
+            <TouchableOpacity 
+              onPress={() => navigation.navigate('ChatRoom', { conversationId, searchMode: true })}
+              style={{ marginRight: 16 }}
+            >
+              <Icon name="search" size={24} color="#1A1A1A" />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity onPress={() => setShowMenu(true)}>
+            <Icon name="ellipsis-vertical" size={24} color="#1A1A1A" />
+          </TouchableOpacity>
+        </View>
+      ) : undefined
+    });
+  }, [navigation, isReadOnly, isEditingMode, conversationId, profile?.display_name]);
+
+  useEffect(() => {
+    if (!isReadOnly && isEditingMode) {
+      navigation.setOptions({
+        headerLeft: () => (
+          <TouchableOpacity onPress={() => setIsEditingMode(false)} style={{ marginLeft: 16 }}>
+            <Icon name="arrow-back" size={24} color="#1A1A1A" />
+          </TouchableOpacity>
+        )
+      });
+    } else {
+      navigation.setOptions({
+        headerLeft: undefined
+      });
+    }
+  }, [navigation, isReadOnly, isEditingMode]);
+
+  const fetchFriendStatus = async () => {
+    if (!viewingOtherProfile?.id) return;
+    try {
+      const friendsList = await chatAPI.getFriends();
+      const isFriend = friendsList.some((f: any) => f.id === viewingOtherProfile.id);
+      if (isFriend) {
+        setFriendStatus('friends');
+        return;
+      }
+      
+      const reqs = await chatAPI.getFriendRequests();
+      const req = reqs.find((r: any) => 
+        r.sender?.id === viewingOtherProfile.id || 
+        r.from_user?.id === viewingOtherProfile.id || 
+        r.receiver?.id === viewingOtherProfile.id || 
+        r.to_user?.id === viewingOtherProfile.id
+      );
+      if (req) {
+        const isOutgoing = req.sender?.id === user?.id || req.from_user?.id === user?.id || req.direction === 'outgoing';
+        setFriendStatus(isOutgoing ? 'sent_pending' : 'received_pending');
+      } else {
+        setFriendStatus('none');
+      }
+    } catch (err) {
+      console.warn('Error loading friend status dynamically:', err);
+    }
+  };
+
+  const handleFriendAction = async () => {
+    if (!profile) return;
+    try {
+      if (friendStatus === 'none') {
+        await chatAPI.sendFriendRequest(profile.id);
+        setFriendStatus('sent_pending');
+        Toast.show({ type: 'success', text1: 'Friend request sent', position: 'bottom' });
+      } else if (friendStatus === 'sent_pending') {
+        await chatAPI.cancelFriendRequestByUserId(profile.id);
+        setFriendStatus('none');
+        Toast.show({ type: 'info', text1: 'Friend request cancelled', position: 'bottom' });
+      } else if (friendStatus === 'received_pending') {
+        const reqs = await chatAPI.getFriendRequests();
+        const incomingReq = reqs.find((r: any) => r.sender?.id === profile.id || r.from_user?.id === profile.id);
+        if (incomingReq) {
+          await chatAPI.acceptFriendRequest(incomingReq.id);
+          setFriendStatus('friends');
+          Toast.show({ type: 'success', text1: 'Friend request accepted', position: 'bottom' });
+        } else {
+          await chatAPI.sendFriendRequest(profile.id);
+        }
+      } else if (friendStatus === 'friends') {
+        Alert.alert(
+          'Remove Friend',
+          `Are you sure you want to remove ${displayNameFromProfile(profile)} from your friends?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Remove',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  await chatAPI.unfriend(profile.id);
+                  setFriendStatus('none');
+                  Toast.show({ type: 'info', text1: 'Friend removed', position: 'bottom' });
+                } catch {
+                  Alert.alert('Error', 'Failed to remove friend');
+                }
+              }
+            }
+          ]
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to update friendship status');
+    }
+  };
+
+  const handleOpenChat = async () => {
+    if (!profile) return;
+    try {
+      let convId = route.params?.conversationId;
+      if (!convId) {
+        const conversation = await chatAPI.getOrCreateDirectChat(profile.id);
+        convId = conversation.id;
+      }
+      if (convId) {
+        navigation.navigate('ChatRoom', {
+          conversationId: convId,
+          name: displayNameFromProfile(profile),
+          avatarUri: profile.profile_picture,
+          avatarSticker: profile.avatar_sticker,
+          isGroup: false,
+          otherUser: profile,
+        });
+      } else {
+        Alert.alert('Error', 'Could not open chat room');
+      }
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to open chat room');
+    }
+  };
+
+  const displayNameFromProfile = (p: any) => {
+    return p.display_name || p.username || p.email || 'User';
+  };
 
   const usernameEditable = React.useMemo(() => {
     // Priority: fetched profile object first, then fallback to global user object
@@ -134,6 +367,58 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
+  const handleMediaSelected = (assets: any[]) => {
+    setMediaPickerVisible(false);
+    if (Array.isArray(assets) && assets.length > 0) {
+      const asset = assets[0];
+      navigation.navigate('StatusEditor', {
+        mediaUri: asset.uri,
+        mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+        source: 'gallery',
+      });
+    } else if (assets && (assets as any).uri) {
+      const asset = assets as any;
+      navigation.navigate('StatusEditor', {
+        mediaUri: asset.uri,
+        mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+        source: 'gallery',
+      });
+    }
+  };
+
+  const handleStatusGallerySelect = (assets: GalleryAsset[]) => {
+    setStatusGalleryVisible(false);
+    if (assets && assets.length > 0) {
+      const asset = assets[0];
+      navigation.navigate('StatusEditor', {
+        mediaUri: asset.uri,
+        mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+        source: 'gallery',
+      });
+    }
+  };
+
+  const handleProfileGallerySelect = async (assets: GalleryAsset[]) => {
+    setProfileGalleryVisible(false);
+    if (assets && assets.length > 0) {
+      const asset = assets[0];
+      setIsUploadingImage(true);
+      await uploadProfilePicture(asset);
+      setIsUploadingImage(false);
+    }
+  };
+
+  const handleShareProfile = async () => {
+    try {
+      const shareMessage = `Username: ${profile?.username || ''}`;
+      await Share.share({
+        message: shareMessage,
+      });
+    } catch (error) {
+      console.error('Error sharing profile:', error);
+    }
+  };
+
   const loadStatus = async () => {
     const userId = viewingOtherProfile?.id || user?.id;
     if (!userId) return;
@@ -144,7 +429,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         const groups = StatusService.groupByUser(filtered);
         if (groups.length > 0) {
           setUserStatus(groups[0]);
+        } else {
+          setUserStatus(null);
         }
+      } else {
+        setUserStatus(null);
       }
     } catch (err) {
       console.warn('[ProfileScreen] Error loading status:', err);
@@ -321,6 +610,25 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       loadStatus();
       if (viewingOtherProfile) {
         loadBlockStatus();
+        fetchFriendStatus();
+        
+        if (!route?.params?.conversationId) {
+          try {
+            const token = await AsyncStorage.getItem('access_token');
+            const response = await fetch(getApiUrl('chat/conversations/'), {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (response.ok) {
+              const convs = await response.json();
+              const match = convs.find((c: any) => !c.is_group && c.other_user?.id === viewingOtherProfile.id);
+              if (match) {
+                setConversationId(match.id);
+              }
+            }
+          } catch (e) {
+            console.warn('Failed to auto-resolve conversation ID:', e);
+          }
+        }
         try {
           const token = await AsyncStorage.getItem('access_token');
           const response = await fetch(getApiUrl(`accounts/users/${viewingOtherProfile.id}/`), {
@@ -358,8 +666,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         loadProfile();
       }
     };
-    initializeProfile();
+    const task = InteractionManager.runAfterInteractions(() => {
+      initializeProfile();
+    });
+    return () => task.cancel();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadStatus();
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   const loadProfile = async () => {
     try {
@@ -405,28 +723,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
-  const pickImage = async () => {
-    try {
-      const result = await launchImageLibrary({
-        mediaType: 'photo',
-        maxWidth: 800,
-        maxHeight: 800,
-        quality: 0.7,
-      });
-
-      if (result.didCancel || result.errorCode) return;
-
-      const asset = result.assets?.[0];
-      if (asset?.uri) {
-        setIsUploadingImage(true);
-        await uploadProfilePicture(asset);
-        setIsUploadingImage(false);
-      }
-    } catch (error) {
-      console.error('Error picking image:', error);
-      Alert.alert('Error', 'Failed to pick image');
-      setIsUploadingImage(false);
-    }
+  const pickImage = () => {
+    setProfileGalleryVisible(true);
   };
 
   const handleRemovePhoto = async () => {
@@ -592,7 +890,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           text1: 'Profile updated successfully',
           position: 'bottom',
         });
-        navigation.navigate('MainTabs', { screen: 'Chats' });
+        setIsEditingMode(false);
       } else {
         const errorData = await response.json().catch(() => ({}));
         // Use the specific 'message' from our backend update
@@ -649,81 +947,326 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     </TouchableOpacity>
   );
 
-  if (isReadOnly && profile) {
+  if ((isReadOnly || !isEditingMode) && profile) {
     const displayName = profile.display_name || profile.username || profile.email || 'User';
     const bio = profile.bio || 'No bio available'; 
 
     return (
-      <ScrollView style={styles.container}>
+      <ScrollView style={styles.container} contentContainerStyle={{ flexGrow: 1 }}>
         <View style={styles.friendProfileHeader}>
           <TouchableOpacity 
-            style={[styles.friendAvatarContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
+            style={styles.avatarWrapper90}
             onPress={handleAvatarPress}
             onLongPress={handleAvatarLongPress}
             activeOpacity={0.8}
           >
-            {profile.avatar_sticker ? (
-              <View style={[styles.friendAvatar, styles.friendAvatarPlaceholder]}>
-                <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
+            {hasStatus && (
+              allSeen ? (
+                <View style={styles.ringViewed90} />
+              ) : (
+                <LinearGradient
+                  colors={['#ff4d6d', '#4597f5f6']}
+                  start={{ x: 0, y: 1 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientRing90}
+                >
+                  <View style={styles.gradientRingInner90} />
+                </LinearGradient>
+              )
+            )}
+            <AvatarWithFallback 
+              uri={profile.profile_picture} 
+              displayName={displayName} 
+              sticker={profile.avatar_sticker} 
+              style={styles.friendAvatar} 
+            />
+          </TouchableOpacity>
+
+          <View style={styles.friendHeaderInfo}>
+            <Text style={styles.friendName}>{displayName}</Text>
+            {profile.username ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
+                <Text style={styles.friendUsername}>
+                  <Text style={{ color: '#999', fontSize: 14, fontWeight: 'normal' }}>@</Text>
+                  {profile.username}
+                </Text>
+                <TouchableOpacity onPress={handleCopyUsername} style={{ padding: 4 }}>
+                  <Icon name="copy-outline" size={20} color="#777" />
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        {/* Bio and Friends Count placed below the profile row */}
+        <View style={[styles.friendDetailsContainer, { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }]}>
+          <View style={{ flex: 1, marginRight: 16, marginLeft: 8 }}>
+            <Text style={styles.friendBioText}>{bio}</Text>
+          </View>
+          <View style={{ alignItems: 'center', minWidth: 65, paddingTop: 4 }}>
+            <Text style={{ fontSize: 12, color: '#666', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 }}>Friends</Text>
+            <Text style={{ fontSize: 18, color: '#1A1A1A', fontWeight: 'bold', marginTop: 2 }}>
+              {profile.friends_count !== undefined ? profile.friends_count : 0}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.profileButtonsRow}>
+          {isReadOnly ? (
+            <>
+              <TouchableOpacity
+                style={[
+                  styles.profileActionBtn,
+                  friendStatus === 'none' ? styles.primaryBtn : styles.secondaryBtn
+                ]}
+                onPress={handleFriendAction}
+              >
+                <Text style={[
+                  styles.profileActionBtnText,
+                  friendStatus === 'none' ? styles.primaryBtnText : styles.secondaryBtnText
+                ]}>
+                  {friendStatus === 'none' && 'Add Friend'}
+                  {friendStatus === 'sent_pending' && 'Cancel Request'}
+                  {friendStatus === 'received_pending' && 'Accept Request'}
+                  {friendStatus === 'friends' && 'Friends'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.profileActionBtn, styles.secondaryBtn]}
+                onPress={handleOpenChat}
+              >
+                <Text style={[styles.profileActionBtnText, styles.secondaryBtnText]}>
+                  Message
+                </Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={[styles.profileActionBtn, styles.primaryBtn]}
+                onPress={() => setIsEditingMode(true)}
+              >
+                <Text style={[styles.profileActionBtnText, styles.primaryBtnText]}>
+                  Edit Profile
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.profileActionBtn, styles.secondaryBtn]}
+                onPress={handleShareProfile}
+              >
+                <Text style={[styles.profileActionBtnText, styles.secondaryBtnText]}>
+                  Share Profile
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+
+        {isReadOnly ? (
+          <View style={styles.sharedAlbumSection}>
+            <Text style={styles.sharedAlbumTitle}>Shared Album</Text>
+
+            <View style={styles.albumTabRow}>
+              {ALBUM_TABS.map(tab => (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={[styles.albumTab, activeAlbumTab === tab.key && styles.activeAlbumTab]}
+                  onPress={() => setActiveAlbumTab(tab.key)}
+                >
+                  <Icon name={tab.icon} size={16} color={activeAlbumTab === tab.key ? colors.primary : '#888'} />
+                  <Text style={[styles.albumTabText, activeAlbumTab === tab.key && styles.activeAlbumTabText]}>
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {sharedMedia.length === 0 ? (
+              <View style={styles.emptySharedMedia}>
+                <Icon name="folder-open-outline" size={48} color="#CCC" />
+                <Text style={styles.emptySharedMediaText}>No {activeAlbumTab}s shared yet</Text>
+              </View>
+            ) : activeAlbumTab === 'image' || activeAlbumTab === 'video' ? (
+              <View style={styles.mediaGrid}>
+                {sharedMedia.map((item, index) => {
+                  const url = resolveImageUrl(item.media_url || item.media_file);
+                  const mediaList = sharedMedia.map(m => ({
+                    mediaUrl: resolveImageUrl(m.media_url || m.media_file),
+                    mediaType: activeAlbumTab as 'image' | 'video',
+                    id: m.id,
+                    caption: m.content || '',
+                  }));
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={styles.gridImageWrapper}
+                      onPress={() => navigation.navigate('MediaViewer', {
+                        mediaUrl: url,
+                        mediaType: activeAlbumTab,
+                        mediaList,
+                        initialIndex: index,
+                      })}
+                    >
+                      {activeAlbumTab === 'image' ? (
+                        <Image source={{ uri: url }} style={styles.gridImage} />
+                      ) : (
+                        <View style={styles.mediaPlaceholder}>
+                          <Icon name="play-circle-outline" size={32} color="#fff" style={styles.playIcon} />
+                          <View style={styles.videoOverlay} />
+                          <Icon name="videocam" size={24} color="#ccc" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             ) : (
-              <AvatarWithFallback 
-                uri={profile.profile_picture} 
-                displayName={displayName} 
-                sticker={profile.avatar_sticker} 
-                style={styles.friendAvatar} 
-              />            )}
-          </TouchableOpacity>
-
-          <Text style={styles.friendName}>{displayName}</Text>
-          <Text style={styles.friendBio}>{bio}</Text>
-
-          <View style={styles.quickActionContainer}>
-            <TouchableOpacity
-              style={styles.messageButtonCircle}
-              onPress={() => navigation.navigate('ChatRoom', { conversationId: route.params.conversationId, name: displayName })}
-            >
-              <Icon name="chatbox" size={28} color="#4597f5f6" />
-            </TouchableOpacity><Text style={styles.messageButtonLabel}>Message</Text>
+              <View style={styles.mediaListContainer}>
+                {sharedMedia.map(item => {
+                  const date = new Date(item.created_at).toLocaleDateString();
+                  const fileName = item.media_file ? item.media_file.split('/').pop() : 'Media File';
+                  return (
+                    <TouchableOpacity 
+                      key={item.id}
+                      style={styles.mediaListItem} 
+                      onPress={() => {
+                        if (item.media_file || item.media_url) {
+                          const url = resolveImageUrl(item.media_file || item.media_url);
+                          Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open file URL'));
+                        }
+                      }}
+                    >
+                      <View style={[styles.listIconContainer, activeAlbumTab === 'audio' ? styles.audioIconBg : styles.docIconBg]}>
+                        <Icon name={activeAlbumTab === 'audio' ? 'mic' : 'document-text'} size={20} color="#fff" />
+                      </View>
+                      <View style={styles.listTextContainer}>
+                        <Text style={styles.listFileName} numberOfLines={1}>{fileName}</Text>
+                        <Text style={styles.listDate}>{date}</Text>
+                      </View>
+                      <Icon name="chevron-forward" size={18} color="#ccc" />
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
           </View>
+        ) : (
+          <View style={[styles.sharedAlbumSection, { flex: 1 }]}>
+            {/* Horizontal list of uploaded stories directly below the buttons */}
+            {hasStatus && userStatus && (
+              <View style={{ marginBottom: 16 }}>
+                <Text style={styles.sharedAlbumTitle}>Status</Text>
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false} 
+                  contentContainerStyle={styles.horizontalScrollContent}
+                >
+                  {userStatus.statuses.map((status: Status) => {
+                    const isVideo = status.media_type === 'video';
+                    return (
+                      <TouchableOpacity
+                        key={status.id}
+                        style={styles.horizontalImageWrapper}
+                        onPress={() => {
+                          navigation.navigate('StatusViewer', { 
+                            statuses: userStatus.statuses, 
+                            initialIndex: userStatus.statuses.indexOf(status),
+                            currentUserId: user?.id,
+                            isOwn: true
+                          });
+                        }}
+                      >
+                        <Image source={{ uri: resolveImageUrl(status.media_url) }} style={styles.horizontalImage} />
+                        {isVideo && (
+                          <View style={styles.videoOverlay}>
+                            <Icon name="play" size={16} color="#fff" style={styles.playIcon} />
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
 
-          <View style={styles.actionGrid}>
-            <View style={styles.actionRow}>
-              <TouchableOpacity style={styles.gridButton} onPress={() => navigation.navigate('Call', { callType: 'audio', remoteUserId: profile.id, remoteUserName: displayName, remoteUserPic: profile.profile_picture, conversationId: route.params.conversationId })}>
-                <View style={styles.gridIconContainer}><Icon name="call" size={24} color={colors.primary} /></View>
-                <Text style={styles.gridButtonText}>Audio Call</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.gridButton} onPress={() => navigation.navigate('Call', { callType: 'video', remoteUserId: profile.id, remoteUserName: displayName, remoteUserPic: profile.profile_picture, conversationId: route.params.conversationId })}>
-                <View style={styles.gridIconContainer}><Icon name="videocam" size={24} color={colors.primary} /></View>
-                <Text style={styles.gridButtonText}>Video Call</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.actionRow}>
-              <TouchableOpacity style={styles.gridButton} onPress={() => navigation.navigate('SharedMedia', { conversationId: route.params.conversationId, otherUserId: profile.id })}>
-                <View style={styles.gridIconContainer}><Icon name="images" size={24} color={colors.primary} /></View>
-                <Text style={styles.gridButtonText}>Shared Media</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.gridButton} onPress={() => navigation.navigate('ChatRoom', { conversationId: route.params.conversationId, searchMode: true })}>
-                <View style={styles.gridIconContainer}><Icon name="search" size={24} color={colors.primary} /></View>
-                <Text style={styles.gridButtonText}>Search</Text>
+            <View style={styles.uploadStorySection}>
+              <TouchableOpacity 
+                style={styles.uploadStoryCard} 
+                onPress={() => setStatusGalleryVisible(true)}
+              >
+                <View style={styles.plusIconCircle}>
+                  <Icon name="add" size={26} color="#0095f6" />
+                </View>
+                <Text style={styles.uploadStoryText}>Upload Status</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        )}
 
-        <View style={styles.friendActionsSection}>
-          <TouchableOpacity style={styles.friendActionButton} onPress={handleClearChat} activeOpacity={0.7}>
-            <View style={styles.actionIconContainer}><Icon name="trash-outline" size={22} color="#F44336" /></View>
-            <View style={styles.actionTextContainer}><Text style={[styles.actionTitle, { color: '#F44336' }]}>Clear Chat</Text></View>
-          </TouchableOpacity>
-          <View style={styles.actionSeparator} />
-          <TouchableOpacity style={[styles.friendActionButton, isBlocked && styles.blockActionActive]} onPress={handleBlockUser} activeOpacity={0.7}>
-            <View style={[styles.actionIconContainer, isBlocked && styles.actionIconContainerActive]}>
-              <Icon name={isBlocked ? 'shield-checkmark-outline' : 'ban-outline'} size={22} color={isBlocked ? colors.primary : '#F44336'} />
+        {/* Menu Popover Modal */}
+        <Modal
+          visible={showMenu}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowMenu(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
+            <View style={styles.modalBackdrop}>
+              <View style={styles.popoverMenu}>
+                {conversationId ? (
+                  <TouchableOpacity
+                    style={styles.popoverItem}
+                    onPress={() => {
+                      setShowMenu(false);
+                      handleClearChat();
+                    }}
+                  >
+                    <Icon name="trash-outline" size={20} color="#F44336" />
+                    <Text style={[styles.popoverText, { color: '#F44336' }]}>Clear Chat</Text>
+                  </TouchableOpacity>
+                ) : null}
+                {conversationId ? <View style={styles.popoverSeparator} /> : null}
+                <TouchableOpacity
+                  style={styles.popoverItem}
+                  onPress={() => {
+                    setShowMenu(false);
+                    handleBlockUser();
+                  }}
+                >
+                  <Icon name={isBlocked ? 'shield-checkmark-outline' : 'ban-outline'} size={20} color={isBlocked ? colors.primary : '#F44336'} />
+                  <Text style={[styles.popoverText, isBlocked && { color: colors.primary }]}>
+                    {isBlocked ? 'Unblock User' : 'Block User'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <View style={styles.actionTextContainer}><Text style={[styles.actionTitle, isBlocked && styles.actionTitleActive]}>{isBlocked ? 'Unblock User' : 'Block User'}</Text></View>
-          </TouchableOpacity>
-        </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        <MediaPickerModal 
+          visible={mediaPickerVisible} 
+          onClose={() => setMediaPickerVisible(false)}
+          onMediaSelected={handleMediaSelected}
+        />
+
+        <CustomGalleryPicker
+          visible={statusGalleryVisible}
+          onClose={() => setStatusGalleryVisible(false)}
+          onSelect={handleStatusGallerySelect}
+          maxSelect={1}
+          assetType="All"
+          maxDuration={61}
+        />
+
+        <CustomGalleryPicker
+          visible={profileGalleryVisible}
+          onClose={() => setProfileGalleryVisible(false)}
+          onSelect={handleProfileGallerySelect}
+          maxSelect={1}
+          assetType="Photos"
+        />
       </ScrollView>
     );
   }
@@ -740,21 +1283,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <TouchableOpacity
             onPress={handleAvatarPress}
             onLongPress={handleAvatarLongPress}
-            style={[styles.profilePictureContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
+            style={styles.avatarWrapper120}
             disabled={isUploadingImage}
           >
-            {profile?.avatar_sticker ? (
-              <View style={[styles.profilePicture, styles.profilePicturePlaceholder]}>
-                <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
-              </View>
-            ) : (
-              <AvatarWithFallback 
-                uri={profile?.profile_picture} 
-                displayName={formData.display_name || formData.username} 
-                sticker={profile?.avatar_sticker}
-                style={styles.profilePicture} 
-             />
+            {hasStatus && (
+              allSeen ? (
+                <View style={styles.ringViewed120} />
+              ) : (
+                <LinearGradient
+                  colors={['#ff4d6d', '#4597f5f6']}
+                  start={{ x: 0, y: 1 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientRing120}
+                >
+                  <View style={styles.gradientRingInner120} />
+                </LinearGradient>
+              )
             )}
+            <AvatarWithFallback 
+              uri={profile?.profile_picture} 
+              displayName={formData.display_name || formData.username || 'User'} 
+              sticker={profile?.avatar_sticker}
+              style={styles.profilePicture} 
+            />
             <TouchableOpacity style={styles.cameraIcon} onPress={() => setShowStickerModal(true)}>
               <Text style={styles.cameraIconText}><Icon name="camera" size={18} color="#000" /></Text>
             </TouchableOpacity>
@@ -764,20 +1315,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <TouchableOpacity 
             onPress={handleAvatarPress}
             onLongPress={handleAvatarLongPress}
-            style={[styles.profilePictureContainer, (hasStatus) && styles.avatarRingContainer, ringStyle]}
+            style={styles.avatarWrapper120}
           >
-            {profile?.avatar_sticker ? (
-              <View style={[styles.profilePicture, styles.profilePicturePlaceholder]}>
-                <Text style={styles.stickerAvatar}>{profile.avatar_sticker}</Text>
-              </View>
-            ) : (
-              <AvatarWithFallback 
-                uri={profile?.profile_picture} 
-                displayName={formData.display_name || formData.username} 
-                sticker={profile?.avatar_sticker}
-                style={styles.profilePicture} 
-             />
+            {hasStatus && (
+              allSeen ? (
+                <View style={styles.ringViewed120} />
+              ) : (
+                <LinearGradient
+                  colors={['#ff4d6d', '#4597f5f6']}
+                  start={{ x: 0, y: 1 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientRing120}
+                >
+                  <View style={styles.gradientRingInner120} />
+                </LinearGradient>
+              )
             )}
+            <AvatarWithFallback 
+              uri={profile?.profile_picture} 
+              displayName={formData.display_name || formData.username || 'User'} 
+              sticker={profile?.avatar_sticker}
+              style={styles.profilePicture} 
+            />
           </TouchableOpacity>
         )}
         <Text style={styles.changePhotoText}>
@@ -886,7 +1445,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             onPress={handleSave}
             disabled={isSaving || isUploadingImage || !!usernameError || (!usernameEditable && formData.username !== profile?.username)}
           >
-            {isSaving ? <ActivityIndicator color={colors.textLight} /> : <Text style={styles.saveButtonText}>Save Changes</Text>}
+            {isSaving ? <ActivityIndicator color={colors.textLight} /> : <Text style={styles.saveButtonText}>Update Changes</Text>}
           </TouchableOpacity>
         )}
       </View>
@@ -936,6 +1495,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Text style={styles.modalTitle}>Choose Avatar</Text>
                 <TouchableOpacity onPress={() => setShowStickerModal(false)}><Text style={styles.modalClose}>✕</Text></TouchableOpacity>
               </View>
+              <View style={{ alignItems: 'center', marginVertical: 12 }}>
+                <AvatarWithFallback 
+                  uri={profile?.profile_picture} 
+                  displayName={profile?.display_name || profile?.username || user?.display_name || user?.username || 'User'} 
+                  sticker={profile?.avatar_sticker}
+                  style={{ width: 80, height: 80, borderRadius: 40 }} 
+                />
+                <Text style={{ fontSize: 12, color: '#666', marginTop: 6, fontFamily: 'Kalam-Regular' }}>Current Avatar</Text>
+              </View>
               <View style={styles.stickerOptions}>
                 <TouchableOpacity style={[styles.genderTab, selectedGender === 'male' && styles.genderTabActive]} onPress={() => setSelectedGender('male')}><Text style={[styles.genderTabText, selectedGender === 'male' && styles.genderTabTextActive]}>Male</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.genderTab, selectedGender === 'female' && styles.genderTabActive]} onPress={() => setSelectedGender('female')}><Text style={[styles.genderTabText, selectedGender === 'female' && styles.genderTabTextActive]}>Female</Text></TouchableOpacity>
@@ -955,16 +1523,82 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </View>
         </Modal>
       )}
+
+      <CustomGalleryPicker
+        visible={profileGalleryVisible}
+        onClose={() => setProfileGalleryVisible(false)}
+        onSelect={handleProfileGallerySelect}
+        maxSelect={1}
+        assetType="Photos"
+      />
     </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   profilePictureSection: { alignItems: 'center', paddingVertical: spacing.lg, backgroundColor: colors.surface },
   profilePictureContainer: { position: 'relative' },
   profilePicture: { width: 120, height: 120, borderRadius: 60 },
-  profilePicturePlaceholder: { backgroundColor: '#E8DEF8', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primaryLight },
+  avatarWrapper90: {
+    width: 100,
+    height: 100,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  avatarWrapper120: {
+    width: 130,
+    height: 130,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  gradientRing90: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gradientRingInner90: {
+    width: 94,
+    height: 94,
+    borderRadius: 47,
+    backgroundColor: '#ffffff',
+  },
+  ringViewed90: {
+    position: 'absolute',
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    borderWidth: 2,
+    borderColor: '#ccc',
+  },
+  gradientRing120: {
+    position: 'absolute',
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gradientRingInner120: {
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    backgroundColor: '#ffffff',
+  },
+  ringViewed120: {
+    position: 'absolute',
+    width: 126,
+    height: 126,
+    borderRadius: 63,
+    borderWidth: 2,
+    borderColor: '#ccc',
+  },
+  profilePicturePlaceholder: { backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primaryLight },
   stickerAvatar: { fontSize: 72 },
   cameraIcon: { position: 'absolute', bottom: 10, right: 8, backgroundColor: colors.surface, width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.primary },
   cameraIconText: { fontSize: 18 },
@@ -1013,13 +1647,22 @@ const styles = StyleSheet.create({
   },
   footer: { alignItems: 'center', padding: spacing.xl },
   footerText: { fontSize: fontSize.sm, color: colors.textSecondary },
-  friendProfileHeader: { alignItems: 'center', padding: spacing.lg, backgroundColor: colors.surface },
+  friendProfileHeader: { flexDirection: 'row', padding: 16, alignItems: 'center', backgroundColor: '#FFF' },
   friendAvatarContainer: { position: 'relative' },
-  friendAvatar: { width: 120, height: 120, borderRadius: 60 },
-  friendAvatarPlaceholder: { backgroundColor: '#E8DEF8', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primary },
-  friendAvatarText: { fontSize: 40, color: colors.primary, fontWeight: 'bold' },
-  friendName: { fontSize: fontSize.xl, fontWeight: 'bold', marginTop: spacing.md, color: colors.textPrimary },
-  friendBio: { fontSize: fontSize.md, color: colors.textSecondary, marginTop: spacing.xs },
+  friendAvatar: { width: 90, height: 90, borderRadius: 45 },
+  friendAvatarPlaceholder: { backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primary, borderRadius: 45, overflow: 'hidden' },
+  friendAvatarText: { fontSize: 32, color: colors.primary, fontWeight: 'bold' },
+  friendHeaderInfo: { flex: 1, marginLeft: 16 },
+  friendName: { fontSize: 20, color: '#000', fontWeight: '600' },
+  friendUsername: { fontSize: 16, fontWeight: '500', color: '#777' },
+  friendBioText: { fontSize: 14, color: '#333', marginTop: 4 },
+  friendsCountText: { fontSize: 14, color: '#4597f5f6', fontWeight: 'bold', marginTop: 4 },
+  friendDetailsContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 16,
+    backgroundColor: '#FFF',
+  },
   quickActionContainer: { alignItems: 'center', marginTop: spacing.lg },
   messageButtonCircle: { width: 100, height: 60, borderRadius: borderRadius.md, backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.primary },
   messageButtonLabel: { marginTop: spacing.xs, color: colors.primary },
@@ -1077,7 +1720,7 @@ const styles = StyleSheet.create({
   previewStickerContainer: {
     width: 250,
     height: 250,
-    backgroundColor: '#E8DEF8',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1114,5 +1757,141 @@ const styles = StyleSheet.create({
   },
   emojiSelectText: {
     fontSize: 24,
+  },
+  profileButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    marginBottom: spacing.md,
+    width: '100%',
+  },
+  profileActionBtn: {
+    flex: 1,
+    height: 40,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 5,
+  },
+  profileActionBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  primaryBtn: {
+    backgroundColor: '#0095f6',
+  },
+  primaryBtnText: {
+    color: '#ffffff',
+  },
+  secondaryBtn: {
+    backgroundColor: '#efefef',
+    borderWidth: 1,
+    borderColor: '#dbdbdb',
+  },
+  secondaryBtnText: {
+    color: '#000000',
+  },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'flex-start', alignItems: 'flex-end' },
+  popoverMenu: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: '#fff', borderRadius: 8, padding: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
+  popoverSeparator: { height: 1, backgroundColor: '#eee', marginVertical: 4 },
+  popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
+  popoverText: { fontSize: 14, color: '#333' },
+  
+  sharedAlbumSection: { padding: 16, backgroundColor: '#FFF', flex: 1 },
+  sharedAlbumTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 12 },
+  emptySharedMedia: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  emptySharedMediaText: { fontSize: 14, color: '#999', marginTop: 8 },
+  mediaGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  gridImageWrapper: { margin: 1, width: (Dimensions.get('window').width - 32 - 6) / 3, height: (Dimensions.get('window').width - 32 - 6) / 3 },
+  gridImage: { width: '100%', height: '100%', borderRadius: 4 },
+  albumTabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#eee', marginBottom: 12 },
+  albumTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, borderBottomWidth: 2, borderBottomColor: 'transparent', gap: 4 },
+  activeAlbumTab: { borderBottomColor: colors.primary },
+  albumTabText: { fontSize: 11, color: '#888' },
+  activeAlbumTabText: { color: colors.primary, fontWeight: '600' },
+  mediaPlaceholder: { flex: 1, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', borderRadius: 4 },
+  videoOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: 4 },
+  playIcon: { position: 'absolute', zIndex: 1 },
+  mediaListContainer: { paddingVertical: 4 },
+  mediaListItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f5f5f5' },
+  listIconContainer: { width: 36, height: 36, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  audioIconBg: { backgroundColor: colors.primary },
+  docIconBg: { backgroundColor: '#FF9800' },
+  listTextContainer: { flex: 1 },
+  listFileName: { fontSize: 13, color: colors.textPrimary, fontWeight: '500' },
+  listDate: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
+  horizontalScrollContent: {
+    paddingVertical: 8,
+    gap: 8,
+  },
+  horizontalImageWrapper: {
+    width: (Dimensions.get('window').width - 32 - 16) / 3,
+    height: (Dimensions.get('window').width - 32 - 16) / 3,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  horizontalImage: {
+    width: '100%',
+    height: '100%',
+  },
+  horizontalUploadCard: {
+    width: (Dimensions.get('window').width - 32 - 16) / 3,
+    height: (Dimensions.get('window').width - 32 - 16) / 3,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FAFAFA',
+  },
+  horizontalPlusCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E6F4FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  horizontalUploadText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#0095f6',
+    textAlign: 'center',
+  },
+  uploadStorySection: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+    backgroundColor: '#FFFFFF',
+  },
+  uploadStoryCard: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FAFAFA',
+  },
+  plusIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E6F4FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  uploadStoryText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#0095f6',
   },
 });

@@ -1245,7 +1245,7 @@ const CallScreen = () => {
 
           <TouchableOpacity
             style={styles.controlButton}
-            onPress={() => navigation.navigate('NewChat', {
+            onPress={() => navigation.navigate('FriendList', {
               conversationId: conversationId,
               receiverId: receiverId,
               isAdding: true,

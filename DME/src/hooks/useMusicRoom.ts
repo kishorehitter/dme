@@ -174,24 +174,30 @@ export const useMusicRoom = (
           break;
 
         case 'watch_sync':
-          // ✅ KEY FIX: ignore syncs while DJ is backgrounded
+          const { position, is_playing, host_timestamp, is_dj_background } = message.data;
+
+          // ✅ KEY FIX: ignore position/seeking syncs while DJ is backgrounded,
+          // but update isPlaying state if it changed so DJ's local state doesn't get stuck.
           if (isDJBackgroundedRef?.current) {
-            console.log('📱 [HOOK] Ignoring sync — DJ is backgrounded');
+            setRoomState(prev => {
+              if (prev.isPlaying !== is_playing) {
+                console.log('📱 [HOOK] DJ backgrounded: Updating play/pause state to:', is_playing);
+                return { ...prev, isPlaying: is_playing };
+              }
+              console.log('📱 [HOOK] Ignoring position sync — DJ is backgrounded');
+              return prev;
+            });
             break;
           }
 
-          const { position, is_playing, host_timestamp, is_dj_background } = message.data;
           // Compensate network delay
           const delay = host_timestamp ? (Date.now() - host_timestamp) / 1000 : 0;
           const syncPos = position + Math.max(0, delay);
 
-          // ✅ If DJ is backgrounded and sync says pause — ignore the pause
-          // TrackPlayer keeps playing, WebView keeps playing
-          if (!is_playing && is_dj_background) {
-            console.log('📱 [PARTICIPANT] Ignoring pause sync — DJ is backgrounded');
-            break;
-          }
-
+          // We removed the old '!is_playing && is_dj_background' guard. Since the DJ's
+          // app now safely prevents involuntary WebView background pauses at the source,
+          // any pause sync received while the DJ is backgrounded is guaranteed to be a
+          // deliberate remote control action (lock screen/notification) and must be obeyed.
           setRoomState(prev => ({
             ...prev,
             position: syncPos,

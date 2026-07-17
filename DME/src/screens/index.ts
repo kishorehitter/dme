@@ -7,7 +7,7 @@ export { default as GoogleLoginScreen } from './GoogleLoginScreen';
 // Chat Screens
 export { ChatListScreen } from './chat/ChatListScreen';
 export { ChatRoomScreen } from './chat/ChatRoomScreen';
-export { NewChatScreen } from './chat/NewChatScreen';
+export { FriendListScreen } from './chat/FriendListScreen';
 export { StatusTabScreen, CallLogTabScreen } from './Tabs';
 export { CreateGroupScreen } from './chat/CreateGroupScreen';
 export { GroupInfoScreen } from './chat/GroupInfoScreen';
@@ -28,4 +28,5 @@ export { SettingsScreen } from './chat/SettingsScreen';
 
 // Trivia Screen
 export { TriviaSoloScreen } from './TriviaSoloScreen';
+export { TriviaScoreboardScreen } from './TriviaScoreboardScreen';
 

@@ -9,15 +9,10 @@ from django.db.models import Q, Max
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-class HealthCheckView(APIView):
-    """Simple ping endpoint for keep-alive."""
-    permission_classes = [] # Allow anyone to ping
-
-    def get(self, request):
-        return Response({'status': 'ok'}, status=status.HTTP_200_OK)
 from .models import (
-    Conversation, ConversationParticipant, Message, MessageReaction, 
-    Status, StatusView, StatusPrivacy
+    Conversation, ConversationParticipant, Message, MessageReaction,
+    Status, StatusView, StatusPrivacy, FriendRequest, MessageRequest,
+    check_message_allowed,
 )
 from .serializers import (
     ConversationSerializer,
@@ -27,7 +22,17 @@ from .serializers import (
     MessageReactionSerializer,
     UserMinimalSerializer,
     StatusPrivacySerializer,
+    FriendRequestSerializer,
+    MessageRequestSerializer,
 )
+
+
+class HealthCheckView(APIView):
+    """Simple ping endpoint for keep-alive."""
+    permission_classes = []  # Allow anyone to ping
+
+    def get(self, request):
+        return Response({'status': 'ok'}, status=status.HTTP_200_OK)
 
 class ContactsListView(APIView):
     """Retrieve all users the current user has interacted with."""
@@ -109,9 +114,25 @@ class ConversationViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Conversation.objects.filter(
+        qs = Conversation.objects.filter(
             participants__user=self.request.user
-        ).prefetch_related('participants__user', 'messages').distinct().order_by('-updated_at')
+        )
+
+        # Exclude conversations where a MessageRequest exists and is either:
+        # 1. 'pending' and the current user is the receiver (i.e. user has not accepted it yet)
+        # 2. 'rejected' (i.e. request has been declined)
+        from django.db.models import Exists, OuterRef
+        pending_or_rejected_requests = MessageRequest.objects.filter(
+            conversation=OuterRef('pk')
+        ).filter(
+            Q(status='rejected') |
+            Q(status='pending', receiver=self.request.user)
+        )
+
+        qs = qs.exclude(Exists(pending_or_rejected_requests))
+
+        return qs.prefetch_related('participants__user', 'messages').distinct().order_by('-updated_at')
+
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -420,9 +441,10 @@ class MessageViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         """
         Override create to handle multipart/form-data for file uploads.
+        Also enforces MessageRequest gating for non-friends.
         """
         conversation_id = self.kwargs.get('conversation_id')
-        
+
         # Verify conversation exists and user is a participant
         try:
             conversation = Conversation.objects.get(pk=conversation_id)
@@ -437,6 +459,11 @@ class MessageViewSet(viewsets.ModelViewSet):
                 {'error': 'You are not a participant of this conversation'},
                 status=status.HTTP_403_FORBIDDEN
             )
+
+        # ── Message permission gate ────────────────────────────────────────────
+        is_allowed, is_first, error_msg = check_message_allowed(conversation, request.user)
+        if not is_allowed:
+            return Response({'error': error_msg}, status=status.HTTP_403_FORBIDDEN)
 
         # Prepare data for serializer
         data = request.data.copy()
@@ -471,6 +498,19 @@ class MessageViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         message = self.perform_create(serializer)
 
+        # ── Auto-create MessageRequest on first message to a non-friend ────────
+        if is_first:
+            other_participant = conversation.participants.exclude(user=request.user).first()
+            if other_participant:
+                MessageRequest.objects.get_or_create(
+                    conversation=conversation,
+                    defaults={
+                        'sender': request.user,
+                        'receiver': other_participant.user,
+                        'status': 'pending',
+                    }
+                )
+
         # WhatsApp-style: Broadcast message via WebSocket and trigger FCM
         self.broadcast_and_notify(message)
 
@@ -478,7 +518,12 @@ class MessageViewSet(viewsets.ModelViewSet):
         conversation.save()
 
         headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        response_data = serializer.data
+        if is_first:
+            response_data = dict(response_data)
+            response_data['is_message_request'] = True
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
 
     def perform_create(self, serializer):
         conversation_id = self.kwargs.get('conversation_id')
@@ -865,40 +910,40 @@ class SearchUsersView(APIView):
 
     def get(self, request):
         query = request.query_params.get('q', '').strip()
+        contacts_only = request.query_params.get('contacts_only', 'false').lower() == 'true'
         User = get_user_model()
+        from .models import ConversationParticipant
+
+        # Get IDs of users with whom the current user has a direct conversation
+        direct_conv_user_ids = ConversationParticipant.objects.filter(
+            conversation__is_group=False,
+            conversation__participants__user=request.user
+        ).exclude(
+            user=request.user
+        ).values_list('user_id', flat=True).distinct()
 
         if not query:
-            # If no query, return users the current user has recently interacted with
-            # Or fallback to a reasonable limit of all users if no interactions
-            from .models import ConversationParticipant
-
-            # Get IDs of users the current user has interacted with
-            recent_user_ids = ConversationParticipant.objects.filter(
-                conversation__participants__user=request.user
-            ).exclude(
-                user=request.user
-            ).values_list('user_id', flat=True).distinct()[:20]
-
             # Fetch those users
-            users = User.objects.filter(id__in=recent_user_ids)
+            users = User.objects.filter(id__in=direct_conv_user_ids)
 
-            # If fewer than 20, fetch more users until 20
-            if users.count() < 20:
+            # If fewer than 20, and NOT contacts_only, fetch more users until 20
+            if not contacts_only and users.count() < 20:
                 more_users = User.objects.exclude(
                     id=request.user.id
                 ).exclude(
-                    id__in=recent_user_ids
+                    id__in=direct_conv_user_ids
                 )[:20 - users.count()]
                 users = (users | more_users).distinct()
         else:
             # 1. Always check for strict username match (case-insensitive)
             strict_username_match = User.objects.filter(username__iexact=query).exclude(id=request.user.id)
 
-            # 2. Only allow partial matching on display_name/email if query is >= 3 characters
-            if len(query) >= 3:
+            # 2. Allow partial matching on display_name/email/username if query is >= 3 characters or contacts_only is True
+            if len(query) >= 3 or contacts_only:
                 partial_matches = User.objects.filter(
                     Q(display_name__icontains=query) |
-                    Q(email__icontains=query)
+                    Q(email__icontains=query) |
+                    Q(username__icontains=query)
                 ).exclude(id=request.user.id)
 
                 # Combine strict username matches with partial matches
@@ -906,6 +951,10 @@ class SearchUsersView(APIView):
             else:
                 # For queries < 3 chars, ONLY allow strict username match
                 users = strict_username_match
+
+            # If contacts_only, filter the results to only include users they have had conversations with
+            if contacts_only:
+                users = users.filter(id__in=direct_conv_user_ids)
 
         serializer = UserMinimalSerializer(users[:20], many=True, context={'request': request})
         return Response(serializer.data)
@@ -1333,3 +1382,285 @@ class ConversationMediaView(APIView):
         serializer = MessageSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
 
+
+# ─── Friend Request Views ─────────────────────────────────────────────────────
+
+class FriendRequestListView(APIView):
+    """
+    GET  /chat/friends/requests/         → list incoming + outgoing pending requests
+    POST /chat/friends/requests/         → send a friend request to user_id
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        received = FriendRequest.objects.filter(
+            receiver=request.user, status='pending'
+        ).select_related('sender', 'receiver')
+        sent = FriendRequest.objects.filter(
+            sender=request.user, status='pending'
+        ).select_related('sender', 'receiver')
+
+        return Response({
+            'received': FriendRequestSerializer(received, many=True, context={'request': request}).data,
+            'sent': FriendRequestSerializer(sent, many=True, context={'request': request}).data,
+        })
+
+    def post(self, request):
+        receiver_id = request.data.get('user_id')
+        if not receiver_id:
+            return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            receiver = get_user_model().objects.get(id=receiver_id)
+        except get_user_model().DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if receiver == request.user:
+            return Response(
+                {'error': 'You cannot send a friend request to yourself'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check for existing request in either direction
+        existing = FriendRequest.objects.filter(
+            Q(sender=request.user, receiver=receiver) |
+            Q(sender=receiver, receiver=request.user)
+        ).first()
+
+        if existing:
+            if existing.status == 'accepted':
+                return Response({'error': 'You are already friends'}, status=status.HTTP_400_BAD_REQUEST)
+            if existing.status == 'pending':
+                if existing.sender == request.user:
+                    return Response({'error': 'Friend request already sent'}, status=status.HTTP_400_BAD_REQUEST)
+                # The other person already sent us a request — auto-accept
+                existing.status = 'accepted'
+                existing.save()
+                _notify_friend_request_accepted(existing)
+                return Response(
+                    FriendRequestSerializer(existing, context={'request': request}).data,
+                    status=status.HTTP_200_OK,
+                )
+            if existing.status == 'rejected':
+                # Allow re-sending after rejection
+                existing.status = 'pending'
+                existing.sender = request.user
+                existing.receiver = receiver
+                existing.save()
+                _notify_friend_request_sent(existing)
+                return Response(
+                    FriendRequestSerializer(existing, context={'request': request}).data,
+                    status=status.HTTP_201_CREATED,
+                )
+
+        fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
+        _notify_friend_request_sent(fr)
+        return Response(
+            FriendRequestSerializer(fr, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class FriendRequestActionView(APIView):
+    """
+    POST   /chat/friends/requests/<int:request_id>/accept/  → accept incoming request
+    POST   /chat/friends/requests/<int:request_id>/reject/  → reject incoming request
+    DELETE /chat/friends/requests/<int:request_id>/         → cancel own sent request
+    Note: request_id parameter can be either the actual FriendRequest ID or the target/source User ID.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_incoming(self, request_id, user):
+        return FriendRequest.objects.filter(
+            Q(id=request_id) | Q(sender_id=request_id),
+            receiver=user,
+            status='pending'
+        ).first()
+
+    def post(self, request, request_id, action):
+        if action == 'accept':
+            fr = self._get_incoming(request_id, request.user)
+            if not fr:
+                return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            fr.status = 'accepted'
+            fr.save()
+            _notify_friend_request_accepted(fr)
+            return Response(FriendRequestSerializer(fr, context={'request': request}).data)
+
+        elif action == 'reject':
+            fr = self._get_incoming(request_id, request.user)
+            if not fr:
+                return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            fr.status = 'rejected'
+            fr.save()
+            return Response(FriendRequestSerializer(fr, context={'request': request}).data)
+
+        return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, request_id, action=None):
+        """Cancel a sent friend request (sender only)."""
+        try:
+            fr = FriendRequest.objects.filter(
+                Q(id=request_id) | Q(receiver_id=request_id),
+                sender=request.user,
+                status='pending'
+            ).first()
+            if not fr:
+                return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            fr.delete()
+            return Response({'message': 'Friend request cancelled'}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class FriendsListView(APIView):
+    """
+    GET    /chat/friends/                   → list all accepted friends
+    DELETE /chat/friends/<int:user_id>/     → unfriend a user
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        frs = FriendRequest.objects.filter(
+            Q(sender=request.user, status='accepted') |
+            Q(receiver=request.user, status='accepted')
+        ).select_related('sender', 'receiver')
+
+        friends = []
+        for fr in frs:
+            friend_user = fr.receiver if fr.sender == request.user else fr.sender
+            friends.append(friend_user)
+
+        serializer = UserMinimalSerializer(friends, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def delete(self, request, user_id):
+        """Unfriend a user — delete the accepted FriendRequest in either direction."""
+        deleted, _ = FriendRequest.objects.filter(
+            Q(sender=request.user, receiver_id=user_id, status='accepted') |
+            Q(sender_id=user_id, receiver=request.user, status='accepted')
+        ).delete()
+        if deleted:
+            return Response({'message': 'Unfriended successfully'})
+        return Response({'error': 'Friendship not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+# ─── Message Request Views ────────────────────────────────────────────────────
+
+class MessageRequestListView(APIView):
+    """
+    GET /chat/message-requests/   → list pending incoming message requests
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        requests_qs = MessageRequest.objects.filter(
+            receiver=request.user, status='pending'
+        ).select_related('sender', 'receiver', 'conversation')
+
+        serializer = MessageRequestSerializer(requests_qs, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
+class MessageRequestActionView(APIView):
+    """
+    POST /chat/message-requests/<int:request_id>/accept/  → accept (open the conversation)
+    POST /chat/message-requests/<int:request_id>/reject/  → decline (block further messages)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id, action):
+        try:
+            msg_req = MessageRequest.objects.select_related(
+                'sender', 'receiver', 'conversation'
+            ).get(id=request_id, receiver=request.user, status='pending')
+        except MessageRequest.DoesNotExist:
+            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if action == 'accept':
+            msg_req.status = 'accepted'
+            msg_req.save()
+            _notify_message_request_accepted(msg_req)
+            return Response({
+                'message': 'Message request accepted',
+                'conversation_id': msg_req.conversation_id,
+            })
+
+        elif action == 'reject':
+            msg_req.status = 'rejected'
+            msg_req.save()
+            return Response({'message': 'Message request declined'})
+
+        return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─── FCM Notification Helpers ─────────────────────────────────────────────────
+
+def _notify_friend_request_sent(fr):
+    """Push notification to the receiver when a friend request is sent."""
+    try:
+        from notifications.fcm_service import FCMService
+        sender_name = fr.sender.display_name or fr.sender.username or 'Someone'
+        FCMService.send_to_user(
+            user=fr.receiver,
+            notification={
+                'title': 'New Friend Request',
+                'body': f'{sender_name} sent you a friend request',
+            },
+            data={
+                'type': 'friend_request',
+                'action': 'sent',
+                'request_id': str(fr.id),
+                'sender_id': str(fr.sender_id),
+                'sender_name': sender_name,
+            },
+        )
+    except Exception as e:
+        print(f'Warning: FCM friend_request_sent failed: {e}')
+
+
+def _notify_friend_request_accepted(fr):
+    """Push notification to the original sender when their request is accepted."""
+    try:
+        from notifications.fcm_service import FCMService
+        acceptor_name = fr.receiver.display_name or fr.receiver.username or 'Someone'
+        FCMService.send_to_user(
+            user=fr.sender,
+            notification={
+                'title': 'Friend Request Accepted',
+                'body': f'{acceptor_name} accepted your friend request',
+            },
+            data={
+                'type': 'friend_request',
+                'action': 'accepted',
+                'request_id': str(fr.id),
+                'acceptor_id': str(fr.receiver_id),
+                'acceptor_name': acceptor_name,
+            },
+        )
+    except Exception as e:
+        print(f'Warning: FCM friend_request_accepted failed: {e}')
+
+
+def _notify_message_request_accepted(msg_req):
+    """Push notification to the message sender when their request is accepted."""
+    try:
+        from notifications.fcm_service import FCMService
+        acceptor_name = msg_req.receiver.display_name or msg_req.receiver.username or 'Someone'
+        FCMService.send_to_user(
+            user=msg_req.sender,
+            notification={
+                'title': 'Message Request Accepted',
+                'body': f'{acceptor_name} accepted your message request',
+            },
+            data={
+                'type': 'message_request',
+                'action': 'accepted',
+                'request_id': str(msg_req.id),
+                'conversation_id': str(msg_req.conversation_id),
+                'acceptor_name': acceptor_name,
+            },
+        )
+    except Exception as e:
+        print(f'Warning: FCM message_request_accepted failed: {e}')

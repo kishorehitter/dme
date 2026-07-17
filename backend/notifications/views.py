@@ -141,3 +141,85 @@ class FCMTestNotificationView(APIView):
             'message': f'Notification sent to {success_count} device(s)',
             'success_count': success_count
         })
+
+
+class TriviaChallengeView(APIView):
+    """
+    Send a trivia challenge FCM notification directly to a friend.
+
+    POST /api/fcm/trivia/challenge/
+    {
+        "friend_id": 42,
+        "category": "science",
+        "set_id": "set1"
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        friend_id = request.data.get('friend_id')
+        category = request.data.get('category', '')
+        set_id = request.data.get('set_id', '')
+
+        if not friend_id:
+            return Response({'error': 'friend_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            friend = User.objects.get(id=friend_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        sender_name = request.user.display_name or request.user.first_name or 'Someone'
+        category_label = category.replace('_', ' ').title()
+        set_label = set_id.replace('set', 'Set ') if set_id else ''
+
+        notification = {
+            'title': f'⚔️ Trivia Challenge from {sender_name}!',
+            'body': f'{sender_name} challenged you to {category_label} {set_label}. Tap to play!'
+        }
+
+        data = {
+            'type': 'trivia_challenge',
+            'challenge_category': str(category),
+            'challenge_set': str(set_id),
+            'challenger_name': str(sender_name),
+            'challenger_id': str(request.user.id),
+        }
+
+        # Send with a 7-day TTL so the challenge is delivered even if the friend is offline
+        import datetime
+        from firebase_admin import messaging as fb_messaging
+        from accounts.models import FCMDevice
+
+        devices = FCMDevice.objects.filter(user=friend, is_active=True)
+        tokens = list(set(d.registration_token for d in devices))
+
+        success_count = 0
+        for token in tokens:
+            try:
+                msg = fb_messaging.Message(
+                    notification=fb_messaging.Notification(
+                        title=notification['title'],
+                        body=notification['body'],
+                    ),
+                    data=data,
+                    token=token,
+                    android=fb_messaging.AndroidConfig(
+                        priority='high',
+                        ttl=datetime.timedelta(days=7),  # Store for up to 7 days if offline
+                    ),
+                    apns=fb_messaging.APNSConfig(
+                        headers={'apns-expiration': str(int((datetime.datetime.now() + datetime.timedelta(days=7)).timestamp()))},
+                        payload=fb_messaging.APNSPayload(aps=fb_messaging.Aps(content_available=True)),
+                    ),
+                )
+                fb_messaging.send(msg)
+                success_count += 1
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f'Failed to send challenge to token: {e}')
+
+        return Response({
+            'message': f'Challenge sent to {friend.display_name or friend.first_name}',
+            'success_count': success_count
+        }, status=status.HTTP_200_OK)

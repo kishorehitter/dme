@@ -156,6 +156,62 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
   );
 };
 
+const PreviewVideoPlayer = ({ uri, isActive }: { uri: string; isActive: boolean }) => {
+  const [paused, setPaused] = useState(true);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    if (!isActive) {
+      setPaused(true);
+    }
+  }, [isActive]);
+
+  const handlePlayPause = () => {
+    setPaused(prev => !prev);
+  };
+
+  const onLoad = (data: any) => {
+    setDuration(data.duration || 0);
+  };
+
+  const formatDuration = (sec: number) => {
+    if (!sec || isNaN(sec)) return '0:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <View style={styles.fullMedia}>
+      <Video
+        source={{ uri }}
+        style={StyleSheet.absoluteFill}
+        resizeMode="contain"
+        paused={paused}
+        controls={false}
+        onLoad={onLoad}
+        repeat
+      />
+      <TouchableOpacity
+        style={StyleSheet.absoluteFillObject}
+        activeOpacity={1}
+        onPress={handlePlayPause}
+      >
+        {paused && (
+          <View style={styles.playOverlayButton}>
+            <Icon name="play" size={32} color="#FFF" style={{ marginLeft: 3 }} />
+          </View>
+        )}
+        {duration > 0 && (
+          <View style={styles.durationOverlay}>
+            <Text style={styles.durationText}>{formatDuration(duration)}</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +225,18 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
   const [items, setItems] = useState<SelectedMedia[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [caption, setCaption] = useState(''); // Single caption for the whole bulk file
+  const [shouldRenderContents, setShouldRenderContents] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setShouldRenderContents(true);
+    } else {
+      const timer = setTimeout(() => {
+        setShouldRenderContents(false);
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+  }, [visible]);
 
   // Editing State
   const [isEditing, setIsEditing] = useState(false);
@@ -447,18 +515,13 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     resetEditStates();
   };
 
-  const renderMediaItem = ({ item }: { item: SelectedMedia }) => {
+  const renderMediaItem = ({ item, index }: { item: SelectedMedia; index: number }) => {
     const isVideo = item.type?.startsWith('video') || item.uri.endsWith('.mp4') || item.uri.endsWith('.mov');
+    const isActive = index === activeIndex;
     if (isVideo) {
       return (
         <View style={styles.mediaWrapper}>
-          <Video
-            source={{ uri: item.uri }}
-            style={styles.fullMedia}
-            resizeMode="contain"
-            paused={true}
-            controls={true}
-          />
+          <PreviewVideoPlayer uri={item.uri} isActive={isActive} />
         </View>
       );
     }
@@ -500,7 +563,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     ? computeContainSize(naturalSize!, containerSize)
     : { width: 0, height: 0 };
 
-  if (!visible || items.length === 0) return null;
+  if (!shouldRenderContents || items.length === 0) return null;
 
   return (
     <Modal
@@ -960,5 +1023,32 @@ const styles = StyleSheet.create({
     backgroundColor: '#D1C4E9',
     marginHorizontal: 8,
     alignSelf: 'center',
+  },
+  playOverlayButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginTop: -32,
+    marginLeft: -32,
+  },
+  durationOverlay: {
+    position: 'absolute',
+    bottom: 16,
+    right: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  durationText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

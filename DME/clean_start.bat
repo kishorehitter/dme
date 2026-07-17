@@ -1,4 +1,5 @@
 @echo off
+set NoDefaultCurrentDirectoryInExePath=
 TITLE React Native Nuclear Reset
 echo ==========================================
 echo   REACT NATIVE INDUSTRIAL CLEAN START

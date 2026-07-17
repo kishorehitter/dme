@@ -679,7 +679,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             {/* Flow 1 — Start new party */}
             {!isFlow2 ? (
               <View style={[styles.topSection, { paddingTop: insets.top + 20 }]}>
-                <Text style={styles.namingTitle}>Name your Lobby</Text>
+                <Text style={styles.namingTitle}>Name your Room</Text>
                 <TextInput
                   style={styles.namingInput}
                   placeholder="e.g. Fun Time..."
@@ -694,7 +694,14 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                   onPress={handleStartParty}
                   disabled={!roomName.trim()}
                 >
-                  <Text style={styles.submitBtnText}>Start Party 🎉</Text>
+                  <LinearGradient
+                    colors={['#111111', '#222222', '#b10000', '#FF007F']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.gradientBtn}
+                  >
+                    <Text style={styles.submitBtnText}>Play</Text>
+                  </LinearGradient>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -708,7 +715,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 size={40}
                 color={selectedSource === 'drive' ? '#000000' : '#FF0000'}
               />
-              <Icon name="play-circle" size={60} color="#4597f5f6" />
+             
               <Text style={styles.videoSelectedText}>Ready to Play!</Text>
               <Text style={styles.videoSourceText}>
                 {selectedSource === 'drive' ? '📁 Google Drive' : '▶️ YouTube'}
@@ -770,7 +777,8 @@ const styles = StyleSheet.create({
   topSection:        { width: '100%', alignItems: 'center' },
   namingTitle:       { color: '#000', fontSize: 24, fontWeight: '800', marginBottom: 20 },
   namingInput:       { width: '100%', height: 44, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: 15, paddingHorizontal: 20, color: '#000', fontSize: 16, textAlign: 'center', borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' },
-  submitBtn:         { marginTop: 20, backgroundColor: '#4597f5f6', paddingHorizontal: 30, paddingVertical: 12, borderRadius: 25 },
+  submitBtn:         { marginTop: 20, borderRadius: 25, overflow: 'hidden' },
+  gradientBtn:       { paddingHorizontal: 30, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
   submitBtnDisabled: { opacity: 0.5 },
   submitBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
   centerSection:     { alignItems: 'center', gap: 15 },

@@ -74,7 +74,7 @@ const AvatarWithFallback = ({
       return (
         <Image
           source={{ uri: resolveImageUrl(uri) }}
-          style={styles.fill}
+          style={[styles.fill, { borderRadius }]}
           onError={() => setError(true)}
         />
       );
@@ -82,7 +82,7 @@ const AvatarWithFallback = ({
 
     if (sticker) {
       return (
-        <View style={[styles.fill, styles.placeholder]}>
+        <View style={[styles.fill, styles.placeholder, { backgroundColor: '#FFFFFF', borderRadius }]}>
           <Text style={{ fontSize: stickerFontSize }}>{String(sticker)}</Text>
         </View>
       );
@@ -90,7 +90,7 @@ const AvatarWithFallback = ({
 
     if (isGroup) {
       return (
-        <View style={[styles.fill, styles.placeholder]}>
+        <View style={[styles.fill, styles.placeholder, { borderRadius }]}>
           <Icon name="people" size={derivedIconSize} color={colors.primary} />
         </View>
       );
@@ -100,7 +100,7 @@ const AvatarWithFallback = ({
     if (initial) {
       const bgColor = getAvatarColor(displayName);
       return (
-        <View style={[styles.fill, styles.placeholder, { backgroundColor: bgColor }]}>
+        <View style={[styles.fill, styles.placeholder, { backgroundColor: bgColor, borderRadius }]}>
           <Text style={{ fontSize: derivedFontSize, color: '#FFFFFF', fontWeight: 'bold' }}>
             {initial}
           </Text>
@@ -109,7 +109,7 @@ const AvatarWithFallback = ({
     }
 
     return (
-      <View style={[styles.fill, styles.placeholder]}>
+      <View style={[styles.fill, styles.placeholder, { borderRadius }]}>
         <Icon name="person" size={derivedIconSize} color={colors.primary} />
       </View>
     );

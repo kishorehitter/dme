@@ -4,6 +4,7 @@ import Video from 'react-native-video';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import Icon from 'react-native-vector-icons/Ionicons';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 
@@ -14,6 +15,8 @@ interface Props {
 }
 
 const FullScreenMediaViewer: React.FC<Props> = ({ mediaUrl, mediaType, onClose }) => {
+  const insets = useSafeAreaInsets();
+
   useEffect(() => {
     if (Platform.OS === 'android') {
       try {
@@ -51,7 +54,16 @@ const FullScreenMediaViewer: React.FC<Props> = ({ mediaUrl, mediaType, onClose }
           renderIndicator={() => null}
         />
       )}
-      <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+      <TouchableOpacity
+        style={[
+          styles.closeButton,
+          {
+            top: insets.top > 0 ? insets.top : 20,
+            right: insets.right > 0 ? insets.right : 20,
+          }
+        ]}
+        onPress={onClose}
+      >
         <Icon name="close" size={35} color="#fff" />
       </TouchableOpacity>
     </View>
@@ -61,7 +73,7 @@ const FullScreenMediaViewer: React.FC<Props> = ({ mediaUrl, mediaType, onClose }
 const styles = StyleSheet.create({
   container: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 1000 },
   media: { width, height },
-  closeButton: { position: 'absolute', top: 40, right: 20, zIndex: 10, padding: 10 },
+  closeButton: { position: 'absolute', zIndex: 10, padding: 10 },
 });
 
 export default FullScreenMediaViewer;

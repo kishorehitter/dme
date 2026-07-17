@@ -23,6 +23,13 @@ from .views import (
     HealthCheckView,
     StatusPrivacyView,
     ContactsListView,
+    # Friend request
+    FriendRequestListView,
+    FriendRequestActionView,
+    FriendsListView,
+    # Message request
+    MessageRequestListView,
+    MessageRequestActionView,
 )
 from .status_views import StatusViewSet
 
@@ -38,7 +45,24 @@ urlpatterns = [
 
     # Health Check
     path('health/', HealthCheckView.as_view(), name='health-check'),
-    
+
+    # ── Friend Requests ──────────────────────────────────────────────────────
+    # List pending requests (received + sent) / Send a new request
+    path('friends/requests/', FriendRequestListView.as_view(), name='friend-request-list'),
+    # Accept or reject an incoming request (POST with action='accept'|'reject')
+    path('friends/requests/<int:request_id>/<str:action>/', FriendRequestActionView.as_view(), name='friend-request-action'),
+    # Cancel a sent request (DELETE)
+    path('friends/requests/<int:request_id>/', FriendRequestActionView.as_view(), name='friend-request-cancel'),
+    # List friends / Unfriend (DELETE with user_id)
+    path('friends/', FriendsListView.as_view(), name='friends-list'),
+    path('friends/<int:user_id>/', FriendsListView.as_view(), name='friend-unfriend'),
+
+    # ── Message Requests ─────────────────────────────────────────────────────
+    # List pending incoming message requests
+    path('message-requests/', MessageRequestListView.as_view(), name='message-request-list'),
+    # Accept or reject a message request (POST with action='accept'|'reject')
+    path('message-requests/<int:request_id>/<str:action>/', MessageRequestActionView.as_view(), name='message-request-action'),
+
     # Conversation details
     path('conversations/<int:pk>/detail/', ConversationDetailView.as_view(), name='conversation-detail'),
     path('conversations/<int:pk>/update-profile/', ConversationUpdateProfileView.as_view(), name='update-conversation-profile'),

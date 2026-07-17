@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 GoogleOneTapSignIn.configure({
   webClientId: '336096929365-e3p49jq04cr8sbqqmlm64nh1qgsl0j51.apps.googleusercontent.com',
@@ -23,11 +24,19 @@ const GoogleLoginScreen = () => {
   const [loading, setLoading] = React.useState(false);
 
   useEffect(() => {
-    StatusBar.setBarStyle('dark-content');
-    try { changeNavigationBarColor('transparent', true, false); } catch (e) {}
-    
-    // Reset to solid white when leaving the login screen so other screens don't get messed up
+    // Keep translucent=true so layout height is IDENTICAL to all other screens
+    // (AppSplash sets translucent=true and it persists — changing it causes the layout jump)
+    StatusBar.setTranslucent(true);
+    StatusBar.setBarStyle('light-content');
+    StatusBar.setBackgroundColor('#000000');
+    pinNavBarColor('#000000');
+    try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+
     return () => {
+      // Only reset colours/style — do NOT change translucent (no layout resize on exit)
+      StatusBar.setBarStyle('dark-content');
+      StatusBar.setBackgroundColor('#ffffff');
+      pinNavBarColor('#ffffff');
       try { changeNavigationBarColor('#ffffff', true, false); } catch (e) {}
     };
   }, []);
@@ -74,14 +83,14 @@ const GoogleLoginScreen = () => {
 
   return (
     <LinearGradient
-      colors={['#000000', '#111418', '#111820', '#173050', '#1D5875', '#5592B1', '#96C5DC', '#B9DCED', '#7EB9D8', '#4F9FC2', '#2B78A2', '#1A5570', '#1A2B3F', '#161b20', '#111111']}
+      colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
       useAngle={true}
       angle={355}
       style={styles.container}
     >
       <StatusBar
-        barStyle="dark-content"
-        backgroundColor="transparent"
+        barStyle="light-content"
+        backgroundColor="#000000"
         translucent={true}
       />
       <View style={[
@@ -116,7 +125,7 @@ const GoogleLoginScreen = () => {
 
       {loading && (
         <LinearGradient
-          colors={['#000000', '#111418', '#111820', '#173050', '#1D5875', '#5592B1', '#96C5DC', '#B9DCED', '#7EB9D8', '#4F9FC2', '#2B78A2', '#1A5570', '#1A2B3F', '#161b20', '#111111']}
+          colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
           useAngle={true}
           angle={355}
           style={styles.fullScreenLoader}

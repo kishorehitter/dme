@@ -34,13 +34,17 @@ class UserManager(BaseUserManager):
         
         return self.create_user(email, password, **extra_fields)
 
+def get_user_profile_storage():
+    from chat.models import get_universal_storage
+    return get_universal_storage()
+
 class User(AbstractUser):
     """Custom User model using email as unique identifier and unique username."""
 
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True, help_text="Unique username for search")
     # phone_number = models.CharField(max_length=20, blank=True, null=True)
-    profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True, storage=MediaCloudinaryStorage())
+    profile_picture = models.ImageField(upload_to='profile_pics/', max_length=255, blank=True, null=True, storage=get_user_profile_storage)
     avatar_sticker = models.CharField(max_length=10, blank=True, null=True, help_text="Emoji avatar sticker")
     quick_reaction = models.CharField(max_length=10, default='❤️', help_text="Default emoji for double-tap reaction")
     display_name = models.CharField(max_length=100, blank=True, null=True, help_text="Public profile name (can include emojis)")

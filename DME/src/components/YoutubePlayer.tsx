@@ -490,6 +490,21 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           }
           pendingDur.current = false;
           break;
+        case 'mediaSessionPlay':
+          // WebView's own navigator.mediaSession play handler fired (background-safe)
+          // Forward to the same channel as the native notification button
+          try {
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('WEBVIEW_MEDIA_PLAY');
+          } catch (_) {}
+          break;
+        case 'mediaSessionPause':
+          // WebView's own navigator.mediaSession pause handler fired (background-safe)
+          try {
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('WEBVIEW_MEDIA_PAUSE');
+          } catch (_) {}
+          break;
       }
     } catch (e) {}
   };
@@ -605,7 +620,8 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           (function() {
             window.userPaused = false;
             
-            // HEARTBEAT
+            // HEARTBEAT — restart playback if it stalls unintentionally.
+            // Checks window.userPaused so notification-button pauses are respected.
             setInterval(function() {
               if (!window.userPaused && window.player && window.player.getPlayerState && window.player.getPlayerState() === 2) {
                 window.player.playVideo();
@@ -613,6 +629,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
             }, 500);
 
             // MEDIA SESSION (Official lockscreen controls)
+            // These handlers fire even in background when the YouTube player
+            // holds the OS media session (via its own audio focus).
+            // We postMessage back to React Native so the room can be synced.
             if ('mediaSession' in navigator) {
               navigator.mediaSession.metadata = new MediaMetadata({
                 title: 'Streaming Content',
@@ -620,8 +639,18 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
                 album: 'App Media'
               });
               navigator.mediaSession.playbackState = 'playing';
-              navigator.mediaSession.setActionHandler('play', function() { window.userPaused=false; window.player.playVideo(); });
-              navigator.mediaSession.setActionHandler('pause', function() { window.userPaused=true; window.player.pauseVideo(); });
+              navigator.mediaSession.setActionHandler('play', function() {
+                window.userPaused = false;
+                if (window.player) window.player.playVideo();
+                // Signal React Native — works from background
+                try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPlay' })); } catch(e) {}
+              });
+              navigator.mediaSession.setActionHandler('pause', function() {
+                window.userPaused = true;
+                if (window.player) window.player.pauseVideo();
+                // Signal React Native — works from background
+                try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPause' })); } catch(e) {}
+              });
             }
           })();
           true;

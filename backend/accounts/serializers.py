@@ -14,16 +14,25 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for User model."""
     profile_picture = serializers.SerializerMethodField()
+    friends_count = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ('id', 'email', 'username', 'profile_picture', 'avatar_sticker', 'quick_reaction', 'display_name',
-                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'last_seen_privacy', 'computed_display_name', 'last_username_change')
+                  'bio', 'is_verified', 'is_profile_complete', 'last_seen', 'last_seen_privacy', 'computed_display_name', 'last_username_change', 'friends_count')
         read_only_fields = ('id', 'email', 'is_verified', 'is_profile_complete', 'last_seen', 'computed_display_name', 'last_username_change')
 
     def get_profile_picture(self, obj):
         """Return standardized absolute URL for profile picture."""
         return obj.clean_profile_picture_url
+
+    def get_friends_count(self, obj):
+        from chat.models import FriendRequest
+        from django.db.models import Q
+        return FriendRequest.objects.filter(
+            Q(sender=obj, status='accepted') |
+            Q(receiver=obj, status='accepted')
+        ).count()
 
 
 
@@ -51,7 +60,6 @@ class ProfileSetupSerializer(serializers.ModelSerializer):
         fields = ('username', 'display_name', 'bio', 'avatar_sticker', 'quick_reaction', 'profile_picture')
         extra_kwargs = {
             'username': {'required': True},
-            'display_name': {'required': True},
             'profile_picture': {'required': False, 'allow_null': True},
         }
 
@@ -115,3 +123,15 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
                 instance.profile_picture = None
             
         return super().update(instance, validated_data)
+
+
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.exceptions import InvalidToken
+
+class SafeTokenRefreshSerializer(TokenRefreshSerializer):
+    """Custom TokenRefreshSerializer that handles User.DoesNotExist gracefully."""
+    def validate(self, attrs):
+        try:
+            return super().validate(attrs)
+        except User.DoesNotExist:
+            raise InvalidToken("User matching query does not exist or has been deleted.")

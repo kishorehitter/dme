@@ -4,9 +4,10 @@ Serializers for chat app.
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.conf import settings
+from django.db.models import Q
 from .models import (
     Conversation, ConversationParticipant, Message, MessageReaction, 
-    Status, StatusView, StatusPrivacy
+    Status, StatusView, StatusPrivacy, FriendRequest, MessageRequest
 )
 
 User = get_user_model()
@@ -16,10 +17,11 @@ class UserMinimalSerializer(serializers.ModelSerializer):
     """Minimal user info for chat. Hides email for non-owners."""
     display_name = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    friend_status = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'profile_picture', 'avatar_sticker', 'display_name', 'last_seen', 'last_seen_privacy')
+        fields = ('id', 'username', 'profile_picture', 'avatar_sticker', 'display_name', 'last_seen', 'last_seen_privacy', 'friend_status')
 
     def get_display_name(self, obj):
         """Return custom display_name or username."""
@@ -38,6 +40,55 @@ class UserMinimalSerializer(serializers.ModelSerializer):
                 timestamp = int(obj.last_seen.timestamp()) if hasattr(obj, 'last_seen') and obj.last_seen else 0
                 return f"{url}?t={timestamp}"
         return None
+
+    def get_friend_status(self, obj):
+        """Return friendship status: 'none', 'sent_pending', 'received_pending', 'friends'."""
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user') or request.user == obj:
+            return 'none'
+        me = request.user
+        # Check if there's an accepted friend request in either direction
+        fr = FriendRequest.objects.filter(
+            Q(sender=me, receiver=obj) |
+            Q(sender=obj, receiver=me)
+        ).first()
+        if not fr:
+            return 'none'
+        if fr.status == 'accepted':
+            return 'friends'
+        if fr.status == 'pending':
+            if fr.sender == me:
+                return 'sent_pending'
+            return 'received_pending'
+        # rejected — treat as none
+        return 'none'
+
+
+class FriendRequestSerializer(serializers.ModelSerializer):
+    """Serializer for FriendRequest model."""
+    sender = UserMinimalSerializer(read_only=True)
+    receiver = UserMinimalSerializer(read_only=True)
+
+    class Meta:
+        model = FriendRequest
+        fields = ('id', 'sender', 'receiver', 'status', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'sender', 'receiver', 'status', 'created_at', 'updated_at')
+
+
+class MessageRequestSerializer(serializers.ModelSerializer):
+    """Serializer for MessageRequest model."""
+    sender = UserMinimalSerializer(read_only=True)
+    receiver = UserMinimalSerializer(read_only=True)
+    conversation_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MessageRequest
+        fields = ('id', 'conversation', 'conversation_detail', 'sender', 'receiver', 'status', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'conversation', 'conversation_detail', 'sender', 'receiver', 'status', 'created_at', 'updated_at')
+
+    def get_conversation_detail(self, obj):
+        return ConversationListSerializer(obj.conversation, context=self.context).data
+
 
 
 class StatusPrivacySerializer(serializers.ModelSerializer):
@@ -283,14 +334,35 @@ class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    message_request_status = serializers.SerializerMethodField()
+    message_request_sender_id = serializers.SerializerMethodField()
     
     class Meta:
         model = Conversation
         fields = (
             'id', 'name', 'description', 'is_group', 'created_at', 'updated_at', 'created_by',
-            'profile_picture', 'participants', 'last_message', 'unread_count'
+            'profile_picture', 'participants', 'last_message', 'unread_count',
+            'message_request_status', 'message_request_sender_id'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'created_by')
+
+    def get_message_request_status(self, obj):
+        """Return the message request status for this conversation, or None."""
+        if obj.is_group:
+            return None
+        try:
+            return obj.message_request.status
+        except MessageRequest.DoesNotExist:
+            return None
+
+    def get_message_request_sender_id(self, obj):
+        """Return the sender ID of the message request, or None."""
+        if obj.is_group:
+            return None
+        try:
+            return obj.message_request.sender_id
+        except MessageRequest.DoesNotExist:
+            return None
     
     def get_profile_picture(self, obj):
         return obj.clean_profile_picture_url
@@ -407,13 +479,32 @@ class ConversationListSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    message_request_status = serializers.SerializerMethodField()
+    message_request_sender_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = (
             'id', 'name', 'description', 'is_group', 'profile_picture', 'updated_at',
-            'other_user', 'last_message', 'unread_count'
+            'other_user', 'last_message', 'unread_count',
+            'message_request_status', 'message_request_sender_id'
         )
+
+    def get_message_request_status(self, obj):
+        if obj.is_group:
+            return None
+        try:
+            return obj.message_request.status
+        except MessageRequest.DoesNotExist:
+            return None
+
+    def get_message_request_sender_id(self, obj):
+        if obj.is_group:
+            return None
+        try:
+            return obj.message_request.sender_id
+        except MessageRequest.DoesNotExist:
+            return None
 
     def get_profile_picture(self, obj):
         return obj.clean_profile_picture_url

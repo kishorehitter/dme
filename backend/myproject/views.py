@@ -55,3 +55,28 @@ def assetlinks_json(request):
         }
     }]
     return JsonResponse(data, safe=False, content_type='application/json')
+
+
+def trivia_challenge_redirect(request, token):
+    """
+    Redirect page for trivia challenge links.
+    When opened in a browser it shows a landing page.
+    When opened in the app via App Links it is intercepted and handled by the React Native app.
+    """
+    from trivia.models import TriviaChallenge
+    try:
+        challenge = TriviaChallenge.objects.get(token=token)
+        if challenge.is_used:
+            status_text = 'already_used'
+        elif challenge.is_expired:
+            status_text = 'expired'
+        else:
+            status_text = 'valid'
+    except TriviaChallenge.DoesNotExist:
+        status_text = 'not_found'
+
+    return render(request, 'trivia_challenge.html', {
+        'token': str(token),
+        'status': status_text,
+        'app_link': f'dme://trivia/challenge/{token}',
+    })

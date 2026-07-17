@@ -2,7 +2,6 @@
 URLs for accounts app.
 """
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     GoogleLoginView,
     ProfileView,
@@ -15,6 +14,7 @@ from .views import (
     UserBlockView,
     UserBlockStatusView,
     UserBlockedByStatusView,
+    SafeTokenRefreshView,
 )
 
 urlpatterns = [
@@ -22,7 +22,7 @@ urlpatterns = [
     path('google/', GoogleLoginView.as_view(), name='google_login'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('delete-account/', DeleteAccountView.as_view(), name='delete_account'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
 
     # Profile
     path('profile/', ProfileView.as_view(), name='profile'),

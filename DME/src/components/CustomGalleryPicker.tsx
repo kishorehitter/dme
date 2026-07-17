@@ -32,8 +32,9 @@ import {
   Platform,
   Alert,
   Animated,
-  PanResponder,
+  Keyboard,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   CameraRoll,
   PhotoIdentifier,
@@ -43,18 +44,18 @@ import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native
 import Icon from 'react-native-vector-icons/Ionicons';
 import { launchCamera, CameraOptions } from 'react-native-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-const NUM_COLS = 3;
+const NUM_COLS = 4;
 const CELL_SIZE = SCREEN_W / NUM_COLS;
 const PAGE_SIZE = 60;
 const MAX_SELECT = 10;
 const THEME = '#4597f5f6';
 
 const SHEET_MAX_HEIGHT = SCREEN_H * 0.9;
-const SHEET_MIN_HEIGHT = SCREEN_H * 0.5;
-const HIDDEN_OFFSET = SHEET_MAX_HEIGHT;
-const MIN_HEIGHT_OFFSET = SHEET_MAX_HEIGHT - SHEET_MIN_HEIGHT;
+const SHEET_HEIGHT = SCREEN_H * 0.62;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,10 @@ interface Props {
   onSelect: (assets: GalleryAsset[]) => void;
   maxSelect?: number;
   themeColor?: string;
+  theme?: 'light' | 'dark';
+  assetType?: 'All' | 'Photos' | 'Videos';
+  restoreNavBarColor?: string;
+  maxDuration?: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -90,10 +95,12 @@ const fmtDuration = (sec: number) => {
 };
 
 const mediaTypeOf = (photo: PhotoIdentifier): string => {
-  const { type, uri } = photo.node.image;
-  if (type === 'video') return 'video/mp4';
-  if (uri?.endsWith('.png')) return 'image/png';
-  if (uri?.endsWith('.gif')) return 'image/gif';
+  const uri = photo.node.image.uri;
+  const typeLower = photo.node.type?.toLowerCase();
+  const isVideo = typeLower === 'video' || typeLower?.includes('video') || (photo.node.image.playableDuration != null && photo.node.image.playableDuration > 0) || uri?.toLowerCase()?.endsWith('.mp4') || uri?.toLowerCase()?.endsWith('.mov') || uri?.toLowerCase()?.endsWith('.mkv');
+  if (isVideo) return 'video/mp4';
+  if (uri?.toLowerCase()?.endsWith('.png')) return 'image/png';
+  if (uri?.toLowerCase()?.endsWith('.gif')) return 'image/gif';
   return 'image/jpeg';
 };
 
@@ -135,98 +142,77 @@ const checkCameraPerm = async (): Promise<boolean> => {
 };
 
 // ─── Album tile component (Grid style select category) ────────────────────────
-const AlbumTile: React.FC<{
+const AlbumRow: React.FC<{
   album: Album;
   selected: boolean;
   onPress: () => void;
-}> = ({ album, selected, onPress }) => {
-  const tileWidth = (SCREEN_W - 36) / 2;
+  theme?: 'light' | 'dark';
+}> = ({ album, selected, onPress, theme = 'light' }) => {
+  const isDark = theme === 'dark';
   return (
     <TouchableOpacity
       style={[
-        albumStyles.tile,
-        { width: tileWidth, height: tileWidth },
-        selected && { borderColor: THEME, borderWidth: 2.5 }
+        albumStyles.row,
+        isDark && { backgroundColor: '#1E1E1E', borderBottomColor: '#2A2A2A' },
+        selected && { backgroundColor: isDark ? '#2A2A2A' : '#EEEEEE' }
       ]}
       onPress={onPress}
-      activeOpacity={0.8}
+      activeOpacity={0.7}
     >
       {album.coverUri ? (
-        <Image source={{ uri: album.coverUri }} style={albumStyles.tileImg} />
+        <Image source={{ uri: album.coverUri }} style={albumStyles.rowImg} />
       ) : (
-        <View style={[albumStyles.tileImg, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center' }]}>
-          <Icon name="images-outline" size={36} color="#999" />
+        <View style={[albumStyles.rowImg, { backgroundColor: isDark ? '#2A2A2A' : '#F0F0F0', justifyContent: 'center', alignItems: 'center' }]}>
+          <Icon name="images-outline" size={24} color={isDark ? '#888' : '#999'} />
         </View>
       )}
 
-      {/* Dark overlay with white texts at bottom */}
-      <View style={albumStyles.tileOverlay}>
-        <Text style={albumStyles.tileTitle} numberOfLines={1}>
+      <View style={albumStyles.rowInfo}>
+        <Text style={[albumStyles.rowTitle, isDark && { color: '#FFF' }]} numberOfLines={1}>
           {album.title}
         </Text>
-        <Text style={albumStyles.tileCount}>
+        <Text style={[albumStyles.rowCount, isDark && { color: '#AAA' }]}>
           {album.count} items
         </Text>
       </View>
 
-      {selected && (
-        <View style={albumStyles.checkBadge}>
-          <Icon name="checkmark" size={12} color="#FFF" />
-        </View>
-      )}
+      <Icon name="chevron-forward-outline" size={16} color={isDark ? '#888' : '#BBB'} style={{ marginLeft: 8 }} />
     </TouchableOpacity>
   );
 };
 
 const albumStyles = StyleSheet.create({
-  tile: {
-    margin: 6,
-    borderRadius: 12,
-    overflow: 'hidden',
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#EFEFEF',
+    backgroundColor: '#FFF',
+  },
+  rowImg: {
+    width: 50,
+    height: 50,
+    borderRadius: 6,
     backgroundColor: '#FAFAFA',
-    position: 'relative',
-    borderColor: '#E5E5E5',
-    borderWidth: 1,
   },
-  tileImg: {
-    width: '100%',
-    height: '100%',
+  rowInfo: {
+    marginLeft: 12,
+    flex: 1,
   },
-  tileOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.93)',
-    borderTopWidth: 0.5,
-    borderTopColor: '#EFEFEF',
-  },
-  tileTitle: {
-    fontSize: 13,
-    fontWeight: '700',
+  rowTitle: {
+    fontSize: 15,
+    fontWeight: '600',
     color: '#1A1A1A',
   },
-  tileCount: {
-    fontSize: 10,
+  rowCount: {
+    fontSize: 12,
     color: '#666',
-    marginTop: 1,
+    marginTop: 2,
   },
-  checkBadge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: THEME,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 1.5,
-    elevation: 1,
+  checkBadgeInline: {
+    marginRight: 4,
   },
 });
 
@@ -238,99 +224,77 @@ export const CustomGalleryPicker: React.FC<Props> = ({
   onSelect,
   maxSelect = MAX_SELECT,
   themeColor = THEME,
+  theme = 'light',
+  assetType = 'All',
+  restoreNavBarColor = '#FFFFFF',
+  maxDuration,
 }) => {
   const insets = useSafeAreaInsets();
 
-  const [permGranted, setPermGranted] = useState(false);
+  const [permGranted, setPermGranted] = useState<'checking' | 'granted' | 'denied'>('checking');
   const [loadingPhotos, setLoadingPhotos] = useState(false);
-  const [showAlbums, setShowAlbums] = useState(false);
+  const [activeTab, setActiveTab] = useState<'photos' | 'folders'>('photos');
   const [albums, setAlbums] = useState<Album[]>([]);
   const [selectedAlbum, setSelectedAlbum] = useState<string | null>(null);
   const [photos, setPhotos] = useState<PhotoIdentifier[]>([]);
   const [endCursor, setEndCursor] = useState<string | undefined>(undefined);
   const [hasNextPage, setHasNextPage] = useState(true);
   const isFetchingRef = useRef(false);
+  const photosRef = useRef<PhotoIdentifier[]>([]);
+  const currentAlbumRef = useRef<string | null>(null);
   const [selected, setSelected] = useState<{ [uri: string]: PhotoIdentifier }>({});
   const selectedCount = Object.keys(selected).length;
   const sendBarAnim = useRef(new Animated.Value(0)).current;
 
-  // Sheet height gesture animated value
-  const sheetHeight = useRef(new Animated.Value(0)).current;
-  const currentPos = useRef<'min' | 'max'>('min');
-  const startHeight = useRef(SHEET_MIN_HEIGHT);
+  // Modern UI transitions: translateY and backdropOpacity (hardware accelerated)
+  const translateY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
 
-  const snapTo = useCallback((position: 'min' | 'max' | 'hidden') => {
-    let toValue = SHEET_MIN_HEIGHT;
-    if (position === 'max') toValue = SHEET_MAX_HEIGHT;
-    if (position === 'hidden') toValue = 0;
-
-    Animated.spring(sheetHeight, {
-      toValue,
-      tension: 65,
-      friction: 11,
-      useNativeDriver: false,
-    }).start(() => {
-      if (position === 'hidden') {
-        onClose();
-      } else {
-        currentPos.current = position === 'max' ? 'max' : 'min';
+  useEffect(() => {
+    if (visible) {
+      if (Platform.OS === 'android') {
+        const barColor = theme === 'dark' ? '#1E1E1E' : '#FFFFFF';
+        const isLight = theme !== 'dark';
+        try {
+          changeNavigationBarColor(barColor, isLight, false);
+          pinNavBarColor(barColor);
+        } catch (_) {}
       }
-    });
-  }, [onClose, sheetHeight]);
+    } else {
+      if (Platform.OS === 'android' && restoreNavBarColor) {
+        const isLight = restoreNavBarColor.toUpperCase() !== '#000000' && restoreNavBarColor.toUpperCase() !== '#111111' && restoreNavBarColor.toUpperCase() !== '#1E1E1E';
+        try {
+          changeNavigationBarColor(restoreNavBarColor, isLight, false);
+          pinNavBarColor(restoreNavBarColor);
+        } catch (_) {}
+      }
+    }
+  }, [visible, theme, restoreNavBarColor]);
 
   const handleClosePress = useCallback(() => {
-    snapTo('hidden');
-  }, [snapTo]);
+    if (Platform.OS === 'android' && restoreNavBarColor) {
+      const isLight = restoreNavBarColor.toUpperCase() !== '#000000' && restoreNavBarColor.toUpperCase() !== '#111111' && restoreNavBarColor.toUpperCase() !== '#1E1E1E';
+      try {
+        changeNavigationBarColor(restoreNavBarColor, isLight, false);
+        pinNavBarColor(restoreNavBarColor);
+      } catch (_) {}
+    }
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return Math.abs(gestureState.dy) > 5;
-      },
-      onPanResponderGrant: () => {
-        if (currentPos.current === 'max') {
-          startHeight.current = SHEET_MAX_HEIGHT;
-        } else {
-          startHeight.current = SHEET_MIN_HEIGHT;
-        }
-      },
-      onPanResponderMove: (_, gestureState) => {
-        // Dragging up (negative dy) increases height, dragging down (positive dy) decreases height
-        let newHeight = startHeight.current - gestureState.dy;
-        if (newHeight > SHEET_MAX_HEIGHT) {
-          const diff = newHeight - SHEET_MAX_HEIGHT;
-          newHeight = SHEET_MAX_HEIGHT + diff * 0.25; // Apply rubber band effect
-        }
-        sheetHeight.setValue(newHeight);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const { dy, vy } = gestureState;
-        const threshold = 100;
-
-        if (currentPos.current === 'min') {
-          if (dy < -threshold || vy < -0.4) {
-            snapTo('max');
-          } else if (dy > threshold || vy > 0.4) {
-            snapTo('hidden');
-          } else {
-            snapTo('min');
-          }
-        } else {
-          // currentPos is 'max'
-          if (dy > threshold || vy > 0.4) {
-            if (dy > SHEET_MIN_HEIGHT * 0.7) {
-              snapTo('hidden');
-            } else {
-              snapTo('min');
-            }
-          } else {
-            snapTo('max');
-          }
-        }
-      },
-    })
-  ).current;
+    Animated.parallel([
+      Animated.timing(translateY, {
+        toValue: SHEET_HEIGHT,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      })
+    ]).start(() => {
+      onClose();
+    });
+  }, [onClose, translateY, backdropOpacity, restoreNavBarColor]);
 
   useEffect(() => {
     Animated.timing(sendBarAnim, {
@@ -340,60 +304,65 @@ export const CustomGalleryPicker: React.FC<Props> = ({
     }).start();
   }, [selectedCount, sendBarAnim]);
 
+
+
   useEffect(() => {
     if (!visible) return;
     let active = true;
-    (async () => {
-      const granted = await checkStoragePerm();
-      if (!active) return;
-      setPermGranted(granted);
-      if (granted) {
-        resetAndLoad(null);
-        loadAlbums();
-      }
-    })();
 
-    // Animate open to initial height (50%)
-    sheetHeight.setValue(0);
-    Animated.spring(sheetHeight, {
-      toValue: SHEET_MIN_HEIGHT,
-      tension: 65,
-      friction: 11,
-      useNativeDriver: false,
-    }).start(() => {
-      currentPos.current = 'min';
+    // Reset tab to photos immediately when opening to avoid stale state from previous opens
+    setActiveTab('photos');
+
+    // Reset animated values for smooth opening
+    translateY.setValue(SHEET_HEIGHT);
+    backdropOpacity.setValue(0);
+
+    Animated.parallel([
+      Animated.spring(translateY, {
+        toValue: 0,
+        tension: 75,
+        friction: 12,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      })
+    ]).start(() => {
+      if (!active) return;
+
+      // Only request permissions and load files AFTER animation completes to avoid thread overload/lag
+      (async () => {
+        const granted = await checkStoragePerm();
+        if (!active) return;
+        setPermGranted(granted ? 'granted' : 'denied');
+        if (granted) {
+          resetAndLoad(null);
+          loadAlbums();
+        }
+      })();
     });
 
     return () => {
       active = false;
-      setPhotos([]);
-      setEndCursor(undefined);
-      setHasNextPage(true);
       setSelected({});
-      setSelectedAlbum(null);
-      setShowAlbums(false);
+      // Do NOT reset activeTab here to prevent visual layout jump/flicker while closing the modal
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
-
-  // Auto-expand sheet when showing albums dropdown
-  useEffect(() => {
-    if (showAlbums) {
-      snapTo('max');
-    }
-  }, [showAlbums, snapTo]);
+  }, [visible, loadAlbums, resetAndLoad]);
 
   const loadAlbums = useCallback(async () => {
     try {
-      const groups = await CameraRoll.getAlbums({ assetType: 'All' });
+      const groups = await CameraRoll.getAlbums({ assetType });
       const albumsWithCovers: Album[] = await Promise.all(
         groups.map(async (g) => {
           try {
             const res = await CameraRoll.getPhotos({
               first: 1,
-              groupTypes: 'Album',
+              ...(Platform.OS === 'ios' ? { groupTypes: 'Album' } : {}),
               groupName: g.title,
-              assetType: 'All',
+              assetType,
             });
             return {
               title: g.title,
@@ -409,27 +378,46 @@ export const CustomGalleryPicker: React.FC<Props> = ({
     } catch (err) {
       console.error('[Gallery] loadAlbums error:', err);
     }
-  }, []);
+  }, [assetType]);
 
   const fetchPhotos = useCallback(
     async (cursor?: string, albumName?: string | null) => {
       if (isFetchingRef.current) return;
       isFetchingRef.current = true;
-      setLoadingPhotos(true);
+      
+      if (!cursor && photosRef.current.length === 0) {
+        setLoadingPhotos(true);
+      } else if (cursor) {
+        setLoadingPhotos(true);
+      }
 
       const params: GetPhotosParams = {
         first: PAGE_SIZE,
-        assetType: 'All',
+        assetType,
         include: ['filename', 'fileSize', 'imageSize', 'playableDuration'],
         ...(cursor ? { after: cursor } : {}),
-        ...(albumName
-          ? { groupTypes: 'Album', groupName: albumName }
-          : { groupTypes: 'All' }),
+        ...(Platform.OS === 'ios'
+          ? (albumName
+            ? { groupTypes: 'Album', groupName: albumName }
+            : { groupTypes: 'All' })
+          : (albumName ? { groupName: albumName } : {})),
       };
 
       try {
         const result = await CameraRoll.getPhotos(params);
-        setPhotos((prev) => (cursor ? [...prev, ...result.edges] : result.edges));
+        const filteredEdges = maxDuration != null ? result.edges.filter(edge => {
+          const duration = edge.node.image.playableDuration;
+          if (duration != null && duration > 0 && duration >= maxDuration) {
+            return false;
+          }
+          return true;
+        }) : result.edges;
+
+        setPhotos((prev) => {
+          const next = cursor ? [...prev, ...filteredEdges] : filteredEdges;
+          photosRef.current = next;
+          return next;
+        });
         setEndCursor(result.page_info.end_cursor);
         setHasNextPage(result.page_info.has_next_page);
       } catch (err) {
@@ -439,12 +427,16 @@ export const CustomGalleryPicker: React.FC<Props> = ({
         isFetchingRef.current = false;
       }
     },
-    []
+    [assetType, maxDuration]
   );
 
   const resetAndLoad = useCallback(
     (albumName: string | null) => {
-      setPhotos([]);
+      if (currentAlbumRef.current !== albumName) {
+        setPhotos([]);
+        photosRef.current = [];
+        currentAlbumRef.current = albumName;
+      }
       setEndCursor(undefined);
       setHasNextPage(true);
       setSelectedAlbum(albumName);
@@ -482,15 +474,28 @@ export const CustomGalleryPicker: React.FC<Props> = ({
         fileName: asset.fileName || `photo_${Date.now()}.jpg`,
       };
       onSelect([out]);
-      onClose();
+      handleClosePress();
     } catch (err) {
       console.error('[Gallery] camera error:', err);
     }
-  }, [onSelect, onClose]);
+  }, [onSelect, handleClosePress]);
 
   const toggleSelect = useCallback(
     (photo: PhotoIdentifier) => {
       const uri = photo.node.image.uri;
+      if (maxSelect === 1) {
+        const out: GalleryAsset = {
+          uri,
+          type: mediaTypeOf(photo),
+          fileName: photo.node.image.filename || `media_${Date.now()}`,
+          duration: photo.node.image.playableDuration ?? undefined,
+          width: photo.node.image.width,
+          height: photo.node.image.height,
+        };
+        onSelect([out]);
+        handleClosePress();
+        return;
+      }
       setSelected((prev) => {
         if (prev[uri]) {
           const next = { ...prev };
@@ -504,7 +509,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
         return { ...prev, [uri]: photo };
       });
     },
-    [maxSelect]
+    [maxSelect, onSelect, handleClosePress]
   );
 
   const handleSend = useCallback(() => {
@@ -517,48 +522,57 @@ export const CustomGalleryPicker: React.FC<Props> = ({
       height: photo.node.image.height,
     }));
     onSelect(assets);
-    onClose();
-  }, [selected, onSelect, onClose]);
+    handleClosePress();
+  }, [selected, onSelect, handleClosePress]);
 
   const gridData = useMemo(
     () => [{ isCameraCell: true }, ...photos] as any[],
     [photos]
   );
 
+  const isDark = theme === 'dark';
+
   const renderCell = useCallback(
     ({ item }: { item: any }) => {
       if (item.isCameraCell) {
         return (
-          <TouchableOpacity style={styles.cameraCell} onPress={handleCamera} activeOpacity={0.8}>
-            <Icon name="camera" size={30} color="#FFF" />
-            <Text style={styles.cameraCellText}>Camera</Text>
+          <TouchableOpacity
+            style={[styles.cameraCell, isDark && { backgroundColor: '#2A2A2A', borderColor: '#1E1E1E' }]}
+            onPress={handleCamera}
+            activeOpacity={0.8}
+          >
+            <Icon name="camera" size={30} color={isDark ? '#AAA' : '#666'} />
+            <Text style={[styles.cameraCellText, isDark && { color: '#AAA' }]}>Camera</Text>
           </TouchableOpacity>
         );
       }
 
       const photo: PhotoIdentifier = item;
       const uri = photo.node.image.uri;
-      const isVideo = photo.node.type === 'video';
+      const typeLower = photo.node.type?.toLowerCase();
+      const isVideo = typeLower === 'video' || typeLower?.includes('video') || (photo.node.image.playableDuration != null && photo.node.image.playableDuration > 0) || uri?.toLowerCase()?.endsWith('.mp4') || uri?.toLowerCase()?.endsWith('.mov') || uri?.toLowerCase()?.endsWith('.mkv');
       const dur = photo.node.image.playableDuration;
       const isSelected = !!selected[uri];
       const selIndex = isSelected ? Object.keys(selected).indexOf(uri) + 1 : -1;
 
       return (
         <TouchableOpacity
-          style={styles.cell}
+          style={[styles.cell, isDark && { borderColor: '#1E1E1E' }]}
           onPress={() => toggleSelect(photo)}
           activeOpacity={0.85}
         >
           <Image source={{ uri }} style={styles.cellImage} />
           {isSelected && <View style={styles.selectedOverlay} />}
-          <View
-            style={[
-              styles.selectBadge,
-              isSelected && { backgroundColor: themeColor, borderColor: themeColor },
-            ]}
-          >
-            {isSelected ? <Text style={styles.selectBadgeText}>{selIndex}</Text> : null}
-          </View>
+          {maxSelect > 1 && (
+            <View
+              style={[
+                styles.selectBadge,
+                isSelected && { backgroundColor: themeColor, borderColor: themeColor },
+              ]}
+            >
+              {isSelected ? <Text style={styles.selectBadgeText}>{selIndex}</Text> : null}
+            </View>
+          )}
           {isVideo && dur != null && (
             <View style={styles.videoBadge}>
               <Icon name="play-circle" size={14} color="#FFF" style={{ marginRight: 3 }} />
@@ -568,16 +582,16 @@ export const CustomGalleryPicker: React.FC<Props> = ({
         </TouchableOpacity>
       );
     },
-    [selected, handleCamera, toggleSelect, themeColor]
+    [selected, handleCamera, toggleSelect, themeColor, maxSelect, isDark]
   );
 
   const albumLabel = selectedAlbum ?? 'All Photos';
 
   const PermDenied = () => (
-    <View style={styles.permDenied}>
-      <Icon name="images-outline" size={64} color="#CCC" />
-      <Text style={styles.permDeniedTitle}>Gallery Access Required</Text>
-      <Text style={styles.permDeniedSub}>
+    <View style={[styles.permDenied, isDark && { backgroundColor: '#1E1E1E' }]}>
+      <Icon name="images-outline" size={64} color={isDark ? '#444' : '#CCC'} />
+      <Text style={[styles.permDeniedTitle, isDark && { color: '#FFF' }]}>Gallery Access Required</Text>
+      <Text style={[styles.permDeniedSub, isDark && { color: '#AAA' }]}>
         Allow photo access so you can share images and videos.
       </Text>
       <TouchableOpacity
@@ -585,7 +599,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
         onPress={async () => {
           const ok = await checkStoragePerm();
           if (ok) {
-            setPermGranted(true);
+            setPermGranted('granted');
             resetAndLoad(null);
             loadAlbums();
           } else {
@@ -611,26 +625,22 @@ export const CustomGalleryPicker: React.FC<Props> = ({
       <FlatList
         data={allAlbums}
         keyExtractor={(a) => a.title}
-        numColumns={2}
-        contentContainerStyle={{ padding: 6 }}
         renderItem={({ item }) => (
-          <AlbumTile
+          <AlbumRow
             album={item}
             selected={(selectedAlbum === null && item.title === 'All Photos') || selectedAlbum === item.title}
             onPress={() => {
-              setShowAlbums(false);
+              setActiveTab('photos');
               resetAndLoad(item.title === 'All Photos' ? null : item.title);
             }}
+            theme={theme}
           />
         )}
       />
     );
   };
 
-  const sendBarTranslate = sendBarAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [80, 0],
-  });
+
 
   return (
     <Modal
@@ -640,7 +650,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
       statusBarTranslucent
       onRequestClose={handleClosePress}
     >
-      <StatusBar backgroundColor="transparent" barStyle="dark-content" translucent />
+      <StatusBar backgroundColor="transparent" barStyle={isDark ? "light-content" : "dark-content"} translucent />
       <View style={styles.modalOverlay}>
         {/* Backdrop click to dismiss */}
         <TouchableOpacity
@@ -648,7 +658,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
           activeOpacity={1}
           onPress={handleClosePress}
         >
-          <View style={styles.backdropBackground} />
+          <Animated.View style={[styles.backdropBackground, { opacity: backdropOpacity }]} />
         </TouchableOpacity>
 
         {/* Sheet Container */}
@@ -656,59 +666,95 @@ export const CustomGalleryPicker: React.FC<Props> = ({
           style={[
             styles.sheetContainer,
             {
-              height: sheetHeight,
+              height: SHEET_HEIGHT,
+              transform: [{ translateY }],
             },
+            isDark && { backgroundColor: '#1E1E1E' }
           ]}
         >
-          {/* Drag Indicator/Handle Bar */}
-          <View style={styles.dragIndicatorArea} {...panResponder.panHandlers}>
-            <View style={styles.dragIndicatorPill} />
+          {/* Drag Indicator/Handle Bar (Visual only) */}
+          <View style={[styles.dragIndicatorArea, isDark && { backgroundColor: '#1E1E1E' }]}>
+            <View style={[styles.dragIndicatorPill, isDark && { backgroundColor: 'rgba(255, 255, 255, 0.3)' }]} />
           </View>
 
           {/* Header */}
-          <View style={styles.header} {...panResponder.panHandlers}>
+          <View style={[styles.header, isDark && { backgroundColor: '#1E1E1E', borderBottomColor: '#2A2A2A' }]}>
             <TouchableOpacity onPress={handleClosePress} style={styles.headerBtn}>
-              <Icon name="close" size={24} color="#333" />
+              <Icon name="close" size={24} color={isDark ? '#FFF' : '#333'} />
             </TouchableOpacity>
 
-            {/* Album selector dropdown trigger */}
-            <TouchableOpacity
-              style={styles.albumSelector}
-              onPress={() => setShowAlbums((v) => !v)}
-              disabled={!permGranted}
-            >
-              <Text style={styles.albumSelectorText} numberOfLines={1}>
-                {albumLabel}
-              </Text>
-              <Icon
-                name={showAlbums ? 'chevron-up' : 'chevron-down'}
-                size={16}
-                color="#333"
-                style={{ marginLeft: 4 }}
-              />
-            </TouchableOpacity>
+            {/* Tab selector */}
+            <View style={[styles.tabContainer, isDark && { backgroundColor: '#2A2A2A' }]}>
+              <TouchableOpacity
+                style={[
+                  styles.tabButton,
+                  activeTab === 'photos' && (isDark ? { backgroundColor: '#1E1E1E' } : styles.tabButtonActive)
+                ]}
+                onPress={() => setActiveTab('photos')}
+                disabled={permGranted !== 'granted'}
+              >
+                <Text 
+                  style={[
+                    styles.tabText,
+                    activeTab === 'photos' && { color: isDark ? '#FFFFFF' : '#000000', fontWeight: 'bold' },
+                    isDark && activeTab !== 'photos' && { color: '#888888' }
+                  ]} 
+                  numberOfLines={1}
+                >
+                  {albumLabel}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.tabButton,
+                  activeTab === 'folders' && (isDark ? { backgroundColor: '#1E1E1E' } : styles.tabButtonActive)
+                ]}
+                onPress={() => setActiveTab('folders')}
+                disabled={permGranted !== 'granted'}
+              >
+                <Text 
+                  style={[
+                    styles.tabText,
+                    activeTab === 'folders' && { color: isDark ? '#FFFFFF' : '#000000', fontWeight: 'bold' },
+                    isDark && activeTab !== 'folders' && { color: '#888888' }
+                  ]}
+                >
+                  Folder
+                </Text>
+              </TouchableOpacity>
+            </View>
 
-            {/* Right: selection count badge */}
+            {/* Right: tick button / confirm selection */}
             <View style={styles.headerRight}>
               {selectedCount > 0 && (
-                <View style={[styles.countBadge, { backgroundColor: themeColor }]}>
-                  <Text style={styles.countBadgeText}>{selectedCount}</Text>
-                </View>
+                <TouchableOpacity
+                  onPress={handleSend}
+                  style={[styles.tickButton, { backgroundColor: themeColor }]}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="checkmark" size={18} color="#FFF" />
+                  <View style={styles.tickBadge}>
+                    <Text style={styles.tickBadgeText}>{selectedCount}</Text>
+                  </View>
+                </TouchableOpacity>
               )}
             </View>
           </View>
 
-          {/* Album Dropdown */}
-          {showAlbums && permGranted && (
-            <View style={styles.albumDropdown}>
-              <AlbumBrowser />
-            </View>
-          )}
-
-          {/* Body: permission denied or grid */}
-          <View style={{ flex: 1 }}>
-            {!permGranted ? (
+          {/* Body: permission denied, folders grid, or photos grid */}
+          <View style={[{ flex: 1 }, isDark && { backgroundColor: '#1E1E1E' }]}>
+            {permGranted === 'checking' ? (
+              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                <ActivityIndicator size="large" color="#CCCCCC" />
+              </View>
+            ) : permGranted === 'denied' ? (
               <PermDenied />
+            ) : activeTab === 'folders' ? (
+              <AlbumBrowser />
+            ) : loadingPhotos && photos.length === 0 ? (
+              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                <ActivityIndicator size="large" color="#CCCCCC" />
+              </View>
             ) : (
               <FlatList
                 data={gridData}
@@ -724,7 +770,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
                 maxToRenderPerBatch={24}
                 windowSize={7}
                 ListFooterComponent={
-                  loadingPhotos ? (
+                  loadingPhotos && photos.length > 0 ? (
                     <View style={{ padding: 20, alignItems: 'center' }}>
                       <ActivityIndicator color={themeColor} />
                     </View>
@@ -733,33 +779,6 @@ export const CustomGalleryPicker: React.FC<Props> = ({
               />
             )}
           </View>
-
-          {/* Animated Send Bar (slides up when items selected) */}
-          <Animated.View
-            style={[
-              styles.sendBar,
-              {
-                paddingBottom: insets.bottom + 8,
-                transform: [{ translateY: sendBarTranslate }],
-                opacity: sendBarAnim,
-              },
-            ]}
-            pointerEvents={selectedCount > 0 ? 'auto' : 'none'}
-          >
-            <View style={styles.sendBarInner}>
-              <Text style={styles.sendBarLabel}>
-                {selectedCount} {selectedCount === 1 ? 'item' : 'items'} selected
-              </Text>
-              <TouchableOpacity
-                style={[styles.sendBtn, { backgroundColor: themeColor }]}
-                onPress={handleSend}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.sendBtnText}>Send</Text>
-                <Icon name="send" size={16} color="#FFF" style={{ marginLeft: 6 }} />
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
         </Animated.View>
       </View>
     </Modal>
@@ -809,21 +828,65 @@ const styles = StyleSheet.create({
     borderBottomColor: '#EFEFEF',
   },
   headerBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  albumSelector: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  albumSelectorText: { fontSize: 17, fontWeight: '700', color: '#1A1A1A', maxWidth: '75%' },
-  headerRight: { width: 40, alignItems: 'flex-end' },
-  countBadge: {
-    minWidth: 24, height: 24, borderRadius: 12,
-    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6,
+  headerRight: { width: 40, height: 40, justifyContent: 'center', alignItems: 'flex-end' },
+  tickButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
   },
-  countBadgeText: { color: '#FFF', fontSize: 13, fontWeight: '700' },
+  tickBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#FF3B30',
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+    borderWidth: 1.5,
+    borderColor: '#FFF',
+  },
+  tickBadgeText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
 
-  // Album dropdown (Full height category overlay below header like WhatsApp)
-  albumDropdown: {
-    position: 'absolute', top: 66, left: 0, right: 0, bottom: 0,
-    backgroundColor: '#FFF', zIndex: 100, elevation: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08, shadowRadius: 6,
+  // Tabs style
+  tabContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 4,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    padding: 3,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+  },
+  tabButtonActive: {
+    backgroundColor: '#FFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 1,
+    elevation: 1,
+  },
+  tabText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#555555',
   },
 
   // Grid cell
@@ -865,20 +928,7 @@ const styles = StyleSheet.create({
   permButton: { marginTop: 28, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 24 },
   permButtonText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
 
-  // Send bar
-  sendBar: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: '#FFF', borderTopWidth: 0.5, borderTopColor: '#E5E5E5',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.05, shadowRadius: 3, elevation: 5,
-  },
-  sendBarInner: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 12,
-  },
-  sendBarLabel: { color: '#333', fontSize: 15, fontWeight: '500' },
-  sendBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 22 },
-  sendBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
+
 });
 
 export default CustomGalleryPicker;

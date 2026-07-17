@@ -409,6 +409,36 @@ class FCMService {
     });
   }
 
+  async displayTriviaChallengeNotification(data: FCMData): Promise<void> {
+    const channelId = await notifee.createChannel({
+      id: 'trivia_challenges',
+      name: 'Trivia Challenges',
+      importance: AndroidImportance.HIGH,
+    });
+
+    await notifee.displayNotification({
+      id: `trivia_challenge_${data.challenge_id || Date.now()}`,
+      title: data.notif_title || '⚔️ Trivia Challenge!',
+      body: data.notif_body || 'Someone challenged you to a trivia game! Tap to play.',
+      data: { ...data } as { [key: string]: string },
+      android: {
+        channelId,
+        importance: AndroidImportance.HIGH,
+        autoCancel: true,
+        pressAction: {
+          id: 'default',
+          launchActivity: 'com.DME.MainActivity',
+        },
+        actions: [
+          {
+            title: '⚔️ Accept Challenge',
+            pressAction: { id: 'accept_challenge' },
+          },
+        ],
+      },
+    });
+  }
+
   async displayDefaultNotification(
     title?: string,
     body?: string,
@@ -614,6 +644,11 @@ class FCMService {
 
         case 'music_invite': {
           await this.displayMusicInviteNotification(data);
+          break;
+        }
+
+        case 'trivia_challenge': {
+          await this.displayTriviaChallengeNotification(data);
           break;
         }
 

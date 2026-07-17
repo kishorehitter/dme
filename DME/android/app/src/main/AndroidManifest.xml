@@ -102,6 +102,14 @@
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" android:host="dme-19zq.onrender.com" android:pathPrefix="/invite" />
         </intent-filter>
+
+        <!-- App Links Intent Filter: Intercepts one-time trivia challenge links -->
+        <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="dme-19zq.onrender.com" android:pathPrefix="/trivia/challenge/" />
+        </intent-filter>
       </activity>
 
     </application>

@@ -142,16 +142,24 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
   if (!lastMessage) return 'No messages yet';
   
   const { message_type, content } = lastMessage;
+
+  if (
+    message_type === 'lottie_sticker' || 
+    message_type === 'sticker' || 
+    (content && (content.includes('/stickers/') || content.endsWith('.json')))
+  ) {
+    return <><Icon name="image-outline" size={14} color="#666" /> Sticker</>;
+  }
   
   switch (message_type) {
     case 'image':
-      return '📷 Photo';
+      return <><Icon name="image" size={14} color="#666" /> Photo</>;
     case 'video':
-      return '🎥 Video';
+      return <><Icon name="videocam" size={14} color="#666" /> Video</>;
     case 'audio':
-      return '🎵 Audio';
+      return <><Icon name="mic" size={14} color="#666" /> Audio</>;
     case 'document':
-      return '📄 Document';
+      return <><Icon name="document-text" size={14} color="#666" /> Document</>;
     case 'text':
     default:
       return content || '';
@@ -220,7 +228,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     }
   });
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
-  const [activeTab, setActiveTab] = useState<'all' | 'chats' | 'groups' | 'unread'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'friends' | 'groups' | 'pending'>('all');
+  const [friends, setFriends] = useState<any[]>([]);
+  const [messageRequests, setMessageRequests] = useState<any[]>([]);
+  const [friendRequestsCount, setFriendRequestsCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(() => {
     try {
       const cached = localDatabase.getConversations();
@@ -240,8 +251,28 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
-  const [initialContainerHeight, setInitialContainerHeight] = useState<number | null>(null);
+
+  const [containerHeight, setContainerHeight] = useState<number | null>(null);
   const [exactMatchedUser, setExactMatchedUser] = useState<User | null>(null);
+  const searchRef = useRef<TextInput>(null);
+
+  const [isKeyboardActive, setIsKeyboardActive] = useState(false);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
+      setIsKeyboardActive(true);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardActive(false);
+      DeviceEventEmitter.emit('show_tab_bar_smoothly');
+      searchRef.current?.blur();
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -261,16 +292,15 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         );
         if (response.ok) {
           const data = await response.json();
-          // Find if there is an exact case-insensitive match for username, display_name, or email
+          // Find if there is an exact case-insensitive match for username (excluding current user)
           const exactUser = data.find((u: any) => 
-            (u.username || '').toLowerCase() === query.toLowerCase() ||
-            (u.display_name || '').toLowerCase() === query.toLowerCase() ||
-            (u.email || '').toLowerCase() === query.toLowerCase()
+            (u.username || '').toLowerCase() === query.toLowerCase() &&
+            u.id !== user?.id
           );
 
           if (exactUser) {
-            // Check if we already have a conversation with this user
-            const hasConv = conversations.some(c => !c.is_group && c.other_user?.id === exactUser.id);
+            // Check if we already have a conversation with this user that has messages
+            const hasConv = conversations.some(c => !c.is_group && c.other_user?.id === exactUser.id && c.last_message !== null);
             if (!hasConv) {
               setExactMatchedUser(exactUser);
               return;
@@ -287,7 +317,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   }, [searchQuery, conversations]);
 
   // ── Onboarding tour ────────────────────────────────────────────────────────
-  const ONBOARDING_KEY = 'dme_onboarding_done_v1';
+  const ONBOARDING_KEY = `dme_onboarding_done_v1_${user?.id || 'default'}`;
   const [tourVisible, setTourVisible] = useState(false);
   const [tourTargets, setTourTargets] = useState<Partial<Record<TourStepKey, TourTarget>>>({});
   const fabRef = useRef<View>(null);
@@ -297,28 +327,40 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   // Check if first launch
   useEffect(() => {
+    if (!user?.id) return;
     AsyncStorage.getItem(ONBOARDING_KEY).then(val => {
       if (!val) {
         // Delay slightly so the layout is fully settled before we measure
         setTimeout(() => measureAllTargets(), 650);
       }
     });
-  }, []);
+  }, [user?.id]);
 
   const measureRef = (ref: React.RefObject<View>, key: TourStepKey) => {
     return new Promise<void>((resolve) => {
-      if (!ref.current) {
-        console.warn(`Ref for ${key} is not available`);
-        resolve();
-        return;
-      }
-      ref.current.measure((x, y, width, height, pageX, pageY) => {
-        setTourTargets((prev) => ({
-          ...prev,
-          [key]: { key, x: pageX, y: pageY, width, height } as TourTarget,
-        }));
-        resolve();
-      });
+      let attempts = 0;
+      const tryMeasure = () => {
+        if (!ref.current) {
+          resolve();
+          return;
+        }
+        ref.current.measure((x, y, width, height, pageX, pageY) => {
+          if (width > 0 && height > 0) {
+            setTourTargets((prev) => ({
+              ...prev,
+              [key]: { key, x: pageX, y: pageY, width, height } as TourTarget,
+            }));
+            resolve();
+          } else if (attempts < 10) {
+            attempts++;
+            setTimeout(tryMeasure, 150);
+          } else {
+            console.warn(`Failed to measure ${key} after 10 attempts`);
+            resolve();
+          }
+        });
+      };
+      tryMeasure();
     });
   };
 
@@ -383,7 +425,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   useFocusEffect(
     useCallback(() => {
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
-    }, [])
+      loadConversations();
+    }, [loadConversations])
   );
 
   useEffect(() => {
@@ -438,7 +481,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     try {
-      const [convs, statuses] = await Promise.all([chatAPI.getConversations(), StatusService.getStatuses()]);
+      const [convs, statuses, msgReqs, friendReqs, friendsList] = await Promise.all([
+        chatAPI.getConversations(),
+        StatusService.getStatuses(),
+        chatAPI.getMessageRequests(),
+        chatAPI.getFriendRequests(),
+        chatAPI.getFriends().catch(() => [])
+      ]);
       let conversationsArray: Conversation[] = [];
       if (Array.isArray(convs)) conversationsArray = convs;
       else if (convs?.results) conversationsArray = convs.results;
@@ -454,6 +503,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       );
       setConversations(conversationsArray);
       setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id && directUserIds.has(s.user_id))));
+
+      if (Array.isArray(msgReqs)) {
+        setMessageRequests(msgReqs);
+      }
+      const receivedReqs = Array.isArray(friendReqs?.received) ? friendReqs.received : [];
+      setFriendRequestsCount(receivedReqs.length);
+      setFriends(Array.isArray(friendsList) ? friendsList : (friendsList?.results || []));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -641,6 +697,17 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </TouchableOpacity>
           ) : (
              <>
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('Profile')}
+                  style={{ marginRight: 32 }}
+                >
+                  <AvatarWithFallback
+                    uri={user?.profile_picture}
+                    sticker={user?.avatar_sticker}
+                    displayName={user?.display_name || user?.username || ''}
+                    style={{ width: 34, height: 34, borderRadius: 17 }}
+                  />
+                </TouchableOpacity>
                 <View ref={playBtnRef} collapsable={false}>
                   <TouchableOpacity
                     onPress={() => {
@@ -670,20 +737,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                         </LinearGradient>
                       </Animated.View>
                     ) : (
-                      <LinearGradient
-                        colors={['#000000', '#fd0000']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: 14,
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <Icon name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
-                      </LinearGradient>
+                      <Icon name="play" size={28} color="#ff0000" />
                     )}
                   </TouchableOpacity>
                 </View>
@@ -711,14 +765,55 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     }
   };
 
+  const handleAcceptRequest = async (requestId: number) => {
+    try {
+      await chatAPI.acceptMessageRequest(requestId);
+      Alert.alert('Success', 'Message request accepted!');
+      loadConversations();
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to accept message request');
+    }
+  };
+
+  const handleRejectRequest = async (requestId: number) => {
+    try {
+      await chatAPI.rejectMessageRequest(requestId);
+      Alert.alert('Success', 'Message request declined.');
+      loadConversations();
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to decline message request');
+    }
+  };
+
+  const unreadChatsCount = conversations.filter(c => !c.is_group).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+  const unreadGroupsCount = conversations.filter(c => c.is_group).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+  const unreadTotalCount = unreadChatsCount + unreadGroupsCount;
+
   const filteredConversations = conversations.filter(c => {
     let matchesTab = true;
-    if (activeTab === 'chats') {
-      matchesTab = !c.is_group;
+    
+    // Filter out 1-to-1 chats with no messages
+    if (!c.is_group && c.last_message === null) {
+      return false;
+    }
+    // Hide incoming pending or rejected message requests from User B's Chats/All list
+    if (!c.is_group && (c.message_request_status === 'pending' || c.message_request_status === 'rejected')) {
+      if (c.message_request_sender_id !== user?.id) {
+        return false;
+      }
+    }
+
+    if (activeTab === 'friends') {
+      const isFriend = c.other_user ? friends.some((f: any) => f.id === c.other_user?.id) : false;
+      matchesTab = !c.is_group && isFriend;
     } else if (activeTab === 'groups') {
       matchesTab = c.is_group;
-    } else if (activeTab === 'unread') {
-      matchesTab = (c.unread_count || 0) > 0;
+    } else if (activeTab === 'pending') {
+      return false;
+    } else if (activeTab === 'all') {
+      matchesTab = true;
     }
     if (!matchesTab) return false;
     
@@ -731,26 +826,54 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     return true;
   });
 
-  const listData = [...filteredConversations];
-  if (exactMatchedUser) {
-    listData.push({
-      id: `exact_match_${exactMatchedUser.id}`,
-      isVirtual: true,
-      is_group: false,
-      other_user: exactMatchedUser,
-      last_message: null,
-      unread_count: 0,
-    } as any);
+  let listData: any[] = [];
+  if (activeTab === 'pending') {
+    // Pending tab: incoming pending message requests (receiver sees here)
+    const filteredRequests = messageRequests.filter(mr => {
+      if (!searchQuery.trim()) return true;
+      const reqSender = mr.sender;
+      const displayName = reqSender?.display_name || reqSender?.email || 'User';
+      return displayName.toLowerCase().startsWith(searchQuery.trim().toLowerCase());
+    });
+    listData = filteredRequests.map(mr => ({
+      ...mr,
+      isMessageRequest: true,
+    }));
+    if (exactMatchedUser) {
+      listData.push({
+        id: `exact_match_${exactMatchedUser.id}`,
+        isVirtual: true,
+        is_group: false,
+        other_user: exactMatchedUser,
+        last_message: null,
+        unread_count: 0,
+      } as any);
+    }
+  } else {
+    listData = [...filteredConversations];
+    if (exactMatchedUser) {
+      listData.push({
+        id: `exact_match_${exactMatchedUser.id}`,
+        isVirtual: true,
+        is_group: false,
+        other_user: exactMatchedUser,
+        last_message: null,
+        unread_count: 0,
+      } as any);
+    }
   }
 
   return (
     <View 
       style={styles.container}
       onLayout={(e) => {
-        if (initialContainerHeight === null) {
-          const { height: layoutHeight } = e.nativeEvent.layout;
-          if (layoutHeight > 0) {
-            setInitialContainerHeight(layoutHeight);
+        const { height } = e.nativeEvent.layout;
+        const windowHeight = Dimensions.get('window').height;
+        // Ignore layout updates caused by keyboard animations (which shrink the screen heavily).
+        // Only accept heights that are near the full window height (accounting for headers/tabs).
+        if (height > windowHeight - 250) {
+          if (!containerHeight || Math.abs(containerHeight - height) > 1) {
+            setContainerHeight(height);
           }
         }
       }}
@@ -833,11 +956,20 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 22.5, paddingHorizontal: 12 }}>
             <Icon name="search" size={20} color="#888" />
             <TextInput
+              ref={searchRef}
               style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
               placeholder="Search by name..."
               placeholderTextColor="#888"
               value={searchQuery}
               onChangeText={setSearchQuery}
+              onFocus={() => {
+                setIsKeyboardActive(true);
+                DeviceEventEmitter.emit('hide_tab_bar_instantly');
+              }}
+              onBlur={() => {
+                setIsKeyboardActive(false);
+                DeviceEventEmitter.emit('show_tab_bar_smoothly');
+              }}
             />
             {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
@@ -857,14 +989,18 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 style={[
                   styles.tabButton, 
                   { 
-                    backgroundColor: '#E0E0E0', 
+                    backgroundColor: '#E6F0FA', 
+                    borderWidth: 1,
+                    borderColor: '#4597f5f6',
                     marginHorizontal: 4,
-                    paddingVertical: spacing.sm || 8,
+                    paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
                 onPress={() => setActiveTab('all')}
               >
-                <Text style={[styles.tabText, styles.activeTabText]}>All</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[styles.tabText, styles.activeTabText]}>All</Text>
+                </View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -879,24 +1015,30 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 ]} 
                 onPress={() => setActiveTab('all')}
               >
-                <Text style={styles.tabText}>All</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={styles.tabText}>All</Text>
+                </View>
               </TouchableOpacity>
             )}
 
-            {/* Chats Tab */}
-            {activeTab === 'chats' ? (
+            {/* Friends Tab */}
+            {activeTab === 'friends' ? (
               <TouchableOpacity 
                 style={[
                   styles.tabButton, 
                   { 
-                    backgroundColor: '#E0E0E0', 
+                    backgroundColor: '#E6F0FA', 
+                    borderWidth: 1,
+                    borderColor: '#4597f5f6',
                     marginHorizontal: 4,
-                    paddingVertical: spacing.sm || 8,
+                    paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
-                onPress={() => setActiveTab('chats')}
+                onPress={() => setActiveTab('friends')}
               >
-                <Text style={[styles.tabText, styles.activeTabText]}>Chats</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[styles.tabText, styles.activeTabText]}>Friends</Text>
+                </View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -909,9 +1051,11 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                     paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
-                onPress={() => setActiveTab('chats')}
+                onPress={() => setActiveTab('friends')}
               >
-                <Text style={styles.tabText}>Chats</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={styles.tabText}>Friends</Text>
+                </View>
               </TouchableOpacity>
             )}
 
@@ -921,14 +1065,18 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 style={[
                   styles.tabButton, 
                   { 
-                    backgroundColor: '#E0E0E0', 
+                    backgroundColor: '#E6F0FA', 
+                    borderWidth: 1,
+                    borderColor: '#4597f5f6',
                     marginHorizontal: 4,
-                    paddingVertical: spacing.sm || 8,
+                    paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
                 onPress={() => setActiveTab('groups')}
               >
-                <Text style={[styles.tabText, styles.activeTabText]}>Groups</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[styles.tabText, styles.activeTabText]}>Groups</Text>
+                </View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -943,24 +1091,35 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 ]} 
                 onPress={() => setActiveTab('groups')}
               >
-                <Text style={styles.tabText}>Groups</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={styles.tabText}>Groups</Text>
+                </View>
               </TouchableOpacity>
             )}
 
-            {/* Unread Tab */}
-            {activeTab === 'unread' ? (
+            {/* Pending Tab - incoming message requests for receiver */}
+            {activeTab === 'pending' ? (
               <TouchableOpacity 
                 style={[
                   styles.tabButton, 
                   { 
-                    backgroundColor: '#E0E0E0', 
+                    backgroundColor: '#E6F0FA', 
+                    borderWidth: 1,
+                    borderColor: '#4597f5f6',
                     marginHorizontal: 4,
-                    paddingVertical: spacing.sm || 8,
+                    paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
-                onPress={() => setActiveTab('unread')}
+                onPress={() => setActiveTab('pending')}
               >
-                <Text style={[styles.tabText, styles.activeTabText]}>Unread</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[styles.tabText, styles.activeTabText]}>Pending</Text>
+                  {messageRequests.length > 0 && (
+                    <View style={styles.requestsCountBadge}>
+                      <Text style={styles.requestsCountText}>{messageRequests.length}</Text>
+                    </View>
+                  )}
+                </View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity 
@@ -973,9 +1132,16 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                     paddingVertical: (spacing.sm || 8) - 1,
                   }
                 ]} 
-                onPress={() => setActiveTab('unread')}
+                onPress={() => setActiveTab('pending')}
               >
-                <Text style={styles.tabText}>Unread</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={styles.tabText}>Pending</Text>
+                  {messageRequests.length > 0 && (
+                    <View style={styles.requestsCountBadge}>
+                      <Text style={styles.requestsCountText}>{messageRequests.length}</Text>
+                    </View>
+                  )}
+                </View>
               </TouchableOpacity>
             )}
           </View>
@@ -984,24 +1150,62 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   
        
         renderItem={({ item }) => {
+          if ((item as any).isMessageRequest) {
+            const reqSender = item.sender;
+            const displayName = reqSender?.display_name || reqSender?.username || reqSender?.email || 'User';
+            const lastMsg = item.conversation_detail?.last_message;
+            const lastMsgContent = lastMsg ? renderLastMessageContent(lastMsg) : 'Sent you a message request';
+            const lastMsgTime = lastMsg ? formatMessageTime(lastMsg.created_at) : '';
+
+            return (
+              <View style={styles.conversationItem}>
+                <AvatarWithFallback
+                  uri={reqSender?.profile_picture}
+                  sticker={reqSender?.avatar_sticker}
+                  displayName={displayName}
+                  style={styles.avatar}
+                />
+                <View style={styles.content}>
+                  <Text style={styles.name}>{displayName}</Text>
+                  <Text style={styles.lastMessage} numberOfLines={1}>
+                    {lastMsgContent}
+                  </Text>
+                </View>
+                <View style={[styles.rightContent, { flexDirection: 'row', alignItems: 'center' }]}>
+                  {lastMsgTime ? <Text style={[styles.time, { marginRight: 8 }]}>{lastMsgTime}</Text> : null}
+                  <TouchableOpacity
+                    style={[styles.smallBtn, { backgroundColor: '#fff', marginRight: 6 }]}
+                    onPress={() => handleAcceptRequest(item.id)}
+                  >
+                    <Icon name="checkmark" size={14} color="#000" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.smallBtn, { backgroundColor: '#fff' }]}
+                    onPress={() => handleRejectRequest(item.id)}
+                  >
+                    <Icon name="close" size={14} color="#000" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          }
+
           if ((item as any).isVirtual) {
             const extUser = item.other_user;
             const displayName = extUser?.display_name || extUser?.username || extUser?.email || 'User';
+
+            const handlePressVirtual = () => {
+              setSearchQuery('');
+              setExactMatchedUser(null);
+              setActiveTab('friends');
+              navigation.navigate('Profile', { user: extUser });
+            };
+
             return (
-              <TouchableOpacity
-                style={styles.conversationItem}
+              <TouchableOpacity 
+                style={styles.conversationItem} 
+                onPress={handlePressVirtual}
                 activeOpacity={0.7}
-                onPress={async () => {
-                  try {
-                    const conversation = await chatAPI.getOrCreateDirectChat(extUser.id);
-                    navigation.navigate('ChatRoom', {
-                      conversationId: conversation.id,
-                      name: displayName,
-                    });
-                  } catch (error) {
-                    Alert.alert('Error', 'Failed to start conversation');
-                  }
-                }}
               >
                 <AvatarWithFallback
                   uri={extUser?.profile_picture}
@@ -1012,11 +1216,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 <View style={styles.content}>
                   <Text style={styles.name}>{displayName}</Text>
                   <Text style={styles.lastMessage} numberOfLines={1}>
-                    Not in chats. Tap to start messaging.
+                    {extUser?.username ? `@${extUser.username}` : extUser?.email}
                   </Text>
-                </View>
-                <View style={styles.rightContent}>
-                  <Icon name="chatbubble-ellipses" size={22} color="#4597f5f6" />
                 </View>
               </TouchableOpacity>
             );
@@ -1044,7 +1245,14 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 if (selectionMode) {
                   toggleSelection(item.id);
                 } else {
-                  navigation.navigate('ChatRoom', { conversationId: item.id, name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User') });
+                  navigation.navigate('ChatRoom', { 
+                    conversationId: item.id, 
+                    name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User'),
+                    avatarUri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
+                    avatarSticker: item.is_group ? null : item.other_user?.avatar_sticker,
+                    isGroup: item.is_group,
+                    otherUser: item.is_group ? null : item.other_user,
+                  });
                 }
               }}
               onLongPress={() => {
@@ -1099,7 +1307,15 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 <View style={styles.lastMessageRow}>
                   {item.last_message && item.last_message.sender_id === user?.id && renderMessageTicks(item.last_message)}
                   <Text style={styles.lastMessage} numberOfLines={1}>
-                    {renderLastMessageContent(item.last_message)}
+                    {!item.is_group && item.message_request_status === 'pending' && item.message_request_sender_id === user?.id ? (
+                      <><Icon name="hourglass-outline" size={14} color="#666" /> Message request pending</>
+                    ) : !item.is_group && item.message_request_status === 'rejected' && item.message_request_sender_id === user?.id ? (
+                      <><Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined</>
+                    ) : !item.is_group && item.message_request_status === 'accepted' && item.message_request_sender_id === user?.id && item.last_message === null ? (
+                      <><Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved</>
+                    ) : (
+                      renderLastMessageContent(item.last_message)
+                    )}
                   </Text>
                 </View>
               </View>
@@ -1161,21 +1377,44 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             </View>
         </TouchableOpacity>
       </Modal>
-      <View 
-        ref={fabRef} 
-        collapsable={false} 
-        style={[
-          styles.fabWrapper,
-          initialContainerHeight !== null ? {
-            bottom: undefined,
-            top: initialContainerHeight - 50 - (spacing.xxl || 32) - 16,
-          } : null
-        ]}
-      >
-        <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('NewChat')}>
-          <Icon name="person-add-outline" size={25} color="#FFF" />
-        </TouchableOpacity>
-      </View>
+      {!isKeyboardActive && (
+        <View 
+          ref={fabRef} 
+          collapsable={false} 
+          style={[
+            styles.fabWrapper,
+            containerHeight ? { top: containerHeight - 130, bottom: undefined } : {}
+          ]}
+        >
+          <TouchableOpacity style={styles.composeButton} onPress={() => navigation.navigate('FriendList')}>
+            <Icon name="person-add-outline" size={25} color="#FFF" />
+            {friendRequestsCount > 0 && (
+              <View style={{
+                position: 'absolute',
+                top: -6,
+                right: -6,
+                backgroundColor: '#4CAF50', // Green
+                borderRadius: 12,
+                minWidth: 24,
+                height: 24,
+                justifyContent: 'center',
+                alignItems: 'center',
+                paddingHorizontal: 4,
+                borderWidth: 2,
+                borderColor: '#FFF',
+              }}>
+                <Text style={{
+                  color: '#FFF',
+                  fontSize: 11,
+                  fontWeight: 'bold',
+                }}>
+                  {friendRequestsCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {tourVisible && (
         <OnboardingTour
@@ -1204,7 +1443,7 @@ const styles = StyleSheet.create({
   tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
   activeTabButton: { backgroundColor: '#FFFFFF', elevation: 2, shadowRadius: 2 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: '#666' },
-  activeTabText: { color: '#4597f5f6', fontWeight: '700' },
+  activeTabText: { color: '#000000', fontWeight: 'bold' },
   logItemSelected: {
     backgroundColor: '#F8F0FF',
   },
@@ -1227,7 +1466,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  fabWrapper: { position: 'absolute', bottom: spacing.xxl, right: spacing.xl },
+  fabWrapper: { position: 'absolute', bottom: 80, right: 16 },
   composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
 
   onlineDot: {
@@ -1271,5 +1510,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
     marginBottom: 4,
+  },
+  // Message request tab styles
+  smallBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  requestsCountBadge: {
+    marginLeft: 5,
+    backgroundColor: '#242424',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  requestsCountText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  mutedCountBadge: {
+    marginLeft: 5,
+    backgroundColor: '#8E8E93',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  mutedCountText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

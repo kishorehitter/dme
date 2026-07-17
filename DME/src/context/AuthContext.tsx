@@ -4,6 +4,7 @@ import { authAPI } from '../services/api';
 import { websocketService } from '../services/websocket';
 import fcmService from '../services/fcm';
 import { User, AuthTokens, LoginCredentials, RegisterData, OTPVerify } from '../types';
+import localDatabase from '../services/LocalDatabase';
 
 interface AuthContextType {
   user: User | null;
@@ -18,6 +19,7 @@ interface AuthContextType {
   requestOTP: (email: string) => Promise<{ message: string }>;
   updateProfile: (data: Partial<RegisterData>) => Promise<void>;
   refreshUser: () => Promise<void>;
+  completeProfileSetup: (formData: FormData) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -55,6 +57,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
+      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
       // Re-register FCM device after successful login
       await fcmService.registerDevice();
@@ -72,6 +75,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
+      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
       // Re-register FCM device after successful login
       await fcmService.registerDevice();
@@ -102,6 +106,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
+      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
     } catch (error: any) {
       throw new Error(error.response?.data?.message || 'OTP verification failed');
@@ -122,6 +127,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       await fcmService.unregisterDevice();
       websocketService.disconnectPermanently(); // Stop WebSocket reconnection
       await AsyncStorage.multiRemove(['access_token', 'refresh_token', 'user']);
+      localDatabase.clearAll(); // Clear old cached data
       setUser(null);
     }
   };
@@ -134,6 +140,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       await fcmService.unregisterDevice();
       websocketService.disconnectPermanently();
       await AsyncStorage.multiRemove(['access_token', 'refresh_token', 'user']);
+      localDatabase.clearAll(); // Clear old cached data
       setUser(null);
     }
   };
@@ -167,6 +174,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const completeProfileSetup = async (formData: FormData) => {
+    try {
+      const updatedUser = await authAPI.completeProfileSetup(formData);
+      setUser(updatedUser);
+      await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
+    } catch (error: any) {
+      let errorMessage = 'Profile setup failed';
+      if (error.response?.data) {
+        if (typeof error.response.data === 'string') {
+          errorMessage = error.response.data;
+        } else if (error.response.data.message) {
+          errorMessage = error.response.data.message;
+        } else if (error.response.data.detail) {
+          errorMessage = error.response.data.detail;
+        } else {
+          const keys = Object.keys(error.response.data);
+          if (keys.length > 0) {
+            const firstError = error.response.data[keys[0]];
+            errorMessage = Array.isArray(firstError) ? `${keys[0]}: ${firstError[0]}` : `${keys[0]}: ${firstError}`;
+          }
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      throw new Error(errorMessage);
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -182,6 +217,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         requestOTP,
         updateProfile,
         refreshUser,
+        completeProfileSetup,
       }}
     >
       {children}

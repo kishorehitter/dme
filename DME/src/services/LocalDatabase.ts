@@ -370,6 +370,19 @@ export const localDatabase = {
     }
     return null;
   },
+
+  /**
+   * Clears all cached conversations and messages from local SQLite storage.
+   */
+  clearAll() {
+    try {
+      db.execute('DELETE FROM messages;');
+      db.execute('DELETE FROM conversations;');
+      console.log('🧹 Offline Database tables cleared.');
+    } catch (error) {
+      console.error('❌ Failed to clear offline database:', error);
+    }
+  },
 };
 
 export default localDatabase;

@@ -8,7 +8,7 @@ from asgiref.sync import sync_to_async
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework_simplejwt.tokens import AccessToken
-from .models import Conversation, ConversationParticipant, Message
+from .models import Conversation, ConversationParticipant, Message, FriendRequest, MessageRequest, check_message_allowed
 
 User = get_user_model()
 
@@ -249,6 +249,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             print(f"   🚫 Message blocked: user {self.user.id} is blocked")
             return
 
+        # Check message permission (friends / message request gate)
+        is_allowed, is_first, error_msg = await self.check_message_permission()
+        if not is_allowed:
+            print(f"   🚫 Message gated: {error_msg}")
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'data': {'error': error_msg}
+            }))
+            return
+
         content = data.get('content', '')
         message_type = data.get('message_type', 'text')
         reply_to_id = data.get('reply_to')  # Extract reply_to from WebSocket data
@@ -268,6 +278,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
         if message:
+            # Auto-create MessageRequest on the very first message to a non-friend
+            if is_first:
+                await self.create_message_request_if_needed()
+
             # Send message to room group
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -294,7 +308,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 self.user.id
             )
 
-    @sync_to_async
+    @database_sync_to_async
+    def check_message_permission(self):
+        """Sync wrapper around check_message_allowed for the WebSocket consumer."""
+        try:
+            conversation = Conversation.objects.get(pk=self.conversation_id)
+            return check_message_allowed(conversation, self.user)
+        except Conversation.DoesNotExist:
+            return (False, False, 'Conversation not found')
+
+    @database_sync_to_async
+    def create_message_request_if_needed(self):
+        """Create a pending MessageRequest when the sender sends their first message to a non-friend."""
+        try:
+            conversation = Conversation.objects.get(pk=self.conversation_id)
+            other = conversation.participants.exclude(user=self.user).first()
+            if other:
+                MessageRequest.objects.get_or_create(
+                    conversation=conversation,
+                    defaults={
+                        'sender': self.user,
+                        'receiver': other.user,
+                        'status': 'pending',
+                    }
+                )
+        except Exception as e:
+            print(f'Warning: create_message_request_if_needed failed: {e}')
+
+    @database_sync_to_async
     def check_if_blocked(self):
         """Check if the current user is blocked by any participant in the conversation."""
         from accounts.models import UserBlock, User

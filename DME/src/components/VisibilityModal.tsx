@@ -22,9 +22,10 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
   const fetchContacts = useCallback(async () => {
     setLoading(true);
     try {
-      // Always fetch the full list of contacts
-      const res = await api.get('/chat/contacts/');
-      setContacts(res.data || []);
+      // Always fetch the full list of friends
+      const res = await api.get('/chat/friends/');
+      const friendsList = Array.isArray(res.data) ? res.data : (res.data?.results || []);
+      setContacts(friendsList);
     } catch (e) {
       console.error('[VisibilityModal] fetchContacts error:', e);
     } finally {
@@ -77,7 +78,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
           <Icon name="search" size={20} color="#999" />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search contacts..."
+            placeholder="Search friends..."
             value={searchQuery}
             onChangeText={setSearchQuery}
             autoCapitalize="none"
@@ -108,7 +109,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
             keyExtractor={item => item.id.toString()}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
-                <Text style={styles.emptyText}>No contacts found.</Text>
+                <Text style={styles.emptyText}>No friends found.</Text>
               </View>
             }
             renderItem={({ item }) => (

@@ -52,6 +52,7 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import FullScreenMediaViewer from '../components/FullScreenMediaViewer';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import StickerPreviewModal from '../components/StickerPreviewModal';
+import { CustomGalleryPicker } from '../components/CustomGalleryPicker';
 import FastImage from 'react-native-fast-image';
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
 
@@ -385,7 +386,7 @@ const cv = StyleSheet.create({
     position: 'absolute',
     left: 2,
     right: 8,
-    bottom: 6, // slightly lower — closer to the always-visible progress track
+    bottom: 0, // slightly lower — closer to the always-visible progress track
   },
   track:            { height: 2, backgroundColor: 'rgba(41, 41, 41, 0.67)', borderRadius: 1, justifyContent: 'center' },
   fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#4d4d4d', borderRadius: 1 },
@@ -561,6 +562,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isMediaModalVisible, setIsMediaModalVisible] = useState(false);
   const [isSendingMedia, setIsSendingMedia] = useState(false);
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
+  const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
@@ -737,23 +739,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   };
 
-  const handleOpenGallery = async () => {
-    try {
-      const result = await launchImageLibrary({
-        mediaType: 'photo',
-        quality: 1,
-        selectionLimit: 1,
-      });
-      if (result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        setStickerPreview({
-          uri: asset.uri || '',
-          mimeType: asset.type || 'image/jpeg',
-        });
-      }
-    } catch (e) {
-      console.error('Gallery open error:', e);
-    }
+  const handleOpenGallery = () => {
+    setGalleryPickerVisible(true);
   };
 
   const lastTapTimeRef = useRef(0);
@@ -1507,7 +1494,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   // ✅ APPSTATE — seamless background/foreground transition
   // TrackPlayer keeps playing uninterrupted in the background (OS handles it).
-  // On foreground return, we just snap the muted WebView to the correct timestamp.
+  // On foreground return, re-enforce the room's isPlaying state to the WebView player
+  // so any background pause/play actions take immediate visible effect.
+  const isPlayingRef = useRef(isPlaying);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
   useEffect(() => {
     const subscription = AppState.addEventListener('change', async (nextState) => {
       const prevState = appState.current;
@@ -1527,12 +1518,26 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       } else if (nextState === 'active' && prevState === 'background') {
         isInBackgroundRef.current = false; // ✅ Back in foreground
 
+        // ✅ KEY FIX: Re-enforce whatever play/pause state the room has now.
+        // If the DJ paused from the lock screen, isPlayingRef.current is false
+        // but the WebView may not have received the pause command while backgrounded.
+        // We re-apply it here so the UI and audio immediately match the room state.
+        const currentIsPlaying = isPlayingRef.current;
+        setTimeout(() => {
+          try {
+            if (currentIsPlaying) {
+              playerRef.current?.playVideo?.();
+            } else {
+              playerRef.current?.pauseVideo?.();
+            }
+          } catch (_) {}
+        }, 300); // small delay to let WebView resume from background first
+
         if (isDJ || isDJMode) {
-          // ✅ Tell participants DJ is back — no need to seek since the WebView played continuously
+          // ✅ Tell participants DJ is back
           musicWebSocketService.sendBackgroundState(false, livePositionRef.current);
-          console.log('📱 [FG] Returned to foreground. Playing seamlessly at:', livePositionRef.current);
+          console.log('📱 [FG] Returned to foreground. isPlaying:', currentIsPlaying, 'at:', livePositionRef.current);
         } else {
-          // Participant side — no need to seek, WebView kept playing.
           console.log('📱 [FG] Participant returned to foreground.');
         }
       }
@@ -1676,21 +1681,72 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName]);
 
   useEffect(() => {
-    const playSub = DeviceEventEmitter.addListener('MEDIA_PLAY', () => {
-      if (isDJ || isDJMode) {
-        syncPlay(livePositionRef.current || 0);
+    // ── Shared handler for play/pause triggered by lock screen / notification ──
+    // Two signal paths:
+    //   1. MEDIA_PLAY / MEDIA_PAUSE  — from MusicForegroundService MediaSession
+    //   2. WEBVIEW_MEDIA_PLAY / WEBVIEW_MEDIA_PAUSE — from WebView's own
+    //      navigator.mediaSession, which works reliably in the background because
+    //      it runs inside the WebView process (not the suspended JS bridge).
+    //      The WebView already paused/played itself; we just sync the room.
+
+    // Debounce guard: a single notification button tap can trigger both paths
+    // within milliseconds. We debounce to ~300ms so the room command fires once.
+    let lastActionTs = 0;
+    const DEBOUNCE_MS = 300;
+
+    const handlePlay = (webViewAlreadyHandled = false) => {
+      if (!(isDJ || isDJMode)) return;
+      const now = Date.now();
+      if (now - lastActionTs < DEBOUNCE_MS) return;
+      lastActionTs = now;
+      // If the signal came from MusicForegroundService (not WebView), force the player too
+      if (!webViewAlreadyHandled) {
+        try { playerRef.current?.playVideo?.(); } catch (_) {}
       }
-    });
-    const pauseSub = DeviceEventEmitter.addListener('MEDIA_PAUSE', () => {
-      if (isDJ || isDJMode) {
-        syncPause(livePositionRef.current || 0);
+      syncPlay(livePositionRef.current || 0);
+      updateMusicService(
+        currentSong?.title ?? '',
+        currentSong?.channelTitle ?? 'Music Room',
+        currentSong?.thumbnail ?? '',
+        true,
+        true
+      );
+    };
+
+    const handlePause = (webViewAlreadyHandled = false) => {
+      if (!(isDJ || isDJMode)) return;
+      const now = Date.now();
+      if (now - lastActionTs < DEBOUNCE_MS) return;
+      lastActionTs = now;
+      // If the signal came from MusicForegroundService (not WebView), force the player too
+      if (!webViewAlreadyHandled) {
+        try { playerRef.current?.pauseVideo?.(); } catch (_) {}
       }
-    });
+      syncPause(livePositionRef.current || 0);
+      updateMusicService(
+        currentSong?.title ?? '',
+        currentSong?.channelTitle ?? 'Music Room',
+        currentSong?.thumbnail ?? '',
+        false,
+        true
+      );
+    };
+
+    // Path 1: native MusicForegroundService MediaSession (notification button)
+    const playSub  = DeviceEventEmitter.addListener('MEDIA_PLAY',  () => handlePlay(false));
+    const pauseSub = DeviceEventEmitter.addListener('MEDIA_PAUSE', () => handlePause(false));
+
+    // Path 2: WebView's own navigator.mediaSession (background-safe, postMessage)
+    const wvPlaySub  = DeviceEventEmitter.addListener('WEBVIEW_MEDIA_PLAY',  () => handlePlay(true));
+    const wvPauseSub = DeviceEventEmitter.addListener('WEBVIEW_MEDIA_PAUSE', () => handlePause(true));
+
     return () => {
       playSub.remove();
       pauseSub.remove();
+      wvPlaySub.remove();
+      wvPauseSub.remove();
     };
-  }, [isDJ, isDJMode, syncPlay, syncPause]);
+  }, [isDJ, isDJMode, syncPlay, syncPause, currentSong?.title, currentSong?.channelTitle, currentSong?.thumbnail]);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('VIDEO_SELECTED', async (data) => {
@@ -3298,6 +3354,24 @@ const sendChatMessage = () => {
             });
             if (caption.trim()) {
               musicWebSocketService.sendChatMessage(caption, replyingTo);
+            }
+          }}
+        />
+
+        <CustomGalleryPicker
+          visible={galleryPickerVisible}
+          onClose={() => setGalleryPickerVisible(false)}
+          theme="dark"
+          maxSelect={1}
+          assetType="Photos"
+          restoreNavBarColor="#000000"
+          onSelect={(assets) => {
+            if (assets.length > 0) {
+              const asset = assets[0];
+              setStickerPreview({
+                uri: asset.uri || '',
+                mimeType: asset.type || 'image/jpeg',
+              });
             }
           }}
         />

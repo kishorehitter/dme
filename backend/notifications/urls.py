@@ -9,6 +9,7 @@ from .views import (
     FCMDeviceListView,
     FCMDeviceRemoveView,
     FCMTestNotificationView,
+    TriviaChallengeView,
 )
 
 router = DefaultRouter()
@@ -20,4 +21,5 @@ urlpatterns = [
     path('list/', FCMDeviceListView.as_view(), name='fcm-list'),
     path('remove/', FCMDeviceRemoveView.as_view(), name='fcm-remove'),
     path('test/', FCMTestNotificationView.as_view(), name='fcm-test'),
+    path('trivia/challenge/', TriviaChallengeView.as_view(), name='trivia-challenge'),
 ]

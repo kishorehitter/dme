@@ -23,13 +23,14 @@ export const StatusPrivacyScreen = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      // Parallel fetch: contacts and current privacy settings
-      const [contactRes, privacyRes] = await Promise.all([
-        api.get('/chat/contacts/'),
+      // Parallel fetch: friends and current privacy settings
+      const [friendRes, privacyRes] = await Promise.all([
+        api.get('/chat/friends/'),
         api.get('/chat/privacy/status/')
       ]);
 
-      setContacts(contactRes.data || []);
+      const friendsList = Array.isArray(friendRes.data) ? friendRes.data : (friendRes.data?.results || []);
+      setContacts(friendsList);
 
       // Set initially selected from backend
       if (privacyRes.data?.restricted_to) {
@@ -99,7 +100,7 @@ export const StatusPrivacyScreen = () => {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Icon name="people-outline" size={48} color="#ddd" />
-              <Text style={styles.emptyText}>No contacts found to set privacy.</Text>
+              <Text style={styles.emptyText}>No friends found to set privacy.</Text>
             </View>
           }
           renderItem={({ item }) => (

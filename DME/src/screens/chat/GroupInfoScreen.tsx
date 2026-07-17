@@ -13,6 +13,7 @@ import {
   Modal,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
+import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { chatAPI } from '../../services/api';
 import { resolveImageUrl } from '../../utils/image';
@@ -113,34 +114,32 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   const handleUpdateImage = async () => {
-    launchImageLibrary({ mediaType: 'photo', quality: 0.8 }, async (response) => {
-      if (response.didCancel) return;
-      if (response.errorCode) {
-        Alert.alert('Error', response.errorMessage);
-        return;
-      }
-      const asset = response.assets?.[0];
-      if (asset) {
-        setIsUploading(true);
-        setShowImageModal(false);
-        try {
-          const formData = new FormData();
-          formData.append('profile_picture', {
-            uri: asset.uri,
-            type: asset.type || 'image/jpeg',
-            name: asset.fileName || 'profile.jpg',
-          } as any);
+    setShowImageModal(false);
+    setGalleryPickerVisible(true);
+  };
 
-          await chatAPI.updateConversationProfile(conversationId, formData);
-          loadDetails();
-        } catch (error) {
-          console.error("Upload error:", error);
-          Alert.alert('Error', 'Failed to update profile picture');
-        } finally {
-          setIsUploading(false);
-        }
+  const handleGallerySelect = async (assets: GalleryAsset[]) => {
+    setGalleryPickerVisible(false);
+    if (assets && assets.length > 0) {
+      const asset = assets[0];
+      setIsUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append('profile_picture', {
+          uri: asset.uri,
+          type: asset.type || 'image/jpeg',
+          name: asset.fileName || 'profile.jpg',
+        } as any);
+
+        await chatAPI.updateConversationProfile(conversationId, formData);
+        loadDetails();
+      } catch (error) {
+        console.error("Upload error:", error);
+        Alert.alert('Error', 'Failed to update profile picture');
+      } finally {
+        setIsUploading(false);
       }
-    });
+    }
   };
 
   const handleRemoveImage = async () => {
@@ -159,6 +158,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   const [showImageModal, setShowImageModal] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState<{ url?: string }>({});
 
   const handleAvatarPress = () => {
@@ -193,7 +193,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
                   style={styles.avatar} 
                 />
               ) : (
-                <View style={[styles.avatarPlaceholder, { backgroundColor: '#E8DEF8' }]}>
+                <View style={styles.avatarPlaceholder}>
                   <Icon name="people" size={40} color={colors.primary} />
                 </View>
               )}
@@ -271,8 +271,9 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
               <Text style={styles.groupName}>{conversation?.name}</Text>
               <Text style={styles.groupDesc}>{conversation?.description || 'No description'}</Text>
               {isAdmin && (
-                <TouchableOpacity onPress={() => setIsEditing(true)}>
-                  <Text style={styles.editLink}>Edit Group Info</Text>
+                <TouchableOpacity onPress={() => setIsEditing(true)} style={styles.editButton}>
+                 
+                  <Icon name="pencil" size={16} color={'#000'} />
                 </TouchableOpacity>
               )}
             </View>
@@ -284,7 +285,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>{conversation?.participants.length} Participants</Text>
             {isAdmin && (
-              <TouchableOpacity onPress={() => navigation.navigate('NewChat', { 
+              <TouchableOpacity onPress={() => navigation.navigate('FriendList', { 
                 conversationId, 
                 isAdding: true,
                 existingMemberIds: conversation.participants.map((p: any) => p.user.id)
@@ -340,6 +341,14 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
       )}
+
+      <CustomGalleryPicker
+        visible={galleryPickerVisible}
+        onClose={() => setGalleryPickerVisible(false)}
+        onSelect={handleGallerySelect}
+        maxSelect={1}
+        assetType="Photos"
+      />
     </View>
   );
 };
@@ -357,7 +366,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#EEE',
   },
   avatarContainer: { marginBottom: spacing.md },
-  avatar: { width: 100, height: 100, borderRadius: 50 },
+  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#FFFFFF', borderWidth: 2, borderColor: '#DDDDDD' },
   editBadge: {
     position: 'absolute', bottom: 8, right: 0,
     backgroundColor: '#FFF', padding: 1, borderRadius: 2, borderColor: '#4597f5f6', borderWidth: 1
@@ -365,13 +374,24 @@ const styles = StyleSheet.create({
   editBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   avatarPlaceholder: { 
     width: 100, height: 100, borderRadius: 50, 
-    backgroundColor: '#999999', justifyContent: 'center', alignItems: 'center' 
+    backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: '#DDDDDD'
   },
   avatarText: { fontSize: 40 },
   infoContainer: { alignItems: 'center' },
   groupName: { fontSize: fontSize.xl, fontWeight: 'bold', color: '#000' },
   groupDesc: { fontSize: fontSize.md, color: '#666', marginTop: 4, textAlign: 'center' },
-  editLink: { color: THEME_COLOR, fontWeight: '600', marginTop: spacing.md },
+  editButton: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderColor: THEME_COLOR,
+    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+  },
+  editLink: { color: THEME_COLOR, fontWeight: '600' },
   editForm: { width: '100%' },
   nameInput: { 
     borderBottomWidth: 1, borderBottomColor: THEME_COLOR, 

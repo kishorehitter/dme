@@ -1,12 +1,14 @@
 import React, { memo, useCallback, useRef, useEffect, useState } from 'react';
 import {
   View,
+  Text,
   TouchableOpacity,
   Animated,
   ActivityIndicator,
   StyleSheet,
   Platform,
   Keyboard,
+  DeviceEventEmitter,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
@@ -27,7 +29,9 @@ const ChatInputArea = memo(({
     micButtonScale,
     THEME_COLOR,
     inputClearKey,
+    isDisabled,
     onRegisterClear,
+    onOpenStickerPicker,
 }: any) => {
 
     const inputRef = useRef<RichTextInputRef>(null);
@@ -55,9 +59,19 @@ const ChatInputArea = memo(({
         setKeyboardVisible(false);
       });
 
+      const emojiSub = DeviceEventEmitter.addListener('INSERT_EMOJI_CHAR', (emoji) => {
+        setLocalInputText(prev => {
+          const next = prev + emoji;
+          inputRef.current?.setText(next);
+          handleTyping?.(next);
+          return next;
+        });
+      });
+
       return () => {
         showSubscription.remove();
         hideSubscription.remove();
+        emojiSub.remove();
       };
     }, []);
 
@@ -106,36 +120,74 @@ const ChatInputArea = memo(({
         sendMessage(localInputText);
     }, [sendMessage, localInputText]);
 
-    const placeholder = editingMessageId ? 'Edit your message...' : 'Message';
+    const placeholder = isDisabled ? 'Messaging is restricted' : (editingMessageId ? 'Edit your message...' : 'Message');
 
     return (
         <View style={styles.inputContainer}>
           {!isRecording && (
             <TouchableOpacity
-              style={styles.attachmentButton}
+              style={[styles.attachmentButton, isDisabled && { opacity: 0.5 }]}
               onPress={handleAttachment}
+              disabled={isDisabled}
             >
               <Icon name="add-outline" size={22} color="#666" />
             </TouchableOpacity>
           )}
 
-          {!isRecording && (
-            <RichTextInput
-              key={inputClearKey} 
-              ref={inputRef}
-              style={[styles.input, { height: inputHeight }]}
-              placeholder={placeholder}
-              placeholderTextColor="#999"
-              autoFocus={localClearKey > 0}            
-              onChangeText={handleTypingInternal}
-              onContentSizeChange={handleContentSizeChange}
-              multiline
-              maxLength={2000}
-              onContentCommitted={handleContentCommitted}
-            />
-          )}
+          {!isRecording && (() => {
+            const showStickerButton = !isKeyboardVisible && !editingMessageId;
+            return (
+              <View style={[styles.inputWrapper, isDisabled && { backgroundColor: '#E0E0E0' }]}>
+                {/* Sticker button inside the input field */}
+                {showStickerButton && (
+                  <TouchableOpacity
+                    style={styles.innerStickerButton}
+                    onPress={onOpenStickerPicker}
+                    disabled={isDisabled}
+                    accessibilityLabel="Open sticker picker"
+                  >
+                    <Icon name="happy-outline" size={24} color="#666" />
+                  </TouchableOpacity>
+                )}
 
-          {(!localInputText || localInputText.trim() === '' || isRecording) ? (
+                <RichTextInput
+                  key={inputClearKey} 
+                  ref={inputRef}
+                  style={[
+                    styles.input,
+                    { height: inputHeight },
+                    showStickerButton ? { paddingLeft: 42 } : { paddingLeft: 12 },
+                    isDisabled && { color: '#999' }
+                  ]}
+                  pointerEvents={isDisabled ? 'none' : 'auto'}
+                  placeholder={placeholder}
+                  placeholderTextColor="#999"
+                  autoFocus={localClearKey > 0}            
+                  onChangeText={handleTypingInternal}
+                  onContentSizeChange={handleContentSizeChange}
+                  multiline
+                  maxLength={2000}
+                  onContentCommitted={handleContentCommitted}
+                />
+              </View>
+            );
+          })()}
+
+          {isDisabled ? (
+            <View
+              style={[
+                styles.sendButton,
+                { backgroundColor: '#CCCCCC' },
+              ]}
+            >
+              <Icon
+                name="send"
+                size={20}
+                color="#FFF"
+                style={{ marginLeft: 2 }}
+              />
+            </View>
+          ) : (!localInputText || localInputText.trim() === '' || isRecording) ? (
             <Animated.View
               style={[
                 styles.micButton,
@@ -192,11 +244,31 @@ const styles = StyleSheet.create({
     marginRight: 4,
     marginBottom: 2,
   },
-  input: {
+  inputWrapper: {
     flex: 1,
+    position: 'relative',
     backgroundColor: '#F5F5F5',
     borderRadius: borderRadius.xl,
-    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+  },
+  innerStickerButton: {
+    position: 'absolute',
+    left: 8,
+    bottom: 5,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  stickerIcon: {
+    fontSize: 20,
+  },
+  input: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    paddingRight: 12,
     paddingTop: Platform.OS === 'ios' ? 8 : 6,
     paddingBottom: Platform.OS === 'ios' ? 8 : 6,
     fontSize: 17.8,

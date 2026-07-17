@@ -309,7 +309,66 @@ export const chatAPI = {
     );
     return response.data;
   },
+
+  // ── Friend Requests ────────────────────────────────────────────────────────
+  getFriendRequests: async () => {
+    const response = await api.get('/chat/friends/requests/');
+    return response.data;
+  },
+
+  sendFriendRequest: async (userId: number) => {
+    const response = await api.post('/chat/friends/requests/', { user_id: userId });
+    return response.data;
+  },
+
+  acceptFriendRequest: async (requestId: number) => {
+    const response = await api.post(`/chat/friends/requests/${requestId}/accept/`);
+    return response.data;
+  },
+
+  rejectFriendRequest: async (requestId: number) => {
+    const response = await api.post(`/chat/friends/requests/${requestId}/reject/`);
+    return response.data;
+  },
+
+  cancelFriendRequest: async (requestId: number) => {
+    const response = await api.delete(`/chat/friends/requests/${requestId}/`);
+    return response.data;
+  },
+
+  // Cancel a friend request when you only know the target user's ID (not the requestId)
+  cancelFriendRequestByUserId: async (userId: number) => {
+    const response = await api.delete(`/chat/friends/requests/${userId}/`);
+    return response.data;
+  },
+
+  getFriends: async () => {
+    const response = await api.get('/chat/friends/');
+    return response.data;
+  },
+
+  unfriend: async (userId: number) => {
+    const response = await api.delete(`/chat/friends/${userId}/`);
+    return response.data;
+  },
+
+  // ── Message Requests ───────────────────────────────────────────────────────
+  getMessageRequests: async () => {
+    const response = await api.get('/chat/message-requests/');
+    return response.data;
+  },
+
+  acceptMessageRequest: async (requestId: number) => {
+    const response = await api.post(`/chat/message-requests/${requestId}/accept/`);
+    return response.data;
+  },
+
+  rejectMessageRequest: async (requestId: number) => {
+    const response = await api.post(`/chat/message-requests/${requestId}/reject/`);
+    return response.data;
+  },
 };
+
 
 // FCM API
 export const fcmAPI = {
@@ -423,6 +482,34 @@ export const callsAPI = {
 
   getHistory: async () => {
     const response = await api.get('/calls/history/');
+    return response.data;
+  },
+};
+
+export const triviaAPI = {
+  /** Creates a one-time challenge link and sends it as a chat message to the friend */
+  createChallenge: async (friendId: number, categoryId: string, setId: string) => {
+    const response = await api.post('/trivia/challenge/create/', {
+      friend_id: friendId,
+      category: categoryId,
+      set_id: setId,
+    });
+    return response.data;
+  },
+
+  /** Claims a challenge token — marks it used and returns category + set_id */
+  claimChallenge: async (token: string) => {
+    const response = await api.post('/trivia/challenge/claim/', { token });
+    return response.data as { category: string; set_id: string; challenger_name: string };
+  },
+
+  /** Legacy: send FCM-only challenge (kept as fallback, not used in UI) */
+  sendChallenge: async (friendId: number, categoryId: string, setId: string) => {
+    const response = await api.post('/fcm/trivia/challenge/', {
+      friend_id: friendId,
+      category: categoryId,
+      set_id: setId,
+    });
     return response.data;
   },
 };

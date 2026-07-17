@@ -41,7 +41,21 @@ class UniversalCloudinaryStorage(MediaCloudinaryStorage):
         """
         if '.' in name:
             # Strip the extension from the public_id
-            return name.rsplit('.', 1)[0]
+            name = name.rsplit('.', 1)[0]
+            
+        # Prepend environment-specific folder prefix to separate local and prod environments
+        from django.conf import settings
+        import os
+        prefix = os.environ.get('CLOUDINARY_PREFIX')
+        if not prefix:
+            prefix = 'local/' if settings.DEBUG else 'prod/'
+            
+        if prefix and not prefix.endswith('/'):
+            prefix += '/'
+            
+        if prefix and not name.startswith(prefix):
+            name = f"{prefix}{name}"
+            
         return name
 
     def _save(self, name, content):
@@ -263,6 +277,7 @@ class Message(models.Model):
         ('audio',    'Audio'),
         ('document', 'Document'),
         ('system',   'System Notification'),
+        ('lottie_sticker', 'Lottie Sticker'),
     ]
 
     conversation = models.ForeignKey(
@@ -408,6 +423,135 @@ class Status(models.Model):
 
     def __str__(self):
         return f"Status by {self.user.email} at {self.created_at}"
+
+
+# ─── FriendRequest ────────────────────────────────────────────────────────────
+
+class FriendRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('rejected', 'Rejected'),
+    ]
+
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='sent_friend_requests'
+    )
+    receiver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='received_friend_requests'
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('sender', 'receiver')
+        ordering = ['-created_at']
+        verbose_name = 'Friend Request'
+        verbose_name_plural = 'Friend Requests'
+
+    def __str__(self):
+        return f"{self.sender} -> {self.receiver} ({self.status})"
+
+
+# ─── MessageRequest ───────────────────────────────────────────────────────────
+
+class MessageRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('rejected', 'Rejected'),
+    ]
+
+    conversation = models.OneToOneField(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name='message_request'
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='sent_message_requests'
+    )
+    receiver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='received_message_requests'
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Message Request'
+        verbose_name_plural = 'Message Requests'
+
+    def __str__(self):
+        return f"MessageRequest: {self.sender} -> {self.receiver} ({self.status})"
+
+
+# ─── Message Permission Utility ──────────────────────────────────────────────
+
+def check_message_allowed(conversation, sender):
+    """
+    Check if sender is allowed to send a message in the given conversation.
+
+    Returns:
+        (is_allowed: bool, is_first: bool, error_message: str)
+        - is_allowed: True if the message can be sent
+        - is_first: True if this is the sender's first message (MessageRequest should be created)
+        - error_message: Explanation string if not allowed
+    """
+    # 1. Group conversations always allow messages
+    if conversation.is_group:
+        return (True, False, '')
+
+    # 2. Get the other participant
+    other_participant = conversation.participants.exclude(user=sender).first()
+    if not other_participant:
+        return (True, False, '')
+    receiver = other_participant.user
+
+    # 3. Check if users are friends (accepted FriendRequest in either direction)
+    are_friends = FriendRequest.objects.filter(
+        models.Q(sender=sender, receiver=receiver, status='accepted') |
+        models.Q(sender=receiver, receiver=sender, status='accepted')
+    ).exists()
+
+    if are_friends:
+        return (True, False, '')
+
+    # 4. Check MessageRequest status for this conversation
+    try:
+        msg_request = conversation.message_request
+        if msg_request.status == 'accepted':
+            return (True, False, '')
+        elif msg_request.status == 'rejected':
+            return (False, False, 'Your message request was declined.')
+        elif msg_request.status == 'pending':
+            if msg_request.sender == sender:
+                # Original requester already sent 1 message, block additional ones
+                return (False, False, 'Waiting for approval or to become friends.')
+            else:
+                # Receiver trying to reply before accepting, block until they accept/approve
+                return (False, False, 'Please approve the chat request first to reply.')
+    except MessageRequest.DoesNotExist:
+        pass
+
+    # 5. No MessageRequest exists — check if sender has sent any messages yet
+    sender_has_messages = conversation.messages.filter(sender=sender).exists()
+    if not sender_has_messages:
+        # First message from this sender — allow and flag as is_first
+        return (True, True, '')
+
+    # Sender already sent messages but no MessageRequest exists (edge case)
+    # This shouldn't normally happen, but allow to avoid blocking
+    return (True, False, '')
 
 
 # ─── Signals ──────────────────────────────────────────────────────────────────

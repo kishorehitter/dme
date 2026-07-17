@@ -30,10 +30,13 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
   const pendingRequest = useRef(false);
   const idempotencyKey = useRef<string>('');
 
+  const [allFriends, setAllFriends] = useState<User[]>([]);
+
   // When visibility changes to true, fetch data
   React.useEffect(() => {
     if (visible) {
-      searchFriends('');
+      fetchFriends();
+      setQuery('');
       pendingRequest.current = false;
       idempotencyKey.current = Math.random().toString(36).substring(2, 15) + Date.now().toString();
     }
@@ -41,15 +44,29 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
 
   if (!visible) return null;
 
-  const searchFriends = async (q: string) => {
+  const fetchFriends = async () => {
     setLoading(true);
     try {
-      const response = await api.get(`/chat/users/search/?q=${q}`);
+      const response = await api.get('/chat/friends/');
+      setAllFriends(response.data);
       setFriends(response.data);
     } catch (e) {
-      console.error('Failed to search friends', e);
+      console.error('Failed to fetch friends', e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSearch = (q: string) => {
+    setQuery(q);
+    if (!q.trim()) {
+      setFriends(allFriends);
+    } else {
+      const lowerQ = q.toLowerCase();
+      setFriends(allFriends.filter(f => 
+        (f.display_name && f.display_name.toLowerCase().includes(lowerQ)) ||
+        (f.username && f.username.toLowerCase().includes(lowerQ))
+      ));
     }
   };
 
@@ -99,10 +116,7 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
             placeholder="Search friends..."
             placeholderTextColor="#666"
             value={query}
-            onChangeText={(text) => {
-              setQuery(text);
-              searchFriends(text);
-            }}
+            onChangeText={handleSearch}
           />
         </View>
 

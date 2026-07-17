@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   SafeAreaView,
   StatusBar,
   Platform,
+  Image,
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -26,6 +27,65 @@ interface MediaGroupListModalProps {
   themeColor?: string;
 }
 
+const AutoHeightMedia = ({
+  uri,
+  isVideo,
+  onPress,
+}: {
+  uri: string;
+  isVideo: boolean;
+  onPress: () => void;
+}) => {
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!uri) return;
+    if (uri.endsWith('.mp4') || uri.endsWith('.mov') || uri.endsWith('.mkv') || isVideo) {
+      setAspectRatio(1.777); // 16:9 for videos
+      return;
+    }
+    Image.getSize(
+      uri,
+      (w, h) => {
+        if (w > 0 && h > 0) {
+          setAspectRatio(w / h);
+        }
+      },
+      () => {
+        setAspectRatio(1.333); // Fallback
+      }
+    );
+  }, [uri, isVideo]);
+
+  const cardWidth = width - 32;
+  const finalRatio = aspectRatio || 1.333;
+  const calculatedHeight = cardWidth / finalRatio;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={onPress}
+      style={{
+        width: '100%',
+        height: calculatedHeight,
+        backgroundColor: '#F5F5F5',
+        position: 'relative',
+      }}
+    >
+      <FastImage
+        source={{ uri }}
+        style={{ width: '100%', height: '100%' }}
+        resizeMode={FastImage.resizeMode.contain}
+      />
+      {isVideo && (
+        <View style={styles.playOverlay}>
+          <Icon name="play-circle" size={50} color="#FFF" />
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+};
+
 export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
   visible,
   messages,
@@ -40,22 +100,11 @@ export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
 
     return (
       <View style={styles.card}>
-        <TouchableOpacity
-          activeOpacity={0.9}
+        <AutoHeightMedia
+          uri={url}
+          isVideo={isVideo}
           onPress={() => onSelectMedia(item)}
-          style={styles.mediaContainer}
-        >
-          <FastImage
-            source={{ uri: url }}
-            style={styles.media}
-            resizeMode={FastImage.resizeMode.cover}
-          />
-          {isVideo && (
-            <View style={styles.playOverlay}>
-              <Icon name="play-circle" size={50} color="#FFF" />
-            </View>
-          )}
-        </TouchableOpacity>
+        />
         {item.content ? (
           <View style={styles.captionContainer}>
             <Text style={styles.captionText}>{item.content}</Text>
@@ -143,16 +192,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  mediaContainer: {
-    width: '100%',
-    height: width * 0.65,
-    backgroundColor: '#F0F0F0',
-    position: 'relative',
-  },
-  media: {
-    width: '100%',
-    height: '100%',
-  },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.2)',
@@ -171,3 +210,5 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
+
+export default MediaGroupListModal;

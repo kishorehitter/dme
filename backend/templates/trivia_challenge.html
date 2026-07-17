@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trivia Challenge ⚔️</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a0533 0%, #2d1b69 50%, #0f3460 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 20px;
+    }
+    .card {
+      background: rgba(255,255,255,0.08);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 28px;
+      padding: 48px 36px;
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 32px 64px rgba(0,0,0,0.4);
+    }
+    .icon { font-size: 72px; margin-bottom: 20px; display: block; }
+    h1 { color: #fff; font-size: 28px; font-weight: 700; margin-bottom: 12px; }
+    .subtitle { color: rgba(255,255,255,0.65); font-size: 16px; line-height: 1.5; margin-bottom: 32px; }
+    .btn {
+      display: block;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+      text-decoration: none;
+      padding: 16px 32px;
+      border-radius: 16px;
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(124,58,237,0.4);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .btn:active { transform: scale(0.97); }
+    .used-badge, .expired-badge {
+      background: rgba(239,68,68,0.2);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 12px;
+      color: #fca5a5;
+      padding: 16px;
+      font-size: 15px;
+      margin-bottom: 24px;
+    }
+    .download-link { color: rgba(255,255,255,0.45); font-size: 13px; text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="icon">⚔️</span>
+
+    {% if status == 'valid' %}
+      <h1>You've been challenged!</h1>
+      <p class="subtitle">Open the DME app to accept this Trivia challenge. This link can only be used once!</p>
+      <a href="{{ app_link }}" class="btn">🎮 Accept Challenge</a>
+      <p class="subtitle" style="margin-top: 12px; font-size:13px;">Tap the button above. If the app doesn't open,<br>make sure DME is installed.</p>
+
+    {% elif status == 'already_used' %}
+      <h1>Already Played!</h1>
+      <div class="used-badge">🔒 This challenge has already been accepted and played. One-time links can only be used once.</div>
+      <p class="subtitle">Download DME to start your own Trivia battles!</p>
+
+    {% elif status == 'expired' %}
+      <h1>Link Expired</h1>
+      <div class="expired-badge">⏰ This challenge link has expired (7-day limit). Ask your friend to send a new challenge!</div>
+
+    {% else %}
+      <h1>Not Found</h1>
+      <div class="used-badge">❓ This challenge link is invalid or doesn't exist.</div>
+    {% endif %}
+
+    <a href="https://dme-19zq.onrender.com/invite" class="download-link">Download DME App</a>
+  </div>
+
+  {% if status == 'valid' %}
+  <script>
+    // Auto-open the app link on load
+    window.location.href = '{{ app_link }}';
+  </script>
+  {% endif %}
+</body>
+</html>

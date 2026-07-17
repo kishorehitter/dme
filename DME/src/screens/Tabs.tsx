@@ -19,11 +19,14 @@ import {
   Platform,
   PermissionsAndroid,
   DeviceEventEmitter,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
+import LinearGradient from 'react-native-linear-gradient';
+import { launchCamera } from 'react-native-image-picker';
+import { CustomGalleryPicker, GalleryAsset } from '../components/CustomGalleryPicker';
 import { useAuth } from '../context/AuthContext';
 import { resolveImageUrl } from '../utils/image';
 import AvatarWithFallback from '../components/AvatarWithFallback';
@@ -74,23 +77,31 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
         onPress={hasStatus ? onView : onAdd}
         activeOpacity={0.7}
       >
-        <View style={styles.avatarWrapper}>
+        <View style={styles.avatarWrapperMy}>
           {hasStatus && (
-            <View style={[
-              styles.statusRing,
-              allSeen ? styles.ringViewed : styles.ringUnseen,
-            ]} />
+            allSeen ? (
+              <View style={[styles.statusRingMy, styles.ringViewed]} />
+            ) : (
+              <LinearGradient
+                colors={['#ff4d6d', '#4597f5f6']}
+                start={{ x: 0, y: 1 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.gradientRingMy}
+              >
+                <View style={styles.gradientRingInnerMy} />
+              </LinearGradient>
+            )
           )}
           
           <AvatarWithFallback
             uri={avatar}
             sticker={avatarSticker}
             displayName={username}
-            style={styles.avatar}
+            style={styles.avatarMy}
           />
 
-          <TouchableOpacity style={styles.addBadge} onPress={onAdd}>
-            <Icon name="add" size={14} color="#fff" />
+          <TouchableOpacity style={styles.addBadgeMy} onPress={onAdd}>
+            <Icon name="add" size={16} color="#fff" />
           </TouchableOpacity>
         </View>
 
@@ -118,10 +129,18 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
   return (
     <TouchableOpacity style={styles.statusRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.avatarWrapper}>
-        <View style={[
-          styles.statusRing,
-          group.has_unseen ? styles.ringUnseen : styles.ringViewed,
-        ]} />
+        {group.has_unseen ? (
+          <LinearGradient
+            colors={['#ff4d6d', '#4597f5f6']}
+            start={{ x: 0, y: 1 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.gradientRing54}
+          >
+            <View style={styles.gradientRingInner54} />
+          </LinearGradient>
+        ) : (
+          <View style={[styles.statusRing, styles.ringViewed]} />
+        )}
         <AvatarWithFallback
           uri={group.user_avatar}
           sticker={group.user_avatar_sticker}
@@ -150,31 +169,21 @@ export const StatusTabScreen = () => {
   const [friendGroups,   setFriendGroups]   = useState<UserStatusGroup[]>([]);
   const [refreshing,     setRefreshing]     = useState(false);
   const [menuVisible,    setMenuVisible]    = useState(false);
+  const [galleryVisible, setGalleryVisible] = useState(false);
 
   const loadStatuses = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [all, convs] = await Promise.all([
+      const [all, friends] = await Promise.all([
         StatusService.getStatuses(),
-        chatAPI.getConversations(),
+        chatAPI.getFriends().catch(() => []),
       ]);
 
-      let conversationsArray: any[] = [];
-      if (Array.isArray(convs)) {
-        conversationsArray = convs;
-      } else if (convs?.results) {
-        conversationsArray = convs.results;
-      }
-
-      const conversationUserIds = new Set<number>();
-      conversationsArray.forEach(c => {
-        if (!c.is_group && c.other_user?.id) {
-          conversationUserIds.add(c.other_user.id);
-        }
-      });
+      const friendsArray = Array.isArray(friends) ? friends : (friends?.results || []);
+      const friendIds = new Set<number>(friendsArray.map((f: any) => f.id));
 
       const mine   = all.filter(s => s.user_id === currentUser?.id);
-      const others = all.filter(s => s.user_id !== currentUser?.id && conversationUserIds.has(s.user_id));
+      const others = all.filter(s => s.user_id !== currentUser?.id && friendIds.has(s.user_id));
       setMyStatuses(mine);
       setFriendGroups(StatusService.groupByUser(others));
     } catch (err) {
@@ -208,13 +217,24 @@ export const StatusTabScreen = () => {
     }
   };
 
-  const openGallery = async () => {
-    await requestCameraPermission();
-    const result = await launchImageLibrary({
-      mediaType: 'mixed',
-      quality: 0.8,
+  const openGallery = () => {
+    setGalleryVisible(true);
+  };
+
+  const handleGallerySelect = (assets: GalleryAsset[]) => {
+    setGalleryVisible(false);
+    if (!assets || assets.length === 0) return;
+    const first = assets[0];
+    const pending = assets.slice(1).map(a => ({
+      mediaUri:  a.uri,
+      mediaType: a.type?.startsWith('video') ? 'video' : 'photo',
+    }));
+    navigation.navigate('StatusEditor', {
+      mediaUri:     first.uri,
+      mediaType:    first.type?.startsWith('video') ? 'video' : 'photo',
+      source:       'gallery',
+      pendingMedia: pending,
     });
-    handlePickerResult(result);
   };
 
   const openCamera = async () => {
@@ -280,18 +300,33 @@ export const StatusTabScreen = () => {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
-        <MediaPickerModal 
-          visible={cameraMenuVisible} 
+        <MediaPickerModal
+          visible={cameraMenuVisible}
           onClose={() => setCameraMenuVisible(false)}
           top={50}
           right={16}
-          onMediaSelected={(asset, type) => {
-              navigation.navigate('StatusEditor', {
-                mediaUri: asset.uri,
-                mediaType: type === 'image' ? 'photo' : 'video',
-                source: 'camera',
-              });
+          onOpenGallery={() => {
+            setCameraMenuVisible(false);
+            setGalleryVisible(true);
           }}
+          onMediaSelected={(assets: any) => {
+            const asset = Array.isArray(assets) ? assets[0] : assets;
+            if (!asset?.uri) return;
+            navigation.navigate('StatusEditor', {
+              mediaUri:  asset.uri,
+              mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+              source:    'camera',
+            });
+          }}
+        />
+        <CustomGalleryPicker
+          visible={galleryVisible}
+          onClose={() => setGalleryVisible(false)}
+          onSelect={handleGallerySelect}
+          maxSelect={10}
+          assetType="All"
+          maxDuration={61}
+          theme="light"
         />
         {/* ... rest of existing code ... */}
       <StatusPopoverMenu 
@@ -363,14 +398,15 @@ const StatusPopoverMenu = ({
 }) => {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
-        <View style={styles.popover}>
-          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onPrivacySettings(); }}>
-            <Icon name="lock-closed-outline" size={20} color="#333" />
-            <Text style={styles.popoverText}>Status Privacy</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={StyleSheet.absoluteFillObject} />
+      </TouchableWithoutFeedback>
+      <View style={styles.popover}>
+        <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onPrivacySettings(); }}>
+          <Icon name="lock-closed-outline" size={20} color="#333" />
+          <Text style={styles.popoverText}>Status Privacy</Text>
+        </TouchableOpacity>
+      </View>
     </Modal>
   );
 };
@@ -388,18 +424,19 @@ const CallLogPopoverMenu = ({
 }) => {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
-        <View style={styles.popover}>
-          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onClearAll(); }}>
-            <Icon name="trash-outline" size={20} color="#333" />
-            <Text style={styles.popoverText}>Clear all history</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
-            <Icon name="checkbox-outline" size={20} color="#333" />
-            <Text style={styles.popoverText}>Select calls</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={StyleSheet.absoluteFillObject} />
+      </TouchableWithoutFeedback>
+      <View style={styles.popover}>
+        <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onClearAll(); }}>
+          <Icon name="trash-outline" size={20} color="#333" />
+          <Text style={styles.popoverText}>Clear all history</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
+          <Icon name="checkbox-outline" size={20} color="#333" />
+          <Text style={styles.popoverText}>Select calls</Text>
+        </TouchableOpacity>
+      </View>
     </Modal>
   );
 };
@@ -729,14 +766,19 @@ const styles = StyleSheet.create({
     borderRadius: RING_SIZE / 2,
     borderWidth:  RING_WIDTH,
   },
-  ringUnseen: {
-    borderColor:    '#4597f5f6',
-    // Glow effect via shadow
-    shadowColor:    '#4597f5f6',
-    shadowOffset:   { width: 0, height: 0 },
-    shadowOpacity:  0.8,
-    shadowRadius:   6,
-    elevation:      6,
+  gradientRing54: {
+    position: 'absolute',
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gradientRingInner54: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#ffffff',
   },
   ringViewed: {
     borderColor: '#C0C0C0',
@@ -745,6 +787,40 @@ const styles = StyleSheet.create({
     width:        AVATAR_SIZE,
     height:       AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
+  },
+  avatarWrapperMy: {
+    width:          74,
+    height:         74,
+    marginRight:    14,
+    justifyContent: 'center',
+    alignItems:     'center',
+    position:       'relative',
+  },
+  statusRingMy: {
+    position:     'absolute',
+    width:        74,
+    height:       74,
+    borderRadius: 37,
+    borderWidth:  RING_WIDTH,
+  },
+  gradientRingMy: {
+    position: 'absolute',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gradientRingInnerMy: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#ffffff',
+  },
+  avatarMy: {
+    width:        64,
+    height:       64,
+    borderRadius: 32,
   },
   avatarFallback: {
     backgroundColor: '#E8DEF8',
@@ -766,6 +842,19 @@ const styles = StyleSheet.create({
     width:           20,
     height:          20,
     borderRadius:    10,
+    backgroundColor: '#4597f5f6',
+    justifyContent:  'center',
+    alignItems:      'center',
+    borderWidth:     2,
+    borderColor:     '#fff',
+  },
+  addBadgeMy: {
+    position:        'absolute',
+    bottom:          1,
+    right:           1,
+    width:           22,
+    height:          22,
+    borderRadius:    11,
     backgroundColor: '#4597f5f6',
     justifyContent:  'center',
     alignItems:      'center',

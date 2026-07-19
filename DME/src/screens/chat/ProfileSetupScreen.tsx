@@ -168,7 +168,7 @@ export const ProfileSetupScreen: React.FC = () => {
       <View style={styles.profilePictureContainer}>
         {isSubmitting ? (
           <View style={[styles.previewImage, styles.previewPlaceholder, styles.uploadingContainer]}>
-            <ActivityIndicator size="large" color="#4597f5f6" />
+            <ActivityIndicator size="large" color="#555555" />
           </View>
         ) : imagePreviewUrl ? (
           <Image source={{ uri: imagePreviewUrl }} style={styles.previewImage} />
@@ -278,6 +278,7 @@ export const ProfileSetupScreen: React.FC = () => {
         onClose={() => setGalleryPickerVisible(false)}
         onSelect={handleGallerySelect}
         maxSelect={1}
+        assetType="Photos"
       />
     </ScrollView>
   );

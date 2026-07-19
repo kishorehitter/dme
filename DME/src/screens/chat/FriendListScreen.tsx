@@ -11,6 +11,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { chatAPI, callsAPI } from '../../services/api';
@@ -123,7 +124,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const [conversationId, setConversationId] = useState(initialConversationId);
   const [activeTab, setActiveTab] = useState<HubTab>('friends');
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [isNewFriendSearchActive, setIsNewFriendSearchActive] = useState(false);
 
   // People search
   const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -154,12 +155,6 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
         .catch(err => console.error('[FriendList] fetchConversationId error:', err));
     }
   }, [conversationId, receiverId, isInvitingToCall]);
-
-  // ── Debounce search ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(searchQuery), 450);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
 
   // ── Load friends / requests on mount ────────────────────────────────────────
   const loadFriends = useCallback(async () => {
@@ -290,34 +285,58 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     }
   }, [isAdding, isInvitingToCall]);
 
-  // ── People search ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (isAdding || isInvitingToCall) return; // Search is handled locally for group add / call invite mode
-    if (!debouncedQuery.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    const search = async () => {
-      setIsSearching(true);
-      try {
-        const token = await AsyncStorage.getItem('access_token');
-        const contactsOnly = (isAdding || isInvitingToCall) ? '&contacts_only=true' : '';
-        const res = await fetch(
-          getApiUrl(`chat/users/search/?q=${encodeURIComponent(debouncedQuery.trim())}${contactsOnly}`),
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (res.ok) {
-          const data = await res.json();
-          setSearchResults(Array.isArray(data) ? data : []);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setIsSearching(false);
+  // ── Find new friend manually ──────────────────────────────────────────────────
+  const handleFindNewFriend = async () => {
+    const query = searchQuery.trim();
+    if (!query) return;
+
+    setIsSearching(true);
+    setIsNewFriendSearchActive(true);
+    try {
+      const token = await AsyncStorage.getItem('access_token');
+      const res = await fetch(
+        getApiUrl(`chat/users/search/?q=${encodeURIComponent(query)}`),
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        // Strict case-insensitive matching by username
+        const exactMatch = Array.isArray(data)
+          ? data.filter(u => (u.username || '').toLowerCase() === query.toLowerCase())
+          : [];
+        setSearchResults(exactMatch);
+      } else {
+        setSearchResults([]);
       }
-    };
-    search();
-  }, [debouncedQuery, isAdding, isInvitingToCall]);
+    } catch (err) {
+      console.error(err);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleClearSearch = () => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsNewFriendSearchActive(false);
+  };
+
+  // ── Center-screen toast ─────────────────────────────────────────────────────
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    setToastVisible(true);
+    toastOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+      Animated.delay(700),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToastVisible(false));
+  };
 
   // ── Actions ──────────────────────────────────────────────────────────────────
   const startChat = async (user: User) => {
@@ -340,6 +359,16 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     try {
       await chatAPI.sendFriendRequest(userId);
       setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'sent_pending' } : u));
+      showToast('Friend Request Sent');
+      // Reload sent requests and switch to Sent tab
+      await loadFriendRequests();
+      // Small delay so user sees the toast first, then switch tab
+      setTimeout(() => {
+        setIsNewFriendSearchActive(false);
+        setSearchResults([]);
+        setSearchQuery('');
+        setActiveTab('requests');
+      }, 900);
     } catch {
       Alert.alert('Error', 'Failed to send friend request');
     }
@@ -353,11 +382,13 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     }
     // Update UI optimistically regardless
     setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
+    showToast('Friend Request Cancelled');
   };
 
   const handleAcceptFriendRequest = async (requestId: number) => {
     try {
       await chatAPI.acceptFriendRequest(requestId);
+      showToast('Friend Request Accepted 🎉');
       await loadFriendRequests();
       await loadFriends();
     } catch {
@@ -368,6 +399,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const handleRejectFriendRequest = async (requestId: number) => {
     try {
       await chatAPI.rejectFriendRequest(requestId);
+      showToast('Request Declined');
       await loadFriendRequests();
     } catch {
       Alert.alert('Error', 'Failed to decline friend request');
@@ -377,6 +409,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const handleCancelSentRequest = async (requestId: number) => {
     try {
       await chatAPI.cancelFriendRequest(requestId);
+      showToast('Request Cancelled');
       await loadFriendRequests();
     } catch {
       Alert.alert('Error', 'Failed to cancel friend request');
@@ -385,8 +418,10 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
 
   const handleAcceptFromSearch = async (userId: number) => {
     const req = friendRequests.find((r: any) => r.sender?.id === userId || r.from_user?.id === userId);
-    if (req) await handleAcceptFriendRequest(req.id);
-    else {
+    if (req) {
+      await handleAcceptFriendRequest(req.id);
+    } else {
+      showToast('Friend Request Accepted 🎉');
       setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'friends' } : u));
     }
   };
@@ -394,6 +429,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const handleRejectFromSearch = async (userId: number) => {
     const req = friendRequests.find((r: any) => r.sender?.id === userId || r.from_user?.id === userId);
     if (req) await handleRejectFriendRequest(req.id);
+    else showToast('Request Declined');
     setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
   };
 
@@ -525,43 +561,86 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     }
 
     return (
-      <TouchableOpacity 
-        style={styles.userRow} 
-        onPress={() => navigation.navigate('Profile', { user: item })}
-        activeOpacity={0.7}
-      >
-        <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={styles.avatar} />
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{displayName}</Text>
-          <Text style={styles.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
-        </View>
-      </TouchableOpacity>
+      <View style={styles.userRow}>
+        <TouchableOpacity 
+          style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+          onPress={() => navigation.navigate('Profile', { user: item })}
+          activeOpacity={0.7}
+        >
+          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={styles.avatar} />
+          <View style={styles.userInfo}>
+            <Text style={styles.userName}>{displayName}</Text>
+            <Text style={styles.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
+          </View>
+        </TouchableOpacity>
+        <AnimatedAddButton
+          friendStatus={item.friend_status || 'none'}
+          onAdd={() => {
+            if (item.friend_status === 'received_pending') {
+              handleAcceptFromSearch(item.id);
+            } else {
+              handleAddFriend(item.id);
+            }
+          }}
+          onCancel={() => {
+            if (item.friend_status === 'received_pending') {
+              handleRejectFromSearch(item.id);
+            } else {
+              handleCancelFriendRequest(item.id);
+            }
+          }}
+        />
+      </View>
     );
   };
 
   const isGroupMode = isAdding || isInvitingToCall;
-  const hasSearchQuery = debouncedQuery.trim().length > 0;
+
+  const getFilteredLocalData = () => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      if (activeTab === 'friends') return friends;
+      if (activeTab === 'requests') return sentFriendRequests;
+      return incomingFriendRequests;
+    }
+
+    if (activeTab === 'friends') {
+      return friends.filter(u => 
+        (u.display_name && u.display_name.toLowerCase().includes(query)) ||
+        (u.username && u.username.toLowerCase().includes(query)) ||
+        (u.email && u.email.toLowerCase().includes(query))
+      );
+    } else if (activeTab === 'requests') {
+      return sentFriendRequests.filter(item => {
+        const receiver = item.receiver || item.to_user;
+        const name = (receiver?.display_name || receiver?.username || receiver?.email || '').toLowerCase();
+        return name.includes(query);
+      });
+    } else {
+      return incomingFriendRequests.filter(item => {
+        const sender = item.sender || item.from_user;
+        const name = (sender?.display_name || sender?.username || sender?.email || '').toLowerCase();
+        return name.includes(query);
+      });
+    }
+  };
 
   const displayData: any[] = isGroupMode
-    ? (debouncedQuery.trim() 
+    ? (searchQuery.trim() 
         ? addModeUsers.filter(u => {
-            const lowerQ = debouncedQuery.trim().toLowerCase();
+            const lowerQ = searchQuery.trim().toLowerCase();
             return (u.display_name && u.display_name.toLowerCase().includes(lowerQ)) ||
                    (u.username && u.username.toLowerCase().includes(lowerQ)) ||
                    (u.email && u.email.toLowerCase().includes(lowerQ));
           })
         : addModeUsers)
-    : hasSearchQuery
+    : isNewFriendSearchActive
     ? searchResults
-    : activeTab === 'friends'
-    ? friends
-    : activeTab === 'requests'
-    ? sentFriendRequests
-    : incomingFriendRequests;
+    : getFilteredLocalData();
 
   const isDisplayLoading = isGroupMode
     ? isSearching || isLoadingFriends
-    : hasSearchQuery
+    : isNewFriendSearchActive
     ? isSearching
     : activeTab === 'friends'
     ? isLoadingFriends
@@ -573,6 +652,21 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
 
   return (
     <View style={styles.container}>
+
+      {/* ── Center-screen fade toast ── */}
+      <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
+        <View style={styles.toastOverlay} pointerEvents="none">
+          <Animated.View style={[styles.toastBox, { opacity: toastOpacity }]}>
+            <Icon
+              name={toastMessage.includes('Sent') ? 'checkmark-circle' : 'close-circle'}
+              size={22}
+              color={toastMessage.includes('Sent') ? '#4CAF50' : '#FF5252'}
+              style={{ marginRight: 8 }}
+            />
+            <Text style={styles.toastText}>{toastMessage}</Text>
+          </Animated.View>
+        </View>
+      </Modal>
       <View style={styles.searchWrapper}>
         <View style={styles.searchBar}>
           <Icon name="search" size={18} color="#888" style={{ marginRight: 8 }} />
@@ -583,14 +677,29 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
             value={searchQuery}
             onChangeText={v => {
               setSearchQuery(v);
+              if (isNewFriendSearchActive) {
+                setIsNewFriendSearchActive(false);
+                setSearchResults([]);
+              }
             }}
             autoCapitalize="none"
             autoCorrect={false}
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Icon name="close-circle" size={18} color="#AAA" />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {!isGroupMode && (
+                <TouchableOpacity 
+                  style={styles.findNewBtn} 
+                  onPress={handleFindNewFriend}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.findNewText}>Tap to Find</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={handleClearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Icon name="close-circle" size={18} color="#AAA" />
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
@@ -624,7 +733,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
           renderItem={
             isGroupMode
               ? renderSearchResult
-              : hasSearchQuery
+              : isNewFriendSearchActive
               ? renderSearchResult
               : activeTab === 'friends'
               ? renderFriendItem
@@ -634,21 +743,40 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
           }
           ListEmptyComponent={
             <View style={styles.centered}>
-              <Text style={styles.emptyIcon}>
-                {hasSearchQuery ? '🔍'
-                  : activeTab === 'friends' ? '👥'
-                  : activeTab === 'approve' ? '✅'
-                  : '📤'}
-              </Text>
+              <Icon
+                name={
+                  isNewFriendSearchActive
+                    ? 'search-outline'
+                    : searchQuery.trim()
+                    ? 'search-outline'
+                    : activeTab === 'friends'
+                    ? 'people-outline'
+                    : activeTab === 'approve'
+                    ? 'checkmark-circle-outline'
+                    : 'paper-plane-outline'
+                }
+                size={52}
+                color="#BBB"
+                style={{ marginBottom: 12 }}
+              />
               <Text style={styles.emptyTitle}>
-                {hasSearchQuery ? (debouncedQuery.trim() ? 'No users found' : 'Search for someone')
-                  : activeTab === 'friends' ? 'No friends yet'
-                  : activeTab === 'approve' ? 'No friend requests received'
+                {isNewFriendSearchActive
+                  ? 'No users found'
+                  : searchQuery.trim()
+                  ? 'No matches found'
+                  : activeTab === 'friends'
+                  ? 'No friends yet'
+                  : activeTab === 'approve'
+                  ? 'No friend requests received'
                   : 'No sent requests'}
               </Text>
               <Text style={styles.emptySub}>
-                {hasSearchQuery ? 'Try a different name or username'
-                  : activeTab === 'friends' ? 'Search for people and send friend requests'
+                {isNewFriendSearchActive
+                  ? 'Try searching a different exact username'
+                  : searchQuery.trim()
+                  ? 'No matching people in your list'
+                  : activeTab === 'friends'
+                  ? 'Search for people and send friend requests'
                   : activeTab === 'approve' ? 'Incoming friend requests appear here'
                   : 'Friend requests you send appear here'}
               </Text>
@@ -820,6 +948,45 @@ const styles = StyleSheet.create({
     elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4,
   },
   floatBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  findNewBtn: {
+    backgroundColor: "#444444",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginRight: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  findNewText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  toastOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  toastBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(30, 30, 30, 0.88)',
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    borderRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  toastText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
 });
 
 export default FriendListScreen;

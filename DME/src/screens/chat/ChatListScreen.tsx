@@ -21,6 +21,7 @@ import {
   PanResponder,
   Linking,
   Animated,
+  Easing,
   Share,
   Keyboard,
   Dimensions,
@@ -253,8 +254,106 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
   const [downloadProgress, setDownloadProgress] = useState(0);
 
   const [containerHeight, setContainerHeight] = useState<number | null>(null);
-  const [exactMatchedUser, setExactMatchedUser] = useState<User | null>(null);
   const searchRef = useRef<TextInput>(null);
+
+  // ── Auto-reset countdown after 1 s of idle typing ───────────────────────────
+  const [countdownActive, setCountdownActive] = useState(false);
+  const [countdownValue, setCountdownValue] = useState(3);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearCountdown = () => {
+    setCountdownActive(false);
+    setCountdownValue(3);
+    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+  };
+
+  const startCountdown = () => {
+    setCountdownActive(true);
+    setCountdownValue(3);
+    let tick = 3;
+    countdownIntervalRef.current = setInterval(() => {
+      tick -= 1;
+      setCountdownValue(tick);
+      if (tick <= 0) {
+        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      }
+    }, 1000);
+    countdownTimerRef.current = setTimeout(() => {
+      setSearchQuery('');
+      setCountdownActive(false);
+      setCountdownValue(3);
+    }, 3000);
+  };
+
+  // Reset idle timer on every keystroke
+  useEffect(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    clearCountdown();
+    if (!searchQuery.trim()) return;
+    idleTimerRef.current = setTimeout(() => {
+      startCountdown();
+    }, 1000);
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
+
+  // ── Search bar pink glow border animation ─────────────────────────────────
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [searchBarWidth, setSearchBarWidth] = useState(350);
+  const borderTranslateX = useRef(new Animated.Value(0)).current;
+  const glowOpacity = useRef(new Animated.Value(0)).current;
+  const translateAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+  const opacityAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  const startSpinForward = () => {
+    translateAnimRef.current?.stop();
+    opacityAnimRef.current?.stop();
+    borderTranslateX.setValue(0);
+
+    translateAnimRef.current = Animated.timing(borderTranslateX, {
+      toValue: -searchBarWidth,
+      duration: 3000,
+      useNativeDriver: true,
+      easing: Easing.linear,
+    });
+
+    opacityAnimRef.current = Animated.timing(glowOpacity, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    });
+
+    Animated.parallel([translateAnimRef.current, opacityAnimRef.current]).start();
+  };
+
+  const startSpinReverse = () => {
+    translateAnimRef.current?.stop();
+    opacityAnimRef.current?.stop();
+
+    borderTranslateX.stopAnimation(current => {
+      const duration = Math.abs(current) > 0 ? (Math.abs(current) / searchBarWidth) * 3000 : 0;
+
+      translateAnimRef.current = Animated.timing(borderTranslateX, {
+        toValue: 0,
+        duration: duration,
+        useNativeDriver: true,
+        easing: Easing.linear,
+      });
+
+      opacityAnimRef.current = Animated.timing(glowOpacity, {
+        toValue: 0,
+        duration: 350,
+        useNativeDriver: true,
+      });
+
+      Animated.parallel([translateAnimRef.current, opacityAnimRef.current]).start();
+    });
+  };
 
   const [isKeyboardActive, setIsKeyboardActive] = useState(false);
 
@@ -273,48 +372,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       hideSubscription.remove();
     };
   }, []);
-
-  useEffect(() => {
-    if (!searchQuery.trim()) {
-      setExactMatchedUser(null);
-      return;
-    }
-
-    const delayDebounceFn = setTimeout(async () => {
-      try {
-        const token = await AsyncStorage.getItem('access_token');
-        const query = searchQuery.trim();
-        const response = await fetch(
-          getApiUrl(`chat/users/search/?q=${encodeURIComponent(query)}`),
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          // Find if there is an exact case-insensitive match for username (excluding current user)
-          const exactUser = data.find((u: any) => 
-            (u.username || '').toLowerCase() === query.toLowerCase() &&
-            u.id !== user?.id
-          );
-
-          if (exactUser) {
-            // Check if we already have a conversation with this user that has messages
-            const hasConv = conversations.some(c => !c.is_group && c.other_user?.id === exactUser.id && c.last_message !== null);
-            if (!hasConv) {
-              setExactMatchedUser(exactUser);
-              return;
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Error fetching user for exact match:', err);
-      }
-      setExactMatchedUser(null);
-    }, 500);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery, conversations]);
 
   // ── Onboarding tour ────────────────────────────────────────────────────────
   const ONBOARDING_KEY = `dme_onboarding_done_v1_${user?.id || 'default'}`;
@@ -717,7 +774,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                         navigation.navigate('YouTubeDiscovery', {});
                       }
                     }}
-                    style={{ marginRight: 16 }}
+                    style={{ marginRight: 12 }}
                   >
                     {activeRoomCode ? (
                       <Animated.View style={{ transform: [{ rotate: spin }] }}>
@@ -737,7 +794,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                         </LinearGradient>
                       </Animated.View>
                     ) : (
-                      <Icon name="play" size={28} color="#ff0000" />
+                      <Icon name="play" size={32} color="#af0000" />
                     )}
                   </TouchableOpacity>
                 </View>
@@ -828,7 +885,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   let listData: any[] = [];
   if (activeTab === 'pending') {
-    // Pending tab: incoming pending message requests (receiver sees here)
     const filteredRequests = messageRequests.filter(mr => {
       if (!searchQuery.trim()) return true;
       const reqSender = mr.sender;
@@ -839,28 +895,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       ...mr,
       isMessageRequest: true,
     }));
-    if (exactMatchedUser) {
-      listData.push({
-        id: `exact_match_${exactMatchedUser.id}`,
-        isVirtual: true,
-        is_group: false,
-        other_user: exactMatchedUser,
-        last_message: null,
-        unread_count: 0,
-      } as any);
-    }
   } else {
     listData = [...filteredConversations];
-    if (exactMatchedUser) {
-      listData.push({
-        id: `exact_match_${exactMatchedUser.id}`,
-        isVirtual: true,
-        is_group: false,
-        other_user: exactMatchedUser,
-        last_message: null,
-        unread_count: 0,
-      } as any);
-    }
   }
 
   return (
@@ -946,38 +982,97 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           </View>
         </View>
       </Modal>
-      <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4, backgroundColor: '#fff' }}>
-        <LinearGradient
-          colors={['#424242f6', '#4597f5f6']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={{ padding: 1.5, borderRadius: 24 }}
+      <View style={{ paddingHorizontal: 16, paddingBottom: 4, paddingTop: 4, backgroundColor: '#fff' }}>
+        {/* ── Search bar with rotating pink glow border ── */}
+        <View 
+          onLayout={e => {
+            const w = e.nativeEvent.layout.width;
+            if (w > 0 && w !== searchBarWidth) {
+              setSearchBarWidth(w);
+            }
+          }}
+          style={{ borderRadius: 24, overflow: 'hidden' }}
         >
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 22.5, paddingHorizontal: 12 }}>
-            <Icon name="search" size={20} color="#888" />
+          {/* Static dark→blue gradient border — always visible */}
+          <LinearGradient
+            colors={['#424242f6', '#4597f5f6']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+          {/* Sliding pink glow overlay — fades slowly from right to left over 3s */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              {
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: 0,
+                width: searchBarWidth * 2,
+                opacity: glowOpacity,
+              },
+              { transform: [{ translateX: borderTranslateX }] },
+            ]}
+          >
+            <LinearGradient
+              colors={['#FF1493', '#FF69B4', 'transparent']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={{ width: '100%', height: '100%' }}
+            />
+          </Animated.View>
+          {/* White input box — sits 1.5 px inset so the ring behind shows through */}
+          <View style={{
+            margin: 1.5,
+            borderRadius: 22.5,
+            backgroundColor: '#fff',
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 12,
+          }}>
+            <Icon name="search" size={20} color={isSearchFocused ? '#FF1493' : '#888'} />
             <TextInput
               ref={searchRef}
               style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 16, color: '#333' }}
               placeholder="Search by name..."
               placeholderTextColor="#888"
               value={searchQuery}
-              onChangeText={setSearchQuery}
+              onChangeText={v => {
+                setSearchQuery(v);
+                if (countdownActive) clearCountdown();
+              }}
               onFocus={() => {
+                setIsSearchFocused(true);
+                startSpinForward();
                 setIsKeyboardActive(true);
                 DeviceEventEmitter.emit('hide_tab_bar_instantly');
               }}
               onBlur={() => {
+                setIsSearchFocused(false);
+                startSpinReverse();
                 setIsKeyboardActive(false);
                 DeviceEventEmitter.emit('show_tab_bar_smoothly');
               }}
             />
             {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Icon name="close-circle" size={20} color="#888" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {countdownActive && (
+                  <View style={{
+                    width: 24, height: 24, borderRadius: 12,
+                    backgroundColor: '#333333',
+                    justifyContent: 'center', alignItems: 'center',
+                  }}>
+                    <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{countdownValue}s</Text>
+                  </View>
+                )}
+                <TouchableOpacity onPress={() => { clearCountdown(); setSearchQuery(''); }}>
+                  <Icon name="close-circle" size={20} color="#888" />
+                </TouchableOpacity>
+              </View>
             )}
           </View>
-        </LinearGradient>
+        </View>
       </View>
 
       <FlatList
@@ -1191,36 +1286,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           }
 
           if ((item as any).isVirtual) {
-            const extUser = item.other_user;
-            const displayName = extUser?.display_name || extUser?.username || extUser?.email || 'User';
-
-            const handlePressVirtual = () => {
-              setSearchQuery('');
-              setExactMatchedUser(null);
-              setActiveTab('friends');
-              navigation.navigate('Profile', { user: extUser });
-            };
-
-            return (
-              <TouchableOpacity 
-                style={styles.conversationItem} 
-                onPress={handlePressVirtual}
-                activeOpacity={0.7}
-              >
-                <AvatarWithFallback
-                  uri={extUser?.profile_picture}
-                  sticker={extUser?.avatar_sticker}
-                  displayName={displayName}
-                  style={styles.avatar}
-                />
-                <View style={styles.content}>
-                  <Text style={styles.name}>{displayName}</Text>
-                  <Text style={styles.lastMessage} numberOfLines={1}>
-                    {extUser?.username ? `@${extUser.username}` : extUser?.email}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
+            // Virtual rows removed — no-op guard kept for safety
+            return null;
           }
 
           const isSelected = selectedIds.includes(item.id);
@@ -1393,7 +1460,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 position: 'absolute',
                 top: -6,
                 right: -6,
-                backgroundColor: '#4CAF50', // Green
+                backgroundColor: '#0e6d12', // Green
                 borderRadius: 12,
                 minWidth: 24,
                 height: 24,

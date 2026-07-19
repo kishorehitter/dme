@@ -1347,9 +1347,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               </View>
 
               <View style={styles.headerRowCenter}>
-                <View style={styles.pointsCenterBadge}>
-                  <Text style={styles.pointsCenterText}>
-                    {getPointsForDifficulty(currentQuestion.difficulty)} {getPointsForDifficulty(currentQuestion.difficulty) === 1 ? 'Point' : 'Points'}
+                <View style={[styles.pointsCenterBadge, { backgroundColor: `${activeCategoryConfig.color}15`, borderColor: `${activeCategoryConfig.color}40` }]}>
+                  <Text style={[styles.pointsCenterText, { color: activeCategoryConfig.color }]}>
+                    {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                   </Text>
                 </View>
               </View>
@@ -1362,46 +1362,10 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               </View>
             </View>
 
-            {/* Scrollable Category Tabs to toggle category during gameplay */}
-            <View style={styles.categoryTabsContainer}>
-              <ScrollView
-                ref={categoryScrollViewRef}
-                horizontal={true}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.categoryTabsScroll}
-              >
-                {CATEGORIES.map((cat) => {
-                  const isCurrent = selectedCategory === cat.id;
-                  return (
-                    <TouchableOpacity
-                      key={cat.id}
-                      style={[
-                        styles.categoryTabButton,
-                        isCurrent && styles.categoryTabButtonActive,
-                      ]}
-                      onPress={() => {
-                        switchCategoryDuringGame(cat.id);
-                      }}
-                      onLayout={(event) => {
-                        tabOffsets[cat.id] = event.nativeEvent.layout.x;
-                      }}
-                    >
-                      <Text style={[
-                        styles.categoryTabText,
-                        isCurrent && styles.categoryTabTextActive,
-                      ]}>
-                        {cat.emoji} {language === 'tamil' && cat.nameTa ? cat.nameTa : cat.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
             {/* Bordered Container enclosing Question Card & Choices */}
             <View style={styles.mainGameBox}>
               {/* Question Card */}
-              <Animated.View style={[styles.card, { transform: [{ scale: cardScale }] }]}>
+              <Animated.View style={[styles.card, { transform: [{ scale: cardScale }] }, { position: 'relative' }]}>
                 <Text style={styles.questionText}>{currentQuestion.text}</Text>
               </Animated.View>
 
@@ -1462,7 +1426,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                               {String.fromCharCode(65 + index)}
                             </Text>
                           </View>
-                          <Text style={[styles.choiceText, { color: textColor }]}>
+                          <Text style={[styles.choiceText, { color: '#111111' }]}>
                             {choice}
                           </Text>
                           {showCorrect && (
@@ -1485,6 +1449,17 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 <Icon name="chevron-back" size={20} color="#1E3A5F" />
                 <Text style={styles.navButtonText}>Prev</Text>
               </TouchableOpacity>
+              <View style={{
+                paddingVertical: 2,
+              }}>
+                <Text style={{
+                  fontSize: 14,
+                  fontFamily: 'Kalam-Bold',
+                  color: '#fa0505',
+                }}>
+                  {getPointsForDifficulty(currentQuestion.difficulty)} {getPointsForDifficulty(currentQuestion.difficulty) === 1 ? 'mark' : 'mark'}
+                </Text>
+              </View>
               <TouchableOpacity style={styles.navButton} onPress={() => goToNextWithAnswers()}>
                 <Text style={styles.navButtonText}>Skip</Text>
                 <Icon name="chevron-forward" size={20} color="#1E3A5F" />
@@ -1566,7 +1541,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                     <Text style={styles.detailValue}>{percentage}%</Text>
                   </View>
                   <View style={[styles.detailRow, { backgroundColor: '#2EC4B6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 }]}>
-                    <Text style={[styles.detailLabel, { color: '#fff' }]}>Total Points</Text>
+                    <Text style={[styles.detailLabel, { color: '#fff' }]}>Total Marks</Text>
                     <Text style={[styles.detailValue, { color: '#fff', fontSize: 20 }]}>{score} / {maxPoints}</Text>
                   </View>
                 </View>
@@ -2713,8 +2688,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    marginTop: 16,
-    marginBottom: 20,
+    marginTop: 10,
+    marginBottom: 10,
   },
   navButton: {
     flexDirection: 'row',
@@ -2755,15 +2730,15 @@ const styles = StyleSheet.create({
   choicesContainer: {
     flex: 1,
     justifyContent: 'space-evenly',
-    marginVertical: 10,
+    marginVertical: 8,
   },
   choiceButton: {
     borderWidth: 1.5,
     borderRadius: borderRadius.md,
-    padding: 8,
+    padding: 6,
     minHeight: 40,
     justifyContent: 'center',
-    width: '88%',
+    width: '92%',
     alignSelf: 'center',
   },
   choiceRow: {

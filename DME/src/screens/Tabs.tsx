@@ -28,6 +28,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { launchCamera } from 'react-native-image-picker';
 import { CustomGalleryPicker, GalleryAsset } from '../components/CustomGalleryPicker';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { resolveImageUrl } from '../utils/image';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import { MediaPickerModal } from '../components/MediaPickerModal';
@@ -67,6 +68,8 @@ interface MyStatusRowProps {
 const MyStatusRow: React.FC<MyStatusRowProps> = ({
   statuses, username, avatar, avatarSticker, onView, onAdd, onViewViewers,
 }) => {
+  const { theme } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const hasStatus = statuses.length > 0;
   const allSeen   = hasStatus && statuses.every(s => s.is_viewed);
 
@@ -126,6 +129,8 @@ interface FriendStatusRowProps {
 }
 
 const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => {
+  const { theme } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   return (
     <TouchableOpacity style={styles.statusRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.avatarWrapper}>
@@ -154,7 +159,7 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
         <Text style={styles.rowSub}>{timeAgo(group.latest_at)}</Text>
       </View>
 
-      <Icon name="chevron-forward" size={18} color="#ccc" />
+      <Icon name="chevron-forward" size={18} color={theme.border} />
     </TouchableOpacity>
   );
 };
@@ -162,6 +167,8 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
 // ─── StatusTabScreen ──────────────────────────────────────────────────────────
 
 export const StatusTabScreen = () => {
+  const { theme, isDark } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const { user: currentUser } = useAuth();
   const navigation = useNavigation<any>();
 
@@ -284,22 +291,23 @@ export const StatusTabScreen = () => {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerTitle: 'Status',
-      headerTitleStyle: { color: '#1A1A1A', fontWeight: 'bold', fontSize: 20 },
+      headerTitleStyle: { color: theme.textPrimary, fontWeight: 'bold', fontSize: 20 },
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity onPress={() => { console.log('Camera button pressed'); setCameraMenuVisible(true); }} style={{ marginRight: 20 }}>
-            <Icon name="camera-outline" size={24} color="#333" />
+            <Icon name="camera-outline" size={24} color={theme.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
-            <Icon name="ellipsis-vertical" size={24} color="#333" />
+            <Icon name="ellipsis-vertical" size={24} color={theme.textPrimary} />
           </TouchableOpacity>
         </View>
       ),
+      headerStyle: { backgroundColor: theme.surface },
     });
-  }, [navigation]);
+  }, [navigation, theme]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
         <MediaPickerModal
           visible={cameraMenuVisible}
           onClose={() => setCameraMenuVisible(false)}
@@ -350,15 +358,15 @@ export const StatusTabScreen = () => {
       <FlatList
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
-        contentContainerStyle={{ flexGrow: 1 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 80 }}
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color="#4597f5f6" />
+              <ActivityIndicator size="large" color={theme.primary} />
             </View>
           ) : (
             <View style={styles.empty}>
-              <Icon name="person-outline" size={38} color="#ddd" />
+              <Icon name="person-outline" size={38} color={theme.border} />
               <Text style={styles.emptyText}>No recent updates</Text>
             </View>
           )
@@ -377,6 +385,8 @@ export const StatusTabScreen = () => {
 // ─── Call log ───────────────────────────────────────────────────────────────
 
 const CallLogItemAvatar = ({ avatar, sticker, name }: { avatar: string | null, sticker: string | null, name: string }) => {
+  const { theme } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   return (
     <AvatarWithFallback
       uri={avatar}
@@ -396,6 +406,8 @@ const StatusPopoverMenu = ({
   onClose: () => void, 
   onPrivacySettings: () => void 
 }) => {
+  const { theme } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
@@ -403,7 +415,7 @@ const StatusPopoverMenu = ({
       </TouchableWithoutFeedback>
       <View style={styles.popover}>
         <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onPrivacySettings(); }}>
-          <Icon name="lock-closed-outline" size={20} color="#333" />
+          <Icon name="lock-closed-outline" size={20} color={theme.textPrimary} />
           <Text style={styles.popoverText}>Status Privacy</Text>
         </TouchableOpacity>
       </View>
@@ -422,6 +434,8 @@ const CallLogPopoverMenu = ({
   onClearAll: () => void, 
   onSelect: () => void 
 }) => {
+  const { theme } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
@@ -429,11 +443,11 @@ const CallLogPopoverMenu = ({
       </TouchableWithoutFeedback>
       <View style={styles.popover}>
         <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onClearAll(); }}>
-          <Icon name="trash-outline" size={20} color="#333" />
+          <Icon name="trash-outline" size={20} color={theme.textPrimary} />
           <Text style={styles.popoverText}>Clear all history</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.popoverItem} onPress={() => { onClose(); onSelect(); }}>
-          <Icon name="checkbox-outline" size={20} color="#333" />
+          <Icon name="checkbox-outline" size={20} color={theme.textPrimary} />
           <Text style={styles.popoverText}>Select calls</Text>
         </TouchableOpacity>
       </View>
@@ -441,13 +455,18 @@ const CallLogPopoverMenu = ({
   );
 };
 
-const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => (
-  <TouchableOpacity onPress={onPress} style={{ marginRight: 16 }}>
-    <Icon name="ellipsis-vertical" size={24} color="#333" />
-  </TouchableOpacity>
-);
+const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => {
+  const { theme } = useTheme();
+  return (
+    <TouchableOpacity onPress={onPress} style={{ marginRight: 16 }}>
+      <Icon name="ellipsis-vertical" size={24} color={theme.textPrimary} />
+    </TouchableOpacity>
+  );
+};
 
 export const CallLogTabScreen = () => {
+  const { theme, isDark } = useTheme();
+  const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const navigation  = useNavigation<any>();
   const [logs,       setLogs]       = useState<CallLog[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -529,8 +548,8 @@ export const CallLogTabScreen = () => {
           </TouchableOpacity>
         ),
         headerTitleAlign: 'center',
-        headerStyle: { backgroundColor: '#F8F0FF', elevation: 0, shadowOpacity: 0 },
-        headerTitleStyle: { color: '#4597f5f6', fontWeight: 'bold' }
+        headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 },
+        headerTitleStyle: { color: theme.primary, fontWeight: 'bold' }
       });
     } else {
       navigation.setOptions({
@@ -538,11 +557,11 @@ export const CallLogTabScreen = () => {
         headerLeft: undefined,
         headerRight: () => <CallLogMenuButton onPress={() => setMenuVisible(true)} />,
         headerTitleAlign: 'left',
-        headerStyle: { backgroundColor: '#fff', elevation: 2, shadowOpacity: 0.1 },
-        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: '#1A1A1A' }
+        headerStyle: { backgroundColor: theme.surface, elevation: 2, shadowOpacity: 0.1 },
+        headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: theme.textPrimary }
       });
     }
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, theme, styles]);
 
   const toggleSelection = (id: string) => {
     setSelectedIds(prev => 
@@ -575,13 +594,13 @@ export const CallLogTabScreen = () => {
   };
 
   const directionConfig = (dir: 'outgoing' | 'missed' | 'incoming') => {
-    if (dir === 'outgoing') return { icon: 'arrow-up-outline',   color: '#4CAF50', label: 'Outgoing' };
-    if (dir === 'missed')   return { icon: 'arrow-down-outline', color: '#F44336', label: 'Missed'   };
-    return                         { icon: 'arrow-down-outline', color: '#4CAF50', label: 'Incoming'  };
+    if (dir === 'outgoing') return { icon: 'arrow-up-outline',   color: '#25D366', label: 'Outgoing' };
+    if (dir === 'missed')   return { icon: 'arrow-down-outline', color: '#FF3B30', label: 'Missed'   };
+    return                         { icon: 'arrow-down-outline', color: '#25D366', label: 'Incoming'  };
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
       <CallLogPopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -611,15 +630,15 @@ export const CallLogTabScreen = () => {
       <FlatList
         data={logs}
         keyExtractor={item => String(item.id)}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: 20 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 80 }}
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color="#4597f5f6" />
+              <ActivityIndicator size="large" color={theme.primary} />
             </View>
           ) : (
             <View style={styles.empty}>
-              <Icon name="call-outline" size={38} color="#ddd" />
+              <Icon name="call-outline" size={38} color={theme.border} />
               <Text style={styles.emptyText}>No call history</Text>
             </View>
           )
@@ -677,7 +696,7 @@ export const CallLogTabScreen = () => {
                   <Icon 
                     name={isSelected ? "checkbox" : "square-outline"} 
                     size={22} 
-                    color="#4597f5f6" 
+                    color={theme.primary} 
                   />
                 </View>
               )}
@@ -721,7 +740,7 @@ export const CallLogTabScreen = () => {
                   >
                     <Icon
                       name={item.call_type === 'video' ? 'videocam' : 'call'}
-                      size={22} color="#4597f5f6"
+                      size={22} color={theme.primary}
                     />
                   </TouchableOpacity>
                 </View>
@@ -741,16 +760,16 @@ const RING_WIDTH   = 3;
 const RING_GAP     = 2;
 const RING_SIZE    = AVATAR_SIZE + (RING_WIDTH + RING_GAP) * 2;
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   // ── Status rows ────────────────────────────────────────────────────────────
   statusRow: {
     flexDirection:  'row',
     alignItems:     'center',
     paddingHorizontal: 16,
     paddingVertical:   12,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
+    borderBottomColor: theme.separator,
   },
   avatarWrapper: {
     width:          RING_SIZE,
@@ -778,10 +797,10 @@ const styles = StyleSheet.create({
     width: 58,
     height: 58,
     borderRadius: 29,
-    backgroundColor: '#ffffff',
+    backgroundColor: theme.background,
   },
   ringViewed: {
-    borderColor: '#C0C0C0',
+    borderColor: theme.border,
   },
   avatar: {
     width:        AVATAR_SIZE,
@@ -815,7 +834,7 @@ const styles = StyleSheet.create({
     width: 68,
     height: 68,
     borderRadius: 34,
-    backgroundColor: '#ffffff',
+    backgroundColor: theme.background,
   },
   avatarMy: {
     width:        64,
@@ -823,12 +842,12 @@ const styles = StyleSheet.create({
     borderRadius: 32,
   },
   avatarFallback: {
-    backgroundColor: '#E8DEF8',
+    backgroundColor: theme.surface,
     justifyContent:  'center',
     alignItems:      'center',
   },
   avatarInitial: {
-    color:      '#4597f5f6',
+    color:      theme.primary,
     fontSize:   20,
     fontWeight: '600',
   },
@@ -842,11 +861,11 @@ const styles = StyleSheet.create({
     width:           20,
     height:          20,
     borderRadius:    10,
-    backgroundColor: '#4597f5f6',
+    backgroundColor: theme.primary,
     justifyContent:  'center',
     alignItems:      'center',
     borderWidth:     2,
-    borderColor:     '#fff',
+    borderColor:     theme.background,
   },
   addBadgeMy: {
     position:        'absolute',
@@ -855,21 +874,21 @@ const styles = StyleSheet.create({
     width:           22,
     height:          22,
     borderRadius:    11,
-    backgroundColor: '#4597f5f6',
+    backgroundColor: theme.primary,
     justifyContent:  'center',
     alignItems:      'center',
     borderWidth:     2,
-    borderColor:     '#fff',
+    borderColor:     theme.background,
   },
   rowName: {
     fontSize:   15,
     fontWeight: '600',
-    color:      '#111',
+    color:      theme.textPrimary,
     marginBottom: 2,
   },
   rowSub: {
     fontSize: 12,
-    color:    '#888',
+    color:    theme.textSecondary,
   },
   viewersBtn: {
     flexDirection: 'row',
@@ -879,15 +898,15 @@ const styles = StyleSheet.create({
   viewCountText: {
     marginLeft: 4,
     fontSize: 14,
-    color: '#555',
+    color: theme.textSecondary,
     fontWeight: '500',
   },
   sectionHeader: {
     fontSize:         12,
-    color:            '#999',
+    color:            theme.textMuted,
     paddingHorizontal: 16,
     paddingVertical:   8,
-    backgroundColor:  '#f8f8f8',
+    backgroundColor:  theme.chatBackground,
     textTransform:    'uppercase',
     letterSpacing:    0.5,
   },
@@ -904,7 +923,7 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     marginTop: 12,
-    color:     '#bbb',
+    color:     theme.textSecondary,
     fontSize:  14,
   },
 
@@ -915,29 +934,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    backgroundColor: '#fff',
+    borderBottomColor: theme.separator,
+    backgroundColor: theme.surface,
     gap: 12,
   },
   logAvatarImg: {
     width: 48, height: 48, borderRadius: 24,
   },
   logAvatarFallback: {
-    backgroundColor: '#E8DEF8',
+    backgroundColor: theme.surface,
     justifyContent: 'center',
     alignItems: 'center',
   },
   logAvatarInitial: {
-    color: '#4597f5f6', fontSize: 18, fontWeight: '600',
+    color: theme.primary, fontSize: 18, fontWeight: '600',
   },
   logName: {
-    fontSize: 15, fontWeight: '600', color: '#111',
+    fontSize: 15, fontWeight: '600', color: theme.textPrimary,
   },
   logSub: {
-    fontSize: 12, color: '#888',
+    fontSize: 12, color: theme.textSecondary,
   },
   logTime: {
-    fontSize: 11, color: '#aaa',
+    fontSize: 11, color: theme.textMuted,
   },
   // Selection mode
   selectionHeader: {
@@ -946,26 +965,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#F8F0FF',
+    backgroundColor: theme.chatBackground,
     borderBottomWidth: 1,
-    borderBottomColor: '#E8DEF8',
+    borderBottomColor: theme.separator,
   },
   selectionCancel: {
-    color: '#666',
+    color: theme.textSecondary,
     fontSize: 16,
   },
   selectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#4597f5f6',
+    color: theme.primary,
   },
   selectionDelete: {
-    color: '#F44336',
+    color: '#FF3B30',
     fontSize: 16,
     fontWeight: 'bold',
   },
   logItemSelected: {
-    backgroundColor: '#F8F0FF',
+    backgroundColor: theme.chatBackground,
   },
   checkboxContainer: {
     marginRight: -4,
@@ -976,7 +995,7 @@ const styles = StyleSheet.create({
     top: 50,
     right: 16,
     width: 180,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderRadius: 8,
     padding: 8,
     elevation: 5,
@@ -994,6 +1013,6 @@ const styles = StyleSheet.create({
   },
   popoverText: {
     fontSize: 14,
-    color: '#333',
+    color: theme.textPrimary,
   },
   });

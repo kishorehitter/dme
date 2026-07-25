@@ -43,6 +43,7 @@ import { websocketService, WebSocketMessage } from '../../services/websocket';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
 import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
 import audioRecorder from '../../modules/AudioRecorder';
 import AudioPlayer from '../../components/AudioPlayer';
 import { pick, types, errorCodes } from '@react-native-documents/picker';
@@ -93,11 +94,14 @@ const FRESH_CHAT_STICKERS = [
 ];
 
 
-const THEME_COLOR = '#4597f5f6';
+
 const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
 
 const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, conversationId }: any) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+
   const [hasStatus, setHasStatus] = useState(false);
 
   useEffect(() => {
@@ -135,7 +139,7 @@ const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, convers
 
   const avatarStyle = {
     ...style,
-    ...(hasStatus && { borderWidth: 2, borderColor: '#4597f5f6', padding: 2 }),
+    ...(hasStatus && { borderWidth: 2, borderColor: theme.primary, padding: 2 }),
   };
 
   return (
@@ -248,7 +252,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
     return (
       <Image
         source={{ uri: mediaUrl }}
-        style={styles.replyMediaThumbnail}
+        style={s.replyMediaThumbnail}
         resizeMode="cover"
       />
     );
@@ -256,7 +260,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
 
   if (replyType === 'video') {
     return (
-      <View style={styles.replyMediaPlaceholder}>
+      <View style={s.replyMediaPlaceholder}>
         <Icon name="play" size={16} color="#FFF" />
       </View>
     );
@@ -271,8 +275,8 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
     else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
 
     return (
-      <View style={styles.replyMediaPlaceholder}>
-        <Icon name={iconName} size={18} color={THEME_COLOR} />
+      <View style={s.replyMediaPlaceholder}>
+        <Icon name={iconName} size={18} color={theme.primary} />
       </View>
     );
   }
@@ -301,7 +305,7 @@ const getFileIconColor = (fileExt: string) => {
     case 'txt':
       return '#607D8B'; // Slate Grey
     default:
-      return THEME_COLOR;
+      return theme.primary;
   }
 };
 
@@ -381,6 +385,9 @@ const saveDimensionsToStorage = async () => {
 };
 
 const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>(() => {
     if (url && imageDimensionsCache.has(url)) {
       return imageDimensionsCache.get(url)!;
@@ -446,7 +453,7 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
   return (
     <TouchableOpacity 
       style={[
-        styles.imageContainer, 
+        s.imageContainer, 
         { 
             alignSelf: isMe ? 'flex-end' : 'flex-start',
             width: dimensions.width,
@@ -474,7 +481,7 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
       />
       {loading && !isSticker && (
         <View style={{ position: 'absolute', justifyContent: 'center', alignItems: 'center' }}>
-          <ActivityIndicator size="small" color={THEME_COLOR} />
+          <ActivityIndicator size="small" color={theme.primary} />
         </View>
       )}
       {!isSticker && timeOverlay}
@@ -485,6 +492,9 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
 let uniqueCounter = 0;
 
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+
   const insets = useSafeAreaInsets();
   const { conversationId, name } = route.params;
   const { user: currentUser } = useAuth();
@@ -864,13 +874,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             setFriendStatus(other.user.friend_status);
           }
 
-          // Track message request status for gating input (sender side)
-          if (data.message_request_status) {
-            setMessageRequestStatus(data.message_request_status);
-          }
-          if (data.message_request_sender_id) {
-            setMessageRequestSenderId(data.message_request_sender_id);
-          }
+          setMessageRequestStatus(data.message_request_status || null);
+          setMessageRequestSenderId(data.message_request_sender_id || null);
 
           // Check if user is blocked (from params or API)
           const params = route?.params;
@@ -890,6 +895,33 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         name,
       );
       if (name) setChatTitle(name);
+    }
+  };
+
+  const handleApproveMessageRequest = async () => {
+    try {
+      await chatAPI.approveMessageRequest(conversationId);
+      setMessageRequestStatus('accepted');
+      Toast.show({
+        type: 'success',
+        text1: 'Message request approved',
+        position: 'bottom',
+      });
+    } catch (err) {
+      console.error('Failed to approve message request:', err);
+      Alert.alert('Error', 'Failed to approve message request.');
+    }
+  };
+
+  const handleRejectMessageRequest = async () => {
+    try {
+      await chatAPI.rejectMessageRequest(conversationId);
+      setMessageRequestStatus('rejected');
+      Alert.alert('Request Declined', 'Message request has been declined.');
+      navigation.goBack();
+    } catch (err) {
+      console.error('Failed to reject message request:', err);
+      Alert.alert('Error', 'Failed to decline message request.');
     }
   };
 
@@ -1231,6 +1263,26 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         const target = messagesRef.current.find(m => m.id === message_id);
         const localId = target?.local_id || message_id.toString();
         localDatabase.softDeleteMessage(localId);
+        break;
+      }
+      case 'message_request_created': {
+        const { conversation_id, status, sender_id } = wsMsg.data;
+        if (conversation_id === parseInt(conversationId, 10)) {
+          setMessageRequestStatus(status);
+          setMessageRequestSenderId(sender_id);
+        }
+        break;
+      }
+      case 'message_request_status': {
+        const { conversation_id, status, sender_id } = wsMsg.data;
+        if (conversation_id === parseInt(conversationId, 10)) {
+          setMessageRequestStatus(status);
+          setMessageRequestSenderId(sender_id);
+          if (status === 'rejected' && sender_id === currentUser?.id) {
+            Alert.alert('Request Declined', 'Your message request was declined by the user.');
+            navigation.goBack();
+          }
+        }
         break;
       }
       case 'group_call':
@@ -2346,27 +2398,27 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const renderSearchBar = () => {
     if (!searchMode) return null;
     return (
-      <View style={styles.searchBar}>
+      <View style={s.searchBar}>
         <TouchableOpacity onPress={() => { setSearchMode(false); setSearchText(''); setSearchResults([]); setCurrentResultIndex(-1); }}>
           <Icon name="arrow-back" size={24} color="#666" />
         </TouchableOpacity>
         <TextInput
-          style={styles.searchInput}
+          style={s.searchInput}
           placeholder="Search messages..."
           value={searchText}
           onChangeText={handleSearchTextChange}
           autoFocus
         />
         {searchResults.length > 0 && (
-          <View style={styles.searchNav}>
-            <Text style={styles.searchCount}>
+          <View style={s.searchNav}>
+            <Text style={s.searchCount}>
               {`${currentResultIndex + 1} of ${searchResults.length}`}
             </Text>
-            <TouchableOpacity onPress={goToPrevResult} style={styles.searchNavButton}>
-              <Icon name="chevron-up" size={24} color={THEME_COLOR} />
+            <TouchableOpacity onPress={goToPrevResult} style={s.searchNavButton}>
+              <Icon name="chevron-up" size={24} color={theme.primary} />
             </TouchableOpacity>
-            <TouchableOpacity onPress={goToNextResult} style={styles.searchNavButton}>
-              <Icon name="chevron-down" size={24} color={THEME_COLOR} />
+            <TouchableOpacity onPress={goToNextResult} style={s.searchNavButton}>
+              <Icon name="chevron-down" size={24} color={theme.primary} />
             </TouchableOpacity>
           </View>
         )}
@@ -2540,7 +2592,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     return (
       <View style={[
-        styles.groupReceiptsContainer,
+        s.groupReceiptsContainer,
         {
           alignSelf: isMe ? 'flex-end' : 'flex-start',
           marginRight: isMe ? 16 : 0,
@@ -2549,16 +2601,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           marginBottom: 6,
         }
       ]}>
-        <View style={styles.groupReceiptsRow}>
+        <View style={s.groupReceiptsRow}>
           {viewers.map((v: any, idx: number) => {
             const isSelected = selectedReceiptUser?.id === v.user.id;
             return (
               <TouchableOpacity
                 key={v.user.id}
                 style={[
-                  styles.groupReceiptAvatarWrapper,
+                  s.groupReceiptAvatarWrapper,
                   idx > 0 && { marginLeft: -6 },
-                  isSelected && { borderWidth: 1.5, borderColor: THEME_COLOR, borderRadius: 10, padding: 1 }
+                  isSelected && { borderWidth: 1.5, borderColor: theme.primary, borderRadius: 10, padding: 1 }
                 ]}
                 activeOpacity={0.8}
                 onPress={() => {
@@ -2587,7 +2639,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         
         {selectedReceiptUser && viewers.some((v: any) => v.user.id === selectedReceiptUser.id) && (
           <Text style={[
-            styles.receiptDetailText,
+            s.receiptDetailText,
             { textAlign: isMe ? 'right' : 'left' }
           ]}>
             {`${selectedReceiptUser.name} • ${selectedReceiptUser.seenTime}`}
@@ -2709,16 +2761,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       return (
         <View style={{ flexDirection: 'column', width: '100%' }}>
           {shouldShowDateSeparator(index, groupedMessages) && (
-            <View style={styles.dateSeparator}>
-              <Text style={styles.dateSeparatorText}>
+            <View style={s.dateSeparator}>
+              <Text style={s.dateSeparatorText}>
                 {formatSeparatorDate(item.created_at)}
               </Text>
             </View>
           )}
           <View
             style={[
-              styles.messageContainer,
-              isMe ? styles.myMessageContainer : styles.theirMessageContainer,
+              s.messageContainer,
+              isMe ? s.myMessageContainer : s.theirMessageContainer,
             ]}
           >
             {!isMe && (
@@ -2728,7 +2780,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   sticker={item.sender.avatar_sticker}
                   sName={sName}
                   userId={item.sender.id}
-                  style={styles.avatar}
+                  style={s.avatar}
                   navigation={navigation}
                   conversationId={conversationId}
                 />
@@ -2738,15 +2790,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             )}
             <View
               style={[
-                styles.messageBubble,
-                isMe ? styles.myMessageBubble : styles.theirMessageBubble,
-                { backgroundColor: '#F5F5F5' },
+                s.messageBubble,
+                isMe ? s.myMessageBubble : s.theirMessageBubble,
+                { backgroundColor: theme.chatBackground },
               ]}
             >
               <Text
                 style={[
-                  styles.messageText,
-                  { color: '#999', fontStyle: 'italic' },
+                  s.messageText,
+                  { color: theme.textMuted, fontStyle: 'italic' },
                 ]}
               >
                 The message was removed
@@ -2811,10 +2863,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         return (
           <View 
             pointerEvents="none"
-            style={[styles.imageContainer, alignmentStyle, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
+            style={[s.imageContainer, alignmentStyle, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
           >
             <Icon name="alert-circle-outline" size={32} color="#999" />
-            <Text style={{ color: '#999', fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
+            <Text style={{ color: theme.textMuted, fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
                {label}
             </Text>
           </View>
@@ -2851,19 +2903,19 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         const fileColor = getFileIconColor(fileExt);
 
         return (
-          <View style={[styles.documentBubbleInner, { alignSelf: isMe ? 'flex-end' : 'flex-start' }]}>
+          <View style={[s.documentBubbleInner, { alignSelf: isMe ? 'flex-end' : 'flex-start' }]}>
             {/* Left side: Icon + Extension label below it */}
-            <View style={styles.documentLeftContainer}>
+            <View style={s.documentLeftContainer}>
               <Icon name={iconName} size={32} color={fileColor} />
-              <Text style={[styles.documentExtLabel, { color: fileColor }]}>
+              <Text style={[s.documentExtLabel, { color: fileColor }]}>
                 {fileExt.toUpperCase() || 'FILE'}
               </Text>
             </View>
 
             {/* Middle: File name */}
-            <View style={styles.documentCenterContainer}>
+            <View style={s.documentCenterContainer}>
               <Text 
-                style={styles.documentFileNameText} 
+                style={s.documentFileNameText} 
                 numberOfLines={2}
                 ellipsizeMode="middle"
               >
@@ -2873,7 +2925,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
             {/* Right side: Green circular download button or Spinner */}
             <TouchableOpacity 
-              style={styles.documentDownloadButton}
+              style={s.documentDownloadButton}
               onPress={() => item.status !== 'sending' && downloadAndOpenFile(url, fileName)}
               activeOpacity={0.7}
               disabled={item.status === 'sending'}
@@ -2964,10 +3016,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     if (item.message_type === 'audio') {
       return (
-        <View style={[styles.audioContainer, alignmentStyle, { position: 'relative' }]}>
+        <View style={[s.audioContainer, alignmentStyle, { position: 'relative' }]}>
           <AudioPlayer
             mediaUrl={url}
-            themeColor={THEME_COLOR}
+            themeColor={theme.primary}
             duration={item.audio_duration}
             messageId={item.id}
           />
@@ -2978,7 +3030,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 justifyContent: 'center', alignItems: 'center',
                 borderRadius: 20,
             }}>
-              <ActivityIndicator size="small" color={THEME_COLOR} />
+              <ActivityIndicator size="small" color={theme.primary} />
             </View>
           )}
         </View>
@@ -2988,7 +3040,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     if (item.message_type === 'video') {
       return (
         <TouchableOpacity
-          style={[styles.videoContainer, alignmentStyle, { alignItems: isMe ? 'flex-end' : 'flex-start' }]}
+          style={[s.videoContainer, alignmentStyle, { alignItems: isMe ? 'flex-end' : 'flex-start' }]}
           onPress={(e) => handleMessagePress(item, e)}
           onLongPress={(e) => handleMessageLongPress(item, e)}
           activeOpacity={0.9}
@@ -3015,21 +3067,21 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       const hasThumbnail = ['image', 'video', 'document'].includes(getReplyMessageType(reply, messages) || '');
       return (
         <TouchableOpacity
-          style={[styles.replyIndicator, { backgroundColor: isSender ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)' }]}
+          style={[s.replyIndicator, { backgroundColor: isSender ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)' }]}
           onPress={() => jumpToMessage(reply.id)}
           activeOpacity={0.7}
         >
-          <View style={[styles.replyIndicatorLine, { backgroundColor: isSender ? '#FFFFFF' : THEME_COLOR }]} />
-          <View style={styles.replyIndicatorContentWrapper}>
-            <Text style={[styles.replyIndicatorText, { color: isSender ? '#FFFFFF' : THEME_COLOR }]} numberOfLines={1}>
+          <View style={[s.replyIndicatorLine, { backgroundColor: isSender ? '#FFFFFF' : theme.primary }]} />
+          <View style={s.replyIndicatorContentWrapper}>
+            <Text style={[s.replyIndicatorText, { color: isSender ? '#FFFFFF' : theme.primary }]} numberOfLines={1}>
               {String(reply.sender?.id === currentUser?.id ? 'You' : reply.sender?.display_name || 'User')}
             </Text>
-            <Text style={[styles.replyIndicatorContent, { color: isSender ? '#EEEEEE' : '#666' }]} numberOfLines={2}>
+            <Text style={[s.replyIndicatorContent, { color: isSender ? '#EEEEEE' : '#666' }]} numberOfLines={2}>
               {getMessagePreviewText(reply, messages)}
             </Text>
           </View>
           {hasThumbnail && (
-            <View style={styles.replyThumbnailContainer}>
+            <View style={s.replyThumbnailContainer}>
               {renderReplyThumbnail(reply, messages)}
             </View>
           )}
@@ -3039,10 +3091,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const renderReactionsBadge = (isSender: boolean) => (
       <View style={[
-        styles.reactionBadge,
+        s.reactionBadge,
         {
           alignSelf: isSender ? 'flex-end' : 'flex-start',
-          backgroundColor: '#FFFFFF',
+          backgroundColor: theme.background,
           borderRadius: 12,
           paddingHorizontal: 6,
           paddingVertical: 2,
@@ -3051,7 +3103,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           marginTop: 0,
           marginLeft: isSender ? 0 : 4,
           marginRight: isSender ? 4 : 0,
-          shadowColor: '#000',
+          shadowcolor: theme.textPrimary,
           shadowOffset: { width: 0, height: 1 },
           shadowOpacity: 0.1,
           shadowRadius: 1,
@@ -3059,7 +3111,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         }
       ]}>
         {validReactions.map(([userId, emoji]) => (
-          <Text key={userId} style={styles.reactionEmoji}>{String(emoji || '')}</Text>
+          <Text key={userId} style={s.reactionEmoji}>{String(emoji || '')}</Text>
         ))}
       </View>
     );
@@ -3067,16 +3119,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     return (
       <View style={{ flexDirection: 'column', width: '100%' }}>
         {shouldShowDateSeparator(index, groupedMessages) && (
-          <View style={styles.dateSeparator}>
-            <Text style={styles.dateSeparatorText}>
+          <View style={s.dateSeparator}>
+            <Text style={s.dateSeparatorText}>
               {formatSeparatorDate(item.created_at)}
             </Text>
           </View>
         )}
         <View
           style={[
-            styles.messageContainer,
-            isMe ? styles.myMessageContainer : styles.theirMessageContainer,
+            s.messageContainer,
+            isMe ? s.myMessageContainer : s.theirMessageContainer,
             hasReactions && { marginBottom: 12 },
           ]}
         >
@@ -3087,7 +3139,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 sticker={item.sender.avatar_sticker}
                 sName={sName}
                 userId={item.sender.id}
-                style={styles.avatar}
+                style={s.avatar}
                 navigation={navigation}
                 conversationId={conversationId}
               />
@@ -3111,15 +3163,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '80%', position: 'relative' }}>
                   <TouchableOpacity
                     style={[
-                      styles.messageBubble,
-                      isMe ? styles.myMessageBubble : styles.theirMessageBubble,
+                      s.messageBubble,
+                      isMe ? s.myMessageBubble : s.theirMessageBubble,
                       { alignItems: isMe ? 'flex-end' : 'flex-start' },
                       isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
                       !isMediaMessage && { minWidth: 50 },
                       highlightMessageId === item.id && { 
                         backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
                         borderWidth: 2,
-                        borderColor: THEME_COLOR 
+                        borderColor: theme.primary 
                       }
                     ]}
                     onPress={(e) => {
@@ -3136,7 +3188,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     delayLongPress={500}
                   >
                     {item.reply_to && renderReplyIndicator(item.reply_to, isMe)}
-                    {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+                    {!isMe && isGroup && <Text style={s.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
                     <View>
                       <View style={{ position: 'relative' }}>
                         {renderMedia()}
@@ -3194,7 +3246,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   {!!item.edited_at && (
                     <Text style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                   )}
-                  <Text style={[styles.messageText, { color: '#FFFFFF' }]}>
+                  <Text style={[s.messageText, { color: '#FFFFFF' }]}>
                     {String(item.content || '')}
                   </Text>
                 </TouchableOpacity>
@@ -3204,8 +3256,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               <View style={{ maxWidth: '70%', minWidth: 50, alignSelf: 'flex-start' }}>
                 <TouchableOpacity
                   style={[
-                    styles.messageBubble,
-                    styles.theirMessageBubble,
+                    s.messageBubble,
+                    s.theirMessageBubble,
                     {
                       width: '100%',
                       alignItems: 'flex-start',
@@ -3221,11 +3273,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   delayLongPress={500}
                 >
                   {item.reply_to && renderReplyIndicator(item.reply_to, false)}
-                  {!isMe && isGroup && <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+                  {!isMe && isGroup && <Text style={s.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
                   {!!item.edited_at && (
                     <Text style={{ fontSize: 11, color: '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                   )}
-                  <Text style={[styles.messageText, { color: '#000000' }]}>
+                  <Text style={[s.messageText, { color: theme.textPrimary }]}>
                     {String(item.content || '')}
                   </Text>
                                   </TouchableOpacity>
@@ -3238,7 +3290,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         {/* Seen Status (Instagram Style) */}
         {!isGroup && item.id === latestSeenMessageId && (
           <View style={{ alignSelf: 'flex-end', marginRight: 16, marginTop: -2, marginBottom: 6 }}>
-            <Text style={{ fontSize: 11, color: '#999', fontWeight: '500' }}>
+            <Text style={{ fontSize: 11, color: theme.textMuted, fontWeight: '500' }}>
               {fmtSeenTime(item.delivered_at || item.created_at)}
             </Text>
           </View>
@@ -3255,10 +3307,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const renderGroupCallBanner = () => {
     if (!activeGroupCall || !isGroup) return null;
     return (
-      <View style={styles.callBanner}>
-        <Text style={styles.callBannerText}>📞 Group call in progress...</Text>
+      <View style={s.callBanner}>
+        <Text style={s.callBannerText}>📞 Group call in progress...</Text>
         <TouchableOpacity
-          style={styles.joinButton}
+          style={s.joinButton}
           onPress={() => {
             navigation.navigate('Call', {
               callType: activeGroupCall.call_type,
@@ -3268,7 +3320,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             });
           }}
         >
-          <Text style={styles.joinButtonText}>Join</Text>
+          <Text style={s.joinButtonText}>Join</Text>
         </TouchableOpacity>
       </View>
     );
@@ -3276,21 +3328,21 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   return (
     <KeyboardAvoidingView
-      style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+      style={[s.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Header */}
       {searchMode ? renderSearchBar() : (
-      <View style={styles.customHeader}>
+      <View style={s.customHeader}>
         <TouchableOpacity 
-           style={styles.headerBackButton}
+           style={s.headerBackButton}
            onPress={() => navigation.goBack()}
         >
           <Icon name="arrow-back" size={24} color={'#111111'} />
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.headerCenter}
+          style={s.headerCenter}
           onPress={() =>
             isGroup
               ? navigation.navigate('GroupInfo', { conversationId })
@@ -3307,14 +3359,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
             displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
             isGroup={isGroup}
-            style={styles.headerAvatar}
+            style={s.headerAvatar}
           />
 
-          <View style={styles.headerTextContainer}>
-            <Text style={styles.headerName} numberOfLines={1}>
+          <View style={s.headerTextContainer}>
+            <Text style={s.headerName} numberOfLines={1}>
               {chatTitle}
             </Text>
-            <Text style={styles.headerStatus}>
+            <Text style={s.headerStatus}>
               {isGroup
                 ? groupDescription || 'Group details'
                 : otherUser
@@ -3330,10 +3382,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
         </TouchableOpacity>
 
-        <View style={styles.headerRight}>
+        <View style={s.headerRight}>
           {/* Call buttons are disabled and muted if users are not friends (except in groups) */}
           <TouchableOpacity
-            style={[styles.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            style={[s.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
             disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
@@ -3358,7 +3410,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             <Icon name="videocam" size={22} color={'#111111'} />
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            style={[s.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
             disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
@@ -3394,7 +3446,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         data={groupedMessages}
         renderItem={renderMessage}
         keyExtractor={item => (item.local_id || item.id).toString()}
-        contentContainerStyle={[styles.messagesList, { paddingBottom: 8 }]}
+        contentContainerStyle={[s.messagesList, { paddingBottom: 8 }]}
         inverted={true}
         // Load older messages when user scrolls to top (= onEndReached in inverted list)
         onEndReached={loadOlderMessages}
@@ -3421,9 +3473,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         scrollEventThrottle={16}
         ListFooterComponent={
           isLoadingOlder ? (
-            <View style={styles.loadingOlderContainer}>
-              <ActivityIndicator size="small" color={THEME_COLOR} />
-              <Text style={styles.loadingOlderText}>
+            <View style={s.loadingOlderContainer}>
+              <ActivityIndicator size="small" color={theme.primary} />
+              <Text style={s.loadingOlderText}>
                 Loading older messages...
               </Text>
             </View>
@@ -3435,13 +3487,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         removeClippedSubviews={false}
         ListEmptyComponent={
           isLoading ? (
-            <View style={styles.listLoadingContainer}>
-              <ActivityIndicator size="large" color={THEME_COLOR} />
+            <View style={s.listLoadingContainer}>
+              <ActivityIndicator size="large" color={theme.primary} />
             </View>
           ) : !isLoading && searchText ? (
-            <View style={styles.emptySearchContainer}>
+            <View style={s.emptySearchContainer}>
               <Icon name="search-outline" size={48} color="#DDD" />
-              <Text style={styles.emptySearchText}>No messages found</Text>
+              <Text style={s.emptySearchText}>No messages found</Text>
             </View>
           ) : null
         }
@@ -3450,7 +3502,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       {/* Scroll to bottom button */}
       {showScrollToBottom && (
         <TouchableOpacity
-          style={styles.scrollToBottomButton}
+          style={s.scrollToBottomButton}
           onPress={scrollToBottom}
           activeOpacity={0.8}
         >
@@ -3460,8 +3512,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       {/* Typing */}
       {typingUsers.length > 0 && (
-        <View style={styles.typingContainer}>
-          <Text style={styles.typingText}>
+        <View style={s.typingContainer}>
+          <Text style={s.typingText}>
             {`${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`}
           </Text>
         </View>
@@ -3469,23 +3521,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       {/* Reply preview */}
       {replyToMessage && (
-        <View style={styles.replyPreview}>
-          <View style={styles.replyPreviewContent}>
-            <Text style={styles.replyPreviewTitle}>
+        <View style={s.replyPreview}>
+          <View style={s.replyPreviewContent}>
+            <Text style={s.replyPreviewTitle}>
               {`Replying to ${replyToMessage.sender.id === currentUser?.id ? 'yourself' : replyToMessage.sender.display_name || 'User'}`}
             </Text>
-            <Text style={styles.replyPreviewText} numberOfLines={2}>
+            <Text style={s.replyPreviewText} numberOfLines={2}>
               {getMessagePreviewText(replyToMessage, messages)}
             </Text>
           </View>
           {['image', 'video', 'document'].includes(getReplyMessageType(replyToMessage, messages) || '') && (
-            <View style={styles.replyPreviewThumbnailContainer}>
+            <View style={s.replyPreviewThumbnailContainer}>
               {renderReplyThumbnail(replyToMessage, messages)}
             </View>
           )}
           <TouchableOpacity
             onPress={() => setReplyToMessage(null)}
-            style={styles.cancelReplyButton}
+            style={s.cancelReplyButton}
           >
             <Icon name="close" size={20} color="#666" />
           </TouchableOpacity>
@@ -3503,20 +3555,20 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         }}
       >
         <TouchableOpacity
-          style={styles.modalOverlay}
+          style={s.modalOverlay}
           activeOpacity={1}
           onPress={() => {
             setShowEmojiPicker(false);
             setSelectedMessage(null);
           }}
         >
-          <View style={styles.emojiPicker}>
-            <Text style={styles.emojiPickerTitle}>React with</Text>
-            <View style={styles.emojiGrid}>
+          <View style={s.emojiPicker}>
+            <Text style={s.emojiPickerTitle}>React with</Text>
+            <View style={s.emojiGrid}>
               {EMOJIS.map(e => (
                 <TouchableOpacity
                   key={e}
-                  style={styles.emojiButton}
+                  style={s.emojiButton}
                   onPress={() => {
                     if (selectedMessage) {
                       const targetId = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0].id : selectedMessage.id;
@@ -3524,14 +3576,14 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     }
                   }}
                 >
-                  <Text style={styles.emoji}>{e}</Text>
+                  <Text style={s.emoji}>{e}</Text>
                 </TouchableOpacity>
               ))}
             </View>
             {selectedMessage && (
-              <View style={styles.messageActions}>
+              <View style={s.messageActions}>
                 <TouchableOpacity
-                  style={styles.actionButton}
+                  style={s.actionButton}
                   onPress={() => {
                     if (selectedMessage) {
                       const targetMsg = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0] : selectedMessage;
@@ -3545,10 +3597,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     <Icon
                       name="arrow-undo-outline"
                       size={20}
-                      color={THEME_COLOR}
+                      color={theme.primary}
                       style={{ marginRight: 8 }}
                     />
-                    <Text style={styles.actionButtonText}>Reply</Text>
+                    <Text style={s.actionButtonText}>Reply</Text>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -3559,10 +3611,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       {/* Double-tap reaction animation overlay */}
       {doubleTapReaction.visible && (
-        <View style={styles.doubleTapOverlay}>
+        <View style={s.doubleTapOverlay}>
           <Animated.View
             style={[
-              styles.doubleTapReaction,
+              s.doubleTapReaction,
               {
                 top: doubleTapReaction.y,
                 left: doubleTapReaction.x,
@@ -3572,7 +3624,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             ]}
             pointerEvents="none"
           >
-            <Text style={styles.doubleTapHeart}>{currentUser?.quick_reaction || '❤️'}</Text>
+            <Text style={s.doubleTapHeart}>{currentUser?.quick_reaction || '❤️'}</Text>
           </Animated.View>
         </View>
       )}
@@ -3620,9 +3672,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }
 
             return (
-              <View style={[styles.messageActionsContainer, positionStyle]}>
+              <View style={[s.messageActionsContainer, positionStyle]}>
                 {/* Row 1: Reactions */}
-                <View style={styles.emojiRow}>
+                <View style={s.emojiRow}>
                   <FlatList
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -3631,11 +3683,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     contentContainerStyle={{ paddingHorizontal: 8 }}
                     renderItem={({ item: emoji }) => (
                       <TouchableOpacity
-                        style={styles.emojiQuickButton}
+                        style={s.emojiQuickButton}
                         onPress={() => handleQuickReaction(emoji)}
                         activeOpacity={0.7}
                       >
-                        <Text style={styles.emojiQuick}>{emoji}</Text>
+                        <Text style={s.emojiQuick}>{emoji}</Text>
                       </TouchableOpacity>
                     )}
                   />
@@ -3643,16 +3695,16 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
                 {/* Row 2: Sender (Time & Status) vs Receiver (Time Only) */}
                 {isMe ? (
-                  <View style={styles.menuTimeStatusRow}>
-                    <Text style={styles.menuTimeText}>
+                  <View style={s.menuTimeStatusRow}>
+                    <Text style={s.menuTimeText}>
                       {fmtMsgTime(selectedMessage.created_at)}
                     </Text>
-                    <Text style={styles.menuTimeText}>
+                    <Text style={s.menuTimeText}>
                       {new Date(selectedMessage.created_at).toLocaleDateString()}
                     </Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       {selectedMessage.is_read ? (
-                        <Icon name="checkmark-done" size={16} color={THEME_COLOR} />
+                        <Icon name="checkmark-done" size={16} color={theme.primary} />
                       ) : selectedMessage.delivered_at ? (
                         <Icon name="checkmark-done" size={16} color="#A0A0A0" />
                       ) : (
@@ -3661,31 +3713,31 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     </View>
                   </View>
                 ) : (
-                  <View style={styles.menuTimeStatusRow}>
-                    <Text style={styles.menuTimeText}>
+                  <View style={s.menuTimeStatusRow}>
+                    <Text style={s.menuTimeText}>
                       {fmtMsgTime(selectedMessage.created_at)}
                     </Text>
-                    <Text style={styles.menuTimeText}>
+                    <Text style={s.menuTimeText}>
                       {new Date(selectedMessage.created_at).toLocaleDateString()}
                     </Text>
                   </View>
                 )}
 
                 {/* Vertical actions menu */}
-                <View style={styles.actionsColumn}>
+                <View style={s.actionsColumn}>
                   {/* Row 3: Reply */}
                   <TouchableOpacity
-                    style={styles.actionMenuItem}
+                    style={s.actionMenuItem}
                     onPress={handleReplyFromMenu}
                   >
-                    <View style={styles.actionMenuItemContent}>
+                    <View style={s.actionMenuItemContent}>
                       <Icon
                         name="arrow-undo-outline"
                         size={20}
                         color="#333"
                         style={{ marginRight: 12 }}
                       />
-                      <Text style={styles.actionMenuItemText}>Reply</Text>
+                      <Text style={s.actionMenuItemText}>Reply</Text>
                     </View>
                   </TouchableOpacity>
 
@@ -3695,51 +3747,51 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                       {/* Edit */}
                       {canEdit && (
                         <TouchableOpacity
-                          style={styles.actionMenuItem}
+                          style={s.actionMenuItem}
                           onPress={handleEditMessage}
                         >
-                          <View style={styles.actionMenuItemContent}>
+                          <View style={s.actionMenuItemContent}>
                             <Icon
                               name="create-outline"
                               size={20}
                               color="#333"
                               style={{ marginRight: 12 }}
                             />
-                            <Text style={styles.actionMenuItemText}>Edit</Text>
+                            <Text style={s.actionMenuItemText}>Edit</Text>
                           </View>
                         </TouchableOpacity>
                       )}
 
                       {/* Copy */}
                       <TouchableOpacity
-                        style={styles.actionMenuItem}
+                        style={s.actionMenuItem}
                         onPress={handleCopyMessage}
                       >
-                        <View style={styles.actionMenuItemContent}>
+                        <View style={s.actionMenuItemContent}>
                           <Icon
                             name="copy-outline"
                             size={20}
                             color="#333"
                             style={{ marginRight: 12 }}
                           />
-                          <Text style={styles.actionMenuItemText}>Copy</Text>
+                          <Text style={s.actionMenuItemText}>Copy</Text>
                         </View>
                       </TouchableOpacity>
 
                       {/* Unsend */}
                       {canUnsend && (
                         <TouchableOpacity
-                          style={styles.actionMenuItem}
+                          style={s.actionMenuItem}
                           onPress={handleDeleteMessage}
                         >
-                          <View style={styles.actionMenuItemContent}>
+                          <View style={s.actionMenuItemContent}>
                             <Icon
                               name="trash-outline"
                               size={20}
                               color="#FF4444"
                               style={{ marginRight: 12 }}
                             />
-                            <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
+                            <Text style={[s.actionMenuItemText, { color: '#FF4444' }]}>
                               Unsend
                             </Text>
                           </View>
@@ -3750,33 +3802,33 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     <>
                       {/* Copy */}
                       <TouchableOpacity
-                        style={styles.actionMenuItem}
+                        style={s.actionMenuItem}
                         onPress={handleCopyMessage}
                       >
-                        <View style={styles.actionMenuItemContent}>
+                        <View style={s.actionMenuItemContent}>
                           <Icon
                             name="copy-outline"
                             size={20}
                             color="#333"
                             style={{ marginRight: 12 }}
                           />
-                          <Text style={styles.actionMenuItemText}>Copy</Text>
+                          <Text style={s.actionMenuItemText}>Copy</Text>
                         </View>
                       </TouchableOpacity>
 
                       {/* Delete */}
                       <TouchableOpacity
-                        style={styles.actionMenuItem}
+                        style={s.actionMenuItem}
                         onPress={handleDeleteMessage}
                       >
-                        <View style={styles.actionMenuItemContent}>
+                        <View style={s.actionMenuItemContent}>
                           <Icon
                             name="trash-outline"
                             size={20}
                             color="#FF4444"
                             style={{ marginRight: 12 }}
                           />
-                          <Text style={[styles.actionMenuItemText, { color: '#FF4444' }]}>
+                          <Text style={[s.actionMenuItemText, { color: '#FF4444' }]}>
                             Delete
                           </Text>
                         </View>
@@ -3798,13 +3850,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         onRequestClose={() => setShowFullEmojiPicker(false)}
       >
         <TouchableOpacity
-          style={styles.modalOverlay}
+          style={s.modalOverlay}
           activeOpacity={1}
           onPress={() => setShowFullEmojiPicker(false)}
         >
-          <View style={styles.emojiPicker}>
-            <Text style={styles.emojiPickerTitle}>All Emojis</Text>
-            <View style={styles.emojiGrid}>
+          <View style={s.emojiPicker}>
+            <Text style={s.emojiPickerTitle}>All Emojis</Text>
+            <View style={s.emojiGrid}>
               {[
                 '❤️',
                 '😂',
@@ -3825,13 +3877,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               ].map(e => (
                 <TouchableOpacity
                   key={e}
-                  style={styles.emojiButton}
+                  style={s.emojiButton}
                   onPress={() => {
                     handleQuickReaction(e);
                     setShowFullEmojiPicker(false);
                   }}
                 >
-                  <Text style={styles.emoji}>{e}</Text>
+                  <Text style={s.emoji}>{e}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -3846,23 +3898,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         animationType="fade"
         onRequestClose={() => {}}
       >
-        <View style={styles.permissionModalOverlay}>
-          <View style={styles.permissionModal}>
+        <View style={s.permissionModalOverlay}>
+          <View style={s.permissionModal}>
             <Icon
               name="mic"
               size={48}
-              color={THEME_COLOR}
+              color={theme.primary}
               style={{ marginBottom: spacing.md }}
             />
-            <Text style={styles.permissionModalTitle}>
+            <Text style={s.permissionModalTitle}>
               Microphone Access Required
             </Text>
-            <Text style={styles.permissionModalMessage}>
+            <Text style={s.permissionModalMessage}>
               Allow microphone access to record voice messages.
             </Text>
-            <View style={styles.permissionModalButtons}>
+            <View style={s.permissionModalButtons}>
               <TouchableOpacity
-                style={[styles.permissionButton, styles.allowButton]}
+                style={[s.permissionButton, s.allowButton]}
                 onPress={() => {
                   setShowPermissionModal(false);
                   Linking.openSettings();
@@ -3870,21 +3922,21 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               >
                 <Text
                   style={[
-                    styles.permissionButtonText,
-                    styles.permissionButtonTextWhite,
+                    s.permissionButtonText,
+                    s.permissionButtonTextWhite,
                   ]}
                 >
                   Allow Access
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.permissionButton, styles.notNowButton]}
+                style={[s.permissionButton, s.notNowButton]}
                 onPress={() => setShowPermissionModal(false)}
               >
                 <Text
                   style={[
-                    styles.permissionButtonText,
-                    styles.permissionButtonTextDark,
+                    s.permissionButtonText,
+                    s.permissionButtonTextDark,
                   ]}
                 >
                   Not Now
@@ -3897,10 +3949,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       {/* Input bar */}
       {isUserBlocked ? (
-        <View style={styles.blockedContainer}>
-          <Text style={styles.blockedText}>You have blocked this user</Text>
+        <View style={s.blockedContainer}>
+          <Text style={s.blockedText}>You have blocked this user</Text>
           <TouchableOpacity
-            style={styles.unblockButton}
+            style={s.unblockButton}
             onPress={async () => {
               if (!otherUser?.id) return;
               try {
@@ -3942,25 +3994,25 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               }
             }}
           >
-            <Text style={styles.unblockButtonText}>Unblock User</Text>
+            <Text style={s.unblockButtonText}>Unblock User</Text>
           </TouchableOpacity>
         </View>
       ) : amIBlocked ? (
-        <View style={styles.blockedContainer}>
-          <Text style={styles.blockedText}>You are blocked by this user</Text>
-          <Text style={styles.blockedSubtext}>
+        <View style={s.blockedContainer}>
+          <Text style={s.blockedText}>You are blocked by this user</Text>
+          <Text style={s.blockedSubtext}>
             Messages will not be delivered
           </Text>
         </View>
       ) : (
         <>
           {messages.length === 0 && !isLoading && (
-            <View style={styles.quickStickersRowWrapper}>
-              <View style={styles.quickStickersContainerEvenly}>
+            <View style={s.quickStickersRowWrapper}>
+              <View style={s.quickStickersContainerEvenly}>
                 {FRESH_CHAT_STICKERS.map((st) => (
                   <TouchableOpacity
                     key={st.id}
-                    style={styles.quickStickerCard}
+                    style={s.quickStickerCard}
                     onPress={() => sendLottieSticker(st)}
                     activeOpacity={0.7}
                   >
@@ -3968,7 +4020,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                       source={{ uri: st.url }}
                       autoPlay
                       loop
-                      style={styles.quickStickerLottie}
+                      style={s.quickStickerLottie}
                       resizeMode="contain"
                     />
                   </TouchableOpacity>
@@ -3976,62 +4028,116 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               </View>
             </View>
           )}
-          <View style={styles.inputContainer}>
-            {/* Waiting-for-approval banner shown to message sender when request is pending */}
-            {!isGroup && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id && (
+          <View style={s.inputContainer}>
+            {/* Scenario A: The sender is waiting for approval */}
+            {!isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id ? (
               <View style={{
-                backgroundColor: '#FFF8E1',
-                borderTopWidth: 1,
-                borderTopColor: '#FFD54F',
-                paddingHorizontal: 14,
-                paddingVertical: 7,
+                backgroundColor: 'rgba(30, 30, 30, 0.95)',
+                borderTopWidth: 0.5,
+                borderTopColor: 'rgba(255, 255, 255, 0.1)',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                alignItems: 'center',
+                justifyContent: 'center',
               }}>
-                <Text style={{ fontSize: 12.5, color: '#795548', textAlign: 'center' }}>
-                  ⏳ Waiting for approval — you can only send one message until accepted
+                <Text style={{ fontSize: 13.5, color: 'rgba(255, 255, 255, 0.7)', fontWeight: '600', textAlign: 'center' }}>
+                  ⏳ Message request pending
+                </Text>
+                <Text style={{ fontSize: 11.5, color: 'rgba(255, 255, 255, 0.4)', marginTop: 2, textAlign: 'center' }}>
+                  You can send more messages once your request is approved.
                 </Text>
               </View>
+            ) : !isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' && messageRequestSenderId !== currentUser?.id ? (
+              /* Scenario B: The receiver sees a pending request */
+              <View style={{
+                backgroundColor: 'rgba(30, 30, 30, 0.95)',
+                borderTopWidth: 0.5,
+                borderTopColor: 'rgba(255, 255, 255, 0.1)',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                alignItems: 'center',
+              }}>
+                <Text style={{ fontSize: 13.5, color: '#fff', fontWeight: '700', textAlign: 'center' }}>
+                  💬 Message Request
+                </Text>
+                <Text style={{ fontSize: 11.5, color: 'rgba(255, 255, 255, 0.5)', marginTop: 2, marginBottom: 12, textAlign: 'center' }}>
+                  Do you want to let {otherUser?.display_name || otherUser?.first_name || 'this user'} message you?
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 12, width: '100%', paddingHorizontal: 12 }}>
+                  <TouchableOpacity
+                    onPress={handleRejectMessageRequest}
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'rgba(255, 69, 58, 0.15)',
+                      borderWidth: 1,
+                      borderColor: 'rgb(255, 69, 58)',
+                      borderRadius: 20,
+                      paddingVertical: 8,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ color: 'rgb(255, 69, 58)', fontWeight: '700', fontSize: 13 }}>Reject</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleApproveMessageRequest}
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'rgba(52, 199, 89, 0.15)',
+                      borderWidth: 1,
+                      borderColor: 'rgb(52, 199, 89)',
+                      borderRadius: 20,
+                      paddingVertical: 8,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ color: 'rgb(52, 199, 89)', fontWeight: '700', fontSize: 13 }}>Approve</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              /* Scenario C: Normal input composer */
+              <ChatInputArea
+                isRecording={isRecording}
+                editingMessageId={editingMessageId}
+                inputText={inputText}
+                isSending={isSending}
+                handleAttachment={handleAttachmentStable}       
+                handleCameraCapture={handleCameraCaptureStable}
+                handleTyping={handleTyping}
+                sendMessage={sendMessageStable}
+                setStickerPreview={setStickerPreviewStable}
+                micPanResponder={micPanResponder}
+                micButtonScale={micButtonScale}
+                THEME_COLOR={theme.primary}
+                inputClearKey={inputClearKey}
+                onRegisterClear={(fn) => { clearInputRef.current = fn; }}
+                isDisabled={false}
+                onOpenStickerPicker={() => setStickerPickerVisible(true)}
+              />
             )}
-            <ChatInputArea
-              isRecording={isRecording}
-              editingMessageId={editingMessageId}
-              inputText={inputText}
-              isSending={isSending}
-              handleAttachment={handleAttachmentStable}       
-              handleCameraCapture={handleCameraCaptureStable}
-              handleTyping={handleTyping}
-              sendMessage={sendMessageStable}
-              setStickerPreview={setStickerPreviewStable}
-              micPanResponder={micPanResponder}
-              micButtonScale={micButtonScale}
-              THEME_COLOR={THEME_COLOR}
-              inputClearKey={inputClearKey}
-              onRegisterClear={(fn) => { clearInputRef.current = fn; }}
-              isDisabled={!isGroup && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id}
-              onOpenStickerPicker={() => setStickerPickerVisible(true)}
-            />
 
             {isRecording && (
               <Animated.View
                 style={[
-                  styles.recordingContainerInline,
+                  s.recordingContainerInline,
                   { transform: [{ translateX: slideX }] },
                 ]}
               >
                 <Animated.View
                   style={[
-                    styles.recordingPulseSmall,
+                    s.recordingPulseSmall,
                     { transform: [{ scale: micButtonScale }] },
                   ]}
                 >
-                  <View style={styles.recordingDotSmall} />
+                  <View style={s.recordingDotSmall} />
                 </Animated.View>
-                <Text style={styles.recordingTimerInline}>
+                <Text style={s.recordingTimerInline}>
                   {fmtRec(recordingTime)}
                 </Text>
                 <Text
                   style={[
-                    styles.slideHint,
-                    isCancelled && styles.slideHintCancel,
+                    s.slideHint,
+                    isCancelled && s.slideHintCancel,
                   ]}
                 >
                   {isCancelled ? '✕ Release to cancel' : '◀ Slide to cancel'}
@@ -4111,7 +4217,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       <CustomGalleryPicker
         visible={galleryPickerVisible}
         onClose={() => setGalleryPickerVisible(false)}
-        themeColor={THEME_COLOR}
+        themeColor={theme.primary}
         onSelect={(assets) => {
           if (assets.length > 0) {
             setSelectedMultiMedia(assets.map(asset => ({
@@ -4135,7 +4241,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             sendImageMessage(item, item.caption);
           });
         }}
-        themeColor={THEME_COLOR}
+        themeColor={theme.primary}
       />
       <MediaGroupListModal
         visible={groupListVisible}
@@ -4165,31 +4271,31 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             initialIndex: initialIndex >= 0 ? initialIndex : 0,
           });
         }}
-        themeColor={THEME_COLOR}
+        themeColor={theme.primary}
       />
       </KeyboardAvoidingView>
       );
       };
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.background },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
   },
   customHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     height: 60,
   },
   headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 28, color: '#181818', fontWeight: '300' },
+  backIcon: { fontSize: 28, color: theme.textPrimary, fontWeight: '300' },
   headerBackButton: {
     marginRight: spacing.sm,
     padding: spacing.xs,
@@ -4227,7 +4333,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'center',
   },
   headerAvatarText: {
-    color: THEME_COLOR,
+    color: theme.primary,
     fontSize: fontSize.lg,
     fontWeight: 'bold',
     textAlign: 'center',
@@ -4235,7 +4341,7 @@ const styles = StyleSheet.create({
   },
   headerTextContainer: { flex: 1 },
   headerName: { fontSize: fontSize.lg, fontWeight: '600', color: 'black' },
-  headerStatus: { fontSize: fontSize.xs, color: '#666' },
+  headerStatus: { fontSize: fontSize.xs, color: theme.textSecondary },
   activeText: { color: '#25D366', fontWeight: '500' },
   messagesList: { padding: spacing.md },
   loadingOlderContainer: {
@@ -4247,7 +4353,7 @@ const styles = StyleSheet.create({
   loadingOlderText: {
     marginLeft: spacing.sm,
     fontSize: fontSize.sm,
-    color: '#666',
+    color: theme.textSecondary,
   },
   messageContainer: {
     flexDirection: 'row',
@@ -4258,13 +4364,13 @@ const styles = StyleSheet.create({
   theirMessageContainer: { justifyContent: 'flex-start' },
   avatar: { width: 32, height: 32, borderRadius: 16, marginRight: spacing.xs },
   avatarPlaceholder: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     borderWidth: 1,
-    borderColor: THEME_COLOR,
+    borderColor: theme.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: { color: THEME_COLOR, fontSize: fontSize.sm, fontWeight: 'bold' },
+  avatarText: { color: theme.primary, fontSize: fontSize.sm, fontWeight: 'bold' },
   messageBubble: {
     borderRadius: borderRadius.lg,
   },
@@ -4272,13 +4378,13 @@ const styles = StyleSheet.create({
   theirMessageBubble: { backgroundColor: 'transparent', borderTopLeftRadius: 4 },
   senderName: {
     fontSize: fontSize.sm,
-    color: THEME_COLOR,
+    color: theme.primary,
     fontWeight: '600',
     marginBottom: spacing.xs,
   },
   messageText: { fontSize: 16, lineHeight: 22, flexShrink:0, flex:0 },
-  myMessageText: { color: '#000' },
-  theirMessageText: { color: '#000' },
+  myMessageText: { color: theme.textPrimary },
+  theirMessageText: { color: theme.textPrimary },
   messageFooter: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4286,13 +4392,13 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   messageTime: { fontSize: fontSize.xs },
-  myMessageTime: { color: '#666' },
-  theirMessageTime: { color: '#666' },
+  myMessageTime: { color: theme.textSecondary },
+  theirMessageTime: { color: theme.textSecondary },
   messageStatus: {
     fontSize: fontSize.xs,
     fontWeight: '700',
   },
-  seenText: { color: THEME_COLOR },
+  seenText: { color: theme.primary },
   deliveredText: { color: SENT_COLOR },
   sentText: { color: SENT_COLOR },
   groupReceiptsContainer: {
@@ -4304,7 +4410,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   groupReceiptAvatarWrapper: {
-    shadowColor: '#000',
+    shadowcolor: theme.textPrimary,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.15,
     shadowRadius: 1,
@@ -4312,7 +4418,7 @@ const styles = StyleSheet.create({
   },
   receiptDetailText: {
     fontSize: 10,
-    color: '#888',
+    color: theme.textMuted,
     marginTop: 4,
     fontWeight: '500',
   },
@@ -4329,7 +4435,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000',
+    backgroundcolor: theme.textPrimary,
     overflow: 'hidden',
   },
   videoPlayOverlay: {
@@ -4372,7 +4478,7 @@ const styles = StyleSheet.create({
   },
   documentFileNameText: {
     fontSize: 13,
-    color: '#333',
+    color: theme.textPrimary,
     fontWeight: '500',
   },
   documentDownloadButton: {
@@ -4382,7 +4488,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2E7D32', // Premium Green
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
+    shadowcolor: theme.textPrimary,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.2,
     shadowRadius: 1.41,
@@ -4398,7 +4504,7 @@ const styles = StyleSheet.create({
   },
   dateSeparatorText: {
     fontSize: 11,
-    color: '#666',
+    color: theme.textSecondary,
     fontWeight: '600',
   },
   replyIndicator: {
@@ -4413,20 +4519,20 @@ const styles = StyleSheet.create({
   },
   replyIndicatorLine: {
     width: 3,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
     borderRadius: 2,
     marginRight: 8,
     flexShrink: 0,
   },
   replyIndicatorText: {
     fontSize: fontSize.xs,
-    color: THEME_COLOR,
+    color: theme.primary,
     fontWeight: '600',
     marginBottom: 2,
   },
   replyIndicatorContent: {
     fontSize: fontSize.sm,
-    color: '#666',
+    color: theme.textSecondary,
     flexShrink: 1,
   },
   replyThumbnailContainer: {
@@ -4463,7 +4569,7 @@ const styles = StyleSheet.create({
   },
   reactionBadge: {
     alignSelf: 'flex-end',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     borderRadius: 12,
     paddingHorizontal: 4,
     paddingVertical: 0,
@@ -4496,11 +4602,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   typingContainer: { paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
-  typingText: { fontSize: fontSize.xs, color: '#666', fontStyle: 'italic' },
+  typingText: { fontSize: fontSize.xs, color: theme.textSecondary, fontStyle: 'italic' },
   replyPreview: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.chatBackground,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderTopWidth: 1,
@@ -4509,22 +4615,22 @@ const styles = StyleSheet.create({
   replyPreviewContent: {
     flex: 1,
     borderLeftWidth: 3,
-    borderLeftColor: THEME_COLOR,
+    borderLeftColor: theme.primary,
     paddingLeft: spacing.sm,
   },
   replyPreviewTitle: {
     fontSize: fontSize.xs,
-    color: THEME_COLOR,
+    color: theme.primary,
     fontWeight: '600',
     marginBottom: 2,
   },
-  replyPreviewText: { fontSize: fontSize.sm, color: '#666' },
+  replyPreviewText: { fontSize: fontSize.sm, color: theme.textSecondary },
   cancelReplyButton: { padding: spacing.sm },
-  cancelReplyText: { fontSize: fontSize.lg, color: '#666' },
+  cancelReplyText: { fontSize: fontSize.lg, color: theme.textSecondary },
   inputContainer: {
     flexDirection: 'row',
     padding: spacing.md,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     alignItems: 'flex-end',
     minHeight: 56,
   },
@@ -4562,13 +4668,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: Platform.OS === 'ios' ? 'SF Mono' : 'monospace',
   },
-  slideHint: { fontSize: fontSize.sm, color: '#999' },
+  slideHint: { fontSize: fontSize.sm, color: theme.textMuted },
   slideHintCancel: { color: '#FF4444', fontWeight: '600' },
   attachmentButton: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.chatBackground,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 4,
@@ -4576,12 +4682,12 @@ const styles = StyleSheet.create({
   attachmentButtonText: { fontSize: fontSize.xl },
   input: {
     flex: 1,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.chatBackground,
     borderRadius: borderRadius.xl,
     padding: spacing.md,
     paddingHorizontal: spacing.lg,
     fontSize: fontSize.md,
-    color: '#000',
+    color: theme.textPrimary,
     maxHeight: 100,
     minHeight: 40,
   },
@@ -4589,7 +4695,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.chatBackground,
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 4,
@@ -4611,14 +4717,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   emojiPicker: {
-    backgroundColor: '#FFF',
+    backgroundColor: theme.background,
     padding: spacing.lg,
     borderTopLeftRadius: borderRadius.xl,
     borderTopRightRadius: borderRadius.xl,
   },
   emojiPickerTitle: {
     fontSize: fontSize.md,
-    color: '#666',
+    color: theme.textSecondary,
     marginBottom: spacing.md,
     textAlign: 'center',
   },
@@ -4646,7 +4752,7 @@ const styles = StyleSheet.create({
   actionButton: { paddingVertical: spacing.sm, paddingHorizontal: spacing.lg },
   actionButtonText: {
     fontSize: fontSize.md,
-    color: THEME_COLOR,
+    color: theme.primary,
     fontWeight: '600',
   },
   permissionModalOverlay: {
@@ -4657,7 +4763,7 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
   },
   permissionModal: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     borderRadius: borderRadius.xl,
     padding: spacing.xl,
     width: '100%',
@@ -4668,13 +4774,13 @@ const styles = StyleSheet.create({
   permissionModalTitle: {
     fontSize: fontSize.xl,
     fontWeight: '700',
-    color: '#000',
+    color: theme.textPrimary,
     marginBottom: spacing.sm,
     textAlign: 'center',
   },
   permissionModalMessage: {
     fontSize: fontSize.md,
-    color: '#666',
+    color: theme.textSecondary,
     textAlign: 'center',
     marginBottom: spacing.xl,
     lineHeight: 22,
@@ -4687,10 +4793,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginHorizontal: spacing.xs,
   },
-  allowButton: { backgroundColor: THEME_COLOR },
-  notNowButton: { backgroundColor: '#F5F5F5' },
+  allowButton: { backgroundColor: theme.primary },
+  notNowButton: { backgroundColor: theme.chatBackground },
   permissionButtonText: { fontSize: fontSize.md, fontWeight: '600' },
-  permissionButtonTextDark: { color: '#000' },
+  permissionButtonTextDark: { color: theme.textPrimary },
   permissionButtonTextWhite: { color: '#FFFFFF' },
   scrollToBottomButton: {
     position: 'absolute',
@@ -4700,10 +4806,10 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#999999',
+    backgroundcolor: theme.textMuted,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
+    shadowcolor: theme.textPrimary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
@@ -4720,19 +4826,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.md,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.chatBackground,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
     gap: spacing.md,
   },
   blockedText: {
     fontSize: fontSize.md,
-    color: '#666666',
+    color: theme.textSecondary,
     fontWeight: '500',
   },
   blockedSubtext: {
     fontSize: fontSize.sm,
-    color: '#999999',
+    color: theme.textMuted,
     marginTop: 4,
   },
   unblockButton: {
@@ -4748,11 +4854,11 @@ const styles = StyleSheet.create({
   },
   // Instagram-style message actions menu
   messageActionsContainer: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     borderRadius: 16,
     padding: 0,
     width: 200,
-    shadowColor: '#000',
+    shadowcolor: theme.textPrimary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
     shadowRadius: 10,
@@ -4783,15 +4889,15 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: theme.border,
   },
   menuTimeText: {
     fontSize: 13,
-    color: '#666',
+    color: theme.textSecondary,
   },
   menuStatusText: {
     fontSize: 13,
-    color: '#666',
+    color: theme.textSecondary,
   },
   actionsColumn: {
     paddingVertical: 4,
@@ -4800,7 +4906,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: theme.border,
   },
   actionMenuItemContent: {
     flexDirection: 'row',
@@ -4808,7 +4914,7 @@ const styles = StyleSheet.create({
   },
   actionMenuItemText: {
     fontSize: 15,
-    color: '#000',
+    color: theme.textPrimary,
   },
   // Double-tap reaction animation
   doubleTapOverlay: {
@@ -4833,7 +4939,7 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
     paddingHorizontal: spacing.md,
     height: 60,
     borderBottomWidth: 1,
@@ -4842,7 +4948,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 16,
-    color: '#000',
+    color: theme.textPrimary,
     marginLeft: spacing.md,
   },
   searchNav: {
@@ -4852,7 +4958,7 @@ const styles = StyleSheet.create({
   },
   searchCount: {
     fontSize: 14,
-    color: '#666',
+    color: theme.textSecondary,
     marginRight: spacing.sm,
   },
   searchNavButton: {
@@ -4928,11 +5034,11 @@ const styles = StyleSheet.create({
   emptySearchText: {
     marginTop: spacing.md,
     fontSize: 16,
-    color: '#999',
+    color: theme.textMuted,
   },
   highlightedText: {
     backgroundColor: '#FFEB3B',
-    color: '#000',
+    color: theme.textPrimary,
   },
   replyIndicatorContentWrapper: {
     flex: 1,

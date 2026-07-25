@@ -2,14 +2,17 @@ import React, { useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   ActivityIndicator, Alert, Image, StatusBar,
+  NativeModules, Platform,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {
   GoogleOneTapSignIn, isSuccessResponse,
   isNoSavedCredentialFoundResponse, isCancelledResponse,
+  isErrorWithCode,
 } from 'react-native-nitro-google-signin';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { pinNavBarColor } from '../utils/navBarPin';
 
@@ -21,25 +24,36 @@ GoogleOneTapSignIn.configure({
 const GoogleLoginScreen = () => {
   const insets = useSafeAreaInsets();
   const { googleLogin } = useAuth();
+  const { theme, isDark } = useTheme();
   const [loading, setLoading] = React.useState(false);
 
   useEffect(() => {
-    // Keep translucent=true so layout height is IDENTICAL to all other screens
-    // (AppSplash sets translucent=true and it persists — changing it causes the layout jump)
     StatusBar.setTranslucent(true);
     StatusBar.setBarStyle('light-content');
     StatusBar.setBackgroundColor('#000000');
     pinNavBarColor('#000000');
-    try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+    if (Platform.OS === 'android') {
+      try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+      if (NativeModules.SystemBar) {
+        NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+        NativeModules.SystemBar.setStatusBarColor('#000000', true);
+      }
+    }
 
     return () => {
-      // Only reset colours/style — do NOT change translucent (no layout resize on exit)
-      StatusBar.setBarStyle('dark-content');
-      StatusBar.setBackgroundColor('#ffffff');
-      pinNavBarColor('#ffffff');
-      try { changeNavigationBarColor('#ffffff', true, false); } catch (e) {}
+      // Reset system bars to active app theme after sign up / login
+      StatusBar.setBarStyle(theme.statusBarStyle);
+      StatusBar.setBackgroundColor(theme.statusBar);
+      pinNavBarColor(theme.navBar);
+      if (Platform.OS === 'android') {
+        try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (e) {}
+        if (NativeModules.SystemBar) {
+          NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
+          NativeModules.SystemBar.setStatusBarColor(theme.statusBar, isDark);
+        }
+      }
     };
-  }, []);
+  }, [theme, isDark]);
 
   const enterLoadingState = () => {
     setLoading(true);
@@ -50,6 +64,7 @@ const GoogleLoginScreen = () => {
   };
 
   const handleGoogleLogin = async () => {
+    if (loading) return;
     enterLoadingState();
     try {
       await GoogleOneTapSignIn.checkPlayServices();
@@ -77,13 +92,22 @@ const GoogleLoginScreen = () => {
     } catch (error: any) {
       console.error('[Google Login] Error:', error);
       exitLoadingState();
-      Alert.alert('Google Login Failed', error.message || 'Failed to sign in with Google');
+
+      const isCancel =
+        (isErrorWithCode(error) && error.code === 'SIGN_IN_CANCELLED') ||
+        (error?.message && error.message.toLowerCase().includes('cancel'));
+
+      if (!isCancel) {
+        Alert.alert('Google Login Failed', error.message || 'Failed to sign in with Google');
+      } else {
+        console.log('[Google Login] User cancelled sign-in (caught as error)');
+      }
     }
   };
 
   return (
     <LinearGradient
-      colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
+      colors={['#96C5DC', '#7EB9D8', '#96C5DC']}
       useAngle={true}
       angle={355}
       style={styles.container}
@@ -101,7 +125,7 @@ const GoogleLoginScreen = () => {
           source={require('../assets/logo.png')}
           style={{ width: 120, height: 120, borderRadius: 5 }}
         />
-        <Text style={styles.appName}>DME</Text>
+        <Text style={styles.appName}>Inaivo</Text>
 
         <TouchableOpacity
           style={styles.googleButton}
@@ -125,7 +149,7 @@ const GoogleLoginScreen = () => {
 
       {loading && (
         <LinearGradient
-          colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
+          colors={['#96C5DC', '#7EB9D8', '#96C5DC']}
           useAngle={true}
           angle={355}
           style={styles.fullScreenLoader}
@@ -148,7 +172,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 24,
   },
-  appName: { fontSize: 50, fontWeight: 'bold', color: '#4597f5f6', marginBottom: 8 },
+  appName: { fontSize: 50, fontWeight: 'bold', color: '#8F00FF', marginBottom: 8 },
   googleButton: {
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#ffffff', paddingVertical: 16, paddingHorizontal: 32,

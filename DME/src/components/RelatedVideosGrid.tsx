@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList, Animated } from 'react-native';
 import { Song, QueueItem } from '../hooks/useMusicRoom';
 import Icon from 'react-native-vector-icons/Ionicons';
 
@@ -21,6 +21,8 @@ interface Props {
 
   onPinVideo: (song: Song) => void;
   onUnpinVideo: (videoId: string) => void;
+  currentSong?: Song | null;
+  scrollX?: any;
 }
 
 const RelatedVideosGrid: React.FC<Props> = ({
@@ -29,17 +31,21 @@ const RelatedVideosGrid: React.FC<Props> = ({
   myUserId,
   onPinVideo,
   onUnpinVideo,
+  currentSong,
+  scrollX,
 }) => {
-  // One flat list of "cards": queued items first (in their actual upcoming
-  // play order), then fresh suggestions.
+  // One flat list of "cards": current song first (if playing), queued items next, then fresh suggestions.
   type Card =
+    | { kind: 'current'; song: Song }
     | { kind: 'queued'; item: QueueItem }
     | { kind: 'suggested'; song: Song };
 
-  const cards: Card[] = [
-    ...queueItems.map((item): Card => ({ kind: 'queued', item })),
-    ...suggestedVideos.map((song): Card => ({ kind: 'suggested', song })),
-  ];
+  const cards: Card[] = [];
+  if (currentSong) {
+    cards.push({ kind: 'current', song: currentSong });
+  }
+  cards.push(...queueItems.map((item): Card => ({ kind: 'queued', item })));
+  cards.push(...suggestedVideos.map((song): Card => ({ kind: 'suggested', song })));
 
   const PAGE_CARD_SLOTS = 4;
   const pages: Card[][] = [];
@@ -49,6 +55,12 @@ const RelatedVideosGrid: React.FC<Props> = ({
   if (pages.length === 0) pages.push([]);
 
   const renderCard = (card: Card, key: string) => {
+    if (card.kind === 'current') {
+      return (
+        <View key={key} style={[styles.videoItem, { backgroundColor: 'transparent' }]} />
+      );
+    }
+
     if (card.kind === 'queued') {
       const { item } = card;
       return (
@@ -79,7 +91,10 @@ const RelatedVideosGrid: React.FC<Props> = ({
             </TouchableOpacity>
           )}
           <View style={styles.titleOverlay}>
-            <Text style={styles.videoTitle} numberOfLines={2}>{item.song.title}</Text>
+            <Text style={styles.videoTitle} numberOfLines={1}>{item.song.title}</Text>
+            {item.song.channelTitle && (
+              <Text style={styles.channelTitleText} numberOfLines={1}>{item.song.channelTitle}</Text>
+            )}
           </View>
         </View>
       );
@@ -90,7 +105,10 @@ const RelatedVideosGrid: React.FC<Props> = ({
       <TouchableOpacity key={key} style={styles.videoItem} onPress={() => onPinVideo(song)}>
         <Image source={{ uri: song.thumbnail }} style={styles.thumbnail} />
         <View style={styles.titleOverlay}>
-          <Text style={styles.videoTitle} numberOfLines={2}>{song.title}</Text>
+          <Text style={styles.videoTitle} numberOfLines={1}>{song.title}</Text>
+          {song.channelTitle && (
+            <Text style={styles.channelTitleText} numberOfLines={1}>{song.channelTitle}</Text>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -104,11 +122,15 @@ const RelatedVideosGrid: React.FC<Props> = ({
         showsHorizontalScrollIndicator={false}
         data={pages}
         keyExtractor={(_, index) => index.toString()}
+        onScroll={scrollX ? Animated.event(
+          [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+          { useNativeDriver: false }
+        ) : undefined}
+        scrollEventThrottle={16}
         renderItem={({ item: pageCards, index: pageIndex }) => (
           <View style={styles.page}>
             <View style={styles.grid}>
               {pageCards.map((card, i) => renderCard(card, `${pageIndex}-${i}`))}
-              
             </View>
           </View>
         )}
@@ -132,7 +154,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 6,
   },
-  videoTitle: { color: '#fff', fontSize: 11, fontWeight: '600', textAlign: 'center' },
+  videoTitle: { color: '#fff', fontSize: 10, fontWeight: '600', textAlign: 'center' },
+  channelTitleText: { color: 'rgba(255,255,255,0.6)', fontSize: 8.5, textAlign: 'center', marginTop: 1 },
   pinnedByText: { color: 'rgba(255,255,255,0.5)', fontSize: 10, textAlign: 'center', marginTop: 1 },
   emptyText: { color: 'rgba(255,255,255,0.4)', fontSize: 13, textAlign: 'center', marginTop: 30, width: '100%' },
   avatarBadge: {
@@ -155,6 +178,24 @@ const styles = StyleSheet.create({
     right: 4,
     backgroundColor: 'rgba(0,0,0,0.6)',
     borderRadius: 10,
+  },
+  nowPlayingBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: '#E53935',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    gap: 3,
+  },
+  nowPlayingText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
   },
 });
 

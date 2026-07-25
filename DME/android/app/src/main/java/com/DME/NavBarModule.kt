@@ -18,6 +18,9 @@ class NavBarModule(reactContext: ReactApplicationContext) :
       val activity = reactApplicationContext.currentActivity
       activity?.runOnUiThread {
         activity.window.navigationBarColor = color
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+          activity.window.isNavigationBarContrastEnforced = false
+        }
       }
     } catch (e: Exception) {
       // Ignore invalid colors

@@ -1129,64 +1129,45 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
                   <Icon name="chevron-back" size={28} color="#1E3A5F" />
                 </TouchableOpacity>
-                <Text style={styles.categoryHeaderTitle}>Quiz Challenge</Text>
-                {/* 📊 Scoreboard button */}
-                <TouchableOpacity
-                  style={styles.scoreboardBtn}
-                  onPress={() => navigation.navigate('TriviaScoreboard')}
-                  activeOpacity={0.8}
-                >
-                  <Text style={{ fontSize: 18 }}>📊</Text>
-                </TouchableOpacity>
+                <Text style={styles.categoryHeaderTitle}>
+                  {language === 'tamil' ? 'விளையாட்டுப் பிரிவு' : 'Quiz Challenge'}
+                </Text>
+                {/* Language Toggle in Header */}
+                <View style={[styles.gameLanguageToggleContainer, { marginHorizontal: 0 }]}>
+                  <TouchableOpacity 
+                    style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
+                    onPress={() => toggleLanguage('english')}
+                  >
+                    <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
+                    onPress={() => toggleLanguage('tamil')}
+                  >
+                    <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>TA</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
-              {/* CURRENT AFFAIRS — full-width centred card */}
-              {(() => {
-                const cat = CATEGORIES.find(c => c.id === 'current_affairs')!;
-                const isSelected = selectedCategory === cat.id;
-                return (
-                  <TouchableOpacity
-                    style={[
-                      styles.currentAffairsCard,
-                      isSelected && { borderColor: cat.color, backgroundColor: `${cat.color}18` },
-                    ]}
-                    onPress={() => {
-                      playSelectTone();
-                      setSelectedCategory(cat.id);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    {isSelected ? (
-                      <>
-                        <View style={styles.currentAffairsMid}>
-                          <Text style={[styles.currentAffairsDesc, { color: cat.color }]}>
-                            {cat.desc}
-                          </Text>
-                        </View>
-                        <View style={[styles.selectIndicator, { backgroundColor: cat.color, position: 'relative', top: 0, right: 0, marginLeft: 8 }]}>
-                          <Icon name="checkmark" size={10} color="#FFFDF9" />
-                        </View>
-                      </>
-                    ) : (
-                      <>
-                        <Text style={styles.currentAffairsEmoji}>{cat.emoji}</Text>
-                        <View style={styles.currentAffairsMid}>
-                          <Text style={styles.currentAffairsName}>
-                            {language === 'tamil' && cat.nameTa ? cat.nameTa : cat.name}
-                          </Text>
-                        </View>
-                        <View style={styles.newBatchBadge}>
-                          <Text style={styles.newBatchText}>NEW</Text>
-                        </View>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                );
-              })()}
-
-              {/* 2×5 GRID */}
+              {/* CATEGORIES GRID */}
               <View style={styles.categoriesGrid}>
-                {CATEGORIES.filter(c => c.id !== 'current_affairs').map((cat) => {
+                {/* Scoreboard Card as the 1st grid item (row 1, left) */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  style={styles.categoryCard}
+                  onPress={() => {
+                    playSelectTone();
+                    navigation.navigate('TriviaScoreboard');
+                  }}
+                >
+                  <Text style={styles.categoryEmoji}>📊</Text>
+                  <Text style={styles.categoryName}>
+                    {language === 'tamil' ? 'மதிப்பெண் பலகை' : 'Scoreboard'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Categories including Current Affairs (which is the first category in the array, making it row 1, right) */}
+                {CATEGORIES.map((cat) => {
                   const isSelected = selectedCategory === cat.id;
                   return (
                     <TouchableOpacity
@@ -1447,7 +1428,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             <View style={styles.navigationRow}>
               <TouchableOpacity style={styles.navButton} onPress={() => goToPrev()}>
                 <Icon name="chevron-back" size={20} color="#1E3A5F" />
-                <Text style={styles.navButtonText}>Prev</Text>
+                <Text style={styles.navButtonText}>{language === 'tamil' ? 'முந்தைய' : 'Prev'}</Text>
               </TouchableOpacity>
               <View style={{
                 paddingVertical: 2,
@@ -1457,11 +1438,11 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   fontFamily: 'Kalam-Bold',
                   color: '#fa0505',
                 }}>
-                  {getPointsForDifficulty(currentQuestion.difficulty)} {getPointsForDifficulty(currentQuestion.difficulty) === 1 ? 'mark' : 'mark'}
+                  {getPointsForDifficulty(currentQuestion.difficulty)} {language === 'tamil' ? 'மதிப்பெண்' : 'mark'}
                 </Text>
               </View>
               <TouchableOpacity style={styles.navButton} onPress={() => goToNextWithAnswers()}>
-                <Text style={styles.navButtonText}>Skip</Text>
+                <Text style={styles.navButtonText}>{language === 'tamil' ? 'தவிர்' : 'Skip'}</Text>
                 <Icon name="chevron-forward" size={20} color="#1E3A5F" />
               </TouchableOpacity>
             </View>
@@ -1509,39 +1490,39 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 {/* Score Ring Display */}
                 <View style={styles.scoreDetailsBox}>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Player</Text>
+                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'வீரர்' : 'Player'}</Text>
                     <Text style={[styles.detailValue, { color: '#1E3A5F', fontWeight: '700' }]}>
                       {user?.display_name || 'Guest'}
                     </Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Category</Text>
+                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'பிரிவு' : 'Category'}</Text>
                     <Text style={[styles.detailValue, { color: activeCategoryConfig.color }]}>
-                      {activeCategoryConfig.name}
+                      {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                     </Text>
                   </View>
                   {activeSetIds && activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
                     <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Set Played</Text>
+                      <Text style={styles.detailLabel}>{language === 'tamil' ? 'விளையாடிய தொகுதி' : 'Set Played'}</Text>
                       <Text style={[styles.detailValue, { color: activeCategoryConfig.color }]}>
-                        {'set' + activeSetIds.map(id => id.replace('set', '')).join('/')}
+                        {(language === 'tamil' ? 'தொகுதி ' : 'set ') + activeSetIds.map(id => id.replace('set', '')).join('/')}
                       </Text>
                     </View>
                   )}
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Correct Answers</Text>
+                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'சரியான பதில்கள்' : 'Correct Answers'}</Text>
                     <Text style={styles.detailValue}>{getCorrectAnswersCount()} / {questions.length}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Unanswered</Text>
+                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'பதில் அளிக்காதவை' : 'Unanswered'}</Text>
                     <Text style={styles.detailValue}>{questions.length - Object.keys(userAnswers).length}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Percentage</Text>
+                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'சதவீதம்' : 'Percentage'}</Text>
                     <Text style={styles.detailValue}>{percentage}%</Text>
                   </View>
                   <View style={[styles.detailRow, { backgroundColor: '#2EC4B6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 }]}>
-                    <Text style={[styles.detailLabel, { color: '#fff' }]}>Total Marks</Text>
+                    <Text style={[styles.detailLabel, { color: '#fff' }]}>{language === 'tamil' ? 'மொத்த மதிப்பெண்கள்' : 'Total Marks'}</Text>
                     <Text style={[styles.detailValue, { color: '#fff', fontSize: 20 }]}>{score} / {maxPoints}</Text>
                   </View>
                 </View>
@@ -1595,11 +1576,13 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   <Icon name="arrow-back" size={22} color="#fff" />
                 </TouchableOpacity>
                 <View style={prepStyles.headerCenter}>
-                  <Text style={prepStyles.headerTitle}>📖 Prepare Mode</Text>
+                  <Text style={prepStyles.headerTitle}>
+                    {language === 'tamil' ? '📖 பயிற்சி முறை' : '📖 Prepare Mode'}
+                  </Text>
                   <Text style={prepStyles.headerSub}>
-                    {activeCategoryConfig.emoji} {activeCategoryConfig.name}
+                    {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                     {questions.length > 0
-                      ? `  ·  ${Math.round((viewedSet.size / questions.length) * 100)}% completed`
+                      ? `  ·  ${Math.round((viewedSet.size / questions.length) * 100)}% ${language === 'tamil' ? 'முடிந்தது' : 'completed'}`
                       : ''}
                   </Text>
                 </View>
@@ -1704,13 +1687,13 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                         {index > 0 && (
                           <View style={prepStyles.swipeHintRow}>
                             <Icon name="chevron-up" size={14} color="rgba(255,255,255,0.4)" />
-                            <Text style={prepStyles.swipeHintText}>Swipe up for prev</Text>
+                            <Text style={prepStyles.swipeHintText}>{language === 'tamil' ? 'முந்தைய கேள்விக்கு மேலே இழுக்கவும்' : 'Swipe up for prev'}</Text>
                           </View>
                         )}
                         {index < questions.length - 1 && (
                           <View style={prepStyles.swipeHintRow}>
                             <Icon name="chevron-down" size={14} color="rgba(255,255,255,0.4)" />
-                            <Text style={prepStyles.swipeHintText}>Swipe down for next</Text>
+                            <Text style={prepStyles.swipeHintText}>{language === 'tamil' ? 'அடுத்த கேள்விக்கு கீழே இழுக்கவும்' : 'Swipe down for next'}</Text>
                           </View>
                         )}
                       </View>
@@ -1726,7 +1709,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                           color={isAnswerRevealed ? '#00C853' : 'rgba(255,255,255,0.85)'}
                         />
                         <Text style={[prepStyles.viewBtnText, isAnswerRevealed && prepStyles.viewBtnTextActive]}>
-                          {isAnswerRevealed ? 'Revealed' : 'View Answer'}
+                          {isAnswerRevealed 
+                            ? (language === 'tamil' ? 'காண்பிக்கப்பட்டது' : 'Revealed') 
+                            : (language === 'tamil' ? 'பதிலைக் காண்' : 'View Answer')}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -1748,10 +1733,13 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: 28 }]}>
-            <Text style={styles.modalTitle}>Choose Questions</Text>
+            <Text style={styles.modalTitle}>
+              {language === 'tamil' ? 'கேள்விகளைத் தேர்ந்தெடுக்கவும்' : 'Choose Questions'}
+            </Text>
             <Text style={styles.modalDescription}>
-              Select how many questions you want to attempt.{'\n'}
-              More questions = more sets played in sequence.
+              {language === 'tamil'
+                ? `நீங்கள் முயற்சி செய்ய விரும்பும் கேள்விகளின் எண்ணிக்கையைத் தேர்வுசெய்யவும்.\nஅதிக கேள்விகள் = அடுத்தடுத்து விளையாடப்படும் அதிக தொகுதிகள்.`
+                : `Select how many questions you want to attempt.\nMore questions = more sets played in sequence.`}
             </Text>
 
             {/* Toggle Row */}
@@ -1781,7 +1769,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       {count}
                     </Text>
                     <Text style={{ fontSize: 11, color: isActive ? 'rgba(255,255,255,0.7)' : 'rgba(30,58,95,0.5)', fontFamily: 'Kalam-Regular' }}>
-                      {sets} Set{sets > 1 ? 's' : ''}
+                      {language === 'tamil' ? `${sets} தொகுதி` : `${sets} Set${sets > 1 ? 's' : ''}`}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -1793,7 +1781,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 style={[styles.modalButton, styles.modalCancelButton]}
                 onPress={() => setQuestionCountModal(false)}
               >
-                <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                <Text style={styles.modalCancelButtonText}>{language === 'tamil' ? 'ரத்துசெய்' : 'Cancel'}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.modalButton, { backgroundColor: '#1E3A5F' }]}
@@ -1802,7 +1790,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   startNewGame(undefined, undefined, selectedQuestionCount);
                 }}
               >
-                <Text style={{ color: '#fff', fontFamily: 'Kalam-Bold', fontSize: 16 }}>Start</Text>
+                <Text style={{ color: '#fff', fontFamily: 'Kalam-Bold', fontSize: 16 }}>{language === 'tamil' ? 'தொடங்கு' : 'Start'}</Text>
               </TouchableOpacity>
             </View>
           </View>

@@ -27,9 +27,15 @@ from .views import (
     FriendRequestListView,
     FriendRequestActionView,
     FriendsListView,
+    FriendRequestListCreateView,
+    FriendRequestApproveView,
+    FriendRequestRejectView,
+    FriendRequestCancelView,
     # Message request
     MessageRequestListView,
     MessageRequestActionView,
+    MessageRequestApproveView,
+    MessageRequestRejectView,
 )
 from .status_views import StatusViewSet
 
@@ -48,11 +54,14 @@ urlpatterns = [
 
     # ── Friend Requests ──────────────────────────────────────────────────────
     # List pending requests (received + sent) / Send a new request
-    path('friends/requests/', FriendRequestListView.as_view(), name='friend-request-list'),
+    path('friends/requests/', FriendRequestListCreateView.as_view(), name='friend-request-list'),
     # Accept or reject an incoming request (POST with action='accept'|'reject')
     path('friends/requests/<int:request_id>/<str:action>/', FriendRequestActionView.as_view(), name='friend-request-action'),
+    path('friends/requests/<int:request_id>/approve/', FriendRequestApproveView.as_view(), name='friend-request-approve'),
+    path('friends/requests/<int:request_id>/reject/', FriendRequestRejectView.as_view(), name='friend-request-reject'),
     # Cancel a sent request (DELETE)
-    path('friends/requests/<int:request_id>/', FriendRequestActionView.as_view(), name='friend-request-cancel'),
+    path('friends/requests/<int:request_id>/', FriendRequestCancelView.as_view(), name='friend-request-cancel'),
+    path('friends/requests/<int:request_id>/cancel/', FriendRequestCancelView.as_view(), name='friend-request-cancel-new'),
     # List friends / Unfriend (DELETE with user_id)
     path('friends/', FriendsListView.as_view(), name='friends-list'),
     path('friends/<int:user_id>/', FriendsListView.as_view(), name='friend-unfriend'),
@@ -62,6 +71,8 @@ urlpatterns = [
     path('message-requests/', MessageRequestListView.as_view(), name='message-request-list'),
     # Accept or reject a message request (POST with action='accept'|'reject')
     path('message-requests/<int:request_id>/<str:action>/', MessageRequestActionView.as_view(), name='message-request-action'),
+    path('message-requests/<int:request_id>/approve/', MessageRequestApproveView.as_view(), name='message-request-approve'),
+    path('message-requests/<int:request_id>/reject/', MessageRequestRejectView.as_view(), name='message-request-reject'),
 
     # Conversation details
     path('conversations/<int:pk>/detail/', ConversationDetailView.as_view(), name='conversation-detail'),

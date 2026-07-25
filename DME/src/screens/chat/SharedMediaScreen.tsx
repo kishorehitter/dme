@@ -6,6 +6,7 @@ import { getApiUrl } from '../../config/network';
 import { colors, spacing, fontSize, borderRadius } from '../../utils/theme';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../../utils/image';
+import { useTheme } from '../../context/ThemeContext';
 
 const { width } = Dimensions.get('window');
 const GRID_SIZE = width / 3;
@@ -18,6 +19,8 @@ const TABS = [
 ];
 
 const SharedMediaScreen: React.FC = () => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const navigation = useNavigation<any>();
   const route = useRoute();
   const { conversationId, otherUserId } = route.params as { conversationId: number, otherUserId: number };
@@ -68,7 +71,7 @@ const SharedMediaScreen: React.FC = () => {
     }));
     return (
       <TouchableOpacity 
-        style={styles.gridItem} 
+        style={s.gridItem} 
         onPress={() => navigation.navigate('MediaViewer', { 
           mediaUrl: url, 
           mediaType: activeTab,
@@ -77,11 +80,11 @@ const SharedMediaScreen: React.FC = () => {
         })}
       >
         {activeTab === 'image' ? (
-          <Image source={{ uri: url }} style={styles.mediaImage} />
+          <Image source={{ uri: url }} style={s.mediaImage} />
         ) : (
-          <View style={styles.mediaPlaceholder}>
-            <Icon name="play-circle-outline" size={40} color="#fff" style={styles.playIcon} />
-            <View style={styles.videoOverlay} />
+          <View style={s.mediaPlaceholder}>
+            <Icon name="play-circle-outline" size={40} color="#fff" style={s.playIcon} />
+            <View style={s.videoOverlay} />
             {/* If we had thumbnails, we'd show them here */}
             <Icon name="videocam" size={30} color="#ccc" />
           </View>
@@ -97,7 +100,7 @@ const SharedMediaScreen: React.FC = () => {
 
     return (
       <TouchableOpacity 
-        style={styles.listItem} 
+        style={s.listItem} 
         onPress={() => {
             // Navigate to ChatRoom and jump to this message
             navigation.navigate('ChatRoom', { 
@@ -106,12 +109,12 @@ const SharedMediaScreen: React.FC = () => {
             });
         }}
       >
-        <View style={[styles.listIconContainer, activeTab === 'audio' ? styles.audioIconBg : styles.docIconBg]}>
+        <View style={[s.listIconContainer, activeTab === 'audio' ? s.audioIconBg : s.docIconBg]}>
           <Icon name={activeTab === 'audio' ? 'mic' : 'document-text'} size={24} color="#fff" />
         </View>
-        <View style={styles.listTextContainer}>
-          <Text style={styles.listFileName} numberOfLines={1}>{fileName}</Text>
-          <Text style={styles.listDate}>{date}</Text>
+        <View style={s.listTextContainer}>
+          <Text style={s.listFileName} numberOfLines={1}>{fileName}</Text>
+          <Text style={s.listDate}>{date}</Text>
         </View>
         <Icon name="chevron-forward" size={20} color="#ccc" />
       </TouchableOpacity>
@@ -121,22 +124,22 @@ const SharedMediaScreen: React.FC = () => {
   const isGridLayout = activeTab === 'image' || activeTab === 'video';
 
   return (
-    <View style={styles.container}>
-      <View style={styles.tabRow}>
+    <View style={s.container}>
+      <View style={s.tabRow}>
         {TABS.map(tab => (
           <TouchableOpacity
             key={tab.key}
-            style={[styles.tab, activeTab === tab.key && styles.activeTab]}
+            style={[s.tab, activeTab === tab.key && s.activeTab]}
             onPress={() => setActiveTab(tab.key)}
           >
-            <Icon name={tab.icon} size={20} color={activeTab === tab.key ? colors.primary : '#888'} />
-            <Text style={[styles.tabText, activeTab === tab.key && styles.activeTabText]}>{tab.label}</Text>
+            <Icon name={tab.icon} size={20} color={activeTab === tab.key ? theme.primary : theme.textSecondary} />
+            <Text style={[s.tabText, activeTab === tab.key && s.activeTabText]}>{tab.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
       {isLoading ? (
-        <ActivityIndicator style={{ marginTop: 20 }} color={colors.primary} />
+        <ActivityIndicator style={{ marginTop: 20 }} color={theme.primary} />
       ) : (
         <FlatList
           key={isGridLayout ? 'grid' : 'list'}
@@ -144,11 +147,11 @@ const SharedMediaScreen: React.FC = () => {
           numColumns={isGridLayout ? 3 : 1}
           keyExtractor={item => item.id.toString()}
           renderItem={isGridLayout ? ({ item, index }) => renderGridItem({ item, index }) : renderListItem}
-          contentContainerStyle={media.length === 0 ? styles.emptyContainer : styles.listContent}
+          contentContainerStyle={media.length === 0 ? s.emptyContainer : s.listContent}
           ListEmptyComponent={
-            <View style={styles.emptyView}>
+            <View style={s.emptyView}>
               <Icon name="folder-open-outline" size={64} color="#ddd" />
-              <Text style={styles.emptyText}>No {activeTab}s shared yet</Text>
+              <Text style={s.emptyText}>No {activeTab}s shared yet</Text>
             </View>
           }
         />
@@ -157,18 +160,18 @@ const SharedMediaScreen: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  tabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#eee' },
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.background },
+  tabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: theme.border },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  activeTab: { borderBottomColor: colors.primary },
-  tabText: { fontSize: 12, color: '#888', marginTop: 4 },
-  activeTabText: { color: colors.primary, fontWeight: '600' },
+  activeTab: { borderBottomColor: theme.primary },
+  tabText: { fontSize: 12, color: theme.textSecondary, marginTop: 4 },
+  activeTabText: { color: theme.primary, fontWeight: '600' },
   
   // Grid Styles
   gridItem: { width: GRID_SIZE, height: GRID_SIZE, padding: 1 },
   mediaImage: { width: '100%', height: '100%' },
-  mediaPlaceholder: { flex: 1, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center' },
+  mediaPlaceholder: { flex: 1, backgroundColor: theme.surface, justifyContent: 'center', alignItems: 'center' },
   videoOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.1)' },
   playIcon: { position: 'absolute', zIndex: 1 },
 
@@ -179,7 +182,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     padding: spacing.md, 
     borderBottomWidth: 1, 
-    borderBottomColor: '#f5f5f5' 
+    borderBottomColor: theme.border 
   },
   listIconContainer: { 
     width: 44, 
@@ -189,16 +192,16 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     marginRight: spacing.md 
   },
-  audioIconBg: { backgroundColor: colors.primary },
+  audioIconBg: { backgroundColor: theme.primary },
   docIconBg: { backgroundColor: '#FF9800' },
   listTextContainer: { flex: 1 },
-  listFileName: { fontSize: fontSize.md, color: colors.textPrimary, fontWeight: '500' },
-  listDate: { fontSize: fontSize.sm, color: colors.textSecondary, marginTop: 2 },
+  listFileName: { fontSize: fontSize.md, color: theme.textPrimary, fontWeight: '500' },
+  listDate: { fontSize: fontSize.sm, color: theme.textSecondary, marginTop: 2 },
 
   // Empty State
   emptyContainer: { flexGrow: 1, justifyContent: 'center' },
   emptyView: { alignItems: 'center', marginTop: -100 },
-  emptyText: { marginTop: 16, fontSize: fontSize.md, color: '#aaa' }
+  emptyText: { marginTop: 16, fontSize: fontSize.md, color: theme.textSecondary }
 });
 
 export default SharedMediaScreen;

@@ -57,6 +57,7 @@ interface RouteParams {
   // Internal: used when chaining stories
   _storyIndex?: number;
   _storyTotal?: number;
+  restrictedTo?: number[];
 }
 
 const StatusEditorScreen: React.FC = () => {
@@ -74,13 +75,17 @@ const StatusEditorScreen: React.FC = () => {
   const [mediaType, setMediaType] = useState<'photo' | 'video'>(params.mediaType ?? 'photo');
   const [source, setSource] = useState<'camera' | 'gallery'>(params.source ?? 'gallery');
   const [caption, setCaption] = useState('');
-  const [restrictedTo, setRestrictedTo] = useState<number[]>([]);
+  const [restrictedTo, setRestrictedTo] = useState<number[]>(params.restrictedTo ?? []);
   const [modalVisible, setModalVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
+  const navigatingAwayRef = React.useRef(false);
 
   useEffect(() => {
+    if (!params.restrictedTo) {
+      fetchPrivacyDefaults();
+    }
     if (Platform.OS === 'android') {
       pinNavBarColor('#000000');
       try {
@@ -91,15 +96,17 @@ const StatusEditorScreen: React.FC = () => {
     }
     return () => {
       if (Platform.OS === 'android') {
-        pinNavBarColor('#FFFFFF');
-        try {
-          changeNavigationBarColor('#FFFFFF', true, false);
-        } catch (err) {
-          console.warn('[StatusEditorScreen] Navigation bar color restore error:', err);
+        if (!navigatingAwayRef.current) {
+          pinNavBarColor('#FFFFFF');
+          try {
+            changeNavigationBarColor('#FFFFFF', true, false);
+          } catch (err) {
+            console.warn('[StatusEditorScreen] Navigation bar color restore error:', err);
+          }
         }
       }
     };
-  }, []);
+  }, [params.restrictedTo]);
 
   // Gesture state
   const translationX = useSharedValue((width / 2) - 50); // Center on X
@@ -153,11 +160,13 @@ const StatusEditorScreen: React.FC = () => {
     }
     return () => {
       if (Platform.OS === 'android') {
-        pinNavBarColor('#FFFFFF');
-        if (NativeModules.SystemBar) {
-          // Reset to default light
-          NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', true);
-          NativeModules.SystemBar.setStatusBarColor('#FFFFFF', true);
+        if (!navigatingAwayRef.current) {
+          pinNavBarColor('#FFFFFF');
+          if (NativeModules.SystemBar) {
+            // Reset to default light
+            NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', true);
+            NativeModules.SystemBar.setStatusBarColor('#FFFFFF', true);
+          }
         }
       }
     };
@@ -201,80 +210,45 @@ const StatusEditorScreen: React.FC = () => {
     }
   };
 
-  const handleUpload = async () => {
+  const handleUpload = () => {
     if (!mediaUri) return;
-    setUploading(true);
-    setProcessing(true);
-    let finalUri = mediaUri;
-    let tempPathToCleanup: string | null = null;
-    let compressedPathToCleanup: string | null = null;
 
-    try {
-      const RNFS = require('react-native-fs');
-      
-      // 1. Copy content:// URI to local cache directory to prevent SecurityException
-      if (finalUri.startsWith('content://')) {
-        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
-        const tempPath = `${RNFS.CachesDirectoryPath}/status_temp_${Date.now()}.${ext}`;
-        await RNFS.copyFile(finalUri, tempPath);
-        finalUri = `file://${tempPath}`;
-        tempPathToCleanup = tempPath;
-      }
+    Keyboard.dismiss();
+    navigatingAwayRef.current = true;
 
-      // 2. Compress and trim if it's a video
-      if (mediaType === 'video') {
-        const processedUri = await compressAndTrimVideo(finalUri);
-        if (processedUri !== finalUri) {
-          finalUri = processedUri;
-          compressedPathToCleanup = processedUri.replace('file://', '');
-        }
-      }
+    // Build the upload queue
+    // Only the first status (current one) gets the caption and gesture values.
+    // The rest (pendingMedia) get default values.
+    const queue = [
+      {
+        mediaUri: mediaUri,
+        mediaType: mediaType,
+        caption: caption,
+        restrictedTo: restrictedTo,
+        translationX: translationX.value,
+        translationY: translationY.value,
+        scale: scale.value,
+        rotation: rotation.value,
+      },
+      ...pendingMedia.map(item => ({
+        mediaUri: item.mediaUri,
+        mediaType: item.mediaType,
+        caption: '',
+        restrictedTo: restrictedTo,
+        translationX: 0,
+        translationY: 0,
+        scale: 1,
+        rotation: 0,
+      }))
+    ];
 
-      await StatusService.saveStatus(
-        finalUri, 
-        caption, 
-        mediaType, 
-        restrictedTo,
-        translationX.value,
-        translationY.value,
-        scale.value,
-        rotation.value
-      );
-
-      if (hasMore) {
-        // Navigate to next story in the queue
-        const [next, ...rest] = pendingMedia;
-        navigation.replace('StatusEditor', {
-          mediaUri:     next.mediaUri,
-          mediaType:    next.mediaType,
-          source:       'gallery',
-          pendingMedia: rest,
-          _storyIndex:  storyIndex + 1,
-          _storyTotal:  storyTotal,
-        });
-      } else {
-        navigation.goBack();
-      }
-    } catch (err: any) {
-      console.error('[StatusUpload] failed:', err);
-      Toast.show({ type: 'error', text1: 'Upload failed' });
-    } finally {
-      // Cleanup temporary files
-      if (tempPathToCleanup) {
-        try {
-          const RNFS = require('react-native-fs');
-          await RNFS.unlink(tempPathToCleanup);
-        } catch {}
-      }
-      if (compressedPathToCleanup) {
-        try {
-          const RNFS = require('react-native-fs');
-          await RNFS.unlink(compressedPathToCleanup);
-        } catch {}
-      }
-      setUploading(false);
-      setProcessing(false);
-    }
+    // Navigate directly to StatusViewer to run the uploads in background with visual progress tracker
+    setTimeout(() => {
+      navigation.replace('StatusViewer', {
+        uploadQueue: queue,
+        isOwn: true,
+      });
+    }, 150);
   };
 
   return (

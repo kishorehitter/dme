@@ -22,8 +22,11 @@ import { useAuth } from '../../context/AuthContext';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+import { useTheme } from '../../context/ThemeContext';
 
 export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const { conversationId } = route.params;
   const { user: currentUser } = useAuth();
   
@@ -177,11 +180,11 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={s.container}>
       <ScrollView>
         {/* Header Info */}
-        <View style={styles.header}>
-          <View style={styles.avatarContainer}>
+        <View style={s.header}>
+          <View style={s.avatarContainer}>
             <TouchableOpacity 
               onPress={handleAvatarPress}
               onLongPress={handleAvatarLongPress}
@@ -190,16 +193,16 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
               {conversation?.profile_picture ? (
                 <Image 
                   source={{ uri: resolveImageUrl(conversation.profile_picture) }} 
-                  style={styles.avatar} 
+                  style={s.avatar} 
                 />
               ) : (
-                <View style={styles.avatarPlaceholder}>
+                <View style={s.avatarPlaceholder}>
                   <Icon name="people" size={40} color={colors.primary} />
                 </View>
               )}
               {isAdmin && (
-                <View style={styles.editBadge}>
-                  <Icon name="camera" size={18} color="#000" />
+                <View style={s.editBadge}>
+                  <Icon name="camera" size={18} color={theme.textPrimary} />
                 </View>
               )}
             </TouchableOpacity>
@@ -207,19 +210,19 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
           {/* Image Action Modal */}
           <Modal visible={showImageModal} transparent animationType="slide">
-            <View style={styles.modalOverlay}>
-              <View style={styles.modalContent}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Group Photo</Text>
-                  <TouchableOpacity onPress={() => setShowImageModal(false)}><Text style={styles.modalClose}>✕</Text></TouchableOpacity>
+            <View style={s.modalOverlay}>
+              <View style={s.modalContent}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>Group Photo</Text>
+                  <TouchableOpacity onPress={() => setShowImageModal(false)}><Text style={s.modalClose}>✕</Text></TouchableOpacity>
                 </View>
                 
-                <View style={styles.imageActionRow}>
-                  <TouchableOpacity style={styles.actionButton} onPress={handleUpdateImage}>
-                    <Text style={styles.actionButtonText}>📸 Upload</Text>
+                <View style={s.imageActionRow}>
+                  <TouchableOpacity style={s.actionButton} onPress={handleUpdateImage}>
+                    <Text style={s.actionButtonText}>📸 Upload</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.actionButton, styles.removeButton]} onPress={handleRemoveImage}>
-                    <Text style={[styles.actionButtonText, styles.removeButtonText]}>🗑️ Remove</Text>
+                  <TouchableOpacity style={[s.actionButton, s.removeButton]} onPress={handleRemoveImage}>
+                    <Text style={[s.actionButtonText, s.removeButtonText]}>🗑️ Remove</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -228,12 +231,12 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
           {/* Profile Picture Preview Modal */}
           <Modal visible={showPreview} transparent={true} animationType="fade" onRequestClose={() => setShowPreview(false)}>
-            <TouchableOpacity style={styles.previewModalOverlay} activeOpacity={1} onPress={() => setShowPreview(false)}>
-              <View style={styles.previewModalContent}>
+            <TouchableOpacity style={s.previewModalOverlay} activeOpacity={1} onPress={() => setShowPreview(false)}>
+              <View style={s.previewModalContent}>
                 {previewContent.url ? (
-                  <Image source={{ uri: resolveImageUrl(previewContent.url) }} style={styles.previewImage} />
+                  <Image source={{ uri: resolveImageUrl(previewContent.url) }} style={s.previewImage} />
                 ) : (
-                  <View style={styles.previewPlaceholder}>
+                  <View style={s.previewPlaceholder}>
                     <Icon name="people" size={80} color="#fff" />
                   </View>
                 )}
@@ -243,37 +246,39 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
 
           {isEditing ? (
-            <View style={styles.editForm}>
+            <View style={s.editForm}>
               <TextInput
-                style={styles.nameInput}
+                style={s.nameInput}
                 value={editName}
                 onChangeText={setEditName}
                 placeholder="Group Name"
+                placeholderTextColor={theme.placeholder}
               />
               <TextInput
-                style={styles.descInput}
+                style={s.descInput}
                 value={editDescription}
                 onChangeText={setEditDescription}
                 placeholder="Description"
+                placeholderTextColor={theme.placeholder}
                 multiline
               />
-              <View style={styles.editButtons}>
-                <TouchableOpacity onPress={() => setIsEditing(false)} style={styles.cancelButton}>
-                  <Text>Cancel</Text>
+              <View style={s.editButtons}>
+                <TouchableOpacity onPress={() => setIsEditing(false)} style={s.cancelButton}>
+                  <Text style={{color: theme.textPrimary}}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={handleUpdateGroup} style={styles.saveButton}>
-                  <Text style={styles.saveText}>Save</Text>
+                <TouchableOpacity onPress={handleUpdateGroup} style={s.saveButton}>
+                  <Text style={s.saveText}>Save</Text>
                 </TouchableOpacity>
               </View>
             </View>
           ) : (
-            <View style={styles.infoContainer}>
-              <Text style={styles.groupName}>{conversation?.name}</Text>
-              <Text style={styles.groupDesc}>{conversation?.description || 'No description'}</Text>
+            <View style={s.infoContainer}>
+              <Text style={s.groupName}>{conversation?.name}</Text>
+              <Text style={s.groupDesc}>{conversation?.description || 'No description'}</Text>
               {isAdmin && (
-                <TouchableOpacity onPress={() => setIsEditing(true)} style={styles.editButton}>
+                <TouchableOpacity onPress={() => setIsEditing(true)} style={s.editButton}>
                  
-                  <Icon name="pencil" size={16} color={'#000'} />
+                  <Icon name="pencil" size={16} color={theme.textPrimary} />
                 </TouchableOpacity>
               )}
             </View>
@@ -281,16 +286,16 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
         </View>
 
         {/* Participants List */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>{conversation?.participants.length} Participants</Text>
+        <View style={s.section}>
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionTitle}>{conversation?.participants.length} Participants</Text>
             {isAdmin && (
               <TouchableOpacity onPress={() => navigation.navigate('FriendList', { 
                 conversationId, 
                 isAdding: true,
                 existingMemberIds: conversation.participants.map((p: any) => p.user.id)
               })}>
-                <Text style={styles.addLink}>+ Add</Text>
+                <Text style={s.addLink}>+ Add</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -298,10 +303,10 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
           {conversation?.participants.map((p: any) => (
             <TouchableOpacity 
               key={p.id} 
-              style={styles.participantItem}
+              style={s.participantItem}
               onPress={() => navigation.navigate('Profile', { user: p.user, conversationId })}
             >
-              <View style={[styles.participantAvatar, { backgroundColor: '#E8DEF8' }]}>
+              <View style={[s.participantAvatar, { backgroundColor: '#E8DEF8' }]}>
                 {p.user.avatar_sticker ? (
                   <Text style={{ fontSize: 20 }}>{p.user.avatar_sticker}</Text>
                 ) : (
@@ -312,16 +317,16 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
                   />
                 )}
               </View>
-              <View style={styles.participantInfo}>
-                <Text style={styles.participantName}>
+              <View style={s.participantInfo}>
+                <Text style={s.participantName}>
                   {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.username || p.user.email)}
                 </Text>
-                {p.is_admin && <View style={styles.adminBadge}><Text style={styles.adminBadgeText}>Admin</Text></View>}
+                {p.is_admin && <View style={s.adminBadge}><Text style={s.adminBadgeText}>Admin</Text></View>}
               </View>
               
               {isAdmin && p.user.id !== currentUser?.id && (
                 <TouchableOpacity onPress={() => handleRemoveMember(p.user.id, p.user.display_name || p.user.email)}>
-                  <Text style={styles.removeText}>Remove</Text>
+                  <Text style={s.removeText}>Remove</Text>
                 </TouchableOpacity>
               )}
             </TouchableOpacity>
@@ -329,15 +334,15 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
         </View>
 
         {/* Actions */}
-        <View style={styles.actions}>
-          <TouchableOpacity style={styles.actionItem} onPress={handleLeaveGroup}>
-            <Text style={styles.leaveText}>Leave Group</Text>
+        <View style={s.actions}>
+          <TouchableOpacity style={s.actionItem} onPress={handleLeaveGroup}>
+            <Text style={s.leaveText}>Leave Group</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
 
       {isUploading && (
-        <View style={styles.loadingOverlay}>
+        <View style={s.loadingOverlay}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
       )}
@@ -355,76 +360,76 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
 const THEME_COLOR = '#4597f5f6';
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F8F8' },
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: {
-    backgroundColor: '#FFF',
+    backgroundColor: theme.surface,
     alignItems: 'center',
     padding: spacing.xl,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
+    borderBottomColor: theme.border,
   },
   avatarContainer: { marginBottom: spacing.md },
-  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#FFFFFF', borderWidth: 2, borderColor: '#DDDDDD' },
+  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: theme.surface, borderWidth: 2, borderColor: theme.border },
   editBadge: {
     position: 'absolute', bottom: 8, right: 0,
-    backgroundColor: '#FFF', padding: 1, borderRadius: 2, borderColor: '#4597f5f6', borderWidth: 1
+    backgroundColor: theme.surface, padding: 1, borderRadius: 2, borderColor: theme.primary, borderWidth: 1
   },
-  editBadgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+  editBadgeText: { color: theme.surface, fontSize: 10, fontWeight: 'bold' },
   avatarPlaceholder: { 
     width: 100, height: 100, borderRadius: 50, 
-    backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#DDDDDD'
+    backgroundColor: theme.surface, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: theme.border
   },
   avatarText: { fontSize: 40 },
   infoContainer: { alignItems: 'center' },
-  groupName: { fontSize: fontSize.xl, fontWeight: 'bold', color: '#000' },
-  groupDesc: { fontSize: fontSize.md, color: '#666', marginTop: 4, textAlign: 'center' },
+  groupName: { fontSize: fontSize.xl, fontWeight: 'bold', color: theme.textPrimary },
+  groupDesc: { fontSize: fontSize.md, color: theme.textSecondary, marginTop: 4, textAlign: 'center' },
   editButton: { 
     flexDirection: 'row', 
     alignItems: 'center', 
     marginTop: spacing.md,
     borderWidth: 1,
-    borderColor: THEME_COLOR,
+    borderColor: theme.primary,
     borderRadius: 6,
     paddingVertical: 2,
     paddingHorizontal: 4,
   },
-  editLink: { color: THEME_COLOR, fontWeight: '600' },
+  editLink: { color: theme.primary, fontWeight: '600' },
   editForm: { width: '100%' },
   nameInput: { 
-    borderBottomWidth: 1, borderBottomColor: THEME_COLOR, 
+    borderBottomWidth: 1, borderBottomColor: theme.primary, color: theme.textPrimary,
     fontSize: fontSize.lg, padding: 8, marginBottom: 16 
   },
   descInput: { 
-    borderBottomWidth: 1, borderBottomColor: '#DDD', 
+    borderBottomWidth: 1, borderBottomColor: theme.border, color: theme.textPrimary,
     fontSize: fontSize.md, padding: 8, marginBottom: 16 
   },
   editButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16 },
   cancelButton: { padding: 8 },
-  saveButton: { backgroundColor: THEME_COLOR, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 4 },
+  saveButton: { backgroundColor: theme.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 4 },
   saveText: { color: '#FFF', fontWeight: 'bold' },
-  section: { backgroundColor: '#FFF', marginTop: spacing.md, paddingVertical: spacing.sm },
+  section: { backgroundColor: theme.surface, marginTop: spacing.md, paddingVertical: spacing.sm },
   sectionHeader: { 
     flexDirection: 'row', justifyContent: 'space-between', 
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: '#F0F0F0'
+    borderBottomWidth: 1, borderBottomColor: theme.border
   },
-  sectionTitle: { fontWeight: 'bold', color: '#666' },
-  addLink: { color: THEME_COLOR, fontWeight: 'bold' },
+  sectionTitle: { fontWeight: 'bold', color: theme.textSecondary },
+  addLink: { color: theme.primary, fontWeight: 'bold' },
   participantItem: { 
     flexDirection: 'row', alignItems: 'center', 
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-    borderBottomWidth: 1, borderBottomColor: '#F9F9F9'
+    borderBottomWidth: 1, borderBottomColor: theme.border
   },
   participantAvatar: { 
     width: 40, height: 40, borderRadius: 20, 
-    backgroundColor: '#999999', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: theme.icon, justifyContent: 'center', alignItems: 'center',
     marginRight: spacing.md
   },
   participantInfo: { flex: 1, flexDirection: 'row', alignItems: 'center' },
-  participantName: { fontSize: fontSize.md, fontWeight: '500' },
+  participantName: { fontSize: fontSize.md, fontWeight: '500', color: theme.textPrimary },
   adminBadge: { 
     backgroundColor: '#E8F5E9', paddingHorizontal: 6, paddingVertical: 2, 
     borderRadius: 4, marginLeft: 8 
@@ -433,7 +438,7 @@ const styles = StyleSheet.create({
   removeText: { color: '#FF3B30', fontSize: fontSize.sm },
   actions: { marginTop: spacing.xl, paddingHorizontal: spacing.lg },
   actionItem: { 
-    backgroundColor: '#FFF', padding: spacing.lg, 
+    backgroundColor: theme.surface, padding: spacing.lg, 
     borderRadius: borderRadius.md, alignItems: 'center',
     borderWidth: 1, borderColor: '#FFE5E5'
   },
@@ -444,7 +449,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#FFF',
+    backgroundColor: theme.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
@@ -454,8 +459,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 20,
   },
-  modalTitle: { fontSize: 18, fontWeight: 'bold' },
-  modalClose: { fontSize: 18, color: '#666' },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: theme.textPrimary },
+  modalClose: { fontSize: 18, color: theme.textSecondary },
   imageActionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -464,7 +469,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: '#4597f5f6',
+    borderColor: theme.primary,
     borderRadius: 8,
     alignItems: 'center',
     marginHorizontal: 5,
@@ -474,7 +479,7 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     fontSize: 14,
-    color: '#4597f5f6',
+    color: theme.primary,
     fontWeight: '600',
   },
   removeButtonText: {
@@ -489,7 +494,7 @@ const styles = StyleSheet.create({
   previewModalContent: {
     width: 250,
     height: 250,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderRadius: 12,
     overflow: 'hidden',
     justifyContent: 'center',
@@ -502,7 +507,7 @@ const styles = StyleSheet.create({
   previewPlaceholder: {
     width: 250,
     height: 250,
-    backgroundColor: '#ccc',
+    backgroundColor: theme.border,
     justifyContent: 'center',
     alignItems: 'center',
   },

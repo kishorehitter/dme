@@ -64,6 +64,20 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             'data': event['data']
         }))
 
+    async def message_request_created(self, event):
+        """Handle message request created notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_request_created',
+            'data': event['data']
+        }))
+
+    async def message_request_status(self, event):
+        """Handle message request status notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_request_status',
+            'data': event['data']
+        }))
+
     async def get_user_from_token(self):
         """Get user from JWT token in query params."""
         from rest_framework_simplejwt.tokens import AccessToken
@@ -280,7 +294,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if message:
             # Auto-create MessageRequest on the very first message to a non-friend
             if is_first:
-                await self.create_message_request_if_needed()
+                receiver_id, req_data = await self.create_message_request_if_needed()
+                if receiver_id and req_data:
+                    # Notify receiver's user update channel
+                    await self.channel_layer.group_send(
+                        f'user_updates_{receiver_id}',
+                        {
+                            'type': 'message_request_created',
+                            'data': req_data
+                        }
+                    )
+                    # Notify chat room
+                    await self.channel_layer.group_send(
+                        self.room_group_name,
+                        {
+                            'type': 'message_request_created',
+                            'data': req_data
+                        }
+                    )
 
             # Send message to room group
             await self.channel_layer.group_send(
@@ -324,7 +355,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conversation = Conversation.objects.get(pk=self.conversation_id)
             other = conversation.participants.exclude(user=self.user).first()
             if other:
-                MessageRequest.objects.get_or_create(
+                msg_req, created = MessageRequest.objects.get_or_create(
                     conversation=conversation,
                     defaults={
                         'sender': self.user,
@@ -332,8 +363,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         'status': 'pending',
                     }
                 )
+                from .serializers import MessageRequestSerializer
+                # Context with dummy request can be used or None
+                req_data = MessageRequestSerializer(msg_req, context={'request': None}).data
+                return other.user.id, req_data
         except Exception as e:
             print(f'Warning: create_message_request_if_needed failed: {e}')
+        return None, None
 
     @database_sync_to_async
     def check_if_blocked(self):
@@ -681,6 +717,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'user_name': event['user_name'],
                 'call_id': event['call_id']
             }
+        }))
+
+    async def message_request_created(self, event):
+        """Send message request created notification to WebSocket."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_request_created',
+            'data': event['data']
+        }))
+
+    async def message_request_status(self, event):
+        """Send message request status notification to WebSocket."""
+        await self.send(text_data=json.dumps({
+            'type': 'message_request_status',
+            'data': event['data']
         }))
 
     async def get_user_from_token(self):

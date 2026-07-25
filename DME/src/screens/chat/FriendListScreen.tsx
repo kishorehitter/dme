@@ -19,6 +19,7 @@ import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
 import { getApiUrl } from '../../config/network';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useTheme } from '../../context/ThemeContext';
 
 interface FriendListScreenProps {
   navigation: any;
@@ -37,6 +38,8 @@ const AnimatedAddButton = ({
   onAdd: () => void;
   onCancel: () => void;
 }) => {
+  const { theme } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const checkAnim = useRef(new Animated.Value(0)).current;
 
@@ -55,11 +58,11 @@ const AnimatedAddButton = ({
 
   if (friendStatus === 'sent_pending') {
     return (
-      <Animated.View style={[styles.pendingPill, { transform: [{ scale: scaleAnim }] }]}>
+      <Animated.View style={[s.pendingPill, { transform: [{ scale: scaleAnim }] }]}>
         <Icon name="time-outline" size={13} color="#FF9800" />
-        <Text style={styles.pendingPillText}>Sent</Text>
+        <Text style={s.pendingPillText}>Sent</Text>
         <TouchableOpacity onPress={onCancel} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Icon name="close-circle" size={15} color="#aaa" />
+          <Icon name="close-circle" size={15} color={theme.icon} />
         </TouchableOpacity>
       </Animated.View>
     );
@@ -67,12 +70,12 @@ const AnimatedAddButton = ({
 
   if (friendStatus === 'received_pending') {
     return (
-      <View style={styles.choiceRow}>
-        <TouchableOpacity style={styles.acceptBtn} onPress={onAdd}>
-          <Icon name="checkmark" size={14} color="#FFF" />
+      <View style={s.choiceRow}>
+        <TouchableOpacity style={s.acceptBtn} onPress={onAdd}>
+          <Icon name="checkmark" size={14} color={theme.textPrimary} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.rejectBtn} onPress={onCancel}>
-          <Icon name="close" size={14} color="#FFF" />
+        <TouchableOpacity style={s.rejectBtn} onPress={onCancel}>
+          <Icon name="close" size={14} color={theme.textPrimary} />
         </TouchableOpacity>
       </View>
     );
@@ -80,9 +83,9 @@ const AnimatedAddButton = ({
 
   if (friendStatus === 'friends') {
     return (
-      <View style={styles.friendsBadge}>
+      <View style={s.friendsBadge}>
         <Icon name="people" size={13} color="#4CAF50" />
-        <Text style={styles.friendsBadgeText}>Friends</Text>
+        <Text style={s.friendsBadgeText}>Friends</Text>
       </View>
     );
   }
@@ -90,8 +93,8 @@ const AnimatedAddButton = ({
   // none
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-      <TouchableOpacity style={styles.addPersonBtn} onPress={handleAdd}>
-        <Icon name="person-add" size={18} color="#4597f5" />
+      <TouchableOpacity style={s.addPersonBtn} onPress={handleAdd}>
+        <Icon name="person-add" size={18} color={theme.primary} />
       </TouchableOpacity>
     </Animated.View>
   );
@@ -99,6 +102,8 @@ const AnimatedAddButton = ({
 
 // ── Main Screen ──────────────────────────────────────────────────────────────
 export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, route }) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const isAdding = route?.params?.isAdding || false;
   const isInvitingToCall = route?.params?.isInvitingToCall || false;
   const initialConversationId = route?.params?.conversationId;
@@ -109,17 +114,17 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     if (isInvitingToCall) {
       navigation.setOptions({
         title: 'Invite to Call',
-        headerTitleStyle: { color: '#000000', fontWeight: 'bold' },
-        headerTintColor: '#000000',
+        headerTitleStyle: { color: theme.textPrimary, fontWeight: 'bold' },
+        headerTintColor: theme.textPrimary,
       });
     } else if (isAdding) {
       navigation.setOptions({
         title: 'Add Member',
-        headerTitleStyle: { color: '#000000', fontWeight: 'bold' },
-        headerTintColor: '#000000',
+        headerTitleStyle: { color: theme.textPrimary, fontWeight: 'bold' },
+        headerTintColor: theme.textPrimary,
       });
     }
-  }, [navigation, isAdding, isInvitingToCall]);
+  }, [navigation, isAdding, isInvitingToCall, theme]);
 
   const [conversationId, setConversationId] = useState(initialConversationId);
   const [activeTab, setActiveTab] = useState<HubTab>('friends');
@@ -328,7 +333,8 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const toastOpacity = useRef(new Animated.Value(0)).current;
 
   const showToast = (message: string) => {
-    setToastMessage(message);
+    const cleanMessage = message.replace(/[\u{1F300}-\u{1F9FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{1F1E6}-\u{1F1FF}🎉]+\s*$/gu, '').trim();
+    setToastMessage(cleanMessage);
     setToastVisible(true);
     toastOpacity.setValue(0);
     Animated.sequence([
@@ -388,7 +394,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const handleAcceptFriendRequest = async (requestId: number) => {
     try {
       await chatAPI.acceptFriendRequest(requestId);
-      showToast('Friend Request Accepted 🎉');
+      showToast('Friend Request Accepted');
       await loadFriendRequests();
       await loadFriends();
     } catch {
@@ -421,7 +427,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     if (req) {
       await handleAcceptFriendRequest(req.id);
     } else {
-      showToast('Friend Request Accepted 🎉');
+      showToast('Friend Request Accepted');
       setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'friends' } : u));
     }
   };
@@ -476,14 +482,14 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const renderFriendItem = ({ item }: { item: User }) => {
     const displayName = item.display_name || item.email || 'Unknown';
     return (
-      <TouchableOpacity style={styles.userRow} onPress={() => startChat(item)} activeOpacity={0.7}>
-        <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={styles.avatar} />
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{displayName}</Text>
-          <Text style={styles.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
+      <TouchableOpacity style={s.userRow} onPress={() => startChat(item)} activeOpacity={0.7}>
+        <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={s.avatar} />
+        <View style={s.userInfo}>
+          <Text style={s.userName}>{displayName}</Text>
+          <Text style={s.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
         </View>
-        <TouchableOpacity style={styles.chatBtn} onPress={() => startChat(item)}>
-          <Icon name="chatbubble-ellipses" size={20} color="#4597f5" />
+        <TouchableOpacity style={s.chatBtn} onPress={() => startChat(item)}>
+          <Icon name="chatbubble-ellipses" size={20} color={theme.textSecondary} />
         </TouchableOpacity>
       </TouchableOpacity>
     );
@@ -493,17 +499,17 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     const receiver = item.receiver || item.to_user;
     const displayName = receiver?.display_name || receiver?.username || receiver?.email || 'User';
     return (
-      <View style={styles.userRow}>
-        <AvatarWithFallback uri={receiver?.profile_picture} displayName={displayName} sticker={receiver?.avatar_sticker} style={styles.avatar} />
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{displayName}</Text>
-          <Text style={styles.userSub}>Request sent · waiting</Text>
+      <View style={s.userRow}>
+        <AvatarWithFallback uri={receiver?.profile_picture} displayName={displayName} sticker={receiver?.avatar_sticker} style={s.avatar} />
+        <View style={s.userInfo}>
+          <Text style={s.userName}>{displayName}</Text>
+          <Text style={s.userSub}>Request sent · waiting</Text>
         </View>
         <TouchableOpacity
-          style={[styles.rejectBtn, { paddingHorizontal: 10, borderRadius: 6 }]}
+          style={s.rejectBtn}
           onPress={() => handleCancelSentRequest(item.id)}
         >
-          <Icon name="close" size={14} color="#FFF" />
+          <Icon name="close" size={14} color={theme.textPrimary} />
         </TouchableOpacity>
       </View>
     );
@@ -513,18 +519,18 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     const sender = item.sender || item.from_user;
     const displayName = sender?.display_name || sender?.username || sender?.email || 'User';
     return (
-      <View style={styles.userRow}>
-        <AvatarWithFallback uri={sender?.profile_picture} displayName={displayName} sticker={sender?.avatar_sticker} style={styles.avatar} />
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{displayName}</Text>
-          <Text style={styles.userSub}>Wants to be your friend</Text>
+      <View style={s.userRow}>
+        <AvatarWithFallback uri={sender?.profile_picture} displayName={displayName} sticker={sender?.avatar_sticker} style={s.avatar} />
+        <View style={s.userInfo}>
+          <Text style={s.userName}>{displayName}</Text>
+          <Text style={s.userSub}>Wants to be your friend</Text>
         </View>
-        <View style={styles.choiceRow}>
-          <TouchableOpacity style={styles.acceptBtn} onPress={() => handleAcceptFriendRequest(item.id)}>
-            <Icon name="checkmark" size={15} color="#FFF" />
+        <View style={s.choiceRow}>
+          <TouchableOpacity style={s.acceptBtn} onPress={() => handleAcceptFriendRequest(item.id)}>
+            <Icon name="checkmark" size={15} color={theme.textPrimary} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.rejectBtn} onPress={() => handleRejectFriendRequest(item.id)}>
-            <Icon name="close" size={15} color="#FFF" />
+          <TouchableOpacity style={s.rejectBtn} onPress={() => handleRejectFriendRequest(item.id)}>
+            <Icon name="close" size={15} color={theme.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
@@ -539,7 +545,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     if (isAdding || isInvitingToCall) {
       return (
         <TouchableOpacity
-          style={[styles.userRow, isAlreadyMember && { opacity: 0.55 }]}
+          style={[s.userRow, isAlreadyMember && { opacity: 0.55 }]}
           onPress={() => {
             if (isAlreadyMember) return;
             if (isInvitingToCall) handleInviteToCall(item);
@@ -548,29 +554,29 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
           activeOpacity={0.7}
           disabled={isAlreadyMember}
         >
-          <View style={[styles.checkbox, isSelected && styles.checkboxSelected, isAlreadyMember && styles.checkboxDisabled]}>
+          <View style={[s.checkbox, isSelected && s.checkboxSelected, isAlreadyMember && s.checkboxDisabled]}>
             {(isSelected || isAlreadyMember) && <Icon name="checkmark" size={14} color="#FFF" />}
           </View>
-          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={styles.avatar} />
-          <View style={styles.userInfo}>
-            <Text style={styles.userName}>{displayName}</Text>
-            <Text style={styles.userSub} numberOfLines={1}>{isAlreadyMember ? 'Already a member' : (item.username ? `@${item.username}` : item.email)}</Text>
+          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={s.avatar} />
+          <View style={s.userInfo}>
+            <Text style={s.userName}>{displayName}</Text>
+            <Text style={s.userSub} numberOfLines={1}>{isAlreadyMember ? 'Already a member' : (item.username ? `@${item.username}` : item.email)}</Text>
           </View>
         </TouchableOpacity>
       );
     }
 
     return (
-      <View style={styles.userRow}>
+      <View style={s.userRow}>
         <TouchableOpacity 
           style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
           onPress={() => navigation.navigate('Profile', { user: item })}
           activeOpacity={0.7}
         >
-          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={styles.avatar} />
-          <View style={styles.userInfo}>
-            <Text style={styles.userName}>{displayName}</Text>
-            <Text style={styles.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
+          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={s.avatar} />
+          <View style={s.userInfo}>
+            <Text style={s.userName}>{displayName}</Text>
+            <Text style={s.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
           </View>
         </TouchableOpacity>
         <AnimatedAddButton
@@ -651,29 +657,29 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const incomingCount = incomingFriendRequests.length;
 
   return (
-    <View style={styles.container}>
+    <View style={s.container}>
 
       {/* ── Center-screen fade toast ── */}
       <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
-        <View style={styles.toastOverlay} pointerEvents="none">
-          <Animated.View style={[styles.toastBox, { opacity: toastOpacity }]}>
+        <View style={s.toastOverlay} pointerEvents="none">
+          <Animated.View style={[s.toastBox, { opacity: toastOpacity }]}>
             <Icon
-              name={toastMessage.includes('Sent') ? 'checkmark-circle' : 'close-circle'}
+              name={(toastMessage.includes('Sent') || toastMessage.includes('Accepted')) ? 'checkmark-circle' : 'close-circle'}
               size={22}
-              color={toastMessage.includes('Sent') ? '#4CAF50' : '#FF5252'}
+              color="#FFFFFF"
               style={{ marginRight: 8 }}
             />
-            <Text style={styles.toastText}>{toastMessage}</Text>
+            <Text style={s.toastText}>{toastMessage}</Text>
           </Animated.View>
         </View>
       </Modal>
-      <View style={styles.searchWrapper}>
-        <View style={styles.searchBar}>
-          <Icon name="search" size={18} color="#888" style={{ marginRight: 8 }} />
+      <View style={s.searchWrapper}>
+        <View style={s.searchBar}>
+          <Icon name="search" size={18} color={theme.icon} style={{ marginRight: 8 }} />
           <TextInput
-            style={styles.searchInput}
+            style={s.searchInput}
             placeholder={isInvitingToCall ? 'Search friends...' : isGroupMode ? 'Search contacts...' : 'Search by name or username...'}
-            placeholderTextColor="#AAA"
+            placeholderTextColor={theme.placeholder}
             value={searchQuery}
             onChangeText={v => {
               setSearchQuery(v);
@@ -689,15 +695,15 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               {!isGroupMode && (
                 <TouchableOpacity 
-                  style={styles.findNewBtn} 
+                  style={s.findNewBtn} 
                   onPress={handleFindNewFriend}
                   activeOpacity={0.7}
                 >
-                  <Text style={styles.findNewText}>Tap to Find</Text>
+                  <Text style={s.findNewText}>Tap to Find</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity onPress={handleClearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Icon name="close-circle" size={18} color="#AAA" />
+                <Icon name="close-circle" size={18} color={theme.icon} />
               </TouchableOpacity>
             </View>
           )}
@@ -705,14 +711,14 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
       </View>
 
       {!isGroupMode && (
-        <View style={styles.tabRow}>
+        <View style={s.tabRow}>
           {(['friends', 'approve', 'requests'] as HubTab[]).map(tab => (
             <TouchableOpacity
               key={tab}
-              style={[styles.tabBtn, activeTab === tab && styles.tabBtnActive]}
+              style={[s.tabBtn, activeTab === tab && s.tabBtnActive]}
               onPress={() => setActiveTab(tab)}
             >
-              <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
+              <Text style={[s.tabText, activeTab === tab && s.tabTextActive]}>
                 {tab === 'friends' ? 'Friends'
                   : tab === 'approve' ? `Requests (${incomingCount})`
                   : `Sent (${sentFriendRequests.length})`}
@@ -723,8 +729,8 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
       )}
 
       {isDisplayLoading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#4597f5" />
+        <View style={s.centered}>
+          <ActivityIndicator size="large" color={theme.primary} />
         </View>
       ) : (
         <FlatList
@@ -742,7 +748,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
               : renderRequestItem
           }
           ListEmptyComponent={
-            <View style={styles.centered}>
+            <View style={s.centered}>
               <Icon
                 name={
                   isNewFriendSearchActive
@@ -756,10 +762,10 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
                     : 'paper-plane-outline'
                 }
                 size={52}
-                color="#BBB"
+                color={theme.icon}
                 style={{ marginBottom: 12 }}
               />
-              <Text style={styles.emptyTitle}>
+              <Text style={s.emptyTitle}>
                 {isNewFriendSearchActive
                   ? 'No users found'
                   : searchQuery.trim()
@@ -770,7 +776,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
                   ? 'No friend requests received'
                   : 'No sent requests'}
               </Text>
-              <Text style={styles.emptySub}>
+              <Text style={s.emptySub}>
                 {isNewFriendSearchActive
                   ? 'Try searching a different exact username'
                   : searchQuery.trim()
@@ -782,20 +788,20 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
               </Text>
             </View>
           }
-          contentContainerStyle={displayData.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={displayData.length === 0 ? s.emptyList : undefined}
         />
       )}
 
       {isGroupMode && selectedUserIds.length > 0 && (
         <TouchableOpacity
-          style={[styles.floatBtn, isSubmitting && { opacity: 0.7 }]}
+          style={[s.floatBtn, isSubmitting && { opacity: 0.7 }]}
           onPress={handleAddMembers}
           disabled={isSubmitting}
         >
           {isSubmitting ? (
             <ActivityIndicator color="#FFF" />
           ) : (
-            <Text style={styles.floatBtnText}>
+            <Text style={s.floatBtnText}>
               {isInvitingToCall ? 'Invite to call' : `Add (${selectedUserIds.length})`}
             </Text>
           )}
@@ -805,21 +811,19 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   );
 };
 
-const BLUE = '#4597f5';
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.background },
   searchWrapper: {
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: '#FFF',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: theme.border,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.inputBackground,
     borderRadius: 22,
     paddingHorizontal: 14,
     height: 42,
@@ -827,15 +831,15 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 15,
-    color: '#333',
+    color: theme.inputText,
   },
   tabRow: {
     flexDirection: 'row',
-    backgroundColor: '#FFF',
+    backgroundColor: theme.surface,
     paddingHorizontal: 12,
     paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: theme.border,
     gap: 8,
   },
   tabBtn: {
@@ -844,27 +848,27 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: theme.border,
   },
   tabBtnActive: {
-    backgroundColor: BLUE,
-    borderColor: BLUE,
+    backgroundColor: theme.border,
+    borderColor: theme.textPrimary,
   },
-  tabText: { fontSize: 12, color: '#666', fontWeight: '500' },
-  tabTextActive: { color: '#FFF', fontWeight: '700' },
+  tabText: { fontSize: 12, color: theme.textSecondary, fontWeight: '500' },
+  tabTextActive: { color: theme.textPrimary, fontWeight: '700' },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#FFF',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
+    borderBottomColor: theme.separator,
   },
   avatar: { width: 46, height: 46, borderRadius: 23, marginRight: 12 },
   userInfo: { flex: 1 },
-  userName: { fontSize: 15, fontWeight: '600', color: '#222', marginBottom: 2 },
-  userSub: { fontSize: 13, color: '#888' },
+  userName: { fontSize: 15, fontWeight: '600', color: theme.textPrimary, marginBottom: 2 },
+  userSub: { fontSize: 13, color: theme.textMuted },
   actionButtons: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -874,7 +878,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#EAF2FF',
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -882,7 +886,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#EAF2FF',
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -890,7 +894,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#EAF2FF',
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -909,13 +913,17 @@ const styles = StyleSheet.create({
   choiceRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   acceptBtn: {
     width: 30, height: 30, borderRadius: 15,
-    backgroundColor: '#4CAF50',
+    backgroundColor: theme.surface,
     justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   rejectBtn: {
     width: 30, height: 30, borderRadius: 15,
-    backgroundColor: '#F44336',
+    backgroundColor: theme.surface,
     justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   friendsBadge: {
     flexDirection: 'row',
@@ -929,27 +937,27 @@ const styles = StyleSheet.create({
   friendsBadgeText: { fontSize: 12, color: '#4CAF50', fontWeight: '600' },
   checkbox: {
     width: 22, height: 22, borderRadius: 11,
-    borderWidth: 2, borderColor: BLUE,
+    borderWidth: 2, borderColor: theme.primary,
     marginRight: 10,
     justifyContent: 'center', alignItems: 'center',
   },
-  checkboxSelected: { backgroundColor: BLUE },
-  checkboxDisabled: { backgroundColor: '#CCC', borderColor: '#CCC' },
+  checkboxSelected: { backgroundColor: theme.primary },
+  checkboxDisabled: { backgroundColor: theme.border, borderColor: theme.border },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60, paddingHorizontal: 32 },
   emptyList: { flexGrow: 1 },
   emptyIcon: { fontSize: 52, marginBottom: 12 },
-  emptyTitle: { fontSize: 17, fontWeight: '600', color: '#555', marginBottom: 6 },
-  emptySub: { fontSize: 14, color: '#AAA', textAlign: 'center' },
+  emptyTitle: { fontSize: 17, fontWeight: '600', color: theme.textSecondary, marginBottom: 6 },
+  emptySub: { fontSize: 14, color: theme.textMuted, textAlign: 'center' },
   floatBtn: {
     position: 'absolute', bottom: 28, right: 24,
-    backgroundColor: BLUE,
+    backgroundColor: theme.primary,
     paddingHorizontal: 28, paddingVertical: 13,
     borderRadius: 28,
     elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4,
   },
   floatBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
   findNewBtn: {
-    backgroundColor: "#444444",
+    backgroundColor: theme.primary,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 14,
@@ -971,7 +979,7 @@ const styles = StyleSheet.create({
   toastBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(30, 30, 30, 0.88)',
+    backgroundColor: theme.surface,
     paddingHorizontal: 22,
     paddingVertical: 14,
     borderRadius: 28,
@@ -982,7 +990,7 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   toastText: {
-    color: '#FFF',
+    color: theme.textPrimary,
     fontSize: 15,
     fontWeight: '600',
     letterSpacing: 0.2,

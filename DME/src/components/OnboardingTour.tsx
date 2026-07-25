@@ -35,7 +35,7 @@ const STEPS: {
     key: 'fab',
     icon: 'person-add-outline',
     title: 'Add a New Friend',
-    description: 'Tap this button to search for people and start a new conversation or create a group chat.',
+    description: 'Tap this button to search for a User, view your Friend list or Sent and Accept new Friend Request.',
     tipPosition: 'top',
   },
   {

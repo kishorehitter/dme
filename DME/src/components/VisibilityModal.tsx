@@ -18,6 +18,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
   const [selected, setSelected] = useState<number[]>(initialSelected);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
 
   const fetchContacts = useCallback(async () => {
     setLoading(true);
@@ -26,18 +27,26 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
       const res = await api.get('/chat/friends/');
       const friendsList = Array.isArray(res.data) ? res.data : (res.data?.results || []);
       setContacts(friendsList);
+      
+      // If initialSelected is empty, select all friends by default!
+      if (initialSelected.length === 0) {
+        setSelected(friendsList.map((u: any) => u.id));
+      }
     } catch (e) {
       console.error('[VisibilityModal] fetchContacts error:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [initialSelected]);
 
   useEffect(() => {
     if (visible) {
+      setSelected(initialSelected);
+      setShowSearch(false);
+      setSearchQuery('');
       fetchContacts();
     }
-  }, [visible, fetchContacts]);
+  }, [visible, initialSelected, fetchContacts]);
 
   // Filter contacts locally based on search query
   const filteredContacts = contacts.filter(u => 
@@ -69,35 +78,53 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose}><Icon name="close" size={24} /></TouchableOpacity>
+          <TouchableOpacity onPress={onClose} style={styles.headerBtn}>
+            <Icon name="close" size={24} color="#333" />
+          </TouchableOpacity>
           <Text style={styles.title}>Status Privacy</Text>
-          <TouchableOpacity onPress={handleDone}><Text style={styles.done}>Done</Text></TouchableOpacity>
+          <View style={styles.rightHeaderActions}>
+            <TouchableOpacity 
+              onPress={() => {
+                setShowSearch(prev => !prev);
+                if (showSearch) setSearchQuery('');
+              }} 
+              style={styles.headerBtn}
+            >
+              <Icon name={showSearch ? "search-outline" : "search"} size={22} color="#333" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleDone} style={styles.headerBtn}>
+              <Text style={styles.done}>Done</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        <View style={styles.searchContainer}>
-          <Icon name="search" size={20} color="#999" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search friends..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-          />
-          {searchQuery !== '' && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Icon name="close-circle" size={18} color="#999" />
-            </TouchableOpacity>
-          )}
-        </View>
+        {showSearch && (
+          <View style={styles.searchContainer}>
+            <Icon name="search" size={20} color="#999" />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search friends..."
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoFocus
+            />
+            {searchQuery !== '' && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Icon name="close-circle" size={18} color="#999" />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {contacts.length > 0 && (
           <TouchableOpacity style={styles.selectAllBtn} onPress={selectAll}>
+            <Text style={styles.selectAllText}>{allSelected ? 'Unselect All' : 'Select All'}</Text>
             <Icon 
               name={allSelected ? "checkbox" : "square-outline"} 
               size={22} 
               color="#4597f5f6" 
             />
-            <Text style={styles.selectAllText}>{allSelected ? ' Deselect All' : ' Select All'}</Text>
           </TouchableOpacity>
         )}
 
@@ -117,7 +144,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
                 <AvatarWithFallback 
                   uri={item.profile_picture} 
                   displayName={item.display_name || item.username} 
-                  size={40} 
+                  style={{ width: 40, height: 40, borderRadius: 20 }}
                 />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.name}>{item.display_name || item.username}</Text>
@@ -135,21 +162,46 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', marginTop: 100 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, alignItems: 'center' },
+  header: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    padding: 20, 
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee'
+  },
   title: { fontSize: 18, fontWeight: 'bold' },
   done: { color: '#4597f5f6', fontWeight: 'bold' },
+  rightHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 15,
+  },
+  headerBtn: {
+    padding: 4,
+  },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f0f0f0',
     marginHorizontal: 15,
+    marginTop: 15,
     marginBottom: 10,
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 40,
   },
   searchInput: { flex: 1, marginLeft: 10, fontSize: 15 },
-  selectAllBtn: { paddingHorizontal: 20, marginBottom: 10 },
+  selectAllBtn: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 20, 
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    marginBottom: 10
+  },
   selectAllText: { color: '#4597f5f6', fontWeight: '600' },
   item: { flexDirection: 'row', alignItems: 'center', padding: 15, gap: 15 },
   name: { fontSize: 16, fontWeight: '500' },

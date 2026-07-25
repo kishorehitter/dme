@@ -208,14 +208,14 @@ const VideoControls: React.FC<ControlsProps> = ({
     <Animated.View style={[cv.wrap, { opacity: isFullscreen ? opacity : 1 }]} pointerEvents={(visible || !isFullscreen) ? 'box-none' : 'none'}>
       <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
       <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
-
-      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? 8 : 2, left: isFullscreen ? 16 : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-        <TouchableOpacity style={cv.relatedBtn} onPress={onShowRelated}>
-          <Icon name="layers-outline" size={18} color="#fff" />
-        </TouchableOpacity>
-      </Animated.View>
-
-      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? 8 : 2, right: isFullscreen ? 16 : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+      {!isDrivePlayer && onSettings && (
+        <Animated.View style={[{ position: 'absolute', top: isFullscreen ? (insets.top > 0 ? insets.top : 8) : 2, left: isFullscreen ? (insets.left > 0 ? insets.left + 8 : 16) : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+          <TouchableOpacity style={cv.relatedBtn} onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Icon name="settings-sharp" size={18} color="#fff" />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? (insets.top > 0 ? insets.top : 8) : 2, right: isFullscreen ? (insets.right > 0 ? insets.right + 8 : 16) : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
         <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
           <Icon name="expand" size={18} color="#fff" />
         </TouchableOpacity>
@@ -271,20 +271,13 @@ const VideoControls: React.FC<ControlsProps> = ({
         <View style={[
           cv.bottomBar, 
           { 
-            paddingLeft: isFullscreen ? 16 : 16, 
-            paddingRight: isFullscreen ? 16 : 16,
-            paddingBottom: isFullscreen ? 8 : 12 
+            paddingLeft: isFullscreen ? (insets.left > 0 ? insets.left + 16 : 16) : 16, 
+            paddingRight: isFullscreen ? (insets.right > 0 ? insets.right + 16 : 16) : 16,
+            paddingBottom: isFullscreen ? (insets.bottom > 0 ? insets.bottom + 8 : 12) : 12 
           }
         ]}>
           <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 20 }]}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
-            <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {!isDrivePlayer && onSettings && (
-                <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 12 }}>
-                  <Icon name="settings-sharp" size={20} color="rgba(255,255,255,0.85)" />
-                </TouchableOpacity>
-              )}
-            </View>
           </View>
           <View
             {...pan.panHandlers}
@@ -312,13 +305,6 @@ const VideoControls: React.FC<ControlsProps> = ({
         <>
           <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
-            <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
-              {!isDrivePlayer && onSettings && (
-                <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ bottom: 12 }}>
-                  <Icon name="settings-sharp" size={20} color="rgba(255,255,255,0.85)" />
-                </TouchableOpacity>
-              )}
-            </View>
           </Animated.View>
 
           <View
@@ -379,18 +365,18 @@ const cv = StyleSheet.create({
   },
   bottomEdgeTrack: {
     width: '100%',
-    backgroundColor: 'rgba(41, 41, 41, 0.67)',
+    backgroundColor: '#202020',
     justifyContent: 'center',
   },
   timeRowFloating: {
     position: 'absolute',
     left: 2,
     right: 8,
-    bottom: 0, // slightly lower — closer to the always-visible progress track
+    bottom: 8, // slightly lower — closer to the always-visible progress track
   },
-  track:            { height: 2, backgroundColor: 'rgba(41, 41, 41, 0.67)', borderRadius: 1, justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#4d4d4d', borderRadius: 1 },
-  knob:             { position: 'absolute', top: -2, marginLeft: -5, width: 6, height: 6, borderRadius: 6, backgroundColor: '#fff' },
+  track:            { height: 1, backgroundColor: '#fff', borderRadius: 1, justifyContent: 'center' },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#ccc', borderRadius: 1 },
+  knob:             { position: 'absolute', top: -1, marginLeft: -5, width: 6, height: 6, borderRadius: 6, backgroundColor: '#fff' },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
   timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
   watchBadge:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
@@ -450,6 +436,20 @@ const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
       fadeDuration={0}
     />
   );
+};
+
+const QUALITY_ORDER = ['highres', 'hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny', 'auto'];
+const QUALITY_LABELS: Record<string, string> = {
+  highres: '4K (High)',
+  hd2160: '4K (2160p)',
+  hd1440: '2K (1440p)',
+  hd1080: '1080p (FHD)',
+  hd720: '720p (HD)',
+  large: '480p (SD)',
+  medium: '360p',
+  small: '240p',
+  tiny: '144p',
+  auto: 'Auto',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -568,6 +568,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
   const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
   const [videoQuality, setVideoQuality] = useState('highres');
+  const [availableQualities, setAvailableQualities] = useState<string[]>(['auto']);
+
+  useEffect(() => {
+    setAvailableQualities(['auto']);
+  }, [currentSong?.videoId]);
   const [showQualityOptions, setShowQualityOptions] = useState(false);
   const [previewData, setPreviewData] = useState<{
     visible: boolean;
@@ -756,6 +761,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // automatically when the video ends (existing behavior). Shows queue +
   // fresh suggestions only — no PIP, no current-song display, per spec.
   const [showRelated, setShowRelated] = useState(false);
+  const showRelatedRef = useRef(false);
+  useEffect(() => {
+    showRelatedRef.current = showRelated;
+  }, [showRelated]);
   const [fullscreen, setFullscreen] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
@@ -986,6 +995,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const hasInitialized = useRef(false);
   const metadataLock = useRef<string | null>(null);
   const currentSongRef = useRef<Song | null>(null);
+  const relatedScrollX = useRef(new Animated.Value(0)).current;
   // Lets fetchSwipeSuggestions (declared with stable empty deps further
   // down) always read the CURRENT queue when it runs, without needing
   // `queue` in its dependency array — same rationale as currentSongRef.
@@ -1028,6 +1038,32 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // latest showControlsFor without needing it declared yet at this point
   // in the component body.
   const showControlsForRef = useRef<(ms?: number) => void>(() => {});
+
+  const playerGestureResponder = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: (evt, gestureState) => {
+      // Capture gesture if it moves significantly in the horizontal direction
+      return Math.abs(gestureState.dx) > 10;
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      const isTap = Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5;
+      if (isTap) {
+        if (showRelatedRef.current) {
+          // If related overlay is open, tapping the mini player closes it
+          setShowRelated(false);
+        } else {
+          // Otherwise, toggle playback controls
+          showControlsForRef.current();
+        }
+      } else if (Math.abs(gestureState.dx) > 40) {
+        // Swipe detected! Open the related videos grid
+        if (!showRelatedRef.current && currentSongRef.current?.source !== 'drive') {
+          fetchRelated();
+          setShowRelated(true);
+        }
+      }
+    },
+  })).current;
 
   // AppState refs for background/foreground position tracking
   const appState = useRef(AppState.currentState);
@@ -2313,6 +2349,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setFullScreenMedia({ url: item.media_url, type: 'image' });
     }
   };
+
+  const handleScrollToMessage = (replyToId: any) => {
+    if (!replyToId) return;
+    const targetIndex = reversedMessages.findIndex(
+      m => m.id === replyToId || m.local_id === replyToId
+    );
+    if (targetIndex !== -1) {
+      try {
+        chatListRef.current?.scrollToIndex({
+          index: targetIndex,
+          animated: true,
+          viewPosition: 0.5,
+        });
+      } catch (e) {
+        console.warn('Scroll to message failed:', e);
+      }
+    }
+  };
 const sendChatMessage = () => {
   if (!chatMessage.trim()) return;
   musicWebSocketService.sendChatMessage(chatMessage, replyingTo);
@@ -2402,7 +2456,7 @@ const sendChatMessage = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={s.inner}
       >
-        <View style={{ flex: 1, paddingTop: insets.top, paddingBottom: fullscreen ? 0 : insets.bottom }}>
+        <View style={{ flex: 1, paddingTop: fullscreen ? 0 : insets.top, paddingBottom: fullscreen ? 0 : insets.bottom }}>
           {renderLeaveModal()}
 
           {/* HEADER */}
@@ -2447,9 +2501,7 @@ const sendChatMessage = () => {
                 <TouchableOpacity onPress={() => setShowDiscovery(true)} style={s.headerIconBtn}>
                   <Icon name="search" size={22} color="#fff" />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setInviteModalVisible(true)} style={s.headerIconBtn}>
-                  <Icon name="person-add" size={22} color="#fff" />
-                </TouchableOpacity>
+                
                 <TouchableOpacity onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} style={s.headerIconBtn}>
                   <Icon name="list" size={22} color={activeTab === 'queue' ? '#4597f5f6' : '#fff'} />
                   {queue.length > 0 && (
@@ -2462,21 +2514,47 @@ const sendChatMessage = () => {
             </View>
           )}
 
+          {fullscreen && (
+            <View style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backgroundColor: '#000',
+              zIndex: 98
+            }} />
+          )}
+
           {/* VIDEO — stays in its normal flow position always now. The
               related-videos panel (opened via the top-left icon button,
               not a swipe/PIP) renders as a separate overlay on top while
               this keeps playing underneath, unaffected. */}
           <View style={fullscreen ? {
             position: 'absolute',
-            left: insets.left,
-            right: insets.right,
-            top: insets.top,
-            bottom: insets.bottom,
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: 0,
             backgroundColor: '#000',
             zIndex: 99,
             overflow: 'hidden'
           } : s.videoWrap}>
-            <View style={StyleSheet.absoluteFill} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
+            <Animated.View style={fullscreen ? StyleSheet.absoluteFill : (showRelated ? {
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: width / 2,
+              height: (width / 2) * 0.5625,
+              zIndex: 16,
+              backgroundColor: '#000',
+              overflow: 'hidden',
+              opacity: relatedScrollX.interpolate({
+                inputRange: [0, width],
+                outputRange: [1, 0],
+                extrapolate: 'clamp',
+              }),
+            } : StyleSheet.absoluteFill)} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
               {currentSong && currentSong.videoId ? (
                 
                 // ─── Drive Video ───────────────────────────────────────────────
@@ -2487,6 +2565,7 @@ const sendChatMessage = () => {
                     fileId={currentSong.videoId}
                     play={isPlaying && !playerError && isPlayerReady}
                     muted={false}
+                    isFullscreen={fullscreen}
                     onReady={() => {
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
@@ -2516,6 +2595,14 @@ const sendChatMessage = () => {
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
                     muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
                     quality={videoQuality}
+                    isFullscreen={fullscreen}
+                    onQualitiesAvailable={(levels) => {
+                      let list = levels.filter(q => q);
+                      if (!list.includes('auto')) {
+                        list.push('auto');
+                      }
+                      setAvailableQualities(list);
+                    }}
                     onVideoData={(extractedTitle, author) => {
                       if (currentSong && (currentSong.title === 'Loading...' || currentSong.title === 'Initializing...' || !currentSong.channelTitle)) {
                         console.log('🎵 [METADATA] Extracted video data from IFrame:', extractedTitle, 'by', author);
@@ -2624,7 +2711,7 @@ const sendChatMessage = () => {
                   <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
                 </View>
               )}
-            </View>
+            </Animated.View>
 
             {/* Error overlay */}
             {playerError && (
@@ -2676,12 +2763,20 @@ const sendChatMessage = () => {
             {/* Simple tap on empty video space shows controls. A tap that
                 lands on a VideoControls button (rendered after this, on
                 top) fires that button's onPress instead, never reaching
-                here — same as the original behavior, swipe gesture removed
-                per spec (replaced by the top-left Related icon button). */}
+                here. Swiping left/right opens the related videos grid, 
+                and tapping the mini-player inside the related grid expands it back. */}
             {!playerError && playerState !== 'ended' && (
-              <TouchableWithoutFeedback onPress={() => showControlsForRef.current()}>
-                <View style={StyleSheet.absoluteFill} />
-              </TouchableWithoutFeedback>
+              <View 
+                style={showRelated ? {
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: width / 2,
+                  height: (width / 2) * 0.5625,
+                  zIndex: 17,
+                } : StyleSheet.absoluteFill}
+                {...playerGestureResponder.panHandlers}
+              />
             )}
 
             <VideoControls
@@ -2706,31 +2801,32 @@ const sendChatMessage = () => {
               <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
                 <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', marginBottom: 12 }}>Video Quality</Text>
                 <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 16 }}>
-                  {[
-                    { id: 'highres', label: 'High' },
-                    { id: 'hd720', label: 'Medium' },
-                    { id: 'medium', label: 'Low' },
-                    { id: 'auto', label: 'Auto' },
-                  ].map((item) => (
-                    <TouchableOpacity
-                      key={item.id}
-                      onPress={() => {
-                        setVideoQuality(item.id);
-                        playerRef.current?.setPlaybackQuality(item.id);
-                        setShowQualityOptions(false);
-                      }}
-                      style={{
-                        backgroundColor: videoQuality === item.id ? colors.primary : 'rgba(255,255,255,0.1)',
-                        paddingHorizontal: 16,
-                        paddingVertical: 8,
-                        borderRadius: 18,
-                        minWidth: 70,
-                        alignItems: 'center'
-                      }}
-                    >
-                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{item.label}</Text>
-                    </TouchableOpacity>
-                  ))}
+                  {[...availableQualities]
+                    .sort((a, b) => QUALITY_ORDER.indexOf(a) - QUALITY_ORDER.indexOf(b))
+                    .map((q) => {
+                      const label = QUALITY_LABELS[q] || q;
+                      return (
+                        <TouchableOpacity
+                          key={q}
+                          onPress={() => {
+                            setVideoQuality(q);
+                            playerRef.current?.setPlaybackQuality(q);
+                            setShowQualityOptions(false);
+                          }}
+                          style={{
+                            backgroundColor: videoQuality === q ? colors.primary : 'rgba(255,255,255,0.1)',
+                            paddingHorizontal: 16,
+                            paddingVertical: 8,
+                            borderRadius: 18,
+                            minWidth: 70,
+                            alignItems: 'center',
+                            marginBottom: 8
+                          }}
+                        >
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                 </View>
                 <TouchableOpacity
                   onPress={() => setShowQualityOptions(false)}
@@ -2779,13 +2875,7 @@ const sendChatMessage = () => {
                 would ever auto-advance from. */}
             {showRelated && !fullscreen && currentSong?.source !== 'drive' && (
               <View style={s.relatedOverlay}>
-                <TouchableOpacity
-                  style={s.relatedCloseBtn}
-                  onPress={() => setShowRelated(false)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <Icon name="close-circle" size={36} color="#fff" />
-                </TouchableOpacity>
+
                 {isLoadingRelated && relatedVideos.length === 0 && (
                   <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }]}>
                     <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" animating={true} />
@@ -2795,6 +2885,8 @@ const sendChatMessage = () => {
                   queueItems={queue}
                   suggestedVideos={relatedVideos}
                   myUserId={user?.id ?? -1}
+                  currentSong={currentSong}
+                  scrollX={relatedScrollX}
                   onPinVideo={(song) => {
                     if (playerState === 'ended') {
                       // Nothing left for the room to auto-advance to —
@@ -2838,7 +2930,7 @@ const sendChatMessage = () => {
                       </TouchableOpacity>
                     ))}
                     <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
-                      <Icon name="person-add-outline" size={16} color="#fdfdfd" />
+                      <Icon name="person-add-outline" size={20} color="#fdfdfd" />
                     </TouchableOpacity>
                   </ScrollView>
                 </View>
@@ -2864,10 +2956,27 @@ const sendChatMessage = () => {
                     contentContainerStyle={{ paddingHorizontal: 8, paddingTop: 0, paddingBottom: 10 }}
                     keyboardShouldPersistTaps="handled"
                     ListEmptyComponent={<Text style={s.emptyText}>No messages yet. Say hi! 👋</Text>}
+                    onScrollToIndexFailed={(info) => {
+                      try {
+                        chatListRef.current?.scrollToOffset({
+                          offset: info.averageItemLength * info.index,
+                          animated: true,
+                        });
+                        setTimeout(() => {
+                          chatListRef.current?.scrollToIndex({
+                            index: info.index,
+                            animated: true,
+                            viewPosition: 0.5,
+                          });
+                        }, 100);
+                      } catch (err) {
+                        console.warn('onScrollToIndexFailed fallback scroll error:', err);
+                      }
+                    }}
                     renderItem={({ item, index }) => {
                       const myName = user?.display_name || user?.email || '';
 
-                      const renderParsedMessageText = (text: string) => {
+                      const renderParsedMessageText = (text: string, isMeMsg: boolean) => {
                         if (!text) return null;
 
                         const currentParticipants = participantsRef.current || [];
@@ -2902,7 +3011,7 @@ const sendChatMessage = () => {
                         mentionsList.sort((a, b) => b.searchStr.length - a.searchStr.length);
 
                         if (mentionsList.length === 0) {
-                          return <Text style={s.bubbleMsg}>{text}</Text>;
+                          return <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left' }]}>{text}</Text>;
                         }
 
                         const elements: React.ReactNode[] = [];
@@ -2935,8 +3044,8 @@ const sendChatMessage = () => {
                               <View 
                                 key={`mention-${keyIdx++}`} 
                                 style={{ 
-                                  flexDirection: 'row', 
-                                  alignItems: 'center', 
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
                                   backgroundColor: 'rgba(129, 0, 209, 0.15)',
                                   borderRadius: 12,
                                   paddingHorizontal: 6,
@@ -2968,7 +3077,7 @@ const sendChatMessage = () => {
                         }
 
                         return (
-                          <Text style={s.bubbleMsg}>
+                          <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left' }]}>
                             {elements.map((el, i) => {
                               if (typeof el === 'string') {
                                 return <Text key={`text-${i}`}>{el}</Text>;
@@ -3014,6 +3123,10 @@ const sendChatMessage = () => {
                       const isMedia = item.message_type === 'image' || item.message_type === 'gif' || item.message_type === 'sticker';
                       const isSticker = item.message_type === 'sticker';
 
+                      const replySender = item.reply_to ? participants.find(p => p.name === item.reply_to.user) : null;
+                      const isMyReply = item.reply_to ? item.reply_to.user === (user?.display_name || user?.email) : false;
+                      const replyAvatar = item.reply_to ? (isMyReply ? user?.profile_picture : replySender?.avatar) : null;
+
                       return (
                         <View style={[s.bubble, isMe && s.bubbleMe]}>
                           {showAvatar && (
@@ -3035,7 +3148,7 @@ const sendChatMessage = () => {
                                     />
                                     {sender?.is_dj && (
                                       <View style={{ position: 'absolute', top: -10, right: -4 }}>
-                                        <Icon name="star" size={14} color="#FFD700" />
+                                        <Icon name="star" size={14} color="#fff" />
                                       </View>
                                     )}
                                   </TouchableOpacity>
@@ -3058,6 +3171,45 @@ const sendChatMessage = () => {
                             </View>
                           )}
                           <View style={{ flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+                            {item.reply_to && (
+                              <TouchableOpacity 
+                                activeOpacity={0.7} 
+                                onPress={() => handleScrollToMessage(item.reply_to.id)}
+                                style={[
+                                  s.replyBubble, 
+                                  { 
+                                    flexDirection: 'row', 
+                                    alignItems: 'center', 
+                                    maxWidth: width * 0.78, 
+                                    paddingRight: 6,
+                                    marginBottom: 4,
+                                    gap: 6,
+                                  },
+                                  !isMe && !showAvatar && { marginLeft: 36 },
+                                  isMe && !showAvatar && { marginRight: 36 },
+                                ]}
+                              >
+                                <AvatarWithFallback
+                                  uri={replyAvatar}
+                                  displayName={item.reply_to.user}
+                                  style={{ width: 18, height: 18, borderRadius: 9 }}
+                                />
+                                <Text style={[s.replyText, { textAlign: isMe ? 'right' : 'left', flexShrink: 1 }]} numberOfLines={1} ellipsizeMode="tail">
+                                  {item.reply_to.text && item.reply_to.text.trim() ? item.reply_to.text : 
+                                   (item.reply_to.message_type === 'image' ? '📷 Image' :
+                                    item.reply_to.message_type === 'gif' ? '👾 GIF' :
+                                    item.reply_to.message_type === 'sticker' ? '🖼️ Sticker' : '📁 Attachment')}
+                                </Text>
+                                {item.reply_to.media_url && (
+                                  <Image
+                                    source={{ uri: resolveImageUrl(item.reply_to.media_url) }}
+                                    style={{ width: 28, height: 28, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.05)', marginLeft: 8 }}
+                                    resizeMode="cover"
+                                  />
+                                )}
+                              </TouchableOpacity>
+                            )}
+
                             <TouchableOpacity onPress={(e) => handlePress(item, e)} onLongPress={() => handleMessageLongPress(item)} activeOpacity={1}>
                               <View style={[
                                 s.msgContainer,
@@ -3067,28 +3219,8 @@ const sendChatMessage = () => {
                                 !isMe && !showAvatar && { marginLeft: 36 },
                                 isMe && !showAvatar && { marginRight: 36 },
                               ]}>
-                                {item.reply_to && (
-                                  <View style={[s.replyBubble, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minWidth: 120, paddingRight: 6 }]}>
-                                    <View style={{ flex: 1, marginRight: 8 }}>
-                                      <Text style={s.replyUser}>{item.reply_to.user === (user?.display_name || user?.email) ? 'You' : item.reply_to.user}</Text>
-                                      <Text style={s.replyText} numberOfLines={1}>
-                                        {item.reply_to.text && item.reply_to.text.trim() ? item.reply_to.text : 
-                                         (item.reply_to.message_type === 'image' ? '📷 Image' :
-                                          item.reply_to.message_type === 'gif' ? '👾 GIF' :
-                                          item.reply_to.message_type === 'sticker' ? '🖼️ Sticker' : '📁 Attachment')}
-                                      </Text>
-                                    </View>
-                                    {item.reply_to.media_url && (
-                                      <Image
-                                        source={{ uri: resolveImageUrl(item.reply_to.media_url) }}
-                                        style={{ width: 28, height: 28, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.05)' }}
-                                        resizeMode="cover"
-                                      />
-                                    )}
-                                  </View>
-                                )}
                                 {isMedia ? (
-                                  <View style={{ position: 'relative' }}>
+                                  <View style={{ position: 'relative', alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
                                     <ScaledImage
                                       uri={resolveImageUrl(item.media_url)}
                                       isAnimated={item.message_type === 'gif' || item.message_type === 'sticker'}
@@ -3106,35 +3238,35 @@ const sendChatMessage = () => {
                                     )}
                                   </View>
                                 ) : (
-                                  renderParsedMessageText(displayText)
+                                  <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
+                                    {renderParsedMessageText(displayText, isMe)}
+                                  </View>
+                                )}
+                                {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).length > 0 && (
+                                  <View style={[
+                                    s.reactionContainer,
+                                    isMe ? s.reactionContainerMe : s.reactionContainerThem,
+                                    { marginTop: 6, marginBottom: 2 }
+                                  ]}>
+                                    {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).map(([reactorName, emoji], idx) => {
+                                      const reactor = participants.find(p => p.name === reactorName);
+                                      const isMyReaction = reactorName === myName;
+                                      const reactorPic = isMyReaction ? user?.profile_picture : reactor?.avatar;
+                                      return (
+                                        <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                          <AvatarWithFallback
+                                            uri={reactorPic}
+                                            displayName={reactorName}
+                                            style={{ width: 18, height: 18, borderRadius: 9 }}
+                                          />
+                                          <Text style={s.reactionEmoji}>{String(emoji)}</Text>
+                                        </View>
+                                      );
+                                    })}
+                                  </View>
                                 )}
                               </View>
                             </TouchableOpacity>
-
-                            {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).length > 0 && (
-                              <View style={[
-                                s.reactionContainer,
-                                isMe ? s.reactionContainerMe : s.reactionContainerThem,
-                                !isMe && !showAvatar && { marginLeft: 36 },
-                                isMe && !showAvatar && { marginRight: 36 }
-                              ]}>
-                                {Object.entries(item.reactions || {}).filter(([_, r]) => !!r).map(([reactorName, emoji], idx) => {
-                                  const reactor = participants.find(p => p.name === reactorName);
-                                  const isMyReaction = reactorName === myName;
-                                  const reactorPic = isMyReaction ? user?.profile_picture : reactor?.avatar;
-                                  return (
-                                    <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                      <AvatarWithFallback
-                                        uri={reactorPic}
-                                        displayName={reactorName}
-                                        style={{ width: 18, height: 18, borderRadius: 9 }}
-                                      />
-                                      <Text style={s.reactionEmoji}>{String(emoji)}</Text>
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            )}
                           </View>
                         </View>
                       );
@@ -3439,10 +3571,10 @@ const s = StyleSheet.create({
   headerIconBtn:     { padding: 6, position: 'relative' },
   badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
   badgeText:         { color: '#fff', fontSize: 9, fontWeight: '800' },
-  headerTitleContainer: { flex: 1, flexDirection: 'row', gap: 8, marginHorizontal: 8 },
-  headerTitleTouch:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 5 },
-  headerTitleInput:  { color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0, minWidth: 100 },
-  headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5 },
+  headerTitleContainer: { flex: 1, flexDirection: 'row', gap: 8, marginHorizontal: 8, alignItems: 'center' },
+  headerTitleTouch:  { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  headerTitleInput:  { flex: 1, color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0 },
+  headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5, padding: 0 },
   dot:               { width: 6, height: 6, borderRadius: 3 },
   videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative' },
   videoWrapFullscreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 99 },
@@ -3455,7 +3587,7 @@ const s = StyleSheet.create({
   djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 8, paddingVertical: 1, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
   djBadgeText:       { color: '#4597f5f6', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   participantsRow:   { backgroundColor: 'transparent' },
-  participantsContent: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, gap: 6 },
+  participantsContent: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, gap: 10 },
   participantItem:   { position: 'relative' },
   pAvatar:           { width: 32, height: 32, borderRadius: 16, borderWidth: 0.5, borderColor: '#ffffff', overflow: 'hidden' },
   messageAvatar:     { width: 30, height: 30, borderRadius: 15, borderWidth: 0.5, borderColor: '#ffffff' },
@@ -3469,15 +3601,15 @@ const s = StyleSheet.create({
   bubble:            { marginBottom: 12, maxWidth: '85%', alignSelf: 'flex-start', position: 'relative', flexDirection: 'row', alignItems: 'flex-start' },
   bubbleMe:          { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
   bubbleUser:        { color: '#4597f5f6', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
-  msgContainer:      { paddingHorizontal: 12, paddingVertical: 8, paddingBottom: 10, borderRadius: 18, position: 'relative', backgroundColor: 'rgba(255, 255, 255, 0.05)' },
+  msgContainer:      { paddingHorizontal: 12, paddingVertical: 4, paddingBottom: 0, borderRadius: 18, position: 'relative' },
   msgContainerThem:  { borderTopLeftRadius: 4 },
   msgContainerMe:    { borderTopRightRadius: 4 },
-  bubbleMsg:         { color: '#fff', fontSize: 13 },
+  bubbleMsg:         { color: '#fff', fontSize: 15 },
   replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.06)' },
-  replyUser:         { color: '#4597f5f6', fontSize: 10, fontWeight: '700' },
-  replyText:         { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
+  replyUser:         { color: '#4597f5f6', fontSize: 13, fontWeight: '700' },
+  replyText:         { color: 'rgba(255,255,255,0.6)', fontSize: 16 },
   reactionContainer: { 
-    marginTop: 2,
+    marginTop: 0,
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
@@ -3487,7 +3619,7 @@ const s = StyleSheet.create({
     borderRadius: 10, 
     borderWidth: 1, 
     borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: '#000',
+    backgroundColor: '#00000000',
     zIndex: 5
   },
   reactionContainerThem: { alignSelf: 'flex-start' },
@@ -3495,8 +3627,8 @@ const s = StyleSheet.create({
   reactionEmoji:     { fontSize: 16 },
   replyBar:          { backgroundColor: 'transparent' },
   replyBarContent:   { flexDirection: 'row', alignItems: 'center', padding: 10 },
-  replyBarUser:      { color: '#4597f5f6', fontSize: 12, fontWeight: '700' },
-  replyBarText:      { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
+  replyBarUser:      { color: '#fff', fontSize: 12, fontWeight: '700' },
+  replyBarText:      { color: 'rgba(255,255,255,0.5)', fontSize: 13 },
   quickReactionsRow: {
     backgroundColor: 'transparent',
     borderTopWidth: 0.5,

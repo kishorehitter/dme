@@ -15,6 +15,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Toast from 'react-native-toast-message';
 import { AuthProvider } from './src/context/AuthContext';
 import { CallProvider } from './src/context/CallContext';
+import { ThemeProvider } from './src/context/ThemeContext';
 import CallOverlay from './src/components/CallOverlay';
 import AppNavigator from './src/navigation/AppNavigator';
 import AppSplash from './src/components/AppSplash';
@@ -438,31 +439,31 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <SafeAreaProvider>
-        <UpdateProvider>
-          <View style={styles.container}>
-            <StatusBar
-              barStyle="dark-content"
-              backgroundColor="transparent"
-              translucent={true}
-            />
-            <AuthProvider>
-              <CallProvider>
-                <AppNavigator
-                  setNavigationRef={setNavigationRef}
-                  onNavigatorReady={onNavigatorReady}
-                />
-                <CallOverlay />
-                <Toast />
-              </CallProvider>
-            </AuthProvider>
-            {!isSplashFinished && (
-              <AppSplash 
-                onFinish={() => setIsSplashFinished(true)} 
-                startFadeOut={isAppReady}
+        <ThemeProvider>
+          <UpdateProvider>
+            <View style={styles.container}>
+              <StatusBar
+                translucent={true}
               />
-            )}
-          </View>
-        </UpdateProvider>
+              <AuthProvider>
+                <CallProvider>
+                  <AppNavigator
+                    setNavigationRef={setNavigationRef}
+                    onNavigatorReady={onNavigatorReady}
+                  />
+                  <CallOverlay />
+                  <Toast />
+                </CallProvider>
+              </AuthProvider>
+              {!isSplashFinished && (
+                <AppSplash 
+                  onFinish={() => setIsSplashFinished(true)} 
+                  startFadeOut={isAppReady}
+                />
+              )}
+            </View>
+          </UpdateProvider>
+        </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

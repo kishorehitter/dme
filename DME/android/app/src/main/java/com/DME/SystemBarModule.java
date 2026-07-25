@@ -10,6 +10,8 @@ import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.facebook.react.bridge.UiThreadUtil;
 
 public class SystemBarModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
@@ -45,6 +47,18 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         applyStatusBarColor(colorHex, lightIcons);
     }
 
+    @ReactMethod
+    public void setFitsSystemWindows(final boolean fits) {
+        final Activity activity = getCurrentActivity();
+        if (activity == null) return;
+        UiThreadUtil.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), fits);
+            }
+        });
+    }
+
     private void applyNavigationBarColor(final String colorHex, final boolean lightIcons) {
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
@@ -58,21 +72,23 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
                     window.setNavigationBarColor(Color.parseColor(colorHex));
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        window.setNavigationBarContrastEnforced(false);
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        if (colorHex.equals("#00000000") || colorHex.equals("#01000000") || colorHex.equals("transparent")) {
+                            window.setNavigationBarDividerColor(Color.TRANSPARENT);
+                        } else {
+                            window.setNavigationBarDividerColor(Color.parseColor(colorHex));
+                        }
+                    }
                 } catch (Exception e) {
                     // Ignore invalid colors
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    View decorView = window.getDecorView();
-                    int flags = decorView.getSystemUiVisibility();
-                    if (lightIcons) {
-                        // Light icons for dark background
-                        flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                    } else {
-                        // Dark icons for light background
-                        flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                    }
-                    decorView.setSystemUiVisibility(flags);
+                WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
+                if (controller != null) {
+                    controller.setAppearanceLightNavigationBars(!lightIcons);
                 }
             }
         });
@@ -91,29 +107,22 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
                     window.setStatusBarColor(Color.parseColor(colorHex));
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        window.setStatusBarContrastEnforced(false);
+                    }
                 } catch (Exception e) {
                     // Ignore invalid colors
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    View decorView = window.getDecorView();
-                    int flags = decorView.getSystemUiVisibility();
-                    if (lightIcons) {
-                        // Light icons for dark background
-                        flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                    } else {
-                        // Dark icons for light background
-                        flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                    }
-                    decorView.setSystemUiVisibility(flags);
+                WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
+                if (controller != null) {
+                    controller.setAppearanceLightStatusBars(!lightIcons);
                 }
             }
         });
     }
 
     // --- LifecycleEventListener ---
-    // Reapplies last-known colors when the host activity resumes
-    // (e.g. after backgrounding, a system dialog, or another activity taking focus).
 
     @Override
     public void onHostResume() {

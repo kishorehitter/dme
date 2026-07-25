@@ -260,9 +260,8 @@ def _search_piped(query: str, max_res: int) -> dict | None:
 
 def _get_video_metadata_ytdlp(video_id: str) -> dict | None:
     """
-    Fetch a video's title + channel using yt-dlp with multiple player clients.
-    android_testsuite / tv_embedded bypass the bot-check on datacenter IPs.
-    Returns {'title': str, 'channel': str} or None if all clients fail.
+    Fetch a video's full metadata (title, channel, upload date, categories)
+    using yt-dlp with multiple player clients.
     """
     cookie_file = get_youtube_cookie_file()
     url = f'https://www.youtube.com/watch?v={video_id}'
@@ -272,7 +271,7 @@ def _get_video_metadata_ytdlp(video_id: str) -> dict | None:
                 'quiet': True,
                 'no_warnings': True,
                 'skip_download': True,
-                'extract_flat': True,
+                'extract_flat': False,  # Changed to False to retrieve complete categories/dates
                 'socket_timeout': 10,
                 'extractor_args': {
                     'youtube': {
@@ -280,15 +279,27 @@ def _get_video_metadata_ytdlp(video_id: str) -> dict | None:
                     }
                 },
             }
+
             if cookie_file:
                 ydl_opts['cookiefile'] = cookie_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             if info and info.get('title'):
+                upload_date = info.get('upload_date')
+                year = None
+                if upload_date and isinstance(upload_date, str) and len(upload_date) >= 4:
+                    year = upload_date[:4]
+
+                categories = info.get('categories')
+                category = categories[0] if categories and isinstance(categories, list) else None
+
                 return {
                     'title': info['title'],
                     'channel': info.get('channel') or info.get('uploader') or '',
+                    'year': year,
+                    'category': category,
+                    'language': info.get('language'),
                 }
         except Exception as e:
             logger.warning(f'⚠️ Metadata fetch client={clients} failed for {video_id}: {e}')
@@ -363,25 +374,123 @@ def _build_related_query(title: str, channel: str) -> str:
     return ' '.join(p for p in parts if p).strip()
 
 
+def _normalize_title_for_comparison(t: str) -> str:
+    """
+    Cleans a video title (removes parentheticals, music noise words, non-alphanumeric chars)
+    and sorts the words alphabetically to create a canonical string for de-duplicating similar tracks.
+    """
+    import re
+    # Remove bracketed and parenthetical noise blocks
+    t_clean = re.sub(r'[\(\[].*?[\)\]]', ' ', t.lower())
+    # Strip common metadata tags
+    for tag in ['official', 'video', 'lyrics', 'lyric', 'audio', 'full', 'hd', 'mv', 'song', 'live', 'concert', 'related']:
+        t_clean = t_clean.replace(tag, '')
+    # Extract alphanumeric words and sort them to handle title ordering variations
+    words = re.findall(r'[a-zA-Z0-9]+', t_clean)
+    words.sort()
+    return ''.join(words)
+
+
 def _get_related_fallback(videoId: str) -> dict | None:
     """
-    Fetch related videos by searching yt-dlp, biased toward same
-    channel/content-type using keyword extraction from the source video's
-    title (see _build_related_query). This is YouTube-search-based
-    filtering, not database-driven — results come entirely from YouTube,
-    never from our own DB, per spec.
+    Fetch related videos from YouTube, matching:
+    1. Same Channel (Uploader)
+    2. Same Genre/Category + Year (and language matching via core keywords)
+    3. Standard Related search fallback
+    Searches are executed concurrently in a thread pool to preserve fast response times.
+    Title de-duplication is enforced to avoid repeating identical tracks.
     """
+    import concurrent.futures
+    import re
     try:
         meta = _get_video_metadata_ytdlp(videoId)
 
         if not meta:
             logger.warning(f'⚠️ Could not fetch metadata for {videoId}, using ID as query')
-            search_query = videoId
-        else:
-            search_query = _build_related_query(meta['title'], meta['channel'])
+            return _search_ytdlp(videoId, 12)
 
-        logger.info(f'🔍 Searching for related: "{search_query}"')
-        return _search_ytdlp(search_query, 12)
+        title = meta['title']
+        channel = meta['channel']
+        year = meta.get('year')
+        category = meta.get('category')
+
+        # Build specific recommendation queries
+        # Query 1: Same Channel
+        query_channel = f'"{channel}"' if channel else ""
+
+        # Query 2: Genre/Category + Year (retaining core keywords for language context)
+        cleaned = re.sub(r'[\(\[].*?[\)\]]', ' ', title)
+        cleaned = re.split(r'[|\u2022]', cleaned)[0]
+        words = re.findall(r"[\w']+", cleaned.lower())
+        meaningful = [w for w in words if w not in _NOISE_WORDS and len(w) > 1]
+        core_keywords = ' '.join(meaningful[:4])
+
+        query_genre_year = []
+        if core_keywords:
+            query_genre_year.append(core_keywords)
+        if year:
+            query_genre_year.append(year)
+        if category:
+            query_genre_year.append(category)
+
+        query_genre_year_str = ' '.join(query_genre_year).strip()
+
+        # Query 3: Standard Related
+        query_standard = _build_related_query(title, channel)
+
+        logger.info(f'🔍 Concurrently searching related - Channel: "{query_channel}", Genre/Year: "{query_genre_year_str}", Std: "{query_standard}"')
+
+        # Run up to 3 searches in parallel to optimize latency
+        search_targets = []
+        if query_channel:
+            search_targets.append((query_channel, 8))
+        if query_genre_year_str:
+            search_targets.append((query_genre_year_str, 8))
+        if query_standard:
+            search_targets.append((query_standard, 8))
+
+        results_list = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_to_query = {
+                executor.submit(_search_ytdlp, q, limit): q
+                for q, limit in search_targets
+            }
+            for future in concurrent.futures.as_completed(future_to_query):
+                q = future_to_query[future]
+                try:
+                    res = future.result()
+                    if res and 'items' in res:
+                        results_list.append(res['items'])
+                except Exception as exc:
+                    logger.error(f'Search query "{q}" generated an exception: {exc}')
+
+        # Interleave the different search buckets to form a diverse recommendation list
+        combined_items = []
+        seen_ids = {videoId}
+        
+        # Seed seen titles with the current video's title to avoid proposing the same track
+        seen_titles = {_normalize_title_for_comparison(title)}
+
+        max_len = max(len(lst) for lst in results_list) if results_list else 0
+        for i in range(max_len):
+            for lst in results_list:
+                if i < len(lst):
+                    item = lst[i]
+                    v_id = item.get('id', {}).get('videoId')
+                    if v_id and v_id not in seen_ids:
+                        # Extract title and perform de-duplication check
+                        item_title = item.get('snippet', {}).get('title', '')
+                        norm_title = _normalize_title_for_comparison(item_title)
+                        
+                        # Only include if we haven't seen a highly similar title structure
+                        if norm_title not in seen_titles:
+                            seen_ids.add(v_id)
+                            seen_titles.add(norm_title)
+                            combined_items.append(item)
+
+        final_results = combined_items[:15]
+        logger.info(f'✅ Extracted {len(final_results)} related videos after title de-duplication')
+        return {'items': final_results}
 
     except Exception as e:
         logger.error(f'❌ Related fetch exception for "{videoId}": {e}')

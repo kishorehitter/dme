@@ -19,6 +19,8 @@ import RNFS from 'react-native-fs';
 import { useAuth } from '../../context/AuthContext';
 import { authAPI } from '../../services/api';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '../../context/ThemeContext';
+import type { ThemeMode } from '../../context/ThemeContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
 import { checkForUpdate } from '../../services/updateChecker';
@@ -32,11 +34,12 @@ interface SettingsScreenProps {
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
+  const { theme, isDark, themeMode, setThemeMode } = useTheme();
   
   const LAST_SEEN_KEY = `settings_last_seen_${user?.id || 'default'}`;
   const BLOCKED_USERS_KEY = `settings_blocked_users_${user?.id || 'default'}`;
 
-  const [currentView, setCurrentView] = useState<'main' | 'privacy' | 'storage' | 'about' | 'blocklist'>('main');
+  const [currentView, setCurrentView] = useState<'main' | 'privacy' | 'storage' | 'about' | 'blocklist' | 'appearance'>('main');
   
   // Privacy States
   const [lastSeen, setLastSeen] = useState<'everyone' | 'nobody'>('everyone');
@@ -355,51 +358,132 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       case 'storage': return 'Storage & Cache';
       case 'about': return 'About DME';
       case 'blocklist': return 'Block List';
+      case 'appearance': return 'Appearance';
       default: return 'Settings';
     }
   };
 
+  // ─── Appearance (Dark Mode) View ──────────────────────────────────────────────
+  const renderAppearanceSettings = () => {
+    const options: { label: string; value: ThemeMode; icon: string; description: string }[] = [
+      { label: 'Light', value: 'light', icon: 'sunny-outline', description: 'Always use light theme' },
+      { label: 'Dark', value: 'dark', icon: 'moon-outline', description: 'Always use dark theme' },
+      { label: 'System default', value: 'system', icon: 'phone-portrait-outline', description: 'Follow device theme setting' },
+    ];
+
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: theme.background }}>
+        <View style={[dynamicStyles(theme).section, { marginTop: spacing.md }]}>
+          <Text style={dynamicStyles(theme).sectionHeader}>Theme</Text>
+          {options.map(opt => (
+            <TouchableOpacity
+              key={opt.value}
+              style={dynamicStyles(theme).selectableItem}
+              onPress={() => setThemeMode(opt.value)}
+            >
+              <View style={dynamicStyles(theme).itemLeft}>
+                <View style={{
+                  width: 40, height: 40, borderRadius: 20,
+                  backgroundColor: isDark ? '#2a3942' : '#f0f0f0',
+                  alignItems: 'center', justifyContent: 'center', marginRight: 4,
+                }}>
+                  <Icon name={opt.icon} size={22} color={theme.primary} />
+                </View>
+                <View style={{ marginLeft: 8 }}>
+                  <Text style={dynamicStyles(theme).itemText}>{opt.label}</Text>
+                  <Text style={{ fontSize: 12, color: theme.textMuted, marginTop: 1 }}>{opt.description}</Text>
+                </View>
+              </View>
+              {themeMode === opt.value && (
+                <Icon name="checkmark-circle" size={22} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Live preview card */}
+        <View style={[dynamicStyles(theme).section, { marginTop: spacing.md }]}>
+          <Text style={dynamicStyles(theme).sectionHeader}>Preview</Text>
+          <View style={[dynamicStyles(theme).item, { flexDirection: 'column', alignItems: 'flex-start', gap: 8 }]}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <View style={[
+                { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, maxWidth: '70%' },
+                { backgroundColor: theme.theirMessage },
+              ]}>
+                <Text style={{ color: theme.textPrimary, fontSize: 14 }}>Hey! 👋 Looks nice!</Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', width: '100%' }}>
+              <View style={[
+                { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, maxWidth: '70%' },
+                { backgroundColor: theme.myMessage },
+              ]}>
+                <Text style={{ color: isDark ? '#e9edef' : '#1a1a1a', fontSize: 14 }}>Dark mode activated 🌙</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  };
+
   // Render Sub Views
   const renderMainSettings = () => (
-    <ScrollView style={styles.scroll}>
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Account & Privacy</Text>
-        <TouchableOpacity style={styles.item} onPress={() => setCurrentView('privacy')}>
-          <View style={styles.itemLeft}>
-            <Icon name="lock-closed-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>Privacy</Text>
+    <ScrollView style={{ flex: 1, backgroundColor: theme.background }}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Account & Privacy</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={() => setCurrentView('privacy')}>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="lock-closed-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Privacy</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Data & Storage</Text>
-        <TouchableOpacity style={styles.item} onPress={() => setCurrentView('storage')}>
-          <View style={styles.itemLeft}>
-            <Icon name="server-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>Storage</Text>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Appearance</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={() => setCurrentView('appearance')}>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name={isDark ? 'moon' : 'sunny'} size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Dark Mode</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={{ fontSize: 13, color: theme.textMuted, textTransform: 'capitalize' }}>
+              {themeMode === 'system' ? 'System' : themeMode === 'dark' ? 'Dark' : 'Light'}
+            </Text>
+            <Icon name="chevron-forward" size={18} color={theme.textMuted} />
+          </View>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Information</Text>
-        <TouchableOpacity style={styles.item} onPress={() => setCurrentView('about')}>
-          <View style={styles.itemLeft}>
-            <Icon name="information-circle-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>About</Text>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Data & Storage</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={() => setCurrentView('storage')}>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="server-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Storage</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
       </View>
 
-      <View style={[styles.section, { marginTop: spacing.xl }]}>
-        <TouchableOpacity style={[styles.item, styles.logoutItem]} onPress={handleLogoutPress}>
-          <View style={styles.itemLeft}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Information</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={() => setCurrentView('about')}>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="information-circle-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>About</Text>
+          </View>
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={[dynamicStyles(theme).section, { marginTop: spacing.xl }]}>
+        <TouchableOpacity style={[dynamicStyles(theme).item, dynamicStyles(theme).logoutItem]} onPress={handleLogoutPress}>
+          <View style={dynamicStyles(theme).itemLeft}>
             <Icon name="log-out-outline" size={22} color="#FF3B30" />
-            <Text style={[styles.itemText, { color: '#FF3B30', fontWeight: 'bold' }]}>Logout</Text>
+            <Text style={[dynamicStyles(theme).itemText, { color: '#FF3B30', fontWeight: 'bold' }]}>Logout</Text>
           </View>
           <Icon name="chevron-forward" size={18} color="#FF3B30" />
         </TouchableOpacity>
@@ -408,82 +492,82 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   );
 
   const renderPrivacySettings = () => (
-    <ScrollView style={styles.scroll}>
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Last Seen Settings</Text>
+    <ScrollView style={{ flex: 1, backgroundColor: theme.background }}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Last Seen Settings</Text>
         <TouchableOpacity 
-          style={styles.selectableItem} 
+          style={dynamicStyles(theme).selectableItem} 
           onPress={() => handleLastSeenChange('everyone')}
         >
-          <Text style={[styles.itemText, lastSeen === 'everyone' && styles.selectedText]}>Everyone</Text>
-          {lastSeen === 'everyone' && <Icon name="checkmark" size={20} color={colors.primary} />}
+          <Text style={[dynamicStyles(theme).itemText, lastSeen === 'everyone' && { color: theme.primary, fontWeight: '600' }]}>Everyone</Text>
+          {lastSeen === 'everyone' && <Icon name="checkmark" size={20} color={theme.primary} />}
         </TouchableOpacity>
         <TouchableOpacity 
-          style={styles.selectableItem} 
+          style={dynamicStyles(theme).selectableItem} 
           onPress={() => handleLastSeenChange('nobody')}
         >
-          <Text style={[styles.itemText, lastSeen === 'nobody' && styles.selectedText]}>Nobody</Text>
-          {lastSeen === 'nobody' && <Icon name="checkmark" size={20} color={colors.primary} />}
+          <Text style={[dynamicStyles(theme).itemText, lastSeen === 'nobody' && { color: theme.primary, fontWeight: '600' }]}>Nobody</Text>
+          {lastSeen === 'nobody' && <Icon name="checkmark" size={20} color={theme.primary} />}
         </TouchableOpacity>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Contacts</Text>
-        <TouchableOpacity style={styles.item} onPress={() => setCurrentView('blocklist')}>
-          <View style={styles.itemLeft}>
-            <Icon name="ban-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>Block List ({blockedUsers.length})</Text>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Contacts</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={() => setCurrentView('blocklist')}>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="ban-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Block List ({blockedUsers.length})</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
       </View>
     </ScrollView>
   );
 
   const renderBlockList = () => (
-    <View style={{ flex: 1 }}>
-      <View style={styles.addBlockRow}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <View style={[dynamicStyles(theme).addBlockRow]}>
         <TextInput
-          style={styles.blockInput}
+          style={[dynamicStyles(theme).blockInput]}
           placeholder="Search user to block..."
-          placeholderTextColor="#999"
+          placeholderTextColor={theme.placeholder}
           value={blockSearchQuery}
           onChangeText={setBlockSearchQuery}
         />
         {blockSearchQuery.length > 0 && (
           <TouchableOpacity onPress={() => { setBlockSearchQuery(''); setBlockSearchResults([]); }} style={{ justifyContent: 'center' }}>
-            <Icon name="close-circle" size={20} color="#888" style={{ marginRight: 8 }} />
+            <Icon name="close-circle" size={20} color={theme.textMuted} style={{ marginRight: 8 }} />
           </TouchableOpacity>
         )}
       </View>
 
       {isSearchingUsers ? (
-        <ActivityIndicator size="large" color="#4597f5f6" style={{ marginTop: 24 }} />
+        <ActivityIndicator size="large" color={theme.primary} style={{ marginTop: 24 }} />
       ) : blockSearchQuery.length > 0 ? (
         <FlatList
           data={blockSearchResults}
           keyExtractor={item => item.id}
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={{ padding: spacing.md }}
           ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Icon name="search-outline" size={48} color="#ccc" />
-              <Text style={styles.emptyText}>No matching users found</Text>
+            <View style={dynamicStyles(theme).emptyContainer}>
+              <Icon name="search-outline" size={48} color={theme.border} />
+              <Text style={dynamicStyles(theme).emptyText}>No matching users found</Text>
             </View>
           }
           renderItem={({ item }) => (
-            <View style={styles.blockListItem}>
-              <View style={styles.itemLeft}>
-                <Icon name="person-circle-outline" size={32} color="#888" style={{ marginRight: 12 }} />
+            <View style={dynamicStyles(theme).blockListItem}>
+              <View style={dynamicStyles(theme).itemLeft}>
+                <Icon name="person-circle-outline" size={32} color={theme.icon} style={{ marginRight: 12 }} />
                 <View>
-                  <Text style={styles.itemText}>{item.name}</Text>
-                  <Text style={{ fontSize: 12, color: '#999', marginLeft: 12 }}>@{item.username}</Text>
+                  <Text style={dynamicStyles(theme).itemText}>{item.name}</Text>
+                  <Text style={{ fontSize: 12, color: theme.textMuted, marginLeft: 12 }}>@{item.username}</Text>
                 </View>
               </View>
               <TouchableOpacity 
-                style={[styles.unblockButton, { borderColor: '#FF3B30' }]} 
+                style={[dynamicStyles(theme).unblockButton, { borderColor: '#FF3B30' }]} 
                 onPress={() => handleBlockUserById(item.id, item.name)}
               >
-                <Text style={[styles.unblockText, { color: '#FF3B30' }]}>Block</Text>
+                <Text style={[dynamicStyles(theme).unblockText, { color: '#FF3B30' }]}>Block</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -492,24 +576,24 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
         <FlatList
           data={blockedUsers}
           keyExtractor={item => item.id}
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={{ padding: spacing.md }}
           ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Icon name="shield-checkmark-outline" size={48} color="#ccc" />
-              <Text style={styles.emptyText}>No blocked users</Text>
+            <View style={dynamicStyles(theme).emptyContainer}>
+              <Icon name="shield-checkmark-outline" size={48} color={theme.border} />
+              <Text style={dynamicStyles(theme).emptyText}>No blocked users</Text>
             </View>
           }
           renderItem={({ item }) => (
-            <View style={styles.blockListItem}>
-              <View style={styles.itemLeft}>
-                <Icon name="person-circle-outline" size={32} color="#888" style={{ marginRight: 12 }} />
-                <Text style={styles.itemText}>{item.name}</Text>
+            <View style={dynamicStyles(theme).blockListItem}>
+              <View style={dynamicStyles(theme).itemLeft}>
+                <Icon name="person-circle-outline" size={32} color={theme.icon} style={{ marginRight: 12 }} />
+                <Text style={dynamicStyles(theme).itemText}>{item.name}</Text>
               </View>
               <TouchableOpacity 
-                style={styles.unblockButton} 
+                style={dynamicStyles(theme).unblockButton} 
                 onPress={() => handleUnblockUser(item.id, item.name)}
               >
-                <Text style={styles.unblockText}>Unblock</Text>
+                <Text style={dynamicStyles(theme).unblockText}>Unblock</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -519,25 +603,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   );
 
   const renderStorageSettings = () => (
-    <ScrollView style={styles.scroll}>
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Cache Info</Text>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Cached Media Size</Text>
-          <Text style={styles.infoValue}>{cacheSize}</Text>
+    <ScrollView style={{ flex: 1, backgroundColor: theme.background }}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Cache Info</Text>
+        <View style={[dynamicStyles(theme).item, { flexDirection: 'row', justifyContent: 'space-between' }]}>
+          <Text style={dynamicStyles(theme).itemText}>Cached Media Size</Text>
+          <Text style={{ fontSize: 16, color: theme.textSecondary, fontWeight: '500' }}>{cacheSize}</Text>
         </View>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Actions</Text>
-        <TouchableOpacity style={styles.item} onPress={handleClearCache} disabled={isClearing}>
-          <View style={styles.itemLeft}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Actions</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={handleClearCache} disabled={isClearing}>
+          <View style={dynamicStyles(theme).itemLeft}>
             {isClearing ? (
-              <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 10 }} />
+              <ActivityIndicator size="small" color={theme.primary} style={{ marginRight: 10 }} />
             ) : (
               <Icon name="trash-bin-outline" size={22} color="#FF3B30" />
             )}
-            <Text style={[styles.itemText, { color: '#FF3B30' }]}>Clear Cached Media</Text>
+            <Text style={[dynamicStyles(theme).itemText, { color: '#FF3B30' }]}>Clear Cached Media</Text>
           </View>
         </TouchableOpacity>
       </View>
@@ -545,72 +629,72 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   );
 
   const renderAboutSettings = () => (
-    <ScrollView style={styles.scroll}>
-      <View style={styles.aboutHeader}>
+    <ScrollView style={{ flex: 1, backgroundColor: theme.background }}>
+      <View style={[dynamicStyles(theme).aboutHeader]}>
         <Image
           source={require('../../assets/logo.png')}
-          style={styles.aboutLogo}
+          style={dynamicStyles(theme).aboutLogo}
         />
-        <Text style={styles.aboutTitle}>DME Messenger</Text>
-        <Text style={styles.aboutSubtitle}>Version {DeviceInfo.getVersion()}</Text>
+        <Text style={dynamicStyles(theme).aboutTitle}>DME Messenger</Text>
+        <Text style={dynamicStyles(theme).aboutSubtitle}>Version {DeviceInfo.getVersion()}</Text>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>App Updates</Text>
-        <TouchableOpacity style={styles.item} onPress={handleCheckUpdate} disabled={isCheckingUpdate}>
-          <View style={styles.itemLeft}>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>App Updates</Text>
+        <TouchableOpacity style={dynamicStyles(theme).item} onPress={handleCheckUpdate} disabled={isCheckingUpdate}>
+          <View style={dynamicStyles(theme).itemLeft}>
             {isCheckingUpdate ? (
-              <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 10 }} />
+              <ActivityIndicator size="small" color={theme.primary} style={{ marginRight: 10 }} />
             ) : (
-              <Icon name="cloud-download-outline" size={22} color={colors.primary} />
+              <Icon name="cloud-download-outline" size={22} color={theme.primary} />
             )}
-            <Text style={styles.itemText}>Check for update</Text>
+            <Text style={dynamicStyles(theme).itemText}>Check for update</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Legal</Text>
+      <View style={dynamicStyles(theme).section}>
+        <Text style={dynamicStyles(theme).sectionHeader}>Legal</Text>
         <TouchableOpacity 
-          style={styles.item} 
+          style={dynamicStyles(theme).item} 
           onPress={() => setModalText({
             title: 'Privacy Policy',
             content: 'DME Messenger is dedicated to securing your privacy. End-to-end encryption is used where available to protect personal calls and messages. Storage is kept locally, and cached files are automatically cleared upon request.'
           })}
         >
-          <View style={styles.itemLeft}>
-            <Icon name="document-text-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>Privacy Policy</Text>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="document-text-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Privacy Policy</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
 
         <TouchableOpacity 
-          style={styles.item} 
+          style={dynamicStyles(theme).item} 
           onPress={() => setModalText({
             title: 'Terms of Service',
             content: 'By accessing DME Messenger, you agree to comply with all laws regarding online communications. Spamming, scraping, and abusive behavior will result in account suspension.'
           })}
         >
-          <View style={styles.itemLeft}>
-            <Icon name="reader-outline" size={22} color={colors.primary} />
-            <Text style={styles.itemText}>Terms of Service</Text>
+          <View style={dynamicStyles(theme).itemLeft}>
+            <Icon name="reader-outline" size={22} color={theme.primary} />
+            <Text style={dynamicStyles(theme).itemText}>Terms of Service</Text>
           </View>
-          <Icon name="chevron-forward" size={18} color="#999" />
+          <Icon name="chevron-forward" size={18} color={theme.textMuted} />
         </TouchableOpacity>
       </View>
     </ScrollView>
   );
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+    <View style={[dynamicStyles(theme).container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={goBack}>
-          <Icon name="arrow-back" size={24} color="#000" />
+      <View style={dynamicStyles(theme).header}>
+        <TouchableOpacity style={dynamicStyles(theme).backButton} onPress={goBack}>
+          <Icon name="arrow-back" size={24} color={theme.headerTint} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{getTitle()}</Text>
+        <Text style={dynamicStyles(theme).headerTitle}>{getTitle()}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -620,17 +704,18 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       {currentView === 'blocklist' && renderBlockList()}
       {currentView === 'storage' && renderStorageSettings()}
       {currentView === 'about' && renderAboutSettings()}
+      {currentView === 'appearance' && renderAppearanceSettings()}
 
       {/* Policy Text Modal */}
       <Modal visible={modalText !== null} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{modalText?.title}</Text>
+        <View style={dynamicStyles(theme).modalOverlay}>
+          <View style={dynamicStyles(theme).modalContent}>
+            <Text style={dynamicStyles(theme).modalTitle}>{modalText?.title}</Text>
             <ScrollView style={{ maxHeight: 300, marginBottom: 20 }}>
-              <Text style={styles.modalBody}>{modalText?.content}</Text>
+              <Text style={dynamicStyles(theme).modalBody}>{modalText?.content}</Text>
             </ScrollView>
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setModalText(null)}>
-              <Text style={styles.modalCloseBtnText}>Close</Text>
+            <TouchableOpacity style={dynamicStyles(theme).modalCloseBtn} onPress={() => setModalText(null)}>
+              <Text style={dynamicStyles(theme).modalCloseBtnText}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -638,17 +723,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
 
       {/* Downloader progress Modal */}
       <Modal visible={isDownloadingUpdate} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <ActivityIndicator size="large" color="#4597f5f6" style={{ marginBottom: 16 }} />
-            <Text style={styles.modalTitle}>Downloading Update</Text>
-            <Text style={{ fontSize: 14, color: '#666', marginBottom: 16, textAlign: 'center' }}>
+        <View style={dynamicStyles(theme).modalOverlay}>
+          <View style={dynamicStyles(theme).modalContent}>
+            <ActivityIndicator size="large" color={theme.primary} style={{ marginBottom: 16 }} />
+            <Text style={dynamicStyles(theme).modalTitle}>Downloading Update</Text>
+            <Text style={{ fontSize: 14, color: theme.textSecondary, marginBottom: 16, textAlign: 'center' }}>
               Please wait while the new version is being downloaded...
             </Text>
             <View style={{
               width: '100%',
               height: 6,
-              backgroundColor: '#eee',
+              backgroundColor: theme.border,
               borderRadius: 3,
               overflow: 'hidden',
               marginBottom: 8,
@@ -656,10 +741,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
               <View style={{
                 width: `${downloadProgress}%`,
                 height: '100%',
-                backgroundColor: '#4597f5f6',
+                backgroundColor: theme.primary,
               }} />
             </View>
-            <Text style={{ fontSize: 14, fontWeight: '600', color: '#4597f5f6' }}>
+            <Text style={{ fontSize: 14, fontWeight: '600', color: theme.primary }}>
               {downloadProgress}%
             </Text>
           </View>
@@ -669,10 +754,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   );
 };
 
-const styles = StyleSheet.create({
+// Dynamic styles factory — called inside components with the live theme
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
   },
   header: {
     flexDirection: 'row',
@@ -680,9 +766,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: theme.borderLight,
   },
   backButton: {
     padding: 4,
@@ -690,25 +776,21 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#000000',
-  },
-  scroll: {
-    flex: 1,
+    color: theme.textPrimary,
   },
   section: {
     marginTop: spacing.md,
-    backgroundColor: '#fff',
-
+    backgroundColor: theme.surface,
   },
   sectionHeader: {
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#888',
+    color: theme.textMuted,
     textTransform: 'uppercase',
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 8,
-    backgroundColor: '#ffffff',
+    backgroundColor: theme.background,
   },
   item: {
     flexDirection: 'row',
@@ -716,14 +798,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#f6f6f6',
+    borderBottomColor: theme.separator,
   },
   logoutItem: {
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: '#f0f0f0',
+    borderColor: theme.borderLight,
   },
   selectableItem: {
     flexDirection: 'row',
@@ -731,9 +813,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#f6f6f6',
+    borderBottomColor: theme.separator,
   },
   itemLeft: {
     flexDirection: 'row',
@@ -741,35 +823,15 @@ const styles = StyleSheet.create({
   },
   itemText: {
     fontSize: 16,
-    color: '#333',
+    color: theme.textPrimary,
     marginLeft: 12,
-  },
-  selectedText: {
-    color: '#4597f5f6',
-    fontWeight: '600',
-  },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: '#fff',
-  },
-  infoLabel: {
-    fontSize: 16,
-    color: '#333',
-  },
-  infoValue: {
-    fontSize: 16,
-    color: '#666',
-    fontWeight: '500',
   },
   aboutHeader: {
     alignItems: 'center',
     paddingVertical: 32,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: theme.borderLight,
   },
   aboutLogo: {
     width: 70,
@@ -780,59 +842,49 @@ const styles = StyleSheet.create({
   aboutTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
+    color: theme.textPrimary,
   },
   aboutSubtitle: {
     fontSize: 14,
-    color: '#888',
+    color: theme.textSecondary,
     marginTop: 4,
   },
   addBlockRow: {
     flexDirection: 'row',
     padding: 16,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: theme.borderLight,
   },
   blockInput: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: theme.inputBackground,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     fontSize: 15,
-    color: '#333',
+    color: theme.inputText,
     marginRight: 12,
-  },
-  blockButton: {
-    backgroundColor: '#4597f5f6',
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-    borderRadius: 8,
-  },
-  blockButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
   },
   blockListItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f6f6f6',
+    borderBottomColor: theme.separator,
   },
   unblockButton: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#CCCCCC',
+    borderColor: theme.border,
   },
   unblockText: {
-    color: '#666',
+    color: theme.textSecondary,
     fontSize: 13,
     fontWeight: '500',
   },
@@ -843,12 +895,12 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 15,
-    color: '#888',
+    color: theme.textSecondary,
     marginTop: 8,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.modalOverlay,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -856,7 +908,7 @@ const styles = StyleSheet.create({
   modalContent: {
     width: '100%',
     maxWidth: 320,
-    backgroundColor: '#fff',
+    backgroundColor: theme.modalBackground,
     borderRadius: 16,
     padding: 24,
     alignItems: 'center',
@@ -869,19 +921,19 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#333',
+    color: theme.textPrimary,
     marginBottom: 12,
     textAlign: 'center',
   },
   modalBody: {
     fontSize: 14,
-    color: '#555',
+    color: theme.textSecondary,
     lineHeight: 20,
     textAlign: 'center',
   },
   modalCloseBtn: {
     width: '100%',
-    backgroundColor: '#4597f5f6',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
@@ -891,4 +943,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 15,
   },
+});
+
+// Keep a static StyleSheet for scroll (flex: 1 only, no color)
+const styles = StyleSheet.create({
+  scroll: { flex: 1 },
 });

@@ -1,3 +1,4 @@
+import { DeviceEventEmitter } from 'react-native';
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { authAPI } from '../services/api';
@@ -32,6 +33,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // Initialize FCM on app start
     fcmService.initialize();
     loadUser();
+
+    // Listen for force logout events from API interceptor
+    const subscription = DeviceEventEmitter.addListener('force_logout', () => {
+      console.warn('[AuthContext] Force logout event received. Initiating logout.');
+      logout();
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   const loadUser = async () => {

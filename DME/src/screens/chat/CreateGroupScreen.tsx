@@ -18,6 +18,7 @@ import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { User } from '../../types';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useTheme } from '../../context/ThemeContext';
 import { getApiUrl } from '../../config/network';
 
 interface CreateGroupScreenProps {
@@ -27,6 +28,8 @@ interface CreateGroupScreenProps {
 export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   navigation,
 }) => {
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const [step, setStep] = useState<1 | 2>(1);
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
@@ -54,9 +57,11 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
         </TouchableOpacity>
       ),
       headerTitle: step === 1 ? 'Create Group' : 'New Group',
-      headerTitleStyle: { color: '#000' },
+      headerTitleStyle: { color: theme.textPrimary },
+      headerStyle: { backgroundColor: theme.surface },
+      headerTintColor: theme.textPrimary,
     });
-  }, [navigation, step]);
+  }, [navigation, step, theme]);
 
   const [chattedUsers, setChattedUsers] = useState<User[]>([]);
 
@@ -209,17 +214,17 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
 
   if (step === 1) {
     return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Add Participants</Text>
-          <Text style={styles.headerSubtitle}>
+      <View style={s.container}>
+        <View style={s.header}>
+          <Text style={s.headerTitle}>Add Participants</Text>
+          <Text style={s.headerSubtitle}>
             {selectedUsers.length} selected
           </Text>
         </View>
 
-        <View style={styles.searchContainer}>
+        <View style={s.searchContainer}>
           <TextInput
-            style={styles.searchInput}
+            style={s.searchInput}
             placeholder="Search users..."
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -227,12 +232,12 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
         </View>
 
         {selectedUsers.length > 0 && (
-          <View style={styles.selectedContainer}>
+          <View style={s.selectedContainer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {selectedUsers.map(user => (
                 <TouchableOpacity
                   key={user.id}
-                  style={styles.selectedUser}
+                  style={s.selectedUser}
                   onPress={() => toggleUserSelection(user)}
                 >
                   <View style={{position: 'relative'}}>
@@ -242,11 +247,11 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
                       sticker={user.avatar_sticker} 
                       style={{ width: 50, height: 50, borderRadius: 25 }}
                     />
-                    <View style={styles.removeBadge}>
-                      <Text style={styles.removeBadgeText}>×</Text>
+                    <View style={s.removeBadge}>
+                      <Text style={s.removeBadgeText}>×</Text>
                     </View>
                   </View>
-                  <Text style={styles.selectedName} numberOfLines={1}>
+                  <Text style={s.selectedName} numberOfLines={1}>
                     {user.display_name || user.email || 'User'}
                   </Text>
                 </TouchableOpacity>
@@ -260,36 +265,36 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           keyExtractor={item => item.id.toString()}
           renderItem={({ item }) => (
             <TouchableOpacity
-              style={styles.userItem}
+              style={s.userItem}
               onPress={() => toggleUserSelection(item)}
             >
               <View
                 style={[
-                  styles.checkbox,
+                  s.checkbox,
                   selectedUsers.some(u => u.id === item.id) &&
-                    styles.checkboxSelected,
+                    s.checkboxSelected,
                 ]}
               >
                 {selectedUsers.some(u => u.id === item.id) && (
-                  <Text style={styles.checkmark}>✓</Text>
+                  <Text style={s.checkmark}>✓</Text>
                 )}
               </View>
               <AvatarWithFallback 
                 uri={item.profile_picture} 
                 displayName={item.display_name || item.email || 'User'} 
                 sticker={item.avatar_sticker} 
-                style={styles.avatar} 
+                style={s.avatar} 
               />
-              <View style={styles.userInfo}>
-                <Text style={styles.userName}>
+              <View style={s.userInfo}>
+                <Text style={s.userName}>
                   {item.display_name || item.email}
                 </Text>
-                <Text style={styles.userEmail}>{item.email}</Text>
+                <Text style={s.userEmail}>{item.email}</Text>
               </View>
             </TouchableOpacity>
           )}
           ListEmptyComponent={() => (
-            <View style={styles.emptyList}>
+            <View style={s.emptyList}>
               <Text style={{ color: '#888' }}>
                 {searchQuery ? 'No matching contacts found' : 'No recent chats found'}
               </Text>
@@ -299,10 +304,10 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
 
         {selectedUsers.length > 0 && (
           <TouchableOpacity
-            style={styles.nextButton}
+            style={s.nextButton}
             onPress={() => setStep(2)}
           >
-            <Text style={styles.nextButtonText}>Next</Text>
+            <Text style={s.nextButtonText}>Next</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -310,36 +315,36 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   }
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.form}>
-        <View style={styles.avatarPicker}>
-          <TouchableOpacity onPress={handlePickImage} style={styles.avatarLarge}>
+    <ScrollView style={s.container}>
+      <View style={s.form}>
+        <View style={s.avatarPicker}>
+          <TouchableOpacity onPress={handlePickImage} style={s.avatarLarge}>
             {groupImage ? (
-              <Image source={{ uri: groupImage.uri }} style={styles.avatarLarge} />
+              <Image source={{ uri: groupImage.uri }} style={s.avatarLarge} />
             ) : (
               <Icon name="camera" size={40} color="#888" />
             )}
-            <View style={styles.plusIconContainer}>
+            <View style={s.plusIconContainer}>
               <Icon name="add" size={20} color="#FFF" />
             </View>
           </TouchableOpacity>
-          <Text style={styles.pickerLabel}>
+          <Text style={s.pickerLabel}>
             {groupImage ? 'Change Image' : 'Add Group Image'}
           </Text>
         </View>
 
-        <Text style={styles.label}>Group Name</Text>
+        <Text style={s.label}>Group Name</Text>
         <TextInput
-          style={styles.input}
+          style={s.input}
           placeholder="Enter group name"
           value={groupName}
           onChangeText={setGroupName}
           maxLength={50}
         />
 
-        <Text style={styles.label}>Description (Bio)</Text>
+        <Text style={s.label}>Description (Bio)</Text>
         <TextInput
-          style={[styles.input, styles.textArea]}
+          style={[s.input, s.textArea]}
           placeholder="What is this group about?"
           value={groupDescription}
           onChangeText={setGroupDescription}
@@ -347,28 +352,28 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           numberOfLines={3}
         />
 
-        <View style={styles.summary}>
-          <Text style={styles.summaryTitle}>
+        <View style={s.summary}>
+          <Text style={s.summaryTitle}>
             Participants: {selectedUsers.length}
           </Text>
-          <View style={styles.summaryChips}>
+          <View style={s.summaryChips}>
             {selectedUsers.map(u => (
-              <View key={u.id} style={styles.chip}>
-                <Text style={styles.chipText}>{u.display_name || u.email}</Text>
+              <View key={u.id} style={s.chip}>
+                <Text style={s.chipText}>{u.display_name || u.email}</Text>
               </View>
             ))}
           </View>
         </View>
 
         <TouchableOpacity
-          style={[styles.createButton, isCreating && styles.disabledButton]}
+          style={[s.createButton, isCreating && s.disabledButton]}
           onPress={handleCreateGroup}
           disabled={isCreating}
         >
           {isCreating ? (
             <ActivityIndicator color="#FFF" />
           ) : (
-            <Text style={styles.createButtonText}>Create Group</Text>
+            <Text style={s.createButtonText}>Create Group</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -376,16 +381,14 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   );
 };
 
-const THEME_COLOR = '#4597f5f6';
-
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFF',
+    backgroundColor: theme.background,
   },
   header: {
     padding: spacing.lg,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
   },
   headerTitle: {
     color: '#FFF',
@@ -404,10 +407,11 @@ const styles = StyleSheet.create({
   searchContainer: {
     padding: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
+    borderBottomColor: theme.border,
   },
   searchInput: {
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.inputBackground,
+    color: theme.inputText,
     padding: spacing.md,
     borderRadius: borderRadius.md,
     fontSize: fontSize.md,
@@ -415,8 +419,8 @@ const styles = StyleSheet.create({
   selectedContainer: {
     padding: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
-    backgroundColor: '#FDFDFD',
+    borderBottomColor: theme.border,
+    backgroundColor: theme.surface,
   },
   selectedUser: {
     alignItems: 'center',
@@ -427,7 +431,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
@@ -438,7 +442,7 @@ const styles = StyleSheet.create({
   },
   selectedName: {
     fontSize: 10,
-    color: '#666',
+    color: theme.textSecondary,
     textAlign: 'center',
   },
   removeBadge: {
@@ -452,7 +456,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFF',
+    borderColor: theme.surface,
   },
   removeBadgeText: {
     color: '#FFF',
@@ -464,20 +468,20 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#F9F9F9',
+    borderBottomColor: theme.border,
   },
   checkbox: {
     width: 24,
     height: 24,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: THEME_COLOR,
+    borderColor: theme.primary,
     marginRight: spacing.md,
     justifyContent: 'center',
     alignItems: 'center',
   },
   checkboxSelected: {
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
   },
   checkmark: {
     color: '#FFF',
@@ -490,10 +494,11 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: fontSize.md,
     fontWeight: '600',
+    color: theme.textPrimary,
   },
   userEmail: {
     fontSize: fontSize.xs,
-    color: '#999',
+    color: theme.textSecondary,
   },
   emptyList: {
     padding: spacing.xl,
@@ -503,7 +508,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: spacing.xl,
     right: spacing.xl,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
     borderRadius: borderRadius.full,
@@ -525,7 +530,7 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: theme.border,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: spacing.sm,
@@ -534,28 +539,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 5,
     right: 5,
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
     width: 30,
     height: 30,
     borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FFF',
+    borderColor: theme.surface,
   },
   pickerLabel: {
-    color: THEME_COLOR,
+    color: theme.primary,
     fontWeight: '600',
   },
   label: {
     fontSize: fontSize.sm,
     fontWeight: '600',
-    color: '#333',
+    color: theme.textPrimary,
     marginBottom: spacing.xs,
   },
   input: {
     borderBottomWidth: 1,
-    borderBottomColor: '#DDD',
+    borderBottomColor: theme.border,
+    color: theme.textPrimary,
     paddingVertical: spacing.sm,
     fontSize: fontSize.lg,
     marginBottom: spacing.xl,
@@ -564,13 +570,14 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
   },
   summary: {
-    backgroundColor: '#F9F9F9',
+    backgroundColor: theme.surface,
     padding: spacing.md,
     borderRadius: borderRadius.md,
     marginBottom: spacing.xl,
   },
   summaryTitle: {
     fontWeight: '600',
+    color: theme.textPrimary,
     marginBottom: spacing.sm,
   },
   summaryChips: {
@@ -578,7 +585,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   chip: {
-    backgroundColor: '#EEE',
+    backgroundColor: theme.inputBackground,
     paddingHorizontal: spacing.sm,
     paddingVertical: 4,
     borderRadius: 12,
@@ -587,10 +594,10 @@ const styles = StyleSheet.create({
   },
   chipText: {
     fontSize: 12,
-    color: '#666',
+    color: theme.textSecondary,
   },
   createButton: {
-    backgroundColor: THEME_COLOR,
+    backgroundColor: theme.primary,
     padding: spacing.lg,
     borderRadius: borderRadius.md,
     alignItems: 'center',

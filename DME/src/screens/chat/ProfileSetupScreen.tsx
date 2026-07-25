@@ -19,6 +19,7 @@ import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGaller
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Assuming this is used for tokens
 // import Toast from 'react-native-toast-message'; // Assuming this is used for notifications (commented out as not used in current scope)
 import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { authAPI } from '../../services/api'; // Assuming this has the checkUsername and completeProfileSetup functions
 
@@ -48,6 +49,8 @@ const getAvatarColor = (name: string) => {
 
 export const ProfileSetupScreen: React.FC = () => {
   const { user, completeProfileSetup } = useAuth();
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const navigation = useNavigation(); // Add this
   const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('');
@@ -65,6 +68,8 @@ export const ProfileSetupScreen: React.FC = () => {
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
+  const [focusedField, setFocusedField] = useState<'username' | 'displayName' | 'bio' | null>(null);
+  const [agreed, setAgreed] = useState(false);
 
 
   const checkUsername = async (value: string) => {
@@ -153,124 +158,179 @@ export const ProfileSetupScreen: React.FC = () => {
 
   return (
     <ScrollView 
-      style={{ backgroundColor: '#FFF' }}
+      style={{ backgroundColor: theme.background }}
       contentContainerStyle={[
-        styles.container, 
+        s.container, 
         { 
           paddingTop: insets.top > 0 ? insets.top + 16 : 24, 
           paddingBottom: (insets.bottom > 0 ? insets.bottom : 24) + 20 
         }
       ]}
     >
-      <Text style={styles.title}>Complete your profile</Text>
+      <Text style={s.title}>Complete your profile</Text>
       
       {/* Profile Picture / Sticker Selection Area */}
-      <View style={styles.profilePictureContainer}>
+      <View style={s.profilePictureContainer}>
         {isSubmitting ? (
-          <View style={[styles.previewImage, styles.previewPlaceholder, styles.uploadingContainer]}>
-            <ActivityIndicator size="large" color="#555555" />
+          <View style={[s.previewImage, s.previewPlaceholder, s.uploadingContainer]}>
+            <ActivityIndicator size="large" color={theme.textMuted} />
           </View>
         ) : imagePreviewUrl ? (
-          <Image source={{ uri: imagePreviewUrl }} style={styles.previewImage} />
+          <Image source={{ uri: imagePreviewUrl }} style={s.previewImage} />
         ) : (
           <View style={[
-            styles.previewImage, 
-            styles.previewPlaceholder, 
+            s.previewImage, 
+            s.previewPlaceholder, 
             { backgroundColor: avatarBgColor }
           ]}>
-            <Text style={[styles.profilePictureText, { color: '#FFFFFF' }]}>
+            <Text style={[s.profilePictureText, { color: '#FFFFFF' }]}>
               {(displayName || username || 'U').charAt(0).toUpperCase()}
             </Text>
           </View>
         )}
-        <TouchableOpacity style={styles.cameraIcon} onPress={() => setGalleryPickerVisible(true)}>
-          <Icon name="camera" size={18} color="#000" />
+        <TouchableOpacity style={s.cameraIcon} onPress={() => setGalleryPickerVisible(true)}>
+          <Icon name="camera" size={18} color={theme.icon} />
         </TouchableOpacity>
       </View>
-      <Text style={styles.changePhotoText}>Tap to change photo</Text>
+      <Text style={s.changePhotoText}>Tap to choose Profile Picture</Text>
 
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.inputWithValidation}
-          placeholder="Choose unique username"
-          value={username}
-          onChangeText={(text) => {
-            const lowerText = text.toLowerCase();
-            setUsername(lowerText);
-            
-            // Immediate character validation
-            const regex = /^[a-zA-Z0-9_]*$/;
-            if (lowerText.length > 0 && !regex.test(lowerText)) {
-              setUsernameError('Invalid characters');
-              setIsAvailable(null);
-            } else {
-              setUsernameError(null);
-              checkUsername(lowerText);
-            }
-          }}
-          autoCapitalize="none"
-        />
-        <View style={styles.validationFeedback}>
-          {isChecking && <ActivityIndicator size="small" />}
+      <View style={s.inputGroup}>
+        <Text style={s.inputLabel}>Username</Text>
+        <View style={[
+          s.inputWrapper,
+          focusedField === 'username' && s.inputWrapperFocused,
+          usernameError ? s.inputWrapperError : (isAvailable === true && s.inputWrapperSuccess)
+        ]}>
+          <Icon name="at" size={20} color={focusedField === 'username' ? theme.primary : theme.textSecondary} style={s.inputIcon} />
+          <TextInput
+            style={s.textInput}
+            placeholder="Enter Unique Username"
+            placeholderTextColor={theme.placeholder}
+            value={username}
+            onChangeText={(text) => {
+              const lowerText = text.toLowerCase().trim();
+              setUsername(lowerText);
+              
+              // Immediate character validation
+              const regex = /^[a-zA-Z0-9_]*$/;
+              if (lowerText.length > 0 && !regex.test(lowerText)) {
+                setUsernameError('Only letters, numbers, and underscores allowed');
+                setIsAvailable(null);
+              } else {
+                setUsernameError(null);
+                checkUsername(lowerText);
+              }
+            }}
+            onFocus={() => setFocusedField('username')}
+            onBlur={() => setFocusedField(null)}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {isChecking && <ActivityIndicator size="small" color={theme.primary} />}
+        </View>
+        <View style={s.helperTextContainer}>
           {usernameError ? (
-            <Text style={styles.errorText}>{usernameError}</Text>
+            <Text style={s.errorText}>{usernameError}</Text>
           ) : (
             <>
-              {isAvailable === false && <Text style={styles.errorText}>Taken</Text>}
-              {isAvailable === true && <Text style={styles.successText}>Available</Text>}
+              {isAvailable === false && <Text style={s.errorText}>Username is already taken</Text>}
+              {isAvailable === true && <Text style={s.successText}>Username is available</Text>}
+              {isAvailable === null && !isChecking && (
+                <Text style={s.helperText}>Must be at least 3 characters</Text>
+              )}
             </>
           )}
         </View>
       </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Display Name (e.g. John Doe)"
-        value={displayName}
-        onChangeText={setDisplayName}
-      />
+      <View style={s.inputGroup}>
+        <Text style={s.inputLabel}>Display Name</Text>
+        <View style={[
+          s.inputWrapper,
+          focusedField === 'displayName' && s.inputWrapperFocused
+        ]}>
+          <Icon name="person-outline" size={20} color={focusedField === 'displayName' ? theme.primary : theme.textSecondary} style={s.inputIcon} />
+          <TextInput
+            style={s.textInput}
+            placeholder="Display Name (e.g. John Doe)"
+            placeholderTextColor={theme.placeholder}
+            value={displayName}
+            onChangeText={setDisplayName}
+            onFocus={() => setFocusedField('displayName')}
+            onBlur={() => setFocusedField(null)}
+          />
+        </View>
+      </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Bio (optional)"
-        value={bio}
-        onChangeText={setBio}
-        multiline
-      />
+      <View style={s.inputGroup}>
+        <Text style={[s.inputLabel, { marginTop: 18 }]}>Bio (Optional)</Text>
+        <View style={[
+          s.inputWrapper,
+          focusedField === 'bio' && s.inputWrapperFocused,
+          { minHeight: 80, alignItems: 'flex-start' }
+        ]}>
+          <Icon name="create-outline" size={20} color={focusedField === 'bio' ? theme.primary : theme.textSecondary} style={[s.inputIcon, { marginTop: 12 }]} />
+          <TextInput
+            style={[s.textInput, { minHeight: 60, textAlignVertical: 'top' }]}
+            placeholder="Tell us something about yourself..."
+            placeholderTextColor={theme.placeholder}
+            value={bio}
+            onChangeText={setBio}
+            multiline
+            onFocus={() => setFocusedField('bio')}
+            onBlur={() => setFocusedField(null)}
+          />
+        </View>
+      </View>
 
-      <View style={styles.reactionSection}>
-        <Text style={styles.sectionLabel}>Double-Tap Reaction</Text>
-        <View style={styles.reactionContainer}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionScroll}>
+      <View style={s.reactionSection}>
+        <Text style={s.sectionLabel}>Double-Tap Reaction</Text>
+        <View style={s.reactionContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.reactionScroll}>
             {QUICK_REACTIONS.map(emoji => (
               <TouchableOpacity
                 key={emoji}
                 style={[
-                  styles.reactionItem,
-                  quickReaction === emoji && styles.reactionItemActive,
+                  s.reactionItem,
+                  quickReaction === emoji && s.reactionItemActive,
                 ]}
                 onPress={() => setQuickReaction(emoji)}
               >
-                <Text style={styles.reactionText}>{emoji}</Text>
+                <Text style={s.reactionText}>{emoji}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <Text style={styles.hint}>Choose your default double-tap reaction</Text>
         </View>
       </View>
 
+      <TouchableOpacity 
+        style={s.checkboxRow} 
+        onPress={() => setAgreed(!agreed)}
+        activeOpacity={0.8}
+      >
+        <Icon 
+          name={agreed ? "checkbox" : "square-outline"} 
+          size={22} 
+          color={agreed ? theme.primary : theme.textSecondary} 
+          style={{ marginRight: 10 }}
+        />
+        <Text style={s.checkboxLabel}>
+          I agree to the <Text style={s.linkText}>Terms of Service</Text> and <Text style={s.linkText}>Privacy Policy</Text>
+        </Text>
+      </TouchableOpacity>
+
       <TouchableOpacity
         style={[
-          styles.nextButton,
-          (isSubmitting || isAvailable !== true || !username) && styles.nextButtonDisabled
+          s.nextButton,
+          (isSubmitting || isAvailable !== true || !username || !agreed) && s.nextButtonDisabled
         ]}
         onPress={handleCompleteSetup}
-        disabled={isSubmitting || isAvailable !== true || !username}
+        disabled={isSubmitting || isAvailable !== true || !username || !agreed}
       >
         {isSubmitting ? (
           <ActivityIndicator color="#FFF" />
         ) : (
-          <Text style={styles.nextButtonText}>Start Chatting</Text>
+          <Text style={s.nextButtonText}>Start Chatting</Text>
         )}
       </TouchableOpacity>
       <CustomGalleryPicker
@@ -284,25 +344,90 @@ export const ProfileSetupScreen: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
   container: { 
     paddingHorizontal: 24, 
     paddingTop: 24, 
     paddingBottom: 24, 
-    backgroundColor: '#FFF' 
+    backgroundColor: theme.background 
   },
-  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 24, textAlign: 'center' },
-  input: { borderBottomWidth: 1, borderColor: '#DDD', marginBottom: 16, padding: 8, fontSize: 16 },
-  nextButton: { backgroundColor: '#4597f5f6', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
-  nextButtonDisabled: { backgroundColor: '#A2C2F8'},
-  nextButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
-  errorText: { color: 'red', fontSize: 12 },
-  successText: { color: 'green', fontSize: 12 },
+  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: theme.textPrimary },
+  inputGroup: {
+    marginBottom: 0,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: theme.textSecondary,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    borderRadius: 12,
+    backgroundColor: theme.inputBackground,
+    paddingHorizontal: 12,
+    minHeight: 48,
+  },
+  inputWrapperFocused: {
+    borderColor: theme.primary,
+    backgroundColor: theme.background,
+  },
+  inputWrapperError: {
+    borderColor: '#EF4444',
+  },
+  inputWrapperSuccess: {
+    borderColor: '#10B981',
+  },
+  inputIcon: {
+    marginRight: 8,
+  },
+  textInput: {
+    flex: 1,
+    fontSize: 15,
+    color: theme.textPrimary,
+    paddingVertical: 10,
+    fontWeight: 600,
+  },
+  helperTextContainer: {
+    marginTop: 4,
+    minHeight: 18,
+    marginBottom:6,
+    alignItems: 'flex-end',
+  },
+  helperText: {
+    fontSize: 12,
+    color: theme.textSecondary,
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 2,
+    paddingHorizontal: 4,
+  },
+  checkboxLabel: {
+    fontSize: 14,
+    color: theme.textSecondary,
+    flex: 1,
+  },
+  linkText: {
+    color: theme.primary,
+    fontWeight: '600',
+  },
+  nextButton: { backgroundColor: theme.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 12 },
+  nextButtonDisabled: { backgroundColor: theme.border },
+  nextButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
+  errorText: { color: '#EF4444', fontSize: 12, fontWeight: '500' },
+  successText: { color: '#10B981', fontSize: 12, fontWeight: '500' },
   
   // Profile Picture / Sticker Styles
   profilePictureContainer: {
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 10,
     width: 120,
     alignSelf: 'center',
   },
@@ -311,62 +436,45 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: 60,
     borderWidth: 3,
-    borderColor: '#4597f5f6',
+    borderColor: theme.border,
   },
   previewPlaceholder: {
-    backgroundColor: '#EBF3FE',
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
   profilePictureText: {
     fontSize: 48,
-    color: '#4597f5f6',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   stickerAvatar: {
     fontSize: 72,
   },
   uploadingContainer: {
-    backgroundColor: '#FFF',
+    backgroundColor: theme.background,
   },
   cameraIcon: {
     position: 'absolute',
     bottom: 8,
     right: 5,
-    backgroundColor: '#FFF',
+    backgroundColor: theme.background,
     width: 30,
     height: 30,
     borderRadius: 5,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#4597f5f6',
+    borderColor: theme.border,
   },
   cameraIconText: {
     fontSize: 18,
   },
   changePhotoText: {
-    color: '#4597f5f6',
+    color: theme.primary,
     fontWeight: '600',
-    marginBottom: 24,
+    marginBottom: 12,
     textAlign: 'center',
-  },
-  inputContainer: {
-    marginBottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderColor: '#DDD',
-  },
-  inputWithValidation: {
-    flex: 1,
-    padding: 8,
-    fontSize: 16,
-  },
-  validationFeedback: {
-    paddingRight: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 
   // Modal styles
@@ -376,7 +484,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#FFF',
+    backgroundColor: theme.modalBackground || theme.background,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     padding: 24,
@@ -391,10 +499,11 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
+    color: theme.textPrimary,
   },
   modalClose: {
     fontSize: 24,
-    color: '#666',
+    color: theme.textSecondary,
   },
   stickerOptions: {
     flexDirection: 'row',
@@ -404,16 +513,16 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 12,
     alignItems: 'center',
-    backgroundColor: '#EEE',
+    backgroundColor: theme.inputBackground,
     marginHorizontal: 4,
     borderRadius: 8,
   },
   genderTabActive: {
-    backgroundColor: '#4597f5f6',
+    backgroundColor: theme.primary,
   },
   genderTabText: {
     fontSize: 16,
-    color: '#666',
+    color: theme.textSecondary,
     fontWeight: '600',
   },
   genderTabTextActive: {
@@ -428,7 +537,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     margin: 4,
-    backgroundColor: '#EEE',
+    backgroundColor: theme.inputBackground,
     borderRadius: 8,
     padding: 8,
   },
@@ -437,7 +546,7 @@ const styles = StyleSheet.create({
   },
   stickerLabel: {
     fontSize: 10,
-    color: '#666',
+    color: theme.textSecondary,
     marginTop: 4,
   },
   uploadImageButton: {
@@ -445,12 +554,12 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#4597f5f6',
+    borderColor: theme.primary,
     borderRadius: 8,
   },
   uploadImageButtonText: {
     fontSize: 16,
-    color: '#4597f5f6',
+    color: theme.primary,
     fontWeight: '600',
   },
   reactionSection: {
@@ -458,40 +567,36 @@ const styles = StyleSheet.create({
   },
   reactionContainer: {
     borderWidth: 1,
-    borderColor: '#EAEAEA',
+    borderColor: theme.border,
     borderRadius: 12,
-    padding: 12,
-    backgroundColor: '#FAFAFA',
+    paddingHorizontal: 8,
+    paddingVertical:6,
+    backgroundColor: theme.inputBackground,
   },
   sectionLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#666',
+    color: theme.textSecondary,
     marginBottom: 8,
   },
   reactionScroll: {
     paddingVertical: 4,
   },
   reactionItem: {
-    width: 44,
-    height: 44,
+    width: 36,
+    height: 36,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 8,
-    borderRadius: 22,
-    backgroundColor: '#F5F5F5',
+    borderRadius: 18,
+    backgroundColor: theme.inputBackground,
   },
   reactionItemActive: {
-    backgroundColor: '#EBF3FE',
+    backgroundColor: theme.background,
     borderWidth: 1,
-    borderColor: '#4597f5f6',
+    borderColor: theme.primary,
   },
   reactionText: {
-    fontSize: 24,
-  },
-  hint: {
-    fontSize: 11,
-    color: '#999',
-    marginTop: 4,
+    fontSize: 22,
   },
 });

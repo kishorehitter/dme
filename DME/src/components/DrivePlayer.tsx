@@ -22,10 +22,11 @@ interface Props {
   onProgress?: (currentTime: number, duration: number) => void;
   onError?: (e: any) => void;
   onStreamResolved?: (cdnUrl: string, cdnHeaders: Record<string, string>) => void;
+  isFullscreen?: boolean;
 }
 
 const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
-  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved } = props;
+  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, isFullscreen = false } = props;
   const webViewRef = useRef<WebView>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -49,9 +50,27 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; background:#000; overflow:hidden; }
+  #bg-video {
+    position: absolute;
+    top: -10%;
+    left: -10%;
+    width: 120%;
+    height: 120%;
+    object-fit: cover;
+    background: #000;
+    filter: blur(35px) brightness(0.45);
+    opacity: 0.85;
+    z-index: 1;
+  }
   #dmevideo {
-    width:100%; height:100%;
-    object-fit:contain; background:#000;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: transparent;
+    z-index: 2;
   }
   video::-webkit-media-controls { display: none !important; }
   video::-webkit-media-controls-enclosure { display: none !important; }
@@ -63,11 +82,21 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
     font-family:sans-serif; font-size:13px;
     text-align:center; padding:20px;
     max-width:90%;
+    z-index: 3;
   }
 </style>
 </head>
 <body>
 <div id="status">Loading video...</div>
+<video
+  id="bg-video"
+  playsinline
+  webkit-playsinline
+  preload="auto"
+  src="${initialUrl}"
+  muted
+  loop
+></video>
 <video
   id="dmevideo"
   playsinline
@@ -79,6 +108,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 
 <script>
 var v = document.getElementById('dmevideo');
+var bgV = document.getElementById('bg-video');
 var statusEl = document.getElementById('status');
 var ready = false;
 var hasAttemptedBypass = false;
@@ -97,7 +127,9 @@ toRN({ type: 'log', msg: 'navigator.userAgent: [' + navigator.userAgent + ']' })
 
 function showPlayer() {
   if (v) v.style.display = 'block';
+  if (bgV) bgV.style.display = 'block';
   statusEl.style.display = 'none';
+  syncFullscreenState();
 }
 
 function attemptWarningBypass() {
@@ -109,6 +141,7 @@ function attemptWarningBypass() {
   statusEl.innerText = "Bypassing Google Drive scan...";
   statusEl.style.display = 'block';
   v.style.display = 'none';
+  if (bgV) bgV.style.display = 'none';
 
   toRN({ type: 'log', msg: 'document.cookie at bypass time: [' + document.cookie + ']' });
 
@@ -117,6 +150,18 @@ function attemptWarningBypass() {
 
 function attachEvents() {
   if (!v) return;
+
+  function syncBgVideo() {
+    if (!bgV) return;
+    if (v.paused) {
+      bgV.pause();
+    } else {
+      bgV.play().catch(function(){});
+    }
+    if (Math.abs(bgV.currentTime - v.currentTime) > 0.3) {
+      bgV.currentTime = v.currentTime;
+    }
+  }
 
   v.addEventListener('loadedmetadata', function() {
     toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
@@ -132,17 +177,34 @@ function attachEvents() {
 
   v.addEventListener('timeupdate', function() {
     toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
+    syncBgVideo();
   });
 
-  v.addEventListener('play',    function() { toRN({ type: 'stateChange', state: 'playing' }); });
-  v.addEventListener('pause',   function() { if (!v.ended) toRN({ type: 'stateChange', state: 'paused' }); });
-  v.addEventListener('ended',   function() { toRN({ type: 'stateChange', state: 'ended' }); });
-  v.addEventListener('waiting', function() { toRN({ type: 'stateChange', state: 'buffering' }); });
-  v.addEventListener('playing', function() { toRN({ type: 'stateChange', state: 'playing' }); });
+  v.addEventListener('play',    function() { 
+    toRN({ type: 'stateChange', state: 'playing' }); 
+    if (bgV) bgV.play().catch(function(){});
+  });
+  v.addEventListener('pause',   function() { 
+    if (!v.ended) toRN({ type: 'stateChange', state: 'paused' }); 
+    if (bgV) bgV.pause();
+  });
+  v.addEventListener('ended',   function() { 
+    toRN({ type: 'stateChange', state: 'ended' }); 
+    if (bgV) bgV.pause();
+  });
+  v.addEventListener('waiting', function() { 
+    toRN({ type: 'stateChange', state: 'buffering' }); 
+    if (bgV) bgV.pause();
+  });
+  v.addEventListener('playing', function() { 
+    toRN({ type: 'stateChange', state: 'playing' }); 
+    if (bgV) bgV.play().catch(function(){});
+    syncBgVideo();
+  });
+  v.addEventListener('seeking', syncBgVideo);
+  v.addEventListener('seeked', syncBgVideo);
 
   v.addEventListener('error', function() {
-    // If the video tag throws an error, it's likely because Google Drive fed it the HTML virus warning page.
-    // We catch this and attempt the token bypass!
     attemptWarningBypass();
   });
 }
@@ -157,8 +219,10 @@ window.addEventListener('message', function(event) {
       v.play().catch(function(e) {
         toRN({ type: 'log', msg: 'play() msg error: ' + e.message });
       });
+      if (bgV) bgV.play().catch(function() {});
     } else if (data.action === 'pause') {
       v.pause();
+      if (bgV) bgV.pause();
     } else if (data.action === 'mute') {
       v.muted = true;
     } else if (data.action === 'unmute') {
@@ -167,6 +231,16 @@ window.addEventListener('message', function(event) {
   } catch(e) {}
 });
 
+var isFullscreen = false;
+function syncFullscreenState() {
+  var v = document.getElementById('dmevideo');
+  if (!v) return;
+  if (window.isFullscreen) {
+    v.style.objectFit = 'contain';
+  } else {
+    v.style.objectFit = 'cover';
+  }
+}
 // Initial playback is handled via the injected messages.
 </script>
 </body>
@@ -203,14 +277,18 @@ window.addEventListener('message', function(event) {
 
         inject(`
           var v = document.getElementById('dmevideo');
+          var bgV = document.getElementById('bg-video');
           var statusEl = document.getElementById('status');
           if (v && statusEl) {
             statusEl.innerText = "Stream secured, buffering...";
             v.src = "${bypassUrl}";
+            if (bgV) bgV.src = "${bypassUrl}";
             v.load();
+            if (bgV) bgV.load();
             v.play().catch(function(e){
               window.ReactNativeWebView.postMessage(JSON.stringify({type:'log', msg:'play() after form-bypass rejected: ' + e.message}));
             });
+            if (bgV) bgV.play().catch(function(){});
           }
         `);
       } else {
@@ -274,6 +352,10 @@ window.addEventListener('message', function(event) {
       `window.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({action:'${muted ? 'mute' : 'unmute'}'})}));`
     );
   }, [muted]);
+
+  React.useEffect(() => {
+    inject(`window.isFullscreen = ${isFullscreen ? 'true' : 'false'}; if (window.syncFullscreenState) window.syncFullscreenState();`);
+  }, [isFullscreen]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (s) => {

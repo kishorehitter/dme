@@ -3,6 +3,7 @@ import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../utils/image';
 import { colors } from '../utils/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const getInitials = (name: string) => {
   if (typeof name !== 'string') return null;
@@ -40,6 +41,7 @@ const AvatarWithFallback = ({
   uri, displayName, sticker, style, onPress, isGroup, iconSize, initialSize,
 }: AvatarProps) => {
   const [error, setError] = useState(false);
+  const { theme } = useTheme();
 
   useEffect(() => { 
     if (uri) console.log('AvatarWithFallback: Loading URI:', resolveImageUrl(uri));
@@ -58,10 +60,10 @@ const AvatarWithFallback = ({
     width:        containerWidth,
     height:       containerHeight,
     borderRadius,
-    overflow:     'hidden' as const,  // clips image/content to circle shape
+    overflow:     'hidden' as const,
     borderWidth:  1,
-    borderColor:  '#E0E0E0',
-    ...style,                         // allow override
+    borderColor:  theme.border,
+    ...style,
   };
 
   const derivedIconSize    = iconSize    || containerWidth * 0.55;
@@ -82,7 +84,7 @@ const AvatarWithFallback = ({
 
     if (sticker) {
       return (
-        <View style={[styles.fill, styles.placeholder, { backgroundColor: '#FFFFFF', borderRadius }]}>
+        <View style={[styles.fill, styles.placeholder, { backgroundColor: theme.surface, borderRadius }]}>
           <Text style={{ fontSize: stickerFontSize }}>{String(sticker)}</Text>
         </View>
       );
@@ -91,7 +93,7 @@ const AvatarWithFallback = ({
     if (isGroup) {
       return (
         <View style={[styles.fill, styles.placeholder, { borderRadius }]}>
-          <Icon name="people" size={derivedIconSize} color={colors.primary} />
+          <Icon name="people" size={derivedIconSize} color="#bebebe" />
         </View>
       );
     }

@@ -502,7 +502,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         if is_first:
             other_participant = conversation.participants.exclude(user=request.user).first()
             if other_participant:
-                MessageRequest.objects.get_or_create(
+                msg_req, created = MessageRequest.objects.get_or_create(
                     conversation=conversation,
                     defaults={
                         'sender': request.user,
@@ -510,6 +510,33 @@ class MessageViewSet(viewsets.ModelViewSet):
                         'status': 'pending',
                     }
                 )
+                try:
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    from .serializers import MessageRequestSerializer
+                    
+                    channel_layer = get_channel_layer()
+                    if channel_layer:
+                        req_data = MessageRequestSerializer(msg_req, context={'request': request}).data
+                        # Send to receiver's update channel
+                        async_to_sync(channel_layer.group_send)(
+                            f'user_updates_{other_participant.user_id}',
+                            {
+                                'type': 'message_request_created',
+                                'data': req_data
+                            }
+                        )
+                        # Send to chat room group
+                        async_to_sync(channel_layer.group_send)(
+                            f'chat_{conversation_id}',
+                            {
+                                'type': 'message_request_created',
+                                'data': req_data
+                            }
+                        )
+                except Exception as ws_err:
+                    print(f"Warning: WebSocket broadcast for message request creation failed: {ws_err}")
+
 
         # WhatsApp-style: Broadcast message via WebSocket and trigger FCM
         self.broadcast_and_notify(message)
@@ -1664,3 +1691,235 @@ def _notify_message_request_accepted(msg_req):
         )
     except Exception as e:
         print(f'Warning: FCM message_request_accepted failed: {e}')
+
+
+class FriendRequestListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        received = FriendRequest.objects.filter(
+            receiver=request.user, status='pending'
+        ).select_related('sender', 'receiver')
+        sent = FriendRequest.objects.filter(
+            sender=request.user, status='pending'
+        ).select_related('sender', 'receiver')
+
+        return Response({
+            'received': FriendRequestSerializer(received, many=True, context={'request': request}).data,
+            'sent': FriendRequestSerializer(sent, many=True, context={'request': request}).data,
+        })
+
+    def post(self, request):
+        receiver_id = request.data.get('user_id')
+        if not receiver_id:
+            return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            receiver = get_user_model().objects.get(id=receiver_id)
+        except get_user_model().DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if receiver == request.user:
+            return Response(
+                {'error': 'You cannot send a friend request to yourself'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        existing = FriendRequest.objects.filter(
+            Q(sender=request.user, receiver=receiver) |
+            Q(sender=receiver, receiver=request.user)
+        ).first()
+
+        if existing:
+            if existing.status == 'accepted':
+                return Response({'error': 'You are already friends'}, status=status.HTTP_400_BAD_REQUEST)
+            if existing.status == 'pending':
+                if existing.sender == request.user:
+                    return Response({'error': 'Friend request already sent'}, status=status.HTTP_400_BAD_REQUEST)
+                # The other person already sent us a request — auto-accept
+                existing.status = 'accepted'
+                existing.save()
+                _notify_friend_request_accepted(existing)
+                return Response(
+                    FriendRequestSerializer(existing, context={'request': request}).data,
+                    status=status.HTTP_200_OK,
+                )
+            if existing.status == 'rejected':
+                existing.status = 'pending'
+                existing.sender = request.user
+                existing.receiver = receiver
+                existing.save()
+                _notify_friend_request_sent(existing)
+                return Response(
+                    FriendRequestSerializer(existing, context={'request': request}).data,
+                    status=status.HTTP_201_CREATED,
+                )
+
+        fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
+        _notify_friend_request_sent(fr)
+        return Response(
+            FriendRequestSerializer(fr, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class FriendRequestApproveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        fr = FriendRequest.objects.filter(
+            Q(id=request_id) | Q(sender_id=request_id),
+            receiver=request.user,
+            status='pending'
+        ).first()
+        if not fr:
+            return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+        fr.status = 'accepted'
+        fr.save()
+        _notify_friend_request_accepted(fr)
+        return Response(FriendRequestSerializer(fr, context={'request': request}).data)
+
+
+class FriendRequestRejectView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        fr = FriendRequest.objects.filter(
+            Q(id=request_id) | Q(sender_id=request_id),
+            receiver=request.user,
+            status='pending'
+        ).first()
+        if not fr:
+            return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+        fr.status = 'rejected'
+        fr.save()
+        return Response(FriendRequestSerializer(fr, context={'request': request}).data)
+
+
+class FriendRequestCancelView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, request_id):
+        try:
+            fr = FriendRequest.objects.filter(
+                Q(id=request_id) | Q(receiver_id=request_id),
+                sender=request.user,
+                status='pending'
+            ).first()
+            if not fr:
+                return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            fr.delete()
+            return Response({'message': 'Friend request cancelled'}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MessageRequestApproveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        try:
+            msg_req = MessageRequest.objects.select_related(
+                'sender', 'receiver', 'conversation'
+            ).get(
+                Q(id=request_id) | Q(conversation_id=request_id),
+                receiver=request.user,
+                status='pending'
+            )
+        except MessageRequest.DoesNotExist:
+            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        msg_req.status = 'accepted'
+        msg_req.save()
+        _notify_message_request_accepted(msg_req)
+
+        # Broadcast via WebSocket
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                event_data = {
+                    'conversation_id': msg_req.conversation_id,
+                    'status': 'accepted',
+                    'sender_id': msg_req.sender_id,
+                    'receiver_id': msg_req.receiver_id
+                }
+                # Broadcast to chat room
+                async_to_sync(channel_layer.group_send)(
+                    f'chat_{msg_req.conversation_id}',
+                    {
+                        'type': 'message_request_status',
+                        'data': event_data
+                    }
+                )
+                # Broadcast to sender and receiver update groups
+                for u_id in [msg_req.sender_id, msg_req.receiver_id]:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_updates_{u_id}',
+                        {
+                            'type': 'message_request_status',
+                            'data': event_data
+                        }
+                    )
+        except Exception as ws_err:
+            print(f"Warning: WebSocket broadcast for message request approve failed: {ws_err}")
+
+        return Response({
+            'message': 'Message request accepted',
+            'conversation_id': msg_req.conversation_id,
+        })
+
+
+class MessageRequestRejectView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        try:
+            msg_req = MessageRequest.objects.select_related(
+                'sender', 'receiver', 'conversation'
+            ).get(
+                Q(id=request_id) | Q(conversation_id=request_id),
+                receiver=request.user,
+                status='pending'
+            )
+        except MessageRequest.DoesNotExist:
+            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        msg_req.status = 'rejected'
+        msg_req.save()
+
+        # Broadcast via WebSocket
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                event_data = {
+                    'conversation_id': msg_req.conversation_id,
+                    'status': 'rejected',
+                    'sender_id': msg_req.sender_id,
+                    'receiver_id': msg_req.receiver_id
+                }
+                # Broadcast to chat room
+                async_to_sync(channel_layer.group_send)(
+                    f'chat_{msg_req.conversation_id}',
+                    {
+                        'type': 'message_request_status',
+                        'data': event_data
+                    }
+                )
+                # Broadcast to sender and receiver update groups
+                for u_id in [msg_req.sender_id, msg_req.receiver_id]:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_updates_{u_id}',
+                        {
+                            'type': 'message_request_status',
+                            'data': event_data
+                        }
+                    )
+        except Exception as ws_err:
+            print(f"Warning: WebSocket broadcast for message request reject failed: {ws_err}")
+
+        return Response({'message': 'Message request declined'})
+

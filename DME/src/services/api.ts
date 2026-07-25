@@ -1,3 +1,4 @@
+import { DeviceEventEmitter } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -68,12 +69,21 @@ api.interceptors.response.use(
 
         originalRequest.headers.Authorization = `Bearer ${access}`;
         return api(originalRequest);
-      } catch (refreshError) {
-        await AsyncStorage.multiRemove([
-          'access_token',
-          'refresh_token',
-          'user',
-        ]);
+      } catch (refreshError: any) {
+        const status = refreshError.response?.status;
+        // Only wipe credentials if the server returned a 400 or 401 (explicit token expiration or invalidation).
+        // Do not wipe on network issues (e.g. timeout, no response) or server errors (5xx) to prevent auto-logout.
+        if (status === 400 || status === 401) {
+          console.warn('[api.ts] Refresh token is invalid or expired. Wiping credentials and logging out.');
+          await AsyncStorage.multiRemove([
+            'access_token',
+            'refresh_token',
+            'user',
+          ]);
+          DeviceEventEmitter.emit('force_logout');
+        } else {
+          console.log('[api.ts] Token refresh failed due to network or server error. Retaining credentials.', refreshError.message || refreshError);
+        }
         throw refreshError;
       }
     }
@@ -236,6 +246,16 @@ export const chatAPI = {
         },
       },
     );
+    return response.data;
+  },
+
+  approveMessageRequest: async (conversationId: number) => {
+    const response = await api.post(`/chat/message-requests/${conversationId}/approve/`);
+    return response.data;
+  },
+
+  rejectMessageRequest: async (conversationId: number) => {
+    const response = await api.post(`/chat/message-requests/${conversationId}/reject/`);
     return response.data;
   },
 

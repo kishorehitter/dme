@@ -1,9 +1,11 @@
 import React, { useRef } from 'react';
-import { NavigationContainer, DefaultTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, DarkTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal, TouchableWithoutFeedback, StatusBar, Animated, Keyboard, Platform, Easing } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal, TouchableWithoutFeedback, StatusBar, Animated, Keyboard, Platform, Easing, NativeModules, Dimensions } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import {
   LoginScreen,
   RegisterScreen,
@@ -60,15 +62,90 @@ const customTransitionSpec = {
   },
 };
 
+const centerZoomTransition = {
+  gestureEnabled: false,
+  transitionSpec: {
+    open: {
+      animation: 'timing' as const,
+      config: {
+        duration: 250,
+        easing: Easing.bezier(0.2, 0, 0, 1),
+      },
+    },
+    close: {
+      animation: 'timing' as const,
+      config: {
+        duration: 200,
+        easing: Easing.bezier(0.2, 0, 0, 1),
+      },
+    },
+  },
+  cardStyleInterpolator: ({ current: { progress } }: any) => {
+    const opacity = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+    });
+    const scale = progress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [0.93, 0.97, 1],
+    });
+    return {
+      cardStyle: {
+        opacity,
+        transform: [{ scale }],
+      },
+    };
+  },
+};
+
+const fastStatusTransition = {
+  gestureEnabled: false,
+  transitionSpec: {
+    open: {
+      animation: 'timing' as const,
+      config: {
+        duration: 90,
+        easing: Easing.out(Easing.quad),
+      },
+    },
+    close: {
+      animation: 'timing' as const,
+      config: {
+        duration: 100,
+        easing: Easing.out(Easing.quad),
+      },
+    },
+  },
+  cardStyleInterpolator: ({ current: { progress } }: any) => {
+    const opacity = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+    });
+    return {
+      cardStyle: {
+        opacity,
+      },
+    };
+  },
+};
+
+
 // HeaderRightIcons component removed
 
 const MainTabs = () => {
+  const insets = useSafeAreaInsets();
+  const bottomInsetRef = useRef(insets.bottom);
+  if (insets.bottom > 0) {
+    bottomInsetRef.current = insets.bottom;
+  }
+  const safeBottom = bottomInsetRef.current;
   const statusBtnRef = useRef<View>(null);
   const translateY = useRef(new Animated.Value(0)).current;
+  const { theme, isDark } = useTheme();
 
   const hideTabBar = (instantly = false) => {
     Animated.timing(translateY, {
-      toValue: 80, // Slide tab bar fully offscreen (height is 60)
+      toValue: 80 + safeBottom, // Slide tab bar fully offscreen
       duration: instantly ? 0 : 200,
       useNativeDriver: true,
     }).start();
@@ -170,22 +247,22 @@ const MainTabs = () => {
             <Pressable {...props} android_ripple={{ color: 'transparent' }} />
           );
         },
-        tabBarActiveTintColor: '#4597f5f6',
-        tabBarInactiveTintColor: 'gray',
+        tabBarActiveTintColor: theme.primary,
+        tabBarInactiveTintColor: theme.iconMuted,
         tabBarLabelStyle: { fontSize: 12 },
         tabBarStyle: { 
           height: 60, 
-          paddingBottom: 6, 
+          paddingBottom: 8, 
           paddingTop: 4,
           position: 'absolute',
           bottom: 0,
           left: 0,
           right: 0,
-          backgroundColor: '#FFFFFF',
+          backgroundColor: theme.tabBar,
           elevation: 8,
           shadowOpacity: 0.1,
           borderTopWidth: StyleSheet.hairlineWidth,
-          borderTopColor: '#DDD',
+          borderTopColor: theme.border,
           transform: [{ translateY: translateY }] as any,
         },
         tabBarIconStyle: { marginBottom: 0 },
@@ -209,6 +286,8 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       },
     ]);
   };
+
+  const { theme, isDark } = useTheme();
 
   const [musicRoom, setMusicRoom] = useState<{
     roomCode: string | null;
@@ -266,23 +345,23 @@ const ChatStack: React.FC<any> = ({ logout }) => {
   }, [musicRoom.roomCode, musicRoom.isMinimized]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
     <Stack.Navigator
       screenOptions={{
-        cardStyle: { backgroundColor: '#FFFFFF' },
+        cardStyle: { backgroundColor: theme.background },
         detachPreviousScreen: false,
         ...TransitionPresets.SlideFromRightIOS,
         transitionSpec: customTransitionSpec,
         headerStyle: {
-          backgroundColor: '#FFFFFF',
+          backgroundColor: theme.surface,
           elevation: 0,
           shadowOpacity: 0,
         },
-        headerTintColor: '#4597f5f6',
+        headerTintColor: theme.primary,
         headerTitleStyle: {
           fontWeight: 'bold',
           fontSize: 20,
-          color: '#4597f5f6',
+          color: theme.primary,
         },
       }}
     >
@@ -294,25 +373,28 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       <Stack.Screen name="ChatRoom"     component={ChatRoomScreen}     options={{ headerShown: false }} />
       <Stack.Screen name="Call"         component={CallScreen}         options={{ headerShown: false }} />
       <Stack.Screen name="IncomingCall" component={IncomingCallScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="FriendList"   component={FriendListScreen}   options={{ title: 'My Friends', headerTitleStyle: { color: '#000000', fontWeight: 'bold' }, headerTintColor: '#000000' }} />
-      <Stack.Screen name="CreateGroup"  component={CreateGroupScreen}  options={{ title: 'New Group', headerTitleStyle: { color: '#000000', fontWeight: 'bold' }, headerTintColor: '#000000' }} />
+      <Stack.Screen name="FriendList"   component={FriendListScreen}   options={{ title: 'My Friends', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint }} />
+      <Stack.Screen name="CreateGroup"  component={CreateGroupScreen}  options={{ title: 'New Group', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint }} />
       <Stack.Screen 
         name="GroupInfo"    
         component={GroupInfoScreen}    
         options={{ 
           title: 'Group Info',
-          headerTitleStyle: { color: '#000000', fontWeight: 'bold' },
-          headerTintColor: '#000000'
+          headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' },
+          headerTintColor: theme.headerTint,
+          headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 },
         }} 
       />
-      <Stack.Screen name="Profile"      component={ProfileScreen}      options={{ title: 'Profile', headerTitleStyle: { color: '#000000', fontWeight: 'bold' }, headerTintColor: '#000000' }} />
+      <Stack.Screen name="Profile"      component={ProfileScreen}      options={{ title: 'Profile', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 } }} />
       <Stack.Screen
         name="StatusViewer"
         component={StatusViewer}
         options={{
           headerShown: false,
           presentation: 'transparentModal',
-          animation: 'none',
+          cardStyle: { backgroundColor: 'transparent' },
+          safeAreaInsets: { top: 0, bottom: 0, left: 0, right: 0 },
+          ...fastStatusTransition,
         }}
       />
       <Stack.Screen
@@ -326,7 +408,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         }}
       />
       <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
-      <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media', headerTitleStyle: { color: '#000000', fontWeight: 'bold' }, headerTintColor: '#000000' }} />
+      <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 } }} />
       <Stack.Screen name="YouTubeDiscovery" component={YouTubeDiscoveryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusPrivacy" component={StatusPrivacyScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ headerShown: false }} />
@@ -361,7 +443,22 @@ const ChatStack: React.FC<any> = ({ logout }) => {
 
 const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => {
   const { isAuthenticated, isLoading, user } = useAuth();
+  const { isDark, theme } = useTheme();
   const fadeRef = React.useRef(new Animated.Value(0)).current;
+
+  // Build a navigation theme matching our color palette
+  const navTheme = React.useMemo(() => ({
+    ...(isDark ? DarkTheme : DefaultTheme),
+    colors: {
+      ...(isDark ? DarkTheme.colors : DefaultTheme.colors),
+      background: theme.background,
+      card: theme.surface,
+      text: theme.textPrimary,
+      border: theme.border,
+      primary: theme.primary,
+      notification: theme.primary,
+    },
+  }), [isDark, theme]);
 
   // Fade in ONLY once: when the app finishes its initial loading check
   React.useEffect(() => {
@@ -377,12 +474,16 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => 
   // Pre-configure system bars BEFORE the new screen paints to eliminate the colour flash
   React.useLayoutEffect(() => {
     if (isLoading) return;
+    const currentRouteName = navigationRef.current?.getCurrentRoute()?.name;
+    if (currentRouteName === 'StatusViewer' || currentRouteName === 'MediaViewer' || currentRouteName === 'FullScreenMediaViewer' || currentRouteName === 'StatusEditor') {
+      return;
+    }
     if (isAuthenticated) {
       StatusBar.setTranslucent(true);
-      StatusBar.setBarStyle('dark-content');
-      StatusBar.setBackgroundColor('#ffffff');
-      pinNavBarColor('#ffffff');
-      try { changeNavigationBarColor('#ffffff', true, false); } catch (_) {}
+      StatusBar.setBarStyle(theme.statusBarStyle);
+      StatusBar.setBackgroundColor(theme.statusBar);
+      pinNavBarColor(theme.navBar);
+      try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
     } else {
       StatusBar.setTranslucent(true);
       StatusBar.setBarStyle('light-content');
@@ -390,13 +491,63 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => 
       pinNavBarColor('#000000');
       try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
     }
-  }, [isAuthenticated, isLoading]);
+  }, [isAuthenticated, isLoading, isDark, theme]);
 
   return (
-    <NavigationContainer ref={setNavigationRef} onReady={onNavigatorReady}>
+    <NavigationContainer
+      ref={setNavigationRef}
+      theme={navTheme}
+      onReady={() => {
+        onNavigatorReady?.();
+        // Initial configuration for navigation bar
+        if (Platform.OS === 'android' && NativeModules.SystemBar) {
+          if (!isAuthenticated) {
+            pinNavBarColor('#000000');
+            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+            NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+          } else {
+            pinNavBarColor(theme.navBar);
+            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
+            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
+          }
+        }
+      }}
+      onStateChange={() => {
+        if (!navigationRef || !navigationRef.current) return;
+        const currentRouteName = navigationRef.current.getCurrentRoute()?.name;
+        if (!currentRouteName) return;
+
+        if (['Chats', 'Status', 'Calls'].includes(currentRouteName)) {
+          if (Platform.OS === 'android' && NativeModules.SystemBar) {
+            pinNavBarColor(theme.navBar);
+            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
+            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
+          }
+        } else if (currentRouteName === 'StatusViewer') {
+          if (Platform.OS === 'android') {
+            pinNavBarColor('#00000000');
+            if (NativeModules.SystemBar) {
+              NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+            }
+          }
+        } else if (['MusicRoom', 'Call', 'IncomingCall', 'MediaViewer', 'FullScreenMediaViewer', 'StatusEditor'].includes(currentRouteName)) {
+          if (Platform.OS === 'android' && NativeModules.SystemBar) {
+            pinNavBarColor('#000000');
+            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+            NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+          }
+        } else {
+          if (Platform.OS === 'android' && NativeModules.SystemBar) {
+            pinNavBarColor(theme.navBar);
+            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
+            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
+          }
+        }
+      }}
+    >
       <Animated.View style={{ flex: 1, opacity: isLoading ? 0 : fadeRef }}>
         {isLoading ? (
-          <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} />
+          <View style={{ flex: 1, backgroundColor: theme.background }} />
         ) : isAuthenticated ? (
           !user?.is_profile_complete ? (
             <Stack.Navigator key="profile-setup-navigator" screenOptions={{ headerShown: false }}>

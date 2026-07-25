@@ -59,14 +59,14 @@
 
     {% if status == 'valid' %}
       <h1>You've been challenged!</h1>
-      <p class="subtitle">Open the DME app to accept this Trivia challenge. This link can only be used once!</p>
+      <p class="subtitle">Open the Inaivo app to accept this Trivia challenge. This link can only be used once!</p>
       <a href="{{ app_link }}" class="btn">🎮 Accept Challenge</a>
-      <p class="subtitle" style="margin-top: 12px; font-size:13px;">Tap the button above. If the app doesn't open,<br>make sure DME is installed.</p>
+      <p class="subtitle" style="margin-top: 12px; font-size:13px;">Tap the button above. If the app doesn't open,<br>make sure Inaivo is installed.</p>
 
     {% elif status == 'already_used' %}
       <h1>Already Played!</h1>
       <div class="used-badge">🔒 This challenge has already been accepted and played. One-time links can only be used once.</div>
-      <p class="subtitle">Download DME to start your own Trivia battles!</p>
+      <p class="subtitle">Download Inaivo to start your own Trivia battles!</p>
 
     {% elif status == 'expired' %}
       <h1>Link Expired</h1>
@@ -77,7 +77,7 @@
       <div class="used-badge">❓ This challenge link is invalid or doesn't exist.</div>
     {% endif %}
 
-    <a href="https://dme-19zq.onrender.com/invite" class="download-link">Download DME App</a>
+    <a href="https://dme-19zq.onrender.com/invite" class="download-link">Download Inaivo App</a>
   </div>
 
   {% if status == 'valid' %}

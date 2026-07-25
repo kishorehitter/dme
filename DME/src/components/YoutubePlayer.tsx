@@ -32,6 +32,8 @@ interface Props {
   onVideoData?:   (title: string, author: string) => void; // ✅ Callback for auto-extracted metadata
   quality?:       string;
   style?:         any;
+  onQualitiesAvailable?: (qualities: string[]) => void;
+  isFullscreen?:  boolean;
 }
 
 // ─── Pending guards — prevent stacked async calls ────────────────────────────
@@ -46,6 +48,8 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     onVideoData,
     quality = 'highres',
     style,
+    onQualitiesAvailable,
+    isFullscreen = false,
   } = props;
 
   const webViewRef   = useRef<WebView>(null);
@@ -96,6 +100,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: false });
   Object.defineProperty(document, 'hidden', { value: false, writable: false });
 
+
   // ── State ──────────────────────────────────────────────────────────────────
   var player       = null;
   var realDur      = 0;
@@ -116,27 +121,32 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       return;
     }
     
-    var dpr = window.devicePixelRatio || 1;
     var W, H;
     switch(quality) {
       case 'tiny': // 144p
-        W = 160 / dpr; H = 90 / dpr;
+        W = 2560; H = 1440;
         break;
       case 'small': // 240p
-        W = 320 / dpr; H = 180 / dpr;
+        W = 2740; H = 1541;
         break;
       case 'medium': // 360p
-        W = 480 / dpr; H = 270 / dpr;
+        W = 2920; H = 1642;
         break;
       case 'large': // 480p
-        W = 720 / dpr; H = 405 / dpr;
+        W = 3100; H = 1743;
         break;
       case 'hd720': // 720p
-        W = 1280 / dpr; H = 720 / dpr;
+        W = 3280; H = 1845;
         break;
       case 'hd1080': // 1080p
+        W = 3460; H = 1946;
+        break;
+      case 'hd1440': // 1440p (2K)
+        W = 3640; H = 2047;
+        break;
+      case 'hd2160': // 2160p (4K)
       case 'highres': // 4K/highres
-        W = 1920 / dpr; H = 1080 / dpr;
+        W = 3840; H = 2160;
         break;
       case 'auto':
       default:
@@ -148,7 +158,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     
     var scaleX = containerWidth / W;
     var scaleY = containerHeight / H;
-    var scale = Math.min(scaleX, scaleY);
+    var scale = window.isFullscreen ? Math.min(scaleX, scaleY) : Math.max(scaleX, scaleY);
     
     var offsetX = (containerWidth - (W * scale)) / 2;
     var offsetY = (containerHeight - (H * scale)) / 2;
@@ -330,6 +340,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   document.head.appendChild(tag);
 
   function onYouTubeIframeAPIReady() {
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { value: 1, writable: false });
+    } catch(e) {}
     player = new YT.Player('player', {
       width:  '100%',
       height: '100%',
@@ -362,7 +375,11 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           };
 
           updatePlayerSizeByState();
-          toRN({ type: 'playerReady' });
+          var qualities = [];
+          if (p && typeof p.getAvailableQualityLevels === 'function') {
+            qualities = p.getAvailableQualityLevels();
+          }
+          toRN({ type: 'playerReady', qualities: qualities });
           startAdEngine();
           startProgress();
           postVideoData();
@@ -391,7 +408,12 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
             adjustPlayerSize('hd1080'); // keep it 1080p viewport when buffering/paused/etc.
           }
           
-          toRN({ type: 'stateChange', state: state });
+          var qualities = [];
+          if (player && typeof player.getAvailableQualityLevels === 'function') {
+            qualities = player.getAvailableQualityLevels();
+          }
+          
+          toRN({ type: 'stateChange', state: state, qualities: qualities });
           postVideoData();
           setTimeout(hideYouTubeUI, 200);
         },
@@ -458,11 +480,17 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           pendingCT.current  = false;
           pendingDur.current = false;
           onReady?.();
+          if (msg.qualities) {
+            onQualitiesAvailable?.(msg.qualities);
+          }
           if (play)  inject(`window.userPaused = false; player && player.playVideo()`);
           if (muted) inject(`player && player.mute()`);
           break;
         case 'stateChange':
           onStateChange?.(msg.state as PlayerState);
+          if (msg.qualities) {
+            onQualitiesAvailable?.(msg.qualities);
+          }
           break;
         case 'progress':
           onProgress?.(msg.currentTime, msg.duration);
@@ -518,6 +546,10 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     if (muted) inject(`player && player.mute()`);
     else       inject(`player && player.unMute()`);
   }, [muted]);
+
+  React.useEffect(() => {
+    inject(`window.isFullscreen = ${isFullscreen ? 'true' : 'false'}; if (window.updatePlayerSizeByState) window.updatePlayerSizeByState();`);
+  }, [isFullscreen]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds) => {
@@ -606,6 +638,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
             Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: false });
             Object.defineProperty(document, 'webkitVisibilityState', { value: 'visible', writable: false });
             Object.defineProperty(document, 'hasFocus', { value: function() { return true; }, writable: false });
+
 
             // 3. PROXY addEventListener (Total Stealth)
             var original = window.addEventListener;

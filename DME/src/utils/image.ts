@@ -10,7 +10,7 @@ export const resolveImageUrl = (url?: string | null): string | undefined => {
   if (!url) return undefined;
 
   // If it's already an absolute URL, return as is
-  if (url.startsWith('http') || url.startsWith('data:')) {
+  if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('file://') || url.startsWith('content://')) {
     return url;
   }
 

@@ -13,6 +13,7 @@ import {
 import Icon from 'react-native-vector-icons/Ionicons';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import { spacing, borderRadius, fontSize } from '../utils/theme';
+import { useTheme } from '../context/ThemeContext';
 const MIN_HEIGHT = 45;
 const MAX_HEIGHT = 180;
 const ChatInputArea = memo(({
@@ -34,6 +35,7 @@ const ChatInputArea = memo(({
     onOpenStickerPicker,
 }: any) => {
 
+    const { theme } = useTheme();
     const inputRef = useRef<RichTextInputRef>(null);
     const prevInputText = useRef(inputText);
     const [localInputText, setLocalInputText] = useState(inputText || '');
@@ -130,14 +132,14 @@ const ChatInputArea = memo(({
               onPress={handleAttachment}
               disabled={isDisabled}
             >
-              <Icon name="add-outline" size={22} color="#666" />
+              <Icon name="add-outline" size={22} color={theme.icon} />
             </TouchableOpacity>
           )}
 
           {!isRecording && (() => {
             const showStickerButton = !isKeyboardVisible && !editingMessageId;
             return (
-              <View style={[styles.inputWrapper, isDisabled && { backgroundColor: '#E0E0E0' }]}>
+              <View style={[styles.inputWrapper, { backgroundColor: theme.inputBackground }, isDisabled && { backgroundColor: theme.border }]}>
                 {/* Sticker button inside the input field */}
                 {showStickerButton && (
                   <TouchableOpacity
@@ -146,7 +148,7 @@ const ChatInputArea = memo(({
                     disabled={isDisabled}
                     accessibilityLabel="Open sticker picker"
                   >
-                    <Icon name="happy-outline" size={24} color="#666" />
+                    <Icon name="happy-outline" size={24} color={theme.icon} />
                   </TouchableOpacity>
                 )}
 
@@ -155,13 +157,13 @@ const ChatInputArea = memo(({
                   ref={inputRef}
                   style={[
                     styles.input,
-                    { height: inputHeight },
+                    { height: inputHeight, color: theme.inputText },
                     showStickerButton ? { paddingLeft: 42 } : { paddingLeft: 12 },
-                    isDisabled && { color: '#999' }
+                    isDisabled && { color: theme.textMuted }
                   ]}
                   pointerEvents={isDisabled ? 'none' : 'auto'}
                   placeholder={placeholder}
-                  placeholderTextColor="#999"
+                  placeholderTextColor={theme.placeholder}
                   autoFocus={localClearKey > 0}            
                   onChangeText={handleTypingInternal}
                   onContentSizeChange={handleContentSizeChange}
@@ -200,7 +202,7 @@ const ChatInputArea = memo(({
               <Icon
                 name="mic"
                 size={22}
-                color={isRecording ? '#FFF' : '#666'}
+                color={isRecording ? '#FFF' : theme.icon}
               />
             </Animated.View>
           ) : (
@@ -238,7 +240,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#F5F5F5',
+    // backgroundColor applied via inline theme
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 4,
@@ -247,7 +249,7 @@ const styles = StyleSheet.create({
   inputWrapper: {
     flex: 1,
     position: 'relative',
-    backgroundColor: '#F5F5F5',
+    // backgroundColor applied via inline theme
     borderRadius: borderRadius.xl,
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -272,7 +274,7 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 8 : 6,
     paddingBottom: Platform.OS === 'ios' ? 8 : 6,
     fontSize: 17.8,
-    color: '#000',
+    // color applied via inline theme
     textAlignVertical: 'top',
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
@@ -281,7 +283,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#F5F5F5',
+    // backgroundColor applied via inline theme
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 4,

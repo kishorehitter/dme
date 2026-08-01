@@ -4,6 +4,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import api from '../services/api';
 import AvatarWithFallback from './AvatarWithFallback';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 
 interface Props {
   visible: boolean;
@@ -14,6 +15,8 @@ interface Props {
 
 export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, initialSelected }) => {
   const { user: currentUser } = useAuth();
+  const { theme } = useTheme();
+  const styles = dynamicStyles(theme);
   const [contacts, setContacts] = useState<any[]>([]);
   const [selected, setSelected] = useState<number[]>(initialSelected);
   const [loading, setLoading] = useState(false);
@@ -79,7 +82,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} style={styles.headerBtn}>
-            <Icon name="close" size={24} color="#333" />
+            <Icon name="close" size={24} color={theme.icon} />
           </TouchableOpacity>
           <Text style={styles.title}>Status Privacy</Text>
           <View style={styles.rightHeaderActions}>
@@ -90,7 +93,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
               }} 
               style={styles.headerBtn}
             >
-              <Icon name={showSearch ? "search-outline" : "search"} size={22} color="#333" />
+              <Icon name={showSearch ? "search-outline" : "search"} size={22} color={theme.icon} />
             </TouchableOpacity>
             <TouchableOpacity onPress={handleDone} style={styles.headerBtn}>
               <Text style={styles.done}>Done</Text>
@@ -100,10 +103,11 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
 
         {showSearch && (
           <View style={styles.searchContainer}>
-            <Icon name="search" size={20} color="#999" />
+            <Icon name="search" size={20} color={theme.icon} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search friends..."
+              placeholderTextColor={theme.textMuted}
               value={searchQuery}
               onChangeText={setSearchQuery}
               autoCapitalize="none"
@@ -111,7 +115,7 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
             />
             {searchQuery !== '' && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Icon name="close-circle" size={18} color="#999" />
+                <Icon name="close-circle" size={18} color={theme.icon} />
               </TouchableOpacity>
             )}
           </View>
@@ -160,17 +164,17 @@ export const VisibilityModal: React.FC<Props> = ({ visible, onClose, onSelect, i
   );
 };
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff', marginTop: 100 },
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.surface, marginTop: 100 },
   header: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
     padding: 20, 
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#eee'
+    borderBottomColor: theme.border
   },
-  title: { fontSize: 18, fontWeight: 'bold' },
+  title: { fontSize: 18, fontWeight: 'bold', color: theme.textPrimary },
   done: { color: '#4597f5f6', fontWeight: 'bold' },
   rightHeaderActions: {
     flexDirection: 'row',
@@ -183,7 +187,7 @@ const styles = StyleSheet.create({
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: theme.inputBackground,
     marginHorizontal: 15,
     marginTop: 15,
     marginBottom: 10,
@@ -191,7 +195,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     height: 40,
   },
-  searchInput: { flex: 1, marginLeft: 10, fontSize: 15 },
+  searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: theme.textPrimary },
   selectAllBtn: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
@@ -199,13 +203,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, 
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: theme.border,
     marginBottom: 10
   },
   selectAllText: { color: '#4597f5f6', fontWeight: '600' },
   item: { flexDirection: 'row', alignItems: 'center', padding: 15, gap: 15 },
-  name: { fontSize: 16, fontWeight: '500' },
-  username: { fontSize: 12, color: '#666' },
+  name: { fontSize: 16, fontWeight: '500', color: theme.textPrimary },
+  username: { fontSize: 12, color: theme.textSecondary },
   emptyContainer: { padding: 40, alignItems: 'center' },
-  emptyText: { textAlign: 'center', color: '#999', lineHeight: 20 }
+  emptyText: { textAlign: 'center', color: theme.textMuted, lineHeight: 20 }
 });

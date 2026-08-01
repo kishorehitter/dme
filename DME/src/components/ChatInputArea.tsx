@@ -35,13 +35,13 @@ const ChatInputArea = memo(({
     onOpenStickerPicker,
 }: any) => {
 
-    const { theme } = useTheme();
+    const { theme, isDark } = useTheme();
+    const styles = dynamicStyles(theme);
     const inputRef = useRef<RichTextInputRef>(null);
     const prevInputText = useRef(inputText);
     const [localInputText, setLocalInputText] = useState(inputText || '');
     const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
     const [localClearKey, setLocalClearKey] = useState(0);
-    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
     const isTypingRef = useRef(false);
 
     const handleTypingInternal = useCallback((text: string) => {
@@ -51,16 +51,6 @@ const ChatInputArea = memo(({
     }, [handleTyping]);
 
     useEffect(() => {
-      const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-      const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-
-      const showSubscription = Keyboard.addListener(showEvent, () => {
-        setKeyboardVisible(true);
-      });
-      const hideSubscription = Keyboard.addListener(hideEvent, () => {
-        setKeyboardVisible(false);
-      });
-
       const emojiSub = DeviceEventEmitter.addListener('INSERT_EMOJI_CHAR', (emoji) => {
         setLocalInputText(prev => {
           const next = prev + emoji;
@@ -71,8 +61,6 @@ const ChatInputArea = memo(({
       });
 
       return () => {
-        showSubscription.remove();
-        hideSubscription.remove();
         emojiSub.remove();
       };
     }, []);
@@ -86,6 +74,12 @@ const ChatInputArea = memo(({
         inputRef.current?.clear();
       });
     }, [onRegisterClear]);
+
+    useEffect(() => {
+      return () => {
+        inputRef.current?.blur();
+      };
+    }, []);
 
     const prevEditingId = useRef(editingMessageId);
     // EDIT MODE: When editingMessageId changes to a truthy value,
@@ -137,14 +131,20 @@ const ChatInputArea = memo(({
           )}
 
           {!isRecording && (() => {
-            const showStickerButton = !isKeyboardVisible && !editingMessageId;
+            const showStickerButton = !editingMessageId;
             return (
               <View style={[styles.inputWrapper, { backgroundColor: theme.inputBackground }, isDisabled && { backgroundColor: theme.border }]}>
-                {/* Sticker button inside the input field */}
                 {showStickerButton && (
                   <TouchableOpacity
                     style={styles.innerStickerButton}
-                    onPress={onOpenStickerPicker}
+                    onPress={() => {
+                      if (Keyboard.isVisible()) {
+                        Keyboard.dismiss();
+                        return;
+                      }
+                      Keyboard.dismiss();
+                      onOpenStickerPicker?.();
+                    }}
                     disabled={isDisabled}
                     accessibilityLabel="Open sticker picker"
                   >
@@ -157,14 +157,14 @@ const ChatInputArea = memo(({
                   ref={inputRef}
                   style={[
                     styles.input,
-                    { height: inputHeight, color: theme.inputText },
+                    { height: inputHeight, color: theme.textPrimary },
                     showStickerButton ? { paddingLeft: 42 } : { paddingLeft: 12 },
                     isDisabled && { color: theme.textMuted }
                   ]}
                   pointerEvents={isDisabled ? 'none' : 'auto'}
                   placeholder={placeholder}
                   placeholderTextColor={theme.placeholder}
-                  autoFocus={localClearKey > 0}            
+                  autoFocus={false}
                   onChangeText={handleTypingInternal}
                   onContentSizeChange={handleContentSizeChange}
                   multiline
@@ -179,13 +179,13 @@ const ChatInputArea = memo(({
             <View
               style={[
                 styles.sendButton,
-                { backgroundColor: '#CCCCCC' },
+                { backgroundColor: theme.border },
               ]}
             >
               <Icon
                 name="send"
                 size={20}
-                color="#FFF"
+                color={theme.icon}
                 style={{ marginLeft: 2 }}
               />
             </View>
@@ -230,7 +230,7 @@ const ChatInputArea = memo(({
     );
 });
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

@@ -14,6 +14,7 @@ import {
   Text,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   StyleSheet,
   Animated,
   Dimensions,
@@ -22,11 +23,13 @@ import {
 } from 'react-native';
 import LottieView from 'lottie-react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Sticker, StickerPack } from '../stickers/stickerPacks';
+import { useTheme } from '../context/ThemeContext';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_H * 0.45;
-const COLUMN_COUNT = 5; // Reduced sticker size by increasing column count
+const COLUMN_COUNT = 7; // Smaller emoji size matching Google keyboard grid
 const STICKER_SIZE = (SCREEN_W - 16) / COLUMN_COUNT;
 
 interface Props {
@@ -42,10 +45,12 @@ const StickerCell = React.memo(
     sticker,
     packId,
     onSelect,
+    styles,
   }: {
     sticker: Sticker;
     packId: string;
     onSelect: (s: Sticker, packId: string) => void;
+    styles: ReturnType<typeof dynamicStyles>;
   }) => {
     const [loaded, setLoaded] = useState(false);
     const lottieRef = useRef<LottieView>(null);
@@ -87,9 +92,14 @@ const StickerPickerSheet: React.FC<Props> = ({
   onSelectSticker,
   onClose,
 }) => {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 12 : 16);
+  const totalSheetHeight = SHEET_HEIGHT + safeBottom;
+  const styles = dynamicStyles(theme, safeBottom);
   const [activePackId, setActivePackId] = useState<string>(stickerPacks[0]?.id ?? '');
 
-  const slideAnim = useRef(new Animated.Value(SHEET_HEIGHT)).current;
+  const slideAnim = useRef(new Animated.Value(totalSheetHeight)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
   // Slide in / out
@@ -111,7 +121,7 @@ const StickerPickerSheet: React.FC<Props> = ({
     } else {
       Animated.parallel([
         Animated.timing(slideAnim, {
-          toValue: SHEET_HEIGHT,
+          toValue: totalSheetHeight,
           duration: 220,
           useNativeDriver: true,
         }),
@@ -122,7 +132,7 @@ const StickerPickerSheet: React.FC<Props> = ({
         }),
       ]).start();
     }
-  }, [visible, slideAnim, opacityAnim]);
+  }, [visible, slideAnim, opacityAnim, totalSheetHeight]);
 
   const activePack = stickerPacks.find(p => p.id === activePackId) ?? stickerPacks[0];
 
@@ -132,12 +142,13 @@ const StickerPickerSheet: React.FC<Props> = ({
         sticker={item}
         packId={activePackId}
         onSelect={onSelectSticker}
+        styles={styles}
       />
     ),
-    [activePackId, onSelectSticker],
+    [activePackId, onSelectSticker, styles],
   );
 
-  if (!visible && slideAnim._value === SHEET_HEIGHT) return null;
+  if (!visible) return null;
 
   return (
     <>
@@ -164,7 +175,7 @@ const StickerPickerSheet: React.FC<Props> = ({
         <View style={styles.topHeader}>
           <Text style={styles.headerTitle}>Stickers</Text>
           <TouchableOpacity style={styles.closeButton} onPress={onClose} activeOpacity={0.7}>
-            <Icon name="close" size={24} color="#666" />
+            <Icon name="close" size={24} color={theme.icon} />
           </TouchableOpacity>
         </View>
 
@@ -178,27 +189,33 @@ const StickerPickerSheet: React.FC<Props> = ({
             numColumns={COLUMN_COUNT}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.grid}
-            initialNumToRender={10}
-            maxToRenderPerBatch={10}
+            initialNumToRender={14}
+            maxToRenderPerBatch={14}
             windowSize={3}
           />
         </View>
 
         {/* 3. Bottom Category Bar (Selectors at the bottom) */}
         <View style={styles.bottomCategoryBar}>
-          {stickerPacks.map(pack => (
-            <TouchableOpacity
-              key={pack.id}
-              style={[
-                styles.categoryTab,
-                activePackId === pack.id && styles.categoryTabActive,
-              ]}
-              onPress={() => setActivePackId(pack.id)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.categoryTabEmoji}>{pack.emoji}</Text>
-            </TouchableOpacity>
-          ))}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryScroll}
+          >
+            {stickerPacks.map(pack => (
+              <TouchableOpacity
+                key={pack.id}
+                style={[
+                  styles.categoryTab,
+                  activePackId === pack.id && styles.categoryTabActive,
+                ]}
+                onPress={() => setActivePackId(pack.id)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.categoryTabEmoji}>{pack.emoji}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
         </View>
       </Animated.View>
     </>
@@ -206,7 +223,7 @@ const StickerPickerSheet: React.FC<Props> = ({
 };
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors, safeBottom: number) => StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.18)',
@@ -217,8 +234,8 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: SHEET_HEIGHT,
-    backgroundColor: '#FFFFFF',
+    height: SHEET_HEIGHT + safeBottom,
+    backgroundColor: theme.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     zIndex: 100,
@@ -233,7 +250,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#DDD',
+    backgroundColor: theme.border,
     marginTop: 10,
     marginBottom: 4,
   },
@@ -246,11 +263,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: theme.border,
   },
   headerTitle: {
     fontSize: 16,
-    color: '#333333',
+    color: theme.textPrimary,
     fontWeight: 'bold',
   },
   closeButton: {
@@ -260,7 +277,7 @@ const styles = StyleSheet.create({
   // 2. Main Grid Container
   gridContainer: {
     flex: 1,
-    paddingBottom: 50, // Space for bottom category bar
+    paddingBottom: 50 + safeBottom, // Space for bottom category bar + safe inset
   },
   grid: {
     paddingHorizontal: 8,
@@ -285,22 +302,25 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: 50,
-    backgroundColor: '#FAFAFA',
+    height: 50 + safeBottom,
+    backgroundColor: theme.inputBackground,
     borderTopWidth: 1,
-    borderTopColor: '#EEEEEE',
-    flexDirection: 'row',
+    borderTopColor: theme.border,
+    paddingBottom: safeBottom,
+  },
+  categoryScroll: {
+    paddingHorizontal: 10,
     alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingBottom: Platform.OS === 'ios' ? 8 : 0,
+    flexDirection: 'row',
   },
   categoryTab: {
-    width: 38,
+    width: 44,
     height: 38,
     borderRadius: 19,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'transparent',
+    marginHorizontal: 4,
   },
   categoryTabActive: {
     backgroundColor: '#E8F5E9', // Soft green background

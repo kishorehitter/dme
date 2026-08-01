@@ -869,6 +869,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 conversation_id=conversation_id
             ).exclude(user_id=sender_id)
 
+            is_msg_req = False
+            try:
+                if hasattr(conversation, 'message_request') and conversation.message_request:
+                    is_msg_req = (conversation.message_request.status == 'pending')
+            except Exception:
+                pass
+
             for participant in participants:
                 recipient = participant.user
 
@@ -881,7 +888,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     conversation_id=conversation_id,
                     message_id=message_id,
                     message_type=message_type,
-                    sender_avatar=self.user.clean_profile_picture_url
+                    sender_avatar=self.user.clean_profile_picture_url,
+                    is_message_request=is_msg_req
                 )
 
                 if result > 0:

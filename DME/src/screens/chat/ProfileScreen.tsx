@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTheme } from '../../context/ThemeContext';
+
 import {
   View,
   Text,
@@ -21,6 +22,7 @@ import {
   Linking,
   InteractionManager,
   Share,
+  DeviceEventEmitter,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -258,15 +260,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         setFriendStatus('none');
         Toast.show({ type: 'info', text1: 'Friend request cancelled', position: 'bottom' });
       } else if (friendStatus === 'received_pending') {
-        const reqs = await chatAPI.getFriendRequests();
-        const incomingReq = reqs.find((r: any) => r.sender?.id === profile.id || r.from_user?.id === profile.id);
-        if (incomingReq) {
-          await chatAPI.acceptFriendRequest(incomingReq.id);
-          setFriendStatus('friends');
-          Toast.show({ type: 'success', text1: 'Friend request accepted', position: 'bottom' });
-        } else {
-          await chatAPI.sendFriendRequest(profile.id);
-        }
+        const res = await chatAPI.getFriendRequests();
+        const received = Array.isArray(res?.received) ? res.received : (Array.isArray(res) ? res : []);
+        const incomingReq = received.find((r: any) => 
+          r.sender?.id === profile.id || 
+          r.from_user?.id === profile.id || 
+          String(r.sender?.id) === String(profile.id)
+        );
+        const targetId = incomingReq?.id || profile.id;
+        await chatAPI.acceptFriendRequest(targetId);
+        setFriendStatus('friends');
+        DeviceEventEmitter.emit('friend_request_accepted');
+        Toast.show({ type: 'success', text1: 'Friend request accepted', position: 'bottom' });
       } else if (friendStatus === 'friends') {
         Alert.alert(
           'Remove Friend',
@@ -1020,13 +1025,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <TouchableOpacity
                 style={[
                   s.profileActionBtn,
-                  friendStatus === 'none' ? s.primaryBtn : s.secondaryBtn
+                  friendStatus === 'none' ? s.primaryBtn :
+                  friendStatus === 'received_pending' ? s.acceptBtn : s.secondaryBtn
                 ]}
                 onPress={handleFriendAction}
               >
                 <Text style={[
                   s.profileActionBtnText,
-                  friendStatus === 'none' ? s.primaryBtnText : s.secondaryBtnText
+                  friendStatus === 'none' ? s.primaryBtnText :
+                  friendStatus === 'received_pending' ? s.acceptBtnText : s.secondaryBtnText
                 ]}>
                   {friendStatus === 'none' && 'Add Friend'}
                   {friendStatus === 'sent_pending' && 'Cancel Request'}
@@ -1534,6 +1541,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         maxSelect={1}
         assetType="Photos"
       />
+
     </ScrollView>
   );
 };
@@ -1795,6 +1803,14 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   },
   secondaryBtnText: {
     color: theme.textPrimary,
+  },
+  acceptBtn: {
+    backgroundColor: '#66BB6A', // Light green
+    borderWidth: 0,
+  },
+  acceptBtnText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
   },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'flex-start', alignItems: 'flex-end' },
   popoverMenu: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: theme.background, borderRadius: 8, padding: 8, elevation: 5, shadowColor: theme.textPrimary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },

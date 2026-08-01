@@ -20,7 +20,7 @@ import {
   TouchableWithoutFeedback, TouchableOpacity,
   StatusBar, Animated, FlatList, Modal,
   ActivityIndicator, Alert, Platform,
-  PanResponder, TextInput, KeyboardAvoidingView,
+  PanResponder, TextInput, KeyboardAvoidingView, Keyboard,
   NativeModules, DeviceEventEmitter,
 } from 'react-native';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
@@ -28,6 +28,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
 import Video from 'react-native-video';
+import Reanimated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../utils/image';
@@ -185,31 +191,25 @@ const StatusViewerScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const route      = useRoute();
   const insets     = useSafeAreaInsets();
-  const safeBottom = 34;
+  const getNavBarHeight = () => {
+    if (Platform.OS === 'ios') return insets.bottom;
+    const screenHeight = Dimensions.get('screen').height;
+    const windowHeight = Dimensions.get('window').height;
+    const statusBarHeight = StatusBar.currentHeight || 24;
+    const diff = screenHeight - windowHeight - statusBarHeight;
+    return diff > 0 ? diff : 0;
+  };
+  const safeBottom = Math.max(getNavBarHeight(), insets.bottom, 0);
   const safeTop = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 20);
 
   const { theme, isDark } = useTheme();
 
   useFocusEffect(
     useCallback(() => {
-      if (Platform.OS === 'android') {
-        pinNavBarColor('#00000000');
-        if (NativeModules.SystemBar) {
-          NativeModules.SystemBar.setFitsSystemWindows(false);
-          NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
-        }
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setStatusBarColor('#00000000', true);
       }
-
-      return () => {
-        if (Platform.OS === 'android') {
-          pinNavBarColor(theme.navBar);
-          if (NativeModules.SystemBar) {
-            NativeModules.SystemBar.setFitsSystemWindows(true);
-            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
-          }
-        }
-      };
-    }, [theme, isDark])
+    }, [])
   );
 
 
@@ -253,6 +253,53 @@ const StatusViewerScreen: React.FC = () => {
 
   const [saving, setSaving] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false);
+
+  const [kbdHeight, setKbdHeight] = useState(0);
+  const keyboardHeightValue = useSharedValue(0);
+
+  useEffect(() => {
+    const handleShow = (e: any) => {
+      const h = e.endCoordinates ? e.endCoordinates.height : 0;
+      if (h > 0) {
+        setKbdHeight(h);
+        const totalOffset = h + (safeBottom > 0 ? safeBottom : 0);
+        const duration = e.duration && e.duration > 0 ? e.duration : 220;
+        keyboardHeightValue.value = withTiming(totalOffset, {
+          duration,
+          easing: Easing.out(Easing.quad),
+        });
+      }
+    };
+
+    const handleHide = (e: any) => {
+      setKbdHeight(0);
+      const duration = e && e.duration && e.duration > 0 ? e.duration : 200;
+      keyboardHeightValue.value = withTiming(0, {
+        duration,
+        easing: Easing.out(Easing.quad),
+      });
+    };
+
+    const willShowSub = Keyboard.addListener('keyboardWillShow', handleShow);
+    const didShowSub = Keyboard.addListener('keyboardDidShow', handleShow);
+    const willHideSub = Keyboard.addListener('keyboardWillHide', handleHide);
+    const didHideSub = Keyboard.addListener('keyboardDidHide', handleHide);
+
+    return () => {
+      willShowSub.remove();
+      didShowSub.remove();
+      willHideSub.remove();
+      didHideSub.remove();
+    };
+  }, [safeBottom]);
+
+  const animatedReplyContainerStyle = useAnimatedStyle(() => {
+    return {
+      transform: [
+        { translateY: -keyboardHeightValue.value }
+      ],
+    };
+  });
 
 
   // Background Upload states
@@ -622,7 +669,7 @@ const StatusViewerScreen: React.FC = () => {
       style={s.container}
       {...panResponder.panHandlers}
     >
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} animated={true} />
 
 
       {/* ── Media FlatList (Allows horizontal swiping between statuses) ── */}
@@ -686,21 +733,12 @@ const StatusViewerScreen: React.FC = () => {
                   )}
                 </>
               ) : (
-                <>
-                  {/* Dynamic background: blurred cover fills screen for photo statuses */}
-                  <Image
-                    source={{ uri: resolveImageUrl(item.media_url || item.media_file) }}
-                    style={[StyleSheet.absoluteFill, s.bgCoverPhoto]}
-                    resizeMode="cover"
-                    blurRadius={15}
-                  />
-                  <Image
-                    source={{ uri: resolveImageUrl(item.media_url || item.media_file) }}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode="contain"
-                    resizeMethod={Platform.OS === 'android' ? 'resize' : 'auto'}
-                  />
-                </>
+                <Image
+                  source={{ uri: resolveImageUrl(item.media_url || item.media_file) }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="contain"
+                  resizeMethod={Platform.OS === 'android' ? 'resize' : 'auto'}
+                />
               )}
             </View>
           );
@@ -714,10 +752,10 @@ const StatusViewerScreen: React.FC = () => {
         pointerEvents="none"
       />
 
-      {/* ── Bottom scrim: soft subtle fade ── */}
+      {/* ── Bottom scrim: subtle fade ending at caption area ── */}
       <LinearGradient
-        colors={['transparent', 'rgba(0,0,0,0.3)']}
-        style={[s.bottomScrim, { height: bottomBarH + 20 }]}
+        colors={['transparent', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.65)']}
+        style={[s.bottomScrim, { height: bottomBarH + 55 }]}
         pointerEvents="none"
       />
       
@@ -788,11 +826,13 @@ const StatusViewerScreen: React.FC = () => {
       )}
 
       {!isUploading && (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={[s.kvWrapper, { opacity: 1 }]}
+        <Reanimated.View
+          style={[
+            s.kvWrapper,
+            animatedReplyContainerStyle
+          ]}
         >
-          <View style={[s.bottomBar, { paddingBottom: safeBottom }]}>
+          <View style={[s.bottomBar, { paddingBottom: kbdHeight > 0 ? 8 : safeBottom }]}>
             {isOwner ? (
               <>
                 <TouchableOpacity
@@ -875,51 +915,37 @@ const StatusViewerScreen: React.FC = () => {
               </>
             )}
           </View>
-        </KeyboardAvoidingView>
+        </Reanimated.View>
       )}
 
+      {/* ── Minimal Upload Indicator ── */}
       {isUploading && (
         <View style={{
           ...StyleSheet.absoluteFillObject,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+          backgroundColor: 'transparent',
           justifyContent: 'center',
           alignItems: 'center',
           zIndex: 9999,
         }}>
-          <View style={{
-            backgroundColor: 'rgba(30, 30, 30, 0.9)',
-            borderRadius: 16,
-            padding: 24,
-            alignItems: 'center',
-            width: W * 0.75,
-            borderWidth: 1,
-            borderColor: 'rgba(255, 255, 255, 0.1)',
-          }}>
-            <ActivityIndicator size="large" color="#4597f5f6" style={{ marginBottom: 16 }} />
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center' }}>
-              Uploading status
+          <ActivityIndicator size="large" color="#E0E0E0" />
+          <TouchableOpacity
+            onPress={handleCancelUpload}
+            hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+            style={{
+              marginTop: 16,
+              backgroundColor: 'rgba(255, 69, 58, 0.15)',
+              borderWidth: 1,
+              borderColor: 'rgb(255, 69, 58)',
+              borderRadius: 20,
+              paddingVertical: 8,
+              paddingHorizontal: 24,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: 'rgb(255, 69, 58)', fontWeight: '600', fontSize: 14 }}>
+              Cancel
             </Text>
-            <Text style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center' }}>
-              Item {uploadIndex + 1} of {uploadQueue.length}
-            </Text>
-            <TouchableOpacity
-              onPress={handleCancelUpload}
-              style={{
-                backgroundColor: 'rgba(255, 69, 58, 0.15)',
-                borderWidth: 1,
-                borderColor: 'rgb(255, 69, 58)',
-                borderRadius: 20,
-                paddingVertical: 10,
-                paddingHorizontal: 24,
-                width: '100%',
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: 'rgb(255, 69, 58)', fontWeight: '700', fontSize: 14 }}>
-                Cancel
-              </Text>
-            </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -979,16 +1005,22 @@ const s = StyleSheet.create({
   tapZones: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row' },
   captionWrap: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    zIndex: 100,
-    padding: 40,
-    justifyContent: 'center',
+    bottom: 105,
+    left: 20,
+    right: 20,
+    zIndex: 900,
     alignItems: 'center',
-    minWidth: 120,
-    minHeight: 120,
+    justifyContent: 'center',
   },
-  caption: { color: '#fff', fontSize: 24, fontWeight: 'bold', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6 },
+  caption: { 
+    color: '#ffffff', 
+    fontSize: 16, 
+    fontWeight: '600', 
+    textAlign: 'center', 
+    textShadowColor: 'rgba(0, 0, 0, 0.85)', 
+    textShadowOffset: { width: 0, height: 1 }, 
+    textShadowRadius: 6 
+  },
   // kvWrapper sits on the absolute top layer (zIndex 999)
   kvWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 999 },
   bottomBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, justifyContent: 'space-between' },

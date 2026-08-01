@@ -20,6 +20,7 @@ import {
   PermissionsAndroid,
   DeviceEventEmitter,
   TouchableWithoutFeedback,
+  NativeModules,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -62,49 +63,118 @@ interface MyStatusRowProps {
   avatarSticker: string | null;
   onView:      () => void;
   onAdd:       () => void;
+  onCamera:    () => void;
   onViewViewers: () => void;
 }
 
 const MyStatusRow: React.FC<MyStatusRowProps> = ({
-  statuses, username, avatar, avatarSticker, onView, onAdd, onViewViewers,
+  statuses, username, avatar, avatarSticker, onView, onAdd, onCamera, onViewViewers,
 }) => {
   const { theme } = useTheme();
   const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const hasStatus = statuses.length > 0;
   const allSeen   = hasStatus && statuses.every(s => s.is_viewed);
+  
+  // Sort by created_at descending to get the newest (latest) status upload
+  const sortedStatuses = React.useMemo(() => {
+    if (!statuses || statuses.length === 0) return [];
+    return [...statuses].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [statuses]);
+
+  const newestStatus = sortedStatuses[0];
+  const latestMedia = newestStatus ? resolveImageUrl(newestStatus.media_url) : null;
+
+  const THUMB_W = 72;
+  const THUMB_H = Math.round(THUMB_W * (16 / 9)); // ~128px
 
   return (
     <View style={styles.statusRow}>
       <TouchableOpacity
         style={{ flexDirection: 'row', flex: 1, alignItems: 'center' }}
         onPress={hasStatus ? onView : onAdd}
-        activeOpacity={0.7}
+        activeOpacity={0.75}
       >
-        <View style={styles.avatarWrapperMy}>
-          {hasStatus && (
-            allSeen ? (
-              <View style={[styles.statusRingMy, styles.ringViewed]} />
-            ) : (
-              <LinearGradient
-                colors={['#ff4d6d', '#4597f5f6']}
-                start={{ x: 0, y: 1 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.gradientRingMy}
-              >
-                <View style={styles.gradientRingInnerMy} />
-              </LinearGradient>
-            )
-          )}
-          
-          <AvatarWithFallback
-            uri={avatar}
-            sticker={avatarSticker}
-            displayName={username}
-            style={styles.avatarMy}
-          />
+        {/* ── 9:16 thumbnail card ── */}
+        <View style={{ width: THUMB_W, height: THUMB_H, marginRight: 14, position: 'relative' }}>
+          {/* gradient ring border when has unseen */}
+          {hasStatus && !allSeen ? (
+            <LinearGradient
+              colors={['#38BDF8', '#0F62FE']}
+              start={{ x: 0, y: 1 }}
+              end={{ x: 1, y: 0 }}
+              style={{
+                position: 'absolute',
+                top: -3, left: -3,
+                width: THUMB_W + 6,
+                height: THUMB_H + 6,
+                borderRadius: 12,
+                padding: 3,
+              }}
+            />
+          ) : hasStatus && allSeen ? (
+            <View style={{
+              position: 'absolute',
+              top: -2.5, left: -2.5,
+              width: THUMB_W + 5,
+              height: THUMB_H + 5,
+              borderRadius: 12,
+              borderWidth: 2,
+              borderColor: theme.border,
+            }} />
+          ) : null}
 
-          <TouchableOpacity style={styles.addBadgeMy} onPress={onAdd}>
-            <Icon name="add" size={16} color="#fff" />
+          {/* thumbnail or placeholder */}
+          {hasStatus && latestMedia ? (
+            <Image
+              source={{ uri: latestMedia }}
+              style={{
+                width: THUMB_W,
+                height: THUMB_H,
+                borderRadius: 10,
+                backgroundColor: theme.inputBackground,
+              }}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={{
+              width: THUMB_W,
+              height: THUMB_H,
+              borderRadius: 10,
+              backgroundColor: theme.inputBackground,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: 1.5,
+              borderColor: theme.border,
+              borderStyle: 'dashed',
+              paddingHorizontal: 4,
+            }}>
+              <Icon name="image-outline" size={24} color={theme.textSecondary} style={{ marginBottom: 4 }} />
+              <Text style={{ fontSize: 10, color: theme.textSecondary, fontWeight: '600', textAlign: 'center' }}>
+                No status
+              </Text>
+            </View>
+          )}
+
+          {/* + badge on bottom-right corner */}
+          <TouchableOpacity
+            style={{
+              position: 'absolute',
+              bottom: -4,
+              right: -4,
+              width: 24,
+              height: 24,
+              borderRadius: 12,
+              backgroundColor: theme.textPrimary,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: 2,
+              borderColor: theme.background,
+              elevation: 4,
+            }}
+            onPress={onAdd}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Icon name="add" size={16} color={theme.background} />
           </TouchableOpacity>
         </View>
 
@@ -112,14 +182,32 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
           <Text style={styles.rowName}>My Status</Text>
           <Text style={styles.rowSub}>
             {hasStatus
-              ? `${statuses.length} update${statuses.length > 1 ? 's' : ''} · ${timeAgo(statuses[0].created_at)}`
+              ? `${statuses.length} update${statuses.length > 1 ? 's' : ''} · ${timeAgo(newestStatus.created_at)}`
               : 'Tap to add status'}
           </Text>
         </View>
       </TouchableOpacity>
+
+      {/* Camera button on right side of My Status */}
+      <TouchableOpacity
+        style={{
+          width: 60,
+          height: 60,
+          borderRadius: 30,
+          backgroundColor: theme.inputBackground,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginLeft: 8,
+        }}
+        onPress={onCamera}
+        activeOpacity={0.7}
+      >
+        <Icon name="camera-outline" size={30} color={theme.textPrimary} />
+      </TouchableOpacity>
     </View>
   );
 };
+
 
 // ─── Friend Status Row ────────────────────────────────────────────────────────
 
@@ -136,7 +224,7 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
       <View style={styles.avatarWrapper}>
         {group.has_unseen ? (
           <LinearGradient
-            colors={['#ff4d6d', '#4597f5f6']}
+            colors={['#38BDF8', '#0F62FE']}
             start={{ x: 0, y: 1 }}
             end={{ x: 1, y: 0 }}
             style={styles.gradientRing54}
@@ -200,7 +288,13 @@ export const StatusTabScreen = () => {
     }
   }, [currentUser?.id]);
 
-  useFocusEffect(useCallback(() => { loadStatuses(); }, [loadStatuses]));
+  useFocusEffect(useCallback(() => { 
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark);
+      NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
+    }
+    loadStatuses(); 
+  }, [loadStatuses, isDark]));
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
@@ -236,6 +330,7 @@ export const StatusTabScreen = () => {
       mediaUri:  a.uri,
       mediaType: a.type?.startsWith('video') ? 'video' : 'photo',
     }));
+    
     navigation.navigate('StatusEditor', {
       mediaUri:     first.uri,
       mediaType:    first.type?.startsWith('video') ? 'video' : 'photo',
@@ -294,15 +389,18 @@ export const StatusTabScreen = () => {
       headerTitleStyle: { color: theme.textPrimary, fontWeight: 'bold', fontSize: 20 },
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity onPress={() => { console.log('Camera button pressed'); setCameraMenuVisible(true); }} style={{ marginRight: 20 }}>
-            <Icon name="camera-outline" size={24} color={theme.textPrimary} />
-          </TouchableOpacity>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={{ marginRight: 16 }}>
             <Icon name="ellipsis-vertical" size={24} color={theme.textPrimary} />
           </TouchableOpacity>
         </View>
       ),
-      headerStyle: { backgroundColor: theme.surface },
+      headerStyle: {
+        backgroundColor: theme.background,
+        elevation: 0,
+        shadowOpacity: 0,
+        borderBottomWidth: 0,
+      },
+      headerShadowVisible: false,
     });
   }, [navigation, theme]);
 
@@ -350,11 +448,10 @@ export const StatusTabScreen = () => {
         avatarSticker={currentUser?.avatar_sticker ?? null}
         onView={viewMyStatuses}
         onAdd={openGallery}
+        onCamera={() => setCameraMenuVisible(true)}
         onViewViewers={() => {}}
       />
-      {friendGroups.length > 0 && (
-        <Text style={styles.sectionHeader}>Recent updates</Text>
-      )}
+      <Text style={styles.sectionHeader}>Recent updates</Text>
       <FlatList
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
@@ -362,7 +459,7 @@ export const StatusTabScreen = () => {
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color={theme.primary} />
+              <ActivityIndicator size="large" color={theme.textPrimary} />
             </View>
           ) : (
             <View style={styles.empty}>
@@ -548,7 +645,8 @@ export const CallLogTabScreen = () => {
           </TouchableOpacity>
         ),
         headerTitleAlign: 'center',
-        headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 },
+        headerStyle: { backgroundColor: theme.background, elevation: 0, shadowOpacity: 0, borderBottomWidth: 0 },
+        headerShadowVisible: false,
         headerTitleStyle: { color: theme.primary, fontWeight: 'bold' }
       });
     } else {
@@ -557,7 +655,8 @@ export const CallLogTabScreen = () => {
         headerLeft: undefined,
         headerRight: () => <CallLogMenuButton onPress={() => setMenuVisible(true)} />,
         headerTitleAlign: 'left',
-        headerStyle: { backgroundColor: theme.surface, elevation: 2, shadowOpacity: 0.1 },
+        headerStyle: { backgroundColor: theme.background, elevation: 0, shadowOpacity: 0, borderBottomWidth: 0 },
+        headerShadowVisible: false,
         headerTitleStyle: { fontWeight: 'bold', fontSize: 20, color: theme.textPrimary }
       });
     }
@@ -740,7 +839,7 @@ export const CallLogTabScreen = () => {
                   >
                     <Icon
                       name={item.call_type === 'video' ? 'videocam' : 'call'}
-                      size={22} color={theme.primary}
+                      size={22} color={theme.textPrimary}
                     />
                   </TouchableOpacity>
                 </View>
@@ -767,9 +866,9 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     alignItems:     'center',
     paddingHorizontal: 16,
     paddingVertical:   12,
-    backgroundColor: theme.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.separator,
+    backgroundColor: theme.background,
+    borderBottomWidth: 0,
+   
   },
   avatarWrapper: {
     width:          RING_SIZE,
@@ -842,7 +941,7 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     borderRadius: 32,
   },
   avatarFallback: {
-    backgroundColor: theme.surface,
+    backgroundColor: theme.inputBackground,
     justifyContent:  'center',
     alignItems:      'center',
   },
@@ -902,13 +1001,13 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     fontWeight: '500',
   },
   sectionHeader: {
-    fontSize:         12,
-    color:            theme.textMuted,
+    fontSize:         13,
+    fontWeight:       '600',
+    color:            theme.textSecondary,
     paddingHorizontal: 16,
-    paddingVertical:   8,
-    backgroundColor:  theme.chatBackground,
-    textTransform:    'uppercase',
-    letterSpacing:    0.5,
+    paddingTop:       16,
+    paddingBottom:    8,
+    backgroundColor:  theme.background,
   },
   empty: {
     flex:           1,
@@ -933,16 +1032,13 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.separator,
-    backgroundColor: theme.surface,
     gap: 12,
   },
   logAvatarImg: {
     width: 48, height: 48, borderRadius: 24,
   },
   logAvatarFallback: {
-    backgroundColor: theme.surface,
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -965,9 +1061,6 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: theme.chatBackground,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.separator,
   },
   selectionCancel: {
     color: theme.textSecondary,

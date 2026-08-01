@@ -8,6 +8,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import { resolveImageUrl } from '../../utils/image';
 import { useTheme } from '../../context/ThemeContext';
 
+
 const { width } = Dimensions.get('window');
 const GRID_SIZE = width / 3;
 
@@ -70,10 +71,10 @@ const SharedMediaScreen: React.FC = () => {
       caption: m.content || '',
     }));
     return (
-      <TouchableOpacity 
-        style={s.gridItem} 
-        onPress={() => navigation.navigate('MediaViewer', { 
-          mediaUrl: url, 
+      <TouchableOpacity
+        style={s.gridItem}
+        onPress={() => navigation.navigate('MediaViewer', {
+          mediaUrl: url,
           mediaType: activeTab,
           mediaList,
           initialIndex: index,
@@ -156,6 +157,7 @@ const SharedMediaScreen: React.FC = () => {
           }
         />
       )}
+
     </View>
   );
 };

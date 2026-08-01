@@ -18,7 +18,7 @@ import { pinNavBarColor } from '../utils/navBarPin';
 
 GoogleOneTapSignIn.configure({
   webClientId: '336096929365-e3p49jq04cr8sbqqmlm64nh1qgsl0j51.apps.googleusercontent.com',
-  offlineAccess: true,
+  offlineAccess: false,
 });
 
 const GoogleLoginScreen = () => {
@@ -29,14 +29,13 @@ const GoogleLoginScreen = () => {
 
   useEffect(() => {
     StatusBar.setTranslucent(true);
-    StatusBar.setBarStyle('light-content');
-    StatusBar.setBackgroundColor('#000000');
-    pinNavBarColor('#000000');
+    StatusBar.setBarStyle('dark-content');
+    StatusBar.setBackgroundColor('transparent');
     if (Platform.OS === 'android') {
-      try { changeNavigationBarColor('#000000', false, false); } catch (e) {}
+      try { changeNavigationBarColor('#00000000', false, false); } catch (e) {}
       if (NativeModules.SystemBar) {
-        NativeModules.SystemBar.setNavigationBarColor('#000000', true);
-        NativeModules.SystemBar.setStatusBarColor('#000000', true);
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', true);
       }
     }
 
@@ -53,7 +52,7 @@ const GoogleLoginScreen = () => {
         }
       }
     };
-  }, [theme, isDark]);
+  }, []);
 
   const enterLoadingState = () => {
     setLoading(true);
@@ -105,6 +104,9 @@ const GoogleLoginScreen = () => {
     }
   };
 
+  const safeTop = Math.max(insets.top, StatusBar.currentHeight || 0, 24);
+  const safeBottom = Math.max(insets.bottom, 16);
+
   return (
     <LinearGradient
       colors={['#96C5DC', '#7EB9D8', '#96C5DC']}
@@ -113,13 +115,13 @@ const GoogleLoginScreen = () => {
       style={styles.container}
     >
       <StatusBar
-        barStyle="light-content"
-        backgroundColor="#000000"
+        barStyle="dark-content"
+        backgroundColor="transparent"
         translucent={true}
       />
       <View style={[
         styles.content,
-        { paddingTop: insets.top, paddingBottom: insets.bottom }
+        { paddingTop: safeTop, paddingBottom: safeBottom }
       ]}>
         <Image
           source={require('../assets/logo.png')}
@@ -172,7 +174,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 24,
   },
-  appName: { fontSize: 50, fontWeight: 'bold', color: '#8F00FF', marginBottom: 8 },
+  appName: { fontSize: 50, fontWeight: 'bold', color: '#000', marginBottom: 8 },
   googleButton: {
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#ffffff', paddingVertical: 16, paddingHorizontal: 32,

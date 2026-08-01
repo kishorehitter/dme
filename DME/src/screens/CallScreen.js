@@ -331,7 +331,7 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
     return (
       <View style={styles.fullScreenContainer}>
         {localVideoTrack ? (
-          <VideoTrack trackRef={localVideoTrack} style={styles.fullScreenVideo} />
+          <VideoTrack trackRef={localVideoTrack} style={styles.fullScreenVideo} mirror={true} />
         ) : (
           <View style={styles.fullScreenPlaceholder}>
             <View style={styles.avatarPlaceholder}>
@@ -354,10 +354,17 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
   const fullPlaceholderPic = localBig ? null : remoteUserPic;
   const fullPlaceholderName = localBig ? 'You' : remoteUserName;
 
+  const isFullLocal = localBig;
+  const isMiniLocal = !localBig;
+
   return (
     <View style={styles.fullScreenContainer}>
       {fullTrack ? (
-        <VideoTrack trackRef={fullTrack} style={styles.fullScreenVideo} />
+        <VideoTrack
+          trackRef={fullTrack}
+          style={styles.fullScreenVideo}
+          mirror={isFullLocal}
+        />
       ) : (
         <View style={styles.fullScreenPlaceholder}>
           {fullPlaceholderPic ? (
@@ -373,7 +380,11 @@ const VideoParticipantView = ({ onPartnerJoined, remoteUserName, remoteUserPic, 
       {localVideoTrack && remoteVideoTrack && (
         <TouchableOpacity style={styles.miniVideoContainer} onPress={toggleLayout}>
           {miniTrack ? (
-            <VideoTrack trackRef={miniTrack} style={styles.miniVideo} />
+            <VideoTrack
+              trackRef={miniTrack}
+              style={styles.miniVideo}
+              mirror={isMiniLocal}
+            />
           ) : (
             <View style={styles.miniPlaceholder}>
               <Icon name="person" size={30} color="#9CA3AF" />
@@ -1309,7 +1320,7 @@ const styles = StyleSheet.create({
   fullScreenContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#FFFFFF' },
   fullScreenVideo: { flex: 1, width: '100%', height: '100%' },
   fullScreenPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' },
-  callingOverlay: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 40, left: 0, right: 0, alignItems: 'center', zIndex: 20 },
+  callingOverlay: { position: 'absolute', top: Platform.OS === 'ios' ? 120 : 100, left: 0, right: 0, alignItems: 'center', zIndex: 20 },
   callingName: { color: '#000000', fontSize: 20, fontWeight: '600' },
   callingSubtext: { color: '#666666', fontSize: 14, marginTop: 2 },
   miniVideoContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 90 : 60, right: 16, width: 100, height: 148, borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: '#E8DEF8', backgroundColor: '#EEE', zIndex: 25, elevation: 8 },

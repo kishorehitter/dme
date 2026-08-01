@@ -1,5 +1,6 @@
 // src/components/CallOverlay.tsx
 import React from 'react';
+import { useTheme } from '../context/ThemeContext';
 import {
   View,
   Text,
@@ -9,12 +10,16 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useCall } from '../context/CallContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CommonActions } from '@react-navigation/native';
 // ✅ Import the global navigationRef from App.tsx
 import { navigationRef } from '../../App';
 
 
 const CallOverlay = () => {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const styles = dynamicStyles(theme, insets.top);
   const { callState, maximizeCall } = useCall();
 
   if (!callState.isActive || !callState.isMinimized) {
@@ -76,18 +81,18 @@ const CallOverlay = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors, topInset: number) => StyleSheet.create({
   safeArea: {
     position: 'absolute',
-    top: 0,
+    top: topInset + (Platform.OS === 'ios' ? 8 : 10),
     left: 0,
     right: 0,
     zIndex: 9999,
   },
   container: {
-    backgroundColor: '#34C759',
+    backgroundColor: theme.surface,
     marginHorizontal: 10,
-    marginTop: Platform.OS === 'android' ? 10 : 0,
+    marginTop: 0,
     paddingVertical: 10,
     paddingHorizontal: 15,
     borderRadius: 12,
@@ -109,7 +114,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(52, 199, 89, 0.2)', // vibrant green overlay for icon
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -118,12 +123,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   nameText: {
-    color: '#fff',
+    color: theme.textPrimary,
     fontSize: 16,
     fontWeight: '700',
   },
   statusText: {
-    color: 'rgba(255,255,255,0.9)',
+    color: theme.textSecondary,
     fontSize: 12,
     fontWeight: '500',
   },

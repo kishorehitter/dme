@@ -17,7 +17,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
+  BackHandler,
   ActivityIndicator,
   Modal,
   Animated,
@@ -40,9 +42,13 @@ import Toast from 'react-native-toast-message';
 import { chatAPI } from '../../services/api';
 import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
+import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
+import { pinNavBarColor } from '../../utils/navBarPin';
 import { useAuth } from '../../context/AuthContext';
+import { useFocusEffect } from '@react-navigation/native';
+import { NativeModules } from 'react-native';
 import { useTheme } from '../../context/ThemeContext';
 import audioRecorder from '../../modules/AudioRecorder';
 import AudioPlayer from '../../components/AudioPlayer';
@@ -491,12 +497,25 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
 
 let uniqueCounter = 0;
 
+const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingView;
+const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 90 };
+
 export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
 
   const insets = useSafeAreaInsets();
   const { conversationId, name } = route.params;
+
+  useFocusEffect(
+    useCallback(() => {
+      pinNavBarColor(theme.background);
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
+      }
+    }, [isDark, theme.background])
+  );
   const { user: currentUser } = useAuth();
 
   // Dismiss notifications for this conversation on mount and when conversationId changes
@@ -600,6 +619,84 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const doubleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Voice recording
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+
+  const safeBottomPadding = insets.bottom + spacing.md;
+  const spacerHeight = useSharedValue(0);
+
+  const animatedSpacerStyle = useAnimatedStyle(() => {
+    return {
+      height: spacerHeight.value,
+    };
+  });
+
+  useEffect(() => {
+    const handleShow = (e: any) => {
+      const h = e.endCoordinates ? e.endCoordinates.height : 300;
+      setIsKeyboardOpen(true);
+      setStickerPickerVisible(false);
+      setShowFullEmojiPicker(false);
+      const targetHeight = Platform.OS === 'android' ? h : Math.max(0, h - safeBottomPadding);
+      spacerHeight.value = withTiming(targetHeight, {
+        duration: e.duration || 250,
+        easing: Easing.out(Easing.quad),
+      });
+      setTimeout(() => {
+        flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+      }, 50);
+    };
+
+    const handleHide = (e: any) => {
+      setIsKeyboardOpen(false);
+      spacerHeight.value = withTiming(0, {
+        duration: e.duration || 250,
+        easing: Easing.out(Easing.quad),
+      });
+    };
+
+    const listeners = [
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardWillShow', handleShow),
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardWillHide', handleHide),
+    ];
+
+    if (Platform.OS === 'android') {
+      listeners.push(
+        Keyboard.addListener('keyboardDidShow', handleShow),
+        Keyboard.addListener('keyboardDidHide', handleHide)
+      );
+    }
+
+    return () => {
+      listeners.forEach(l => l.remove());
+    };
+  }, [safeBottomPadding]);
+
+  // Dismiss keyboard when leaving screen to prevent autofocusing previous screen inputs
+  useEffect(() => {
+    const unsubBlur = navigation.addListener('blur', () => {
+      Keyboard.dismiss();
+    });
+    const unsubBeforeRemove = navigation.addListener('beforeRemove', () => {
+      Keyboard.dismiss();
+    });
+    const onBackPress = () => {
+      Keyboard.dismiss();
+      return false;
+    };
+    const subBack = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+
+    return () => {
+      Keyboard.dismiss();
+      unsubBlur();
+      unsubBeforeRemove();
+      subBack.remove();
+    };
+  }, [navigation]);
+
+  const handleGoBack = useCallback(() => {
+    Keyboard.dismiss();
+    navigation.goBack();
+  }, [navigation]);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [isCancelled, setIsCancelled] = useState(false);
@@ -628,37 +725,38 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const EMOJIS = ['❤️', '😂', '😮', '😢', '😡', '👍', '👎', '🎉'];
 
-  // Load from local SQLite cache immediately on mount (no InteractionManager deferral)
-  // to render messages instantly during the navigation slide transition
+  // Defer cache load until after the slide transition completes to avoid mid-animation re-renders
   useEffect(() => {
-    if (route.params?.cleared || route.params?.deleted) {
-      return;
-    }
-    try {
-      const cached = localDatabase.getMessages(conversationId);
-      if (cached && cached.length > 0) {
-        // Only load the latest 15 messages initially to keep transition ultra-smooth and avoid thread freeze
-        const latestCached = cached.slice(-15);
-        const mappedCached = latestCached.map(msg => {
-          if (!msg.sender?.id && currentUser) {
-            const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
-            if (isMe) {
-              msg.sender = {
-                ...msg.sender,
-                id: currentUser.id
-              };
-            }
-          }
-          return msg;
-        });
-        setOldestMessageId(mappedCached[0].id || null);
-        setHasMoreMessages(cached.length >= 50);
-        setMessages([...mappedCached].reverse());
-        setIsLoading(false);
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (route.params?.cleared || route.params?.deleted) {
+        return;
       }
-    } catch (e) {
-      console.warn('⚠️ Failed to load cached messages on mount:', e);
-    }
+      try {
+        const cached = localDatabase.getMessages(conversationId);
+        if (cached && cached.length > 0) {
+          const latestCached = cached.slice(-15);
+          const mappedCached = latestCached.map(msg => {
+            if (!msg.sender?.id && currentUser) {
+              const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
+              if (isMe) {
+                msg.sender = {
+                  ...msg.sender,
+                  id: currentUser.id
+                };
+              }
+            }
+            return msg;
+          });
+          setOldestMessageId(mappedCached[0].id || null);
+          setHasMoreMessages(cached.length >= 50);
+          setMessages([...mappedCached].reverse());
+          setIsLoading(false);
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to load cached messages on mount:', e);
+      }
+    });
+    return () => task.cancel();
   }, [conversationId, currentUser, route.params?.cleared, route.params?.deleted]);
 
   useEffect(() => {
@@ -3169,7 +3267,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                       isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
                       !isMediaMessage && { minWidth: 50 },
                       highlightMessageId === item.id && { 
-                        backgroundColor: isMe ? '#D0BCFF' : '#E0E0E0',
+                        backgroundColor: isMe ? theme.myMessage : theme.theirMessage,
                         borderWidth: 2,
                         borderColor: theme.primary 
                       }
@@ -3222,13 +3320,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               <View style={{ maxWidth: '80%', minWidth: 50, alignSelf: 'flex-end' }}>
                 <TouchableOpacity
                   style={[
+                    s.messageBubble,
+                    s.myMessageBubble,
                     {
                       width: '100%',
-                      alignItems: 'flex-start',
+                      alignItems: 'flex-end',
+                      backgroundColor: theme.myMessage,
+                      borderTopRightRadius: 4,
                       padding: spacing.md,
                       borderRadius: borderRadius.lg,
-                      borderTopRightRadius: 4,
-                      overflow: 'hidden',
                     }
                   ]}
                   onPress={(e) => handleMessagePress(item, e)}
@@ -3236,12 +3336,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   activeOpacity={0.8}
                   delayLongPress={500}
                 >
-                  <LinearGradient
-                    colors={['#d68df5', '#9b50d8', '#8e2bff']}
-                    start={{ x: 0, y: 1 }}
-                    end={{ x: 1, y: 0 }}
-                    style={StyleSheet.absoluteFill}
-                  />
                   {item.reply_to && renderReplyIndicator(item.reply_to, true)}
                   {!!item.edited_at && (
                     <Text style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
@@ -3261,7 +3355,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                     {
                       width: '100%',
                       alignItems: 'flex-start',
-                      backgroundColor: '#EFEFEF',
+                      backgroundColor: theme.theirMessage,
                       borderTopLeftRadius: 4,
                       padding: spacing.md,
                       borderRadius: borderRadius.lg,
@@ -3280,7 +3374,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   <Text style={[s.messageText, { color: theme.textPrimary }]}>
                     {String(item.content || '')}
                   </Text>
-                                  </TouchableOpacity>
+                </TouchableOpacity>
                 {hasReactions && renderReactionsBadge(false)}
               </View>
             )
@@ -3327,19 +3421,18 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   return (
-    <KeyboardAvoidingView
+    <KeyboardWrapperView
       style={[s.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+      {...keyboardWrapperProps}
     >
       {/* Header */}
       {searchMode ? renderSearchBar() : (
       <View style={s.customHeader}>
         <TouchableOpacity 
            style={s.headerBackButton}
-           onPress={() => navigation.goBack()}
+           onPress={handleGoBack}
         >
-          <Icon name="arrow-back" size={24} color={'#111111'} />
+          <Icon name="arrow-back" size={24} color={theme.textPrimary} />
         </TouchableOpacity>
         <TouchableOpacity
           style={s.headerCenter}
@@ -3407,7 +3500,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }}
             activeOpacity={0.7}
           >
-            <Icon name="videocam" size={22} color={'#111111'} />
+            <Icon name="videocam" size={22} color={theme.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[s.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
@@ -3432,7 +3525,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             }}
             activeOpacity={0.7}
           >
-            <Icon name="call" size={20} color={'#111111'} />
+            <Icon name="call" size={20} color={theme.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
@@ -3486,11 +3579,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         windowSize={10}
         removeClippedSubviews={false}
         ListEmptyComponent={
-          isLoading ? (
-            <View style={s.listLoadingContainer}>
-              <ActivityIndicator size="large" color={theme.primary} />
-            </View>
-          ) : !isLoading && searchText ? (
+          !isLoading && searchText ? (
             <View style={s.emptySearchContainer}>
               <Icon name="search-outline" size={48} color="#DDD" />
               <Text style={s.emptySearchText}>No messages found</Text>
@@ -3498,6 +3587,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           ) : null
         }
       />
+
+      {/* Initial loading spinner — centered absolute overlay */}
+      {isLoading && (
+        <View style={s.loadingOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color="rgba(180,180,180,0.7)" />
+        </View>
+      )}
 
       {/* Scroll to bottom button */}
       {showScrollToBottom && (
@@ -4163,8 +4259,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         mediaUri={stickerPreview?.uri ?? ''}
         mimeType={stickerPreview?.mimeType ?? ''}
         onClose={() => setStickerPreview(null)}
-        theme="light"
-        restoreNavBarColor="#ffffff"
+        theme={isDark ? 'dark' : 'light'}
+        restoreNavBarColor={theme.background}
         onSend={async (uri, mimeType, caption) => {
           setStickerPreview(null);
           await sendImageMessage({ uri, type: mimeType });
@@ -4273,7 +4369,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         }}
         themeColor={theme.primary}
       />
-      </KeyboardAvoidingView>
+        {Platform.OS === 'android' && <Reanimated.View style={animatedSpacerStyle} />}
+    </KeyboardWrapperView>
       );
       };
 
@@ -4316,7 +4413,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -4340,7 +4437,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     textAlignVertical: 'center',
   },
   headerTextContainer: { flex: 1 },
-  headerName: { fontSize: fontSize.lg, fontWeight: '600', color: 'black' },
+  headerName: { fontSize: fontSize.lg, fontWeight: '600', color: theme.textPrimary },
   headerStatus: { fontSize: fontSize.xs, color: theme.textSecondary },
   activeText: { color: '#25D366', fontWeight: '500' },
   messagesList: { padding: spacing.md },
@@ -4574,7 +4671,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     paddingHorizontal: 4,
     paddingVertical: 0,
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: theme.border,
     flexDirection: 'row',
     gap: 2,
     marginTop: 2,
@@ -4606,11 +4703,11 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   replyPreview: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.chatBackground,
+    backgroundColor: theme.background,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
+    borderTopColor: theme.border,
   },
   replyPreviewContent: {
     flex: 1,
@@ -4976,8 +5073,15 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 150,
-    transform: [{ scaleY: -1 }], // Because list is inverted
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   mediaWrapper: {
     marginTop: spacing.xs,

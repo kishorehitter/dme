@@ -1464,6 +1464,7 @@ class FriendRequestListView(APIView):
                 existing.status = 'accepted'
                 existing.save()
                 _notify_friend_request_accepted(existing)
+                _auto_accept_message_request(existing.sender, existing.receiver)
                 return Response(
                     FriendRequestSerializer(existing, context={'request': request}).data,
                     status=status.HTTP_200_OK,
@@ -1512,6 +1513,9 @@ class FriendRequestActionView(APIView):
             fr.status = 'accepted'
             fr.save()
             _notify_friend_request_accepted(fr)
+            # Auto-accept any pending MessageRequest between the two users so
+            # the conversation immediately appears in All/Friends (not stuck in Pending).
+            _auto_accept_message_request(fr.sender, fr.receiver)
             return Response(FriendRequestSerializer(fr, context={'request': request}).data)
 
         elif action == 'reject':
@@ -1598,27 +1602,10 @@ class MessageRequestActionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, request_id, action):
-        try:
-            msg_req = MessageRequest.objects.select_related(
-                'sender', 'receiver', 'conversation'
-            ).get(id=request_id, receiver=request.user, status='pending')
-        except MessageRequest.DoesNotExist:
-            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        if action == 'accept':
-            msg_req.status = 'accepted'
-            msg_req.save()
-            _notify_message_request_accepted(msg_req)
-            return Response({
-                'message': 'Message request accepted',
-                'conversation_id': msg_req.conversation_id,
-            })
-
-        elif action == 'reject':
-            msg_req.status = 'rejected'
-            msg_req.save()
-            return Response({'message': 'Message request declined'})
-
+        if action in ['accept', 'approve']:
+            return MessageRequestApproveView().post(request, request_id)
+        elif action in ['reject', 'decline']:
+            return MessageRequestRejectView().post(request, request_id)
         return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1645,6 +1632,52 @@ def _notify_friend_request_sent(fr):
         )
     except Exception as e:
         print(f'Warning: FCM friend_request_sent failed: {e}')
+
+
+def _auto_accept_message_request(user_a, user_b):
+    """
+    When two users become friends, automatically accept any pending MessageRequest
+    between them (in either direction) so the conversation is visible in All/Friends.
+    Also broadcasts the status change over WebSocket.
+    """
+    try:
+        msg_req = MessageRequest.objects.filter(
+            Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a),
+            status='pending'
+        ).select_related('sender', 'receiver', 'conversation').first()
+
+        if not msg_req:
+            return  # No pending message request — nothing to do.
+
+        msg_req.status = 'accepted'
+        msg_req.save()
+
+        # Broadcast via WebSocket so frontends update in real-time.
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                event_data = {
+                    'conversation_id': msg_req.conversation_id,
+                    'status': 'accepted',
+                    'sender_id': msg_req.sender_id,
+                    'receiver_id': msg_req.receiver_id,
+                    'auto_accepted_by_friendship': True,
+                }
+                async_to_sync(channel_layer.group_send)(
+                    f'chat_{msg_req.conversation_id}',
+                    {'type': 'message_request_status', 'data': event_data}
+                )
+                for u_id in [msg_req.sender_id, msg_req.receiver_id]:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_updates_{u_id}',
+                        {'type': 'message_request_status', 'data': event_data}
+                    )
+        except Exception as ws_err:
+            print(f'Warning: WebSocket broadcast for auto-accepted message request failed: {ws_err}')
+    except Exception as e:
+        print(f'Warning: _auto_accept_message_request failed: {e}')
 
 
 def _notify_friend_request_accepted(fr):
@@ -1740,6 +1773,7 @@ class FriendRequestListCreateView(APIView):
                 existing.status = 'accepted'
                 existing.save()
                 _notify_friend_request_accepted(existing)
+                _auto_accept_message_request(existing.sender, existing.receiver)
                 return Response(
                     FriendRequestSerializer(existing, context={'request': request}).data,
                     status=status.HTTP_200_OK,
@@ -1777,6 +1811,8 @@ class FriendRequestApproveView(APIView):
         fr.status = 'accepted'
         fr.save()
         _notify_friend_request_accepted(fr)
+        # Auto-accept any pending MessageRequest between the two users.
+        _auto_accept_message_request(fr.sender, fr.receiver)
         return Response(FriendRequestSerializer(fr, context={'request': request}).data)
 
 
@@ -1818,16 +1854,25 @@ class MessageRequestApproveView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, request_id):
-        try:
-            msg_req = MessageRequest.objects.select_related(
-                'sender', 'receiver', 'conversation'
-            ).get(
-                Q(id=request_id) | Q(conversation_id=request_id),
-                receiver=request.user,
-                status='pending'
-            )
-        except MessageRequest.DoesNotExist:
-            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
+        msg_req = MessageRequest.objects.select_related(
+            'sender', 'receiver', 'conversation'
+        ).filter(
+            Q(id=request_id) | Q(conversation_id=request_id)
+        ).filter(
+            Q(receiver=request.user) | Q(sender=request.user)
+        ).first()
+
+        if not msg_req:
+            try:
+                conv = Conversation.objects.get(id=request_id, participants__user=request.user)
+                other_p = conv.participants.exclude(user=request.user).first()
+                other_user = other_p.user if other_p else request.user
+                msg_req, _ = MessageRequest.objects.get_or_create(
+                    conversation=conv,
+                    defaults={'sender': other_user, 'receiver': request.user, 'status': 'accepted'}
+                )
+            except Exception:
+                return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
 
         msg_req.status = 'accepted'
         msg_req.save()
@@ -1875,16 +1920,25 @@ class MessageRequestRejectView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, request_id):
-        try:
-            msg_req = MessageRequest.objects.select_related(
-                'sender', 'receiver', 'conversation'
-            ).get(
-                Q(id=request_id) | Q(conversation_id=request_id),
-                receiver=request.user,
-                status='pending'
-            )
-        except MessageRequest.DoesNotExist:
-            return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
+        msg_req = MessageRequest.objects.select_related(
+            'sender', 'receiver', 'conversation'
+        ).filter(
+            Q(id=request_id) | Q(conversation_id=request_id)
+        ).filter(
+            Q(receiver=request.user) | Q(sender=request.user)
+        ).first()
+
+        if not msg_req:
+            try:
+                conv = Conversation.objects.get(id=request_id, participants__user=request.user)
+                other_p = conv.participants.exclude(user=request.user).first()
+                other_user = other_p.user if other_p else request.user
+                msg_req, _ = MessageRequest.objects.get_or_create(
+                    conversation=conv,
+                    defaults={'sender': other_user, 'receiver': request.user, 'status': 'rejected'}
+                )
+            except Exception:
+                return Response({'error': 'Message request not found'}, status=status.HTTP_404_NOT_FOUND)
 
         msg_req.status = 'rejected'
         msg_req.save()

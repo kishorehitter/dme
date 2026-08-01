@@ -3,7 +3,10 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "android": "react-native run-android",
+    "android": "react-native run-android --mode=debug",
+    "android1": "react-native run-android --mode=debug",
+    "android2": "react-native run-android --mode=debug2 --appIdSuffix debug2",
+    "android:all": "npm run android1 && npm run android2",
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",

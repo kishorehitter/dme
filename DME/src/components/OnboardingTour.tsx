@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
+import { useTheme } from '../context/ThemeContext';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -77,6 +78,9 @@ interface OnboardingTourProps {
 const RING_PADDING = 16;
 
 const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) => {
+  const { theme } = useTheme();
+  const styles = dynamicStyles(theme);
+
   const [stepIdx, setStepIdx] = useState(0);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const cardSlide = useRef(new Animated.Value(40)).current;
@@ -260,7 +264,7 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
           ]}
         >
           <LinearGradient
-            colors={['#4597f5f6', '#FF007F']}
+            colors={['#303030e8', '#000000f3']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.cardHeader}
@@ -283,7 +287,7 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
               </TouchableOpacity>
               <TouchableOpacity activeOpacity={0.85} onPress={handleNext}>
                 <LinearGradient
-                  colors={['#4597f5f6', '#FF007F']}
+                  colors={['#004696', '#112741']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.nextBtn}
@@ -300,10 +304,10 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   fullScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.75)',
+    backgroundColor: 'rgba(0,0,0,0.20)',
   },
   fingerPointer: {
     position: 'absolute',
@@ -317,7 +321,7 @@ const styles = StyleSheet.create({
   card: {
     position: 'absolute',
     borderRadius: 18,
-    backgroundColor: '#fff',
+    backgroundColor: theme.surface,
     elevation: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
@@ -352,7 +356,7 @@ const styles = StyleSheet.create({
   },
   cardDesc: {
     fontSize: 14,
-    color: '#444',
+    color: theme.textSecondary,
     lineHeight: 21,
     marginBottom: 16,
   },
@@ -366,7 +370,7 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#ddd',
+    backgroundColor: theme.border,
   },
   dotActive: {
     backgroundColor: '#4597f5f6',
@@ -383,7 +387,7 @@ const styles = StyleSheet.create({
   },
   skipText: {
     fontSize: 14,
-    color: '#999',
+    color: theme.textSecondary,
     fontWeight: '500',
   },
   nextBtn: {

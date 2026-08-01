@@ -4,6 +4,7 @@ import { launchCamera, launchImageLibrary, CameraOptions } from 'react-native-im
 import { check, request, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import { pick, types, errorCodes } from '@react-native-documents/picker';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { useTheme } from '../context/ThemeContext';
 
 interface MediaPickerModalProps {
   visible: boolean;
@@ -21,6 +22,8 @@ interface MediaPickerModalProps {
 export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({ 
     visible, onClose, onMediaSelected, onDocumentSelected, onOpenGallery, top, bottom, right, left, mode = 'camera' 
 }) => {
+  const { theme } = useTheme();
+  const styles = dynamicStyles(theme);
   
   const handleCapture = async (mode: 'image' | 'video') => {
     const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
@@ -96,11 +99,11 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           {mode === 'camera' ? (
             <>
               <TouchableOpacity style={styles.popoverItem} onPress={() => handleCapture('image')}>
-                <Icon name="camera" size={24} color="#000000" />
+                <Icon name="camera" size={24} color={theme.icon} />
                 <Text style={styles.popoverText}>Photo</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.popoverItem} onPress={() => handleCapture('video')}>
-                <Icon name="videocam" size={24} color="#000000" />
+                <Icon name="videocam" size={24} color={theme.icon} />
                 <Text style={styles.popoverText}>Video</Text>
               </TouchableOpacity>
             </>
@@ -141,16 +144,16 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'transparent' },
   popover: { 
-    position: 'absolute', backgroundColor: '#fff', 
+    position: 'absolute', backgroundColor: theme.surface, 
     borderRadius: 16, padding: 8, elevation: 5, shadowColor: '#000', 
     shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 9999 
   },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 16 },
-  popoverText: { fontSize: 16, color: '#333' },
+  popoverText: { fontSize: 16, color: theme.textPrimary },
   gridItem: { width: '50%', paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
   iconCircle: { width: 50, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
-  gridText: { fontSize: 13, color: '#333', fontWeight: '500' },
+  gridText: { fontSize: 13, color: theme.textPrimary, fontWeight: '500' },
 });

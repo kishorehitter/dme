@@ -6,6 +6,7 @@ import {
 import Icon from 'react-native-vector-icons/Ionicons';
 import api from '../services/api';
 import AvatarWithFallback from './AvatarWithFallback';
+import { useTheme } from '../context/ThemeContext';
 
 interface User {
   id: number;
@@ -22,6 +23,8 @@ interface InviteModalProps {
 }
 
 const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, videoId }) => {
+  const { theme } = useTheme();
+  const styles = dynamicStyles(theme);
   const [query, setQuery] = useState('');
   const [friends, setFriends] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -105,16 +108,16 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
         <View style={styles.header}>
           <Text style={styles.title}>Invite Friends</Text>
           <TouchableOpacity onPress={onClose}>
-            <Icon name="close" size={24} color="#fff" />
+            <Icon name="close" size={24} color={theme.icon} />
           </TouchableOpacity>
         </View>
 
         <View style={styles.searchBar}>
-          <Icon name="search" size={20} color="#888" />
+          <Icon name="search" size={20} color={theme.icon} />
           <TextInput
             style={styles.input}
             placeholder="Search friends..."
-            placeholderTextColor="#666"
+            placeholderTextColor={theme.textMuted}
             value={query}
             onChangeText={handleSearch}
           />
@@ -164,16 +167,16 @@ const InviteModal: React.FC<InviteModalProps> = ({ visible, onClose, roomCode, v
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 1000 },
-  container: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '60%', backgroundColor: '#000000', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
+  container: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '60%', backgroundColor: theme.surface, borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  title: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#222', borderRadius: 12, paddingHorizontal: 12, height: 45, marginBottom: 15 },
-  input: { flex: 1, color: '#fff', marginLeft: 10 },
-  friendItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#222' },
+  title: { color: theme.textPrimary, fontSize: 18, fontWeight: 'bold' },
+  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.inputBackground, borderRadius: 12, paddingHorizontal: 12, height: 45, marginBottom: 15 },
+  input: { flex: 1, color: theme.textPrimary, marginLeft: 10 },
+  friendItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: theme.border },
   avatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12 },
-  name: { flex: 1, color: '#fff', fontSize: 16 },
+  name: { flex: 1, color: theme.textPrimary, fontSize: 16 },
   sendBtn: { backgroundColor: '#4597f5f6', height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
   sendText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
 });

@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { NavigationContainer, DefaultTheme, DarkTheme, CommonActions, useNavigation, getFocusedRouteNameFromRoute } from '@react-navigation/native';
-import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
+import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, DeviceEventEmitter, Modal, TouchableWithoutFeedback, StatusBar, Animated, Keyboard, Platform, Easing, NativeModules, Dimensions } from 'react-native';
@@ -36,6 +36,7 @@ import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/Ionicons';
 import MusicRoomScreen from '../screens/MusicRoomScreen';
 import YouTubeDiscoveryScreen from '../screens/YouTubeDiscoveryScreen';
+import MultiMediaPreviewScreen from '../screens/MultiMediaPreviewScreen';
 import { useState, useEffect, useLayoutEffect } from 'react';
 import { Pressable } from 'react-native';
 import { navigationRef } from '../../App';
@@ -49,14 +50,14 @@ const customTransitionSpec = {
   open: {
     animation: 'timing' as const,
     config: {
-      duration: 380,
+      duration: 260,
       easing: Easing.bezier(0.25, 0.1, 0.25, 1),
     },
   },
   close: {
     animation: 'timing' as const,
     config: {
-      duration: 350,
+      duration: 230,
       easing: Easing.bezier(0.25, 0.1, 0.25, 1),
     },
   },
@@ -133,31 +134,9 @@ const fastStatusTransition = {
 // HeaderRightIcons component removed
 
 const MainTabs = () => {
-  const insets = useSafeAreaInsets();
-  const bottomInsetRef = useRef(insets.bottom);
-  if (insets.bottom > 0) {
-    bottomInsetRef.current = insets.bottom;
-  }
-  const safeBottom = bottomInsetRef.current;
   const statusBtnRef = useRef<View>(null);
-  const translateY = useRef(new Animated.Value(0)).current;
   const { theme, isDark } = useTheme();
-
-  const hideTabBar = (instantly = false) => {
-    Animated.timing(translateY, {
-      toValue: 80 + safeBottom, // Slide tab bar fully offscreen
-      duration: instantly ? 0 : 200,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const showTabBar = (instantly = false) => {
-    Animated.timing(translateY, {
-      toValue: 0, // Slide tab bar back into view
-      duration: instantly ? 0 : 250,
-      useNativeDriver: true,
-    }).start();
-  };
+  const insets = useSafeAreaInsets();
 
   const measureAndEmitStatusTab = () => {
     if (!statusBtnRef.current) return;
@@ -180,25 +159,6 @@ const MainTabs = () => {
 
   useEffect(() => {
     measureAndEmitStatusTab();
-
-    // Listen for custom events from ChatListScreen to control tab bar visibility
-    const hideSub = DeviceEventEmitter.addListener('hide_tab_bar_instantly', () => {
-      hideTabBar(true);
-    });
-    const showSub = DeviceEventEmitter.addListener('show_tab_bar_smoothly', () => {
-      showTabBar(false);
-    });
-
-    // Keyboard hide listener as a fallback to guarantee it always returns smoothly
-    const keyboardHideSub = Keyboard.addListener('keyboardDidHide', () => {
-      showTabBar(false);
-    });
-
-    return () => {
-      hideSub.remove();
-      showSub.remove();
-      keyboardHideSub.remove();
-    };
   }, []);
 
   return (
@@ -247,23 +207,21 @@ const MainTabs = () => {
             <Pressable {...props} android_ripple={{ color: 'transparent' }} />
           );
         },
-        tabBarActiveTintColor: theme.primary,
+        tabBarActiveTintColor: theme.textPrimary,
         tabBarInactiveTintColor: theme.iconMuted,
         tabBarLabelStyle: { fontSize: 12 },
         tabBarStyle: { 
-          height: 60, 
-          paddingBottom: 8, 
+          height: 60 + insets.bottom, 
+          paddingBottom: 8 + insets.bottom, 
           paddingTop: 4,
           position: 'absolute',
           bottom: 0,
           left: 0,
           right: 0,
-          backgroundColor: theme.tabBar,
-          elevation: 8,
-          shadowOpacity: 0.1,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          borderTopColor: theme.border,
-          transform: [{ translateY: translateY }] as any,
+          backgroundColor: theme.surface,
+          elevation: 0,
+          shadowOpacity: 0,
+          borderTopWidth: 0,
         },
         tabBarIconStyle: { marginBottom: 0 },
       })}
@@ -330,19 +288,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
     };
   }, []);
 
-  useEffect(() => {
-    if (musicRoom.roomCode && !musicRoom.isMinimized) {
-      pinNavBarColor('#000000');
-      if (Platform.OS === 'android') {
-        try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
-      }
-    } else {
-      pinNavBarColor('#FFFFFF');
-      if (Platform.OS === 'android') {
-        try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
-      }
-    }
-  }, [musicRoom.roomCode, musicRoom.isMinimized]);
+
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>
@@ -350,8 +296,25 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       screenOptions={{
         cardStyle: { backgroundColor: theme.background },
         detachPreviousScreen: false,
-        ...TransitionPresets.SlideFromRightIOS,
+        gestureEnabled: true,
+        gestureDirection: 'horizontal',
         transitionSpec: customTransitionSpec,
+        cardStyleInterpolator: ({ current, layouts }) => ({
+          cardStyle: {
+            transform: [
+              {
+                translateX: current.progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [layouts.screen.width, 0],
+                  extrapolate: 'clamp',
+                }),
+              },
+            ],
+          },
+          overlayStyle: {
+            opacity: 0,
+          },
+        }),
         headerStyle: {
           backgroundColor: theme.surface,
           elevation: 0,
@@ -402,18 +365,33 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         component={StatusEditorScreen}
         options={{
           headerShown: false,
-          presentation: 'transparentModal',
-          animation: 'none',
-          statusBarHidden: true,
+          cardStyle: { backgroundColor: '#000000' },
         }}
       />
-      <Stack.Screen name="MediaViewer" component={MediaViewerScreen} options={{ headerShown: false, animation: 'none' }} />
+      <Stack.Screen 
+        name="MediaViewer" 
+        component={MediaViewerScreen} 
+        options={{ 
+          headerShown: false, 
+          animation: 'none',
+          cardStyle: { backgroundColor: '#000000' },
+        }} 
+      />
       <Stack.Screen name="SharedMedia" component={SharedMediaScreen} options={{ title: 'Shared Media', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, headerStyle: { backgroundColor: theme.surface, elevation: 0, shadowOpacity: 0 } }} />
       <Stack.Screen name="YouTubeDiscovery" component={YouTubeDiscoveryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="StatusPrivacy" component={StatusPrivacyScreen} options={{ headerShown: false }} />
       <Stack.Screen name="Settings" component={SettingsScreen} options={{ headerShown: false }} />
       <Stack.Screen name="TriviaSolo" component={TriviaSoloScreen} options={{ headerShown: false }} />
       <Stack.Screen name="TriviaScoreboard" component={TriviaScoreboardScreen} options={{ headerShown: false }} />
+      <Stack.Screen
+        name="MultiMediaPreview"
+        component={MultiMediaPreviewScreen}
+        options={{
+          headerShown: false,
+          cardStyle: { backgroundColor: '#000000' },
+          gestureEnabled: true,
+        }}
+      />
     </Stack.Navigator>
       {musicRoom.roomCode && (
         <View
@@ -482,14 +460,10 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => 
       StatusBar.setTranslucent(true);
       StatusBar.setBarStyle(theme.statusBarStyle);
       StatusBar.setBackgroundColor(theme.statusBar);
-      pinNavBarColor(theme.navBar);
-      try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
     } else {
       StatusBar.setTranslucent(true);
       StatusBar.setBarStyle('light-content');
-      StatusBar.setBackgroundColor('#000000');
-      pinNavBarColor('#000000');
-      try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
+      StatusBar.setBackgroundColor('transparent');
     }
   }, [isAuthenticated, isLoading, isDark, theme]);
 
@@ -499,48 +473,19 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady }) => 
       theme={navTheme}
       onReady={() => {
         onNavigatorReady?.();
-        // Initial configuration for navigation bar
-        if (Platform.OS === 'android' && NativeModules.SystemBar) {
-          if (!isAuthenticated) {
-            pinNavBarColor('#000000');
-            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
-            NativeModules.SystemBar.setNavigationBarColor('#000000', true);
-          } else {
-            pinNavBarColor(theme.navBar);
-            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
-            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
-          }
-        }
       }}
       onStateChange={() => {
         if (!navigationRef || !navigationRef.current) return;
         const currentRouteName = navigationRef.current.getCurrentRoute()?.name;
         if (!currentRouteName) return;
 
-        if (['Chats', 'Status', 'Calls'].includes(currentRouteName)) {
-          if (Platform.OS === 'android' && NativeModules.SystemBar) {
-            pinNavBarColor(theme.navBar);
-            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
-            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
-          }
-        } else if (currentRouteName === 'StatusViewer') {
-          if (Platform.OS === 'android') {
-            pinNavBarColor('#00000000');
-            if (NativeModules.SystemBar) {
-              NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
-            }
-          }
-        } else if (['MusicRoom', 'Call', 'IncomingCall', 'MediaViewer', 'FullScreenMediaViewer', 'StatusEditor'].includes(currentRouteName)) {
-          if (Platform.OS === 'android' && NativeModules.SystemBar) {
-            pinNavBarColor('#000000');
-            try { changeNavigationBarColor('#000000', false, false); } catch (_) {}
-            NativeModules.SystemBar.setNavigationBarColor('#000000', true);
-          }
-        } else {
-          if (Platform.OS === 'android' && NativeModules.SystemBar) {
-            pinNavBarColor(theme.navBar);
-            try { changeNavigationBarColor(theme.navBar, !isDark, false); } catch (_) {}
-            NativeModules.SystemBar.setNavigationBarColor(theme.navBar, isDark);
+        if (Platform.OS === 'android' && NativeModules.SystemBar) {
+          if (['StatusViewer', 'StatusEditor', 'MediaViewer', 'FullScreenMediaViewer'].includes(currentRouteName)) {
+            NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+            NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+          } else {
+            NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark);
+            NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
           }
         }
       }}

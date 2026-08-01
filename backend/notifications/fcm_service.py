@@ -221,6 +221,49 @@ class FCMService:
         return response.success_count if response else 0
 
     @staticmethod
+    def format_notification_body(message_content, message_type='text'):
+        """
+        Formats message content for notifications, replacing raw URLs for stickers,
+        images, videos, audio, documents, and GIFs with user-friendly labels.
+        """
+        msg_type = str(message_type or 'text').lower()
+        content = str(message_content or '').strip()
+
+        if msg_type in ['lottie_sticker', 'sticker']:
+            return "🎭 Sticker"
+        elif msg_type == 'image':
+            return "📷 Photo"
+        elif msg_type == 'video':
+            return "🎥 Video"
+        elif msg_type in ['audio', 'voice']:
+            return "🎵 Voice message"
+        elif msg_type in ['document', 'file']:
+            return "📄 Document"
+        elif msg_type == 'gif':
+            return "👾 GIF"
+        elif msg_type == 'location':
+            return "📍 Location"
+
+        # URL fallback detection: if content is a URL or sticker json/media link
+        if content.startswith(('http://', 'https://')):
+            lower_content = content.lower()
+            if '/stickers/' in lower_content or '/lottie/' in lower_content or lower_content.endswith('.json') or 'sticker' in lower_content:
+                return "🎭 Sticker"
+            elif any(lower_content.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic']):
+                return "📷 Photo"
+            elif any(lower_content.endswith(ext) for ext in ['.mp4', '.mov', '.mkv', '.webm']):
+                return "🎥 Video"
+            elif any(lower_content.endswith(ext) for ext in ['.mp3', '.wav', '.m4a', '.aac', '.ogg']):
+                return "🎵 Voice message"
+            elif lower_content.endswith('.gif'):
+                return "👾 GIF"
+
+        if len(content) > 100:
+            content = content[:97] + '...'
+
+        return content
+
+    @staticmethod
     def send_chat_notification(
         recipient,
         sender_name,
@@ -228,7 +271,8 @@ class FCMService:
         conversation_id,
         message_id=None,
         message_type='text',
-        sender_avatar=None
+        sender_avatar=None,
+        is_message_request=False
     ):
         """
         Send a chat message notification to a user.
@@ -237,21 +281,20 @@ class FCMService:
         This ensures the app's setBackgroundMessageHandler receives the message
         and can display a custom Notifee notification with reply action button.
         """
-        # Truncate message content for notification
-        if len(message_content) > 100:
-            message_content = message_content[:97] + '...'
+        body_text = FCMService.format_notification_body(message_content, message_type)
 
         # DATA-ONLY message - no notification payload!
         # The app will receive this and display via Notifee with action buttons
         data = {
-            'type': 'new_message',
+            'type': 'message_request' if is_message_request else 'new_message',
             'conv_id': str(conversation_id),
             'sender': sender_name,
             'msg_type': str(message_type),
             'ts': timezone.now().isoformat(),
+            'is_message_request': 'true' if is_message_request else 'false',
             # For Notifee notification display:
             'notif_title': sender_name,
-            'notif_body': message_content,
+            'notif_body': body_text,
         }
 
         if message_id:
@@ -259,7 +302,7 @@ class FCMService:
         if sender_avatar:
             data['sender_avatar'] = sender_avatar
 
-        logger.info(f"Sending data-only FCM notification: sender={sender_name}, msg={message_content[:20]}...")
+        logger.info(f"Sending data-only FCM notification: sender={sender_name}, msg={body_text[:20]}...")
 
         # Send data-only (no notification payload)
         return FCMService.send_to_user(recipient, None, data)
@@ -274,8 +317,7 @@ class FCMService:
         sender_avatar=None
     ):
         """Send a message edit notification to a user."""
-        if len(message_content) > 100:
-            message_content = message_content[:97] + '...'
+        body_text = FCMService.format_notification_body(message_content, 'text')
 
         data = {
             'type': 'message_edit',
@@ -284,10 +326,12 @@ class FCMService:
             'msg_id': str(message_id),
             'ts': timezone.now().isoformat(),
             'notif_title': sender_name,
-            'notif_body': message_content,
+            'notif_body': body_text,
         }
         if sender_avatar:
             data['sender_avatar'] = sender_avatar
+
+        return FCMService.send_to_user(recipient, None, data)
 
         return FCMService.send_to_user(recipient, None, data)
 
@@ -317,7 +361,8 @@ class FCMService:
         sender_avatar=None
     ):
         """Send a reaction notification to a user."""
-        body_text = f"Reacted {emoji} to: {message_preview}"
+        formatted_preview = FCMService.format_notification_body(message_preview, 'text')
+        body_text = f"Reacted {emoji} to: {formatted_preview}"
         if len(body_text) > 100:
             body_text = body_text[:97] + '...'
 

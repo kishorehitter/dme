@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
   Image,
   TextInput,
+  PanResponder,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AvatarWithFallback from '../components/AvatarWithFallback';
@@ -41,6 +42,7 @@ import { chatAPI, triviaAPI } from '../services/api';
 import { pickNextSet, saveSetScore, getCategorySummary } from '../services/TriviaScoreDB';
 import { getSetsForCategory, TRIVIA_SETS_PER_CATEGORY } from '../utils/triviaSetConfig';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 
 const { width, height: SCREEN_H } = Dimensions.get('window');
 
@@ -88,15 +90,9 @@ const CATEGORIES = [
   { id: 'any', name: 'All', nameTa: 'அனைத்தும்', emoji: '🎲', icon: 'shuffle', color: '#8D99AE', desc: 'A random mixture of all categories' },
 ];
 
-// Helper to get points based on difficulty
+// Helper to get points based on difficulty (Always 1 mark per question)
 const getPointsForDifficulty = (diff: string): number => {
-  if (!diff) return 1;
-  switch (diff.toLowerCase()) {
-    case 'hard': return 3;
-    case 'medium': return 2;
-    case 'easy':
-    default: return 1;
-  }
+  return 1;
 };
 
 // Cache to store prep progress per category (persists during app run time)
@@ -111,6 +107,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const route = useRoute<any>();
   const { user } = useAuth();
+  const { theme, isDark } = useTheme();
   // Game states
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -466,6 +463,86 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const cardScale = useRef(new Animated.Value(1)).current;
   const resultsScale = useRef(new Animated.Value(0)).current;
   const optionScales = useRef(Array(4).fill(0).map(() => new Animated.Value(1))).current;
+  const pointerAnim = useRef(new Animated.Value(0)).current;
+  const pointerXAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (gameState === 'prepare') {
+      const anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pointerAnim, {
+            toValue: 1,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pointerAnim, {
+            toValue: 0,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      anim.start();
+      return () => anim.stop();
+    }
+    if (gameState === 'playing') {
+      const anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pointerXAnim, {
+            toValue: 1,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pointerXAnim, {
+            toValue: 0,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      anim.start();
+      return () => anim.stop();
+    }
+  }, [gameState]);
+
+  const pointerUpTranslateY = pointerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -6],
+  });
+
+  const pointerDownTranslateY = pointerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 6],
+  });
+
+  const pointerLeftTranslateX = pointerXAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -6],
+  });
+
+  const pointerRightTranslateX = pointerXAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 6],
+  });
+
+  // PanResponder for horizontal swiping in Challenge Mode
+  const challengePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 15 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2;
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx < -40) {
+          // Swipe LEFT -> Next question / Skip
+          goToNextWithAnswers();
+        } else if (gestureState.dx > 40) {
+          // Swipe RIGHT -> Previous question
+          goToPrev();
+        }
+      },
+    })
+  ).current;
 
   // Preloaded Sound References
   const correctSoundRef = useRef<Sound | null>(null);
@@ -491,10 +568,10 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       if (error) console.log('[Sound] Failed to load select sound', error);
     });
 
-    // Color the native bottom navigation bar to match the bottom gradient color on mount
-    pinNavBarColor('#FFFFFF');
+    // Color the native bottom navigation bar to match theme background on mount
+    pinNavBarColor(theme.background);
     if (Platform.OS === 'android') {
-      try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+      try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
     }
 
     return () => {
@@ -505,12 +582,12 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       if (incorrectSoundRef.current) incorrectSoundRef.current.release();
       if (selectSoundRef.current) selectSoundRef.current.release();
       // Restore standard bottom navigation bar color
-      pinNavBarColor('#FFFFFF');
+      pinNavBarColor(theme.background);
       if (Platform.OS === 'android') {
-        try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+        try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
       }
     };
-  }, []);
+  }, [theme.background, isDark]);
 
   // Synchronize native bottom navigation bar color with active game state
   useEffect(() => {
@@ -523,15 +600,15 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         }
       }
     } else {
-      pinNavBarColor('#FFFFFF');
+      pinNavBarColor(theme.background);
       if (Platform.OS === 'android') {
-        try { changeNavigationBarColor('#FFFFFF', true, false); } catch (_) {}
+        try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
         if (NativeModules.SystemBar) {
-          try { NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', true); } catch (_) {}
+          try { NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark); } catch (_) {}
         }
       }
     }
-  }, [gameState]);
+  }, [gameState, theme.background, isDark]);
 
   useEffect(() => {
     let interval: any;
@@ -909,7 +986,10 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         tension: 40,
         useNativeDriver: true,
       }).start(() => {
-        pinNavBarColor('#FFFFFF');
+        pinNavBarColor(theme.background);
+        if (Platform.OS === 'android') {
+          try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
+        }
       });
     });
   };
@@ -1129,7 +1209,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
                   <Icon name="chevron-back" size={28} color="#1E3A5F" />
                 </TouchableOpacity>
-                <Text style={styles.categoryHeaderTitle}>
+                <Text style={[styles.categoryHeaderTitle, language === 'tamil' && styles.categoryHeaderTitleTamil]}>
                   {language === 'tamil' ? 'விளையாட்டுப் பிரிவு' : 'Quiz Challenge'}
                 </Text>
                 {/* Language Toggle in Header */}
@@ -1161,7 +1241,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   }}
                 >
                   <Text style={styles.categoryEmoji}>📊</Text>
-                  <Text style={styles.categoryName}>
+                  <Text style={[styles.categoryName, language === 'tamil' && styles.categoryNameTamil]}>
                     {language === 'tamil' ? 'மதிப்பெண் பலகை' : 'Scoreboard'}
                   </Text>
                 </TouchableOpacity>
@@ -1194,7 +1274,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       ) : (
                         <>
                           <Text style={styles.categoryEmoji}>{cat.emoji}</Text>
-                          <Text style={styles.categoryName}>
+                          <Text style={[styles.categoryName, language === 'tamil' && styles.categoryNameTamil]}>
                             {language === 'tamil' && cat.nameTa ? cat.nameTa : cat.name}
                           </Text>
                         </>
@@ -1328,9 +1408,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               </View>
 
               <View style={styles.headerRowCenter}>
-                <View style={[styles.pointsCenterBadge, { backgroundColor: `${activeCategoryConfig.color}15`, borderColor: `${activeCategoryConfig.color}40` }]}>
-                  <Text style={[styles.pointsCenterText, { color: activeCategoryConfig.color }]}>
-                    {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
+                <View style={styles.pointsCenterBadge}>
+                  <Text style={styles.pointsCenterText} numberOfLines={1} ellipsizeMode="tail">
+                    {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                   </Text>
                 </View>
               </View>
@@ -1346,7 +1426,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             {/* Bordered Container enclosing Question Card & Choices */}
             <View style={styles.mainGameBox}>
               {/* Question Card */}
-              <Animated.View style={[styles.card, { transform: [{ scale: cardScale }] }, { position: 'relative' }]}>
+              <Animated.View
+                style={[styles.card, { transform: [{ scale: cardScale }] }, { position: 'relative' }]}
+              >
                 <Text style={styles.questionText}>{currentQuestion.text}</Text>
               </Animated.View>
 
@@ -1424,28 +1506,25 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               </View>
             </View>
 
-            {/* Navigation Buttons */}
+            {/* Chevron Navigation Row for all questions in Challenge Mode */}
             <View style={styles.navigationRow}>
-              <TouchableOpacity style={styles.navButton} onPress={() => goToPrev()}>
-                <Icon name="chevron-back" size={20} color="#1E3A5F" />
-                <Text style={styles.navButtonText}>{language === 'tamil' ? 'முந்தைய' : 'Prev'}</Text>
-              </TouchableOpacity>
-              <View style={{
-                paddingVertical: 2,
-              }}>
-                <Text style={{
-                  fontSize: 14,
-                  fontFamily: 'Kalam-Bold',
-                  color: '#fa0505',
-                }}>
-                  {getPointsForDifficulty(currentQuestion.difficulty)} {language === 'tamil' ? 'மதிப்பெண்' : 'mark'}
-                </Text>
-              </View>
-              <TouchableOpacity style={styles.navButton} onPress={() => goToNextWithAnswers()}>
-                <Text style={styles.navButtonText}>{language === 'tamil' ? 'தவிர்' : 'Skip'}</Text>
-                <Icon name="chevron-forward" size={20} color="#1E3A5F" />
-              </TouchableOpacity>
+              {currentIndex > 0 ? (
+                <TouchableOpacity style={styles.chevronCircleBtn} onPress={() => goToPrev()}>
+                  <Icon name="chevron-back" size={24} color="#1E3A5F" />
+                </TouchableOpacity>
+              ) : (
+                <View style={{ width: 44, height: 44 }} />
+              )}
+
+              {currentIndex < questions.length - 1 ? (
+                <TouchableOpacity style={styles.chevronCircleBtn} onPress={() => goToNextWithAnswers()}>
+                  <Icon name="chevron-forward" size={24} color="#1E3A5F" />
+                </TouchableOpacity>
+              ) : (
+                <View style={{ width: 44, height: 44 }} />
+              )}
             </View>
+
           </View>
         )}
 
@@ -1490,40 +1569,40 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 {/* Score Ring Display */}
                 <View style={styles.scoreDetailsBox}>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'வீரர்' : 'Player'}</Text>
-                    <Text style={[styles.detailValue, { color: '#1E3A5F', fontWeight: '700' }]}>
+                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'வீரர்' : 'Player'}</Text>
+                    <Text style={[styles.detailValue, { color: '#1E3A5F', fontWeight: '700' }, language === 'tamil' && styles.detailValueTamil]}>
                       {user?.display_name || 'Guest'}
                     </Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'பிரிவு' : 'Category'}</Text>
-                    <Text style={[styles.detailValue, { color: activeCategoryConfig.color }]}>
+                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'பிரிவு' : 'Category'}</Text>
+                    <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
                       {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                     </Text>
                   </View>
                   {activeSetIds && activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
                     <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>{language === 'tamil' ? 'விளையாடிய தொகுதி' : 'Set Played'}</Text>
-                      <Text style={[styles.detailValue, { color: activeCategoryConfig.color }]}>
+                      <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'விளையாடிய தொகுதி' : 'Set Played'}</Text>
+                      <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
                         {(language === 'tamil' ? 'தொகுதி ' : 'set ') + activeSetIds.map(id => id.replace('set', '')).join('/')}
                       </Text>
                     </View>
                   )}
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'சரியான பதில்கள்' : 'Correct Answers'}</Text>
-                    <Text style={styles.detailValue}>{getCorrectAnswersCount()} / {questions.length}</Text>
+                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'சரியான பதில்கள்' : 'Correct Answers'}</Text>
+                    <Text style={[styles.detailValue, language === 'tamil' && styles.detailValueTamil]}>{getCorrectAnswersCount()} / {questions.length}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'பதில் அளிக்காதவை' : 'Unanswered'}</Text>
-                    <Text style={styles.detailValue}>{questions.length - Object.keys(userAnswers).length}</Text>
+                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'பதில் அளிக்காதவை' : 'Unanswered'}</Text>
+                    <Text style={[styles.detailValue, language === 'tamil' && styles.detailValueTamil]}>{questions.length - Object.keys(userAnswers).length}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{language === 'tamil' ? 'சதவீதம்' : 'Percentage'}</Text>
-                    <Text style={styles.detailValue}>{percentage}%</Text>
+                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'சதவீதம்' : 'Percentage'}</Text>
+                    <Text style={[styles.detailValue, language === 'tamil' && styles.detailValueTamil]}>{percentage}%</Text>
                   </View>
                   <View style={[styles.detailRow, { backgroundColor: '#2EC4B6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 }]}>
-                    <Text style={[styles.detailLabel, { color: '#fff' }]}>{language === 'tamil' ? 'மொத்த மதிப்பெண்கள்' : 'Total Marks'}</Text>
-                    <Text style={[styles.detailValue, { color: '#fff', fontSize: 20 }]}>{score} / {maxPoints}</Text>
+                    <Text style={[styles.detailLabel, { color: '#fff' }, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'மொத்த மதிப்பெண்கள்' : 'Total Marks'}</Text>
+                    <Text style={[styles.detailValue, { color: '#fff', fontSize: language === 'tamil' ? 16 : 20 }]}>{score} / {maxPoints}</Text>
                   </View>
                 </View>
               </LinearGradient>
@@ -1582,7 +1661,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   <Text style={prepStyles.headerSub}>
                     {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                     {questions.length > 0
-                      ? `  ·  ${Math.round((viewedSet.size / questions.length) * 100)}% ${language === 'tamil' ? 'முடிந்தது' : 'completed'}`
+                      ? `  ·  ${Math.round((viewedSet.size / questions.length) * 100)}%`
                       : ''}
                   </Text>
                 </View>
@@ -1650,10 +1729,27 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       paddingBottom: Math.max(36, insets.bottom + 12)
                     }
                   ]}>
+                    {/* Top indicator: finger pointer pointing DOWN on 2nd question */}
+                    {index === 1 && (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          prepStyles.topChevronHint,
+                          { transform: [{ translateY: pointerDownTranslateY }] }
+                        ]}
+                      >
+                        <MaterialCommunityIcon
+                          name="hand-pointing-down"
+                          size={46}
+                          color="rgba(255, 255, 255, 0.25)"
+                        />
+                      </Animated.View>
+                    )}
+
                     {/* Card — plain border always; green border only on correct choice when viewed */}
                     <View style={prepStyles.card}>
                       {/* Question text */}
-                      <Text style={prepStyles.questionText}>{item.text}</Text>
+                      <Text style={[prepStyles.questionText, language === 'english' && prepStyles.questionTextEnglish]}>{item.text}</Text>
                       <View style={prepStyles.divider} />
                       {/* Choices */}
                       <View style={prepStyles.choicesWrap}>
@@ -1669,7 +1765,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                                   {String.fromCharCode(65 + ci)}
                                 </Text>
                               </View>
-                              <Text style={[prepStyles.choiceText, isCorrect && prepStyles.choiceTextCorrect]}>
+                              <Text style={[prepStyles.choiceText, isCorrect && prepStyles.choiceTextCorrect, language === 'english' && prepStyles.choiceTextEnglish]}>
                                 {choice}
                               </Text>
                               {isCorrect && (
@@ -1681,23 +1777,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       </View>
                     </View>
 
-                    {/* Bottom row: swipe hints (left) + View button (right) */}
-                    <View style={prepStyles.bottomRow}>
-                      <View style={prepStyles.swipeIndicators}>
-                        {index > 0 && (
-                          <View style={prepStyles.swipeHintRow}>
-                            <Icon name="chevron-up" size={14} color="rgba(255,255,255,0.4)" />
-                            <Text style={prepStyles.swipeHintText}>{language === 'tamil' ? 'முந்தைய கேள்விக்கு மேலே இழுக்கவும்' : 'Swipe up for prev'}</Text>
-                          </View>
-                        )}
-                        {index < questions.length - 1 && (
-                          <View style={prepStyles.swipeHintRow}>
-                            <Icon name="chevron-down" size={14} color="rgba(255,255,255,0.4)" />
-                            <Text style={prepStyles.swipeHintText}>{language === 'tamil' ? 'அடுத்த கேள்விக்கு கீழே இழுக்கவும்' : 'Swipe down for next'}</Text>
-                          </View>
-                        )}
-                      </View>
-
+                    {/* Bottom row: View button (right) */}
+                    <View style={[prepStyles.bottomRow, { justifyContent: 'flex-end' }]}>
                       {/* VIEW button — bottom right */}
                       <TouchableOpacity
                         style={[prepStyles.viewBtn, isAnswerRevealed && prepStyles.viewBtnActive]}
@@ -1715,6 +1796,28 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                         </Text>
                       </TouchableOpacity>
                     </View>
+
+                    {/* Bottom indicator: finger pointer pointing UP (mirrored horizontally) on 1st & 2nd questions */}
+                    {index < 2 && index < questions.length - 1 && (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          prepStyles.bottomChevronHint,
+                          {
+                            transform: [
+                              { translateY: pointerUpTranslateY },
+                              { scaleX: -1 }
+                            ]
+                          }
+                        ]}
+                      >
+                        <MaterialCommunityIcon
+                          name="hand-pointing-up"
+                          size={46}
+                          color="rgba(255, 255, 255, 0.25)"
+                        />
+                      </Animated.View>
+                    )}
                   </View>
                 </View>
               );
@@ -2241,6 +2344,10 @@ const styles = StyleSheet.create({
     color: '#1E3A5F',
     textAlign: 'center',
   },
+  categoryHeaderTitleTamil: {
+    fontSize: 18,
+    lineHeight: 22,
+  },
   scoreboardBtn: {
     width: 36,
     height: 36,
@@ -2386,6 +2493,10 @@ const styles = StyleSheet.create({
     color: '#1E3A5F',
     textAlign: 'center',
     lineHeight: 19,
+  },
+  categoryNameTamil: {
+    fontSize: 13,
+    lineHeight: 16,
   },
   categoryDescSelected: {
     fontSize: 16,
@@ -2533,15 +2644,16 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   headerRowLeft: {
-    flex: 3,
+    width: 80,
     alignItems: 'flex-start',
   },
   headerRowCenter: {
-    flex: 4,
+    flex: 1,
     alignItems: 'center',
+    paddingHorizontal: 4,
   },
   headerRowRight: {
-    flex: 3,
+    width: 80,
     alignItems: 'flex-end',
   },
   gameLanguageToggleContainer: {
@@ -2679,6 +2791,16 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 10,
   },
+  chevronCircleBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#1E3A5F',
+    backgroundColor: 'rgba(30, 58, 95, 0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   navButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2707,6 +2829,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(30, 58, 95, 0.12)',
     marginBottom: 20,
     width: '100%',
+  },
+  swipeHintLeft: {
+    position: 'absolute',
+    left: 4,
+    top: '30%',
+    zIndex: 30,
+  },
+  swipeHintRight: {
+    position: 'absolute',
+    right: 4,
+    top: '30%',
+    zIndex: 30,
   },
   questionText: {
     fontSize: 18,
@@ -2894,11 +3028,18 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 17,
     fontFamily: 'Kalam-Bold',
+    flexShrink: 1,
+  },
+  detailLabelTamil: {
+    fontSize: 14,
   },
   detailValue: {
     color: '#1E3A5F',
     fontSize: 19,
     fontFamily: 'Kalam-Bold',
+  },
+  detailValueTamil: {
+    fontSize: 15,
   },
   pointsCenterBadge: {
     backgroundColor: 'rgba(30, 58, 95, 0.05)',
@@ -2907,11 +3048,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(30, 58, 95, 0.12)',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   pointsCenterText: {
-    color: '#1E3A5F',
-    fontSize: 13,
+    color: '#0284C7',
+    fontSize: 12.5,
     fontFamily: 'Kalam-Bold',
+    textAlign: 'center',
   },
   friendsModalContent: {
     width: '92%',
@@ -3186,6 +3331,14 @@ const prepStyles = StyleSheet.create({
     fontSize: 11,
     fontFamily: 'Kalam-Bold',
   },
+  topChevronHint: {
+    alignSelf: 'center',
+    marginBottom: 4,
+  },
+  bottomChevronHint: {
+    alignSelf: 'center',
+    marginTop: 8,
+  },
   // The main card — neutral border only; green is on the correct choice row
   card: {
     backgroundColor: 'rgba(255,255,255,0.05)',
@@ -3197,10 +3350,14 @@ const prepStyles = StyleSheet.create({
   },
   questionText: {
     color: '#fff',
-    fontSize: 18,
-    fontFamily: 'Kalam-Bold',
-    lineHeight: 26,
+    fontSize: 16,
+    fontWeight: '600',
+    lineHeight: 23,
     marginBottom: 14,
+  },
+  questionTextEnglish: {
+    fontSize: 18,
+    lineHeight: 26,
   },
   divider: {
     height: 1,
@@ -3238,18 +3395,22 @@ const prepStyles = StyleSheet.create({
   },
   choiceLetterText: {
     color: 'rgba(255,255,255,0.8)',
-    fontFamily: 'Kalam-Bold',
+    fontWeight: '700',
     fontSize: 13,
   },
   choiceText: {
     flex: 1,
     color: 'rgba(255,255,255,0.82)',
-    fontSize: 15,
-    fontFamily: 'Kalam-Regular',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  choiceTextEnglish: {
+    fontSize: 15.5,
+    lineHeight: 22,
   },
   choiceTextCorrect: {
     color: '#00C853',
-    fontFamily: 'Kalam-Bold',
+    fontWeight: '700',
   },
   // Bottom row
   bottomRow: {
@@ -3260,17 +3421,14 @@ const prepStyles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   swipeIndicators: {
-    gap: 6,
-  },
-  swipeHintRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 12,
   },
-  swipeHintText: {
-    color: 'rgba(255,255,255,0.38)',
-    fontSize: 12,
-    fontFamily: 'Kalam-Regular',
+  swipeHintRow: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 2,
   },
   // View button
   viewBtn: {

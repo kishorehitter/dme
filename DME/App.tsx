@@ -10,7 +10,7 @@ import {
   Platform,
   Linking,
 } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Toast from 'react-native-toast-message';
 import { AuthProvider } from './src/context/AuthContext';
@@ -130,6 +130,20 @@ export function handleNotificationNavigation(data: FCMData) {
     return;
   }
 
+  if ((type === 'message_request' || data.is_message_request === 'true') && (data.conv_id || data.conversation_id)) {
+    console.log('[App] 📩 Message request notification tapped, navigating to ChatList pending tab');
+    navigationRef.dispatch(
+      CommonActions.navigate('MainTabs', {
+        screen: 'Chats',
+        params: {
+          initialTab: 'pending',
+          tab: 'pending',
+        },
+      }),
+    );
+    return;
+  }
+
   if (type === 'new_message' && (data.conv_id || data.conversation_id)) {
     const convId = data.conv_id || data.conversation_id;
     navigationRef.dispatch(
@@ -179,6 +193,22 @@ export function handleNotificationNavigation(data: FCMData) {
       );
     } catch (e) {
       console.error('[App] ❌ Trivia challenge token navigation failed:', e);
+    }
+    return;
+  }
+
+  if (type === 'friend_request') {
+    console.log('[App] 🤝 Friend request FCM notification pressed:', data);
+    try {
+      const targetTab = data.action === 'accepted' ? 'friends' : 'approve';
+      navigationRef.dispatch(
+        CommonActions.navigate('FriendList', {
+          initialTab: targetTab,
+          tab: targetTab,
+        }),
+      );
+    } catch (e) {
+      console.error('[App] ❌ Friend request navigation failed:', e);
     }
     return;
   }
@@ -291,7 +321,7 @@ export default function App() {
     // ✅ Handle Notifee taps (music invites + trivia challenges)
     const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
       const notifType = detail.notification?.data?.type;
-      if (type === EventType.PRESS && (notifType === 'music_invite' || notifType === 'trivia_challenge')) {
+      if (type === EventType.PRESS && (notifType === 'music_invite' || notifType === 'trivia_challenge' || notifType === 'friend_request')) {
         console.log('[App] 🔔 Notifee notification pressed:', detail.notification?.data);
         handleNotificationNavigation(detail.notification?.data as FCMData);
       }
@@ -438,12 +468,14 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={styles.container}>
-      <SafeAreaProvider>
+      <SafeAreaProvider initialWindowMetrics={initialWindowMetrics}>
         <ThemeProvider>
           <UpdateProvider>
             <View style={styles.container}>
               <StatusBar
                 translucent={true}
+                backgroundColor="transparent"
+                barStyle="dark-content"
               />
               <AuthProvider>
                 <CallProvider>

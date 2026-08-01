@@ -14,7 +14,6 @@ class NavBarModule(reactContext: ReactApplicationContext) :
   fun setColor(colorString: String) {
     try {
       val color = Color.parseColor(colorString)
-      MainActivity.pinnedNavBarColor = color
       val activity = reactApplicationContext.currentActivity
       activity?.runOnUiThread {
         activity.window.navigationBarColor = color
@@ -29,6 +28,6 @@ class NavBarModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun clear() {
-    MainActivity.pinnedNavBarColor = null
+    // No-op
   }
 }

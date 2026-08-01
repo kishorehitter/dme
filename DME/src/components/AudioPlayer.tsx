@@ -3,6 +3,7 @@ import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Text, Animated }
 import Icon from 'react-native-vector-icons/Ionicons';
 import RNFS from 'react-native-fs';
 import audioRecorder from '../modules/AudioRecorder';
+import { useTheme } from '../context/ThemeContext';
 
 interface AudioPlayerProps {
   mediaUrl: string;
@@ -15,6 +16,8 @@ interface AudioPlayerProps {
 let currentlyPlayingAudioRef: { stop: () => void; id?: string } | null = null;
 
 const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597f5f6', messageId, duration = 0 }) => {
+  const { theme, isDark } = useTheme();
+  const styles = dynamicStyles(theme);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [audioDuration, setAudioDuration] = useState(duration || 0);
@@ -122,7 +125,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
   return (
     <View style={styles.row}>
       <TouchableOpacity style={styles.btn} onPress={handlePress}>
-        {isLoading ? <ActivityIndicator size="small" color="#333" /> : <Icon name={isPlaying ? 'pause' : 'play'} size={14} color="#333" />}
+        {isLoading ? <ActivityIndicator size="small" color={theme.textPrimary} /> : <Icon name={isPlaying ? 'pause' : 'play'} size={14} color={theme.textPrimary} />}
       </TouchableOpacity>
       <View style={styles.info}>
         <View ref={trackRef} style={styles.track}>
@@ -136,14 +139,14 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
   );
 };
 
-const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', padding: 8, borderRadius: 12, backgroundColor: '#f0f0f0', marginVertical: 4, minWidth: 180 },
-  btn: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', padding: 8, borderRadius: 12, backgroundColor: theme.inputBackground, marginVertical: 4, minWidth: 180 },
+  btn: { width: 30, height: 30, borderRadius: 15, backgroundColor: theme.surface, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
   info: { flex: 1 },
-  track: { height: 4, borderRadius: 2, backgroundColor: '#ccc', overflow: 'hidden' },
+  track: { height: 4, borderRadius: 2, backgroundColor: theme.border, overflow: 'hidden' },
   fill: { height: '100%' },
   timeRow: { marginTop: 4, alignItems: 'flex-end' },
-  time: { fontSize: 10, color: '#666' },
+  time: { fontSize: 10, color: theme.textSecondary },
 });
 
 export default AudioPlayer;

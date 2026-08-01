@@ -112,6 +112,14 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            resValue "string", "app_name", "DME (Debug 1)"
+        }
+        debug2 {
+            signingConfig signingConfigs.debug
+            applicationIdSuffix ".debug2"
+            resValue "string", "app_name", "DME (Debug 2)"
+            debuggable true
+            matchingFallbacks = ['debug']
         }
         release {
             // Caution! In production, you need to generate your own keystore file.

@@ -69,10 +69,10 @@ urlpatterns = [
     # ── Message Requests ─────────────────────────────────────────────────────
     # List pending incoming message requests
     path('message-requests/', MessageRequestListView.as_view(), name='message-request-list'),
-    # Accept or reject a message request (POST with action='accept'|'reject')
-    path('message-requests/<int:request_id>/<str:action>/', MessageRequestActionView.as_view(), name='message-request-action'),
     path('message-requests/<int:request_id>/approve/', MessageRequestApproveView.as_view(), name='message-request-approve'),
     path('message-requests/<int:request_id>/reject/', MessageRequestRejectView.as_view(), name='message-request-reject'),
+    # Accept or reject a message request (POST with action='accept'|'reject')
+    path('message-requests/<int:request_id>/<str:action>/', MessageRequestActionView.as_view(), name='message-request-action'),
 
     # Conversation details
     path('conversations/<int:pk>/detail/', ConversationDetailView.as_view(), name='conversation-detail'),

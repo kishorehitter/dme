@@ -4,6 +4,7 @@ import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { Message } from '../types';
 import { resolveImageUrl } from '../utils/image';
+import { useTheme } from '../context/ThemeContext';
 
 interface ChatMediaGridProps {
   messages: Message[];
@@ -18,6 +19,9 @@ export const ChatMediaGrid: React.FC<ChatMediaGridProps> = ({
   onCancelUpload,
   onRetryUpload,
 }) => {
+  const { theme, isDark } = useTheme();
+  const styles = dynamicStyles(theme);
+
   const totalCount = messages.length;
   if (totalCount < 2) return null;
 
@@ -153,13 +157,13 @@ export const ChatMediaGrid: React.FC<ChatMediaGridProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   container: {
     width: 230,
     height: 230,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#333',
+    backgroundColor: theme.surface,
   },
   row: {
     flex: 1,

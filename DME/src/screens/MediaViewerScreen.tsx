@@ -1,22 +1,21 @@
 import React, { useLayoutEffect, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, StatusBar, Dimensions, Platform, NativeModules, Alert, ActivityIndicator, FlatList } from 'react-native';
+import { 
+  View, Text, StyleSheet, TouchableOpacity, StatusBar, Dimensions, Platform, 
+  NativeModules, Alert, ActivityIndicator, FlatList 
+} from 'react-native';
 import Video from 'react-native-video';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
+import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import RNFetchBlob from 'rn-fetch-blob';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 
-// Note: CameraRoll is often imported differently depending on the version.
-// Trying to access the save method directly if available.
 const saveAsset = CameraRoll.saveAsset || CameraRoll.save;
-import { pinNavBarColor } from '../utils/navBarPin';
 
-
-const { SystemBar } = NativeModules;
-const { width, height } = Dimensions.get('window');
+const { width: W, height: H } = Dimensions.get('screen');
 
 interface MediaItem {
   mediaUrl: string;
@@ -29,7 +28,9 @@ const MediaViewerScreen: React.FC = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const insets = useSafeAreaInsets();
-  
+  const safeTop = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 20);
+  const safeBottom = Math.max(insets.bottom, 0);
+
   const { mediaUrl, mediaType, mediaList, initialIndex } = route.params as { 
     mediaUrl?: string; 
     mediaType?: 'image' | 'video'; 
@@ -50,7 +51,6 @@ const MediaViewerScreen: React.FC = () => {
   const activeUrl = activeItem.mediaUrl;
   const activeType = activeItem.mediaType;
 
-  // Reset video loaded and playback status when swiping to a different media item
   useEffect(() => {
     setVideoLoaded(false);
     setPaused(false);
@@ -58,7 +58,6 @@ const MediaViewerScreen: React.FC = () => {
     setCurrentTime(0);
   }, [currentIndex]);
 
-  // Helper to format time (e.g., 0:00)
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
@@ -86,16 +85,10 @@ const MediaViewerScreen: React.FC = () => {
 
   useLayoutEffect(() => {
     if (Platform.OS === 'android') {
-      pinNavBarColor('#000000');
       if (NativeModules.SystemBar) {
-        NativeModules.SystemBar.setNavigationBarColor('#000000', true);
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', true);
       }
-      return () => {
-        pinNavBarColor('#FFFFFF');
-        if (NativeModules.SystemBar) {
-          NativeModules.SystemBar.setNavigationBarColor('#FFFFFF', false);
-        }
-      };
     }
   }, []);
 
@@ -105,7 +98,6 @@ const MediaViewerScreen: React.FC = () => {
     if (list.length === 0) return null;
 
     if (isAllImages) {
-      // If it's 100% images, ImageViewer handles horizontal swiping natively with high performance
       return (
         <ImageViewer
           imageUrls={list.map(item => ({ url: item.mediaUrl }))}
@@ -127,7 +119,6 @@ const MediaViewerScreen: React.FC = () => {
       );
     }
 
-    // If there is any video, use FlatList horizontal pagination
     return (
       <FlatList
         data={list}
@@ -180,13 +171,13 @@ const MediaViewerScreen: React.FC = () => {
         showsHorizontalScrollIndicator={false}
         initialScrollIndex={initialIndex || 0}
         getItemLayout={(_, index) => ({
-          length: width,
-          offset: width * index,
+          length: W,
+          offset: W * index,
           index,
         })}
         onMomentumScrollEnd={(event) => {
           const offsetX = event.nativeEvent.contentOffset.x;
-          const index = Math.round(offsetX / width);
+          const index = Math.round(offsetX / W);
           if (index >= 0 && index < list.length) {
             setCurrentIndex(index);
           }
@@ -198,14 +189,21 @@ const MediaViewerScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} animated={true} />
       
       {renderMediaContent()}
       
+      {/* Top Scrim */}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.3)', 'transparent']}
+        style={[styles.topScrim, { height: safeTop + 90 }]}
+        pointerEvents="none"
+      />
+
       {/* Custom Action Bar */}
-      <View style={[styles.topBar, { top: insets.top + 10 }]}>
+      <View style={[styles.topBar, { top: safeTop + 10 }]}>
         <TouchableOpacity style={styles.iconBtn} onPress={handleClose}>
-          <Icon name="close" size={30} color="#fff" />
+          <Icon name="close" size={26} color="#fff" />
         </TouchableOpacity>
         
         {list.length > 1 && (
@@ -213,39 +211,48 @@ const MediaViewerScreen: React.FC = () => {
         )}
         
         <TouchableOpacity style={styles.iconBtn} onPress={handleSave} disabled={saving}>
-          {saving ? <ActivityIndicator color="#fff" /> : <Icon name="download-outline" size={30} color="#fff" />}
+          {saving ? <ActivityIndicator color="#fff" /> : <Icon name="download-outline" size={24} color="#fff" />}
         </TouchableOpacity>
       </View>
 
       {/* Video Controls Overlay */}
       {activeType === 'video' && (
-        <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 20 }]}>
-          <TouchableOpacity onPress={() => setPaused(!paused)} style={styles.playPauseBtn}>
-            <Icon name={paused ? 'play' : 'pause'} size={30} color="#fff" />
-          </TouchableOpacity>
-          <View style={styles.progressContainer}>
-            <View style={[styles.progressBar, { width: `${(currentTime / (duration || 1)) * 100}%` }]} />
+        <>
+          <LinearGradient
+            colors={['transparent', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.65)']}
+            style={[styles.bottomScrim, { height: safeBottom + 90 }]}
+            pointerEvents="none"
+          />
+          <View style={[styles.bottomBar, { paddingBottom: safeBottom + 12 }]}>
+            <TouchableOpacity onPress={() => setPaused(!paused)} style={styles.playPauseBtn}>
+              <Icon name={paused ? 'play' : 'pause'} size={26} color="#fff" />
+            </TouchableOpacity>
+            <View style={styles.progressContainer}>
+              <View style={[styles.progressBar, { width: `${(currentTime / (duration || 1)) * 100}%` }]} />
+            </View>
+            <Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
           </View>
-          <Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
-        </View>
+        </>
       )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  media: { width, height },
+  container: { flex: 1, backgroundColor: '#000000' },
+  media: { width: W, height: H },
   mediaList: { flex: 1 },
-  mediaItemContainer: { width, height, justifyContent: 'center', alignItems: 'center' },
-  topBar: { position: 'absolute', left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10, alignItems: 'center' },
-  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10 },
-  iconBtn: { padding: 10, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 25 },
-  playPauseBtn: { padding: 10 },
-  progressContainer: { flex: 1, height: 4, backgroundColor: '#444', marginHorizontal: 15, borderRadius: 2 },
+  mediaItemContainer: { width: W, height: H, justifyContent: 'center', alignItems: 'center' },
+  topScrim: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5 },
+  bottomScrim: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 5 },
+  topBar: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10, alignItems: 'center' },
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, zIndex: 10 },
+  iconBtn: { padding: 8, backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 20 },
+  playPauseBtn: { padding: 8 },
+  progressContainer: { flex: 1, height: 4, backgroundColor: 'rgba(255,255,255,0.3)', marginHorizontal: 12, borderRadius: 2 },
   progressBar: { height: '100%', backgroundColor: '#4597f5f6', borderRadius: 2 },
   timeText: { color: '#fff', fontSize: 12, minWidth: 60, textAlign: 'right' },
-  headerCount: { color: '#fff', fontSize: 16, fontWeight: '600', alignSelf: 'center' },
+  headerCount: { color: '#fff', fontSize: 16, fontWeight: '600', alignSelf: 'center', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
 });
 
 export default MediaViewerScreen;

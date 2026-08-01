@@ -45,6 +45,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import { launchCamera, CameraOptions } from 'react-native-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { useTheme } from '../context/ThemeContext';
 import { pinNavBarColor } from '../utils/navBarPin';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -147,8 +148,9 @@ const AlbumRow: React.FC<{
   selected: boolean;
   onPress: () => void;
   theme?: 'light' | 'dark';
-}> = ({ album, selected, onPress, theme = 'light' }) => {
-  const isDark = theme === 'dark';
+}> = ({ album, selected, onPress, theme: propTheme = 'light' }) => {
+  const { isDark } = useTheme();
+  const isDarkTheme = isDark || propTheme === 'dark';
   return (
     <TouchableOpacity
       style={[
@@ -224,11 +226,13 @@ export const CustomGalleryPicker: React.FC<Props> = ({
   onSelect,
   maxSelect = MAX_SELECT,
   themeColor = THEME,
-  theme = 'light',
+  theme: propTheme = 'light',
   assetType = 'All',
-  restoreNavBarColor = '#FFFFFF',
+  restoreNavBarColor = '#01000000',
   maxDuration,
 }) => {
+  const { theme, isDark } = useTheme();
+  const styles = dynamicStyles(theme);
   const insets = useSafeAreaInsets();
 
   const [permGranted, setPermGranted] = useState<'checking' | 'granted' | 'denied'>('checking');
@@ -250,45 +254,19 @@ export const CustomGalleryPicker: React.FC<Props> = ({
   const translateY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    if (visible) {
-      if (Platform.OS === 'android') {
-        const barColor = theme === 'dark' ? '#1E1E1E' : '#FFFFFF';
-        const isLight = theme !== 'dark';
-        try {
-          changeNavigationBarColor(barColor, isLight, false);
-          pinNavBarColor(barColor);
-        } catch (_) {}
-      }
-    } else {
-      if (Platform.OS === 'android' && restoreNavBarColor) {
-        const isLight = restoreNavBarColor.toUpperCase() !== '#000000' && restoreNavBarColor.toUpperCase() !== '#111111' && restoreNavBarColor.toUpperCase() !== '#1E1E1E';
-        try {
-          changeNavigationBarColor(restoreNavBarColor, isLight, false);
-          pinNavBarColor(restoreNavBarColor);
-        } catch (_) {}
-      }
-    }
-  }, [visible, theme, restoreNavBarColor]);
+  const skipRestoreRef = useRef(false);
 
   const handleClosePress = useCallback(() => {
-    if (Platform.OS === 'android' && restoreNavBarColor) {
-      const isLight = restoreNavBarColor.toUpperCase() !== '#000000' && restoreNavBarColor.toUpperCase() !== '#111111' && restoreNavBarColor.toUpperCase() !== '#1E1E1E';
-      try {
-        changeNavigationBarColor(restoreNavBarColor, isLight, false);
-        pinNavBarColor(restoreNavBarColor);
-      } catch (_) {}
-    }
 
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: SHEET_HEIGHT,
-        duration: 220,
+        duration: 120,
         useNativeDriver: true,
       }),
       Animated.timing(backdropOpacity, {
         toValue: 0,
-        duration: 180,
+        duration: 100,
         useNativeDriver: true,
       })
     ]).start(() => {
@@ -405,13 +383,19 @@ export const CustomGalleryPicker: React.FC<Props> = ({
 
       try {
         const result = await CameraRoll.getPhotos(params);
-        const filteredEdges = maxDuration != null ? result.edges.filter(edge => {
+        const filteredEdges = result.edges.filter(edge => {
+          // 1. Filter out videos over 10 minutes (600 seconds)
           const duration = edge.node.image.playableDuration;
-          if (duration != null && duration > 0 && duration >= maxDuration) {
-            return false;
+          if (duration != null && duration > 0) {
+            if (duration > 600) return false;
+            if (maxDuration != null && duration >= maxDuration) return false;
           }
+          // 2. Filter out media files larger than 100MB (104,857,600 bytes)
+          const fileSize = edge.node.image.fileSize;
+          if (fileSize != null && fileSize > 104857600) return false;
+
           return true;
-        }) : result.edges;
+        });
 
         setPhotos((prev) => {
           const next = cursor ? [...prev, ...filteredEdges] : filteredEdges;
@@ -530,7 +514,6 @@ export const CustomGalleryPicker: React.FC<Props> = ({
     [photos]
   );
 
-  const isDark = theme === 'dark';
 
   const renderCell = useCallback(
     ({ item }: { item: any }) => {
@@ -567,7 +550,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
             <View
               style={[
                 styles.selectBadge,
-                isSelected && { backgroundColor: themeColor, borderColor: themeColor },
+                isSelected && { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(0, 0, 0, 0.75)', borderColor: '#FFFFFF' },
               ]}
             >
               {isSelected ? <Text style={styles.selectBadgeText}>{selIndex}</Text> : null}
@@ -729,12 +712,12 @@ export const CustomGalleryPicker: React.FC<Props> = ({
               {selectedCount > 0 && (
                 <TouchableOpacity
                   onPress={handleSend}
-                  style={[styles.tickButton, { backgroundColor: themeColor }]}
+                  style={[styles.tickButton, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.8)' }]}
                   activeOpacity={0.8}
                 >
                   <Icon name="checkmark" size={18} color="#FFF" />
-                  <View style={styles.tickBadge}>
-                    <Text style={styles.tickBadgeText}>{selectedCount}</Text>
+                  <View style={[styles.tickBadge, { backgroundColor: isDark ? '#FFFFFF' : '#000000', borderColor: isDark ? '#1E1E1E' : '#FFFFFF' }]}>
+                    <Text style={[styles.tickBadgeText, { color: isDark ? '#000000' : '#FFFFFF' }]}>{selectedCount}</Text>
                   </View>
                 </TouchableOpacity>
               )}
@@ -787,8 +770,8 @@ export const CustomGalleryPicker: React.FC<Props> = ({
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFF' },
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.background },
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',

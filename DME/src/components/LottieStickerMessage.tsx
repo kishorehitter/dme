@@ -14,6 +14,7 @@ import {
   Animated,
 } from 'react-native';
 import LottieView from 'lottie-react-native';
+import { useTheme } from '../context/ThemeContext';
 
 const STICKER_RENDER_SIZE = 90;
 
@@ -24,6 +25,8 @@ interface Props {
 }
 
 const LottieStickerMessage: React.FC<Props> = ({ url, onLongPress, onPress }) => {
+  const { theme } = useTheme();
+  const s = dynamicStyles(theme);
   const [loaded, setLoaded] = useState(false);
   const shimmerAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim  = useRef(new Animated.Value(0.6)).current;
@@ -45,11 +48,11 @@ const LottieStickerMessage: React.FC<Props> = ({ url, onLongPress, onPress }) =>
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={350}
-      style={styles.wrapper}
+      style={s.wrapper}
     >
       {/* Shimmer placeholder while loading */}
       {!loaded && (
-        <View style={styles.shimmer} />
+        <View style={s.shimmer} />
       )}
 
       {/* Lottie Sticker */}
@@ -58,7 +61,7 @@ const LottieStickerMessage: React.FC<Props> = ({ url, onLongPress, onPress }) =>
           source={{ uri: url }}
           autoPlay
           loop
-          style={styles.lottie}
+          style={s.lottie}
           onAnimationLoaded={handleLoad}
           resizeMode="contain"
           renderMode="HARDWARE"
@@ -69,7 +72,7 @@ const LottieStickerMessage: React.FC<Props> = ({ url, onLongPress, onPress }) =>
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: any) => StyleSheet.create({
   wrapper: {
     width: STICKER_RENDER_SIZE,
     height: STICKER_RENDER_SIZE,
@@ -85,7 +88,7 @@ const styles = StyleSheet.create({
     width: STICKER_RENDER_SIZE * 0.75,
     height: STICKER_RENDER_SIZE * 0.75,
     borderRadius: STICKER_RENDER_SIZE * 0.375,
-    backgroundColor: '#E8E8E8',
+    backgroundColor: theme.inputBackground,
   },
 });
 

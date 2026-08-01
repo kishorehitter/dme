@@ -26,7 +26,6 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         return "SystemBar";
     }
 
-    // Remembered state so we can reassert after focus/resume events
     private volatile String lastNavColor = null;
     private volatile boolean lastNavLightIcons = false;
 
@@ -54,7 +53,8 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         UiThreadUtil.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), fits);
+                // Permanently lock decor fits system windows to false (edge-to-edge)
+                WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), false);
             }
         });
     }
@@ -71,16 +71,16 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
                 Window window = activity.getWindow();
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
-                    window.setNavigationBarColor(Color.parseColor(colorHex));
+                    if ("#00000000".equals(colorHex) || "#01000000".equals(colorHex) || "transparent".equalsIgnoreCase(colorHex)) {
+                        window.setNavigationBarColor(Color.TRANSPARENT);
+                    } else {
+                        window.setNavigationBarColor(Color.parseColor(colorHex));
+                    }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         window.setNavigationBarContrastEnforced(false);
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        if (colorHex.equals("#00000000") || colorHex.equals("#01000000") || colorHex.equals("transparent")) {
-                            window.setNavigationBarDividerColor(Color.TRANSPARENT);
-                        } else {
-                            window.setNavigationBarDividerColor(Color.parseColor(colorHex));
-                        }
+                        window.setNavigationBarDividerColor(Color.TRANSPARENT);
                     }
                 } catch (Exception e) {
                     // Ignore invalid colors
@@ -106,7 +106,11 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
                 Window window = activity.getWindow();
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
-                    window.setStatusBarColor(Color.parseColor(colorHex));
+                    if ("#00000000".equals(colorHex) || "#01000000".equals(colorHex) || "transparent".equalsIgnoreCase(colorHex)) {
+                        window.setStatusBarColor(Color.TRANSPARENT);
+                    } else {
+                        window.setStatusBarColor(Color.parseColor(colorHex));
+                    }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         window.setStatusBarContrastEnforced(false);
                     }
@@ -126,6 +130,22 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
 
     @Override
     public void onHostResume() {
+        final Activity activity = getCurrentActivity();
+        if (activity != null) {
+            UiThreadUtil.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), false);
+                    if (lastStatusColor == null || "#00000000".equals(lastStatusColor) || "transparent".equalsIgnoreCase(lastStatusColor)) {
+                        activity.getWindow().setStatusBarColor(Color.TRANSPARENT);
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        activity.getWindow().setNavigationBarContrastEnforced(false);
+                        activity.getWindow().setStatusBarContrastEnforced(false);
+                    }
+                }
+            });
+        }
         if (lastNavColor != null) {
             applyNavigationBarColor(lastNavColor, lastNavLightIcons);
         }

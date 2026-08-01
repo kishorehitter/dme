@@ -16,6 +16,7 @@ import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { Message } from '../types';
 import { resolveImageUrl } from '../utils/image';
+import { useTheme } from '../context/ThemeContext';
 
 const { width } = Dimensions.get('window');
 
@@ -36,6 +37,7 @@ const AutoHeightMedia = ({
   isVideo: boolean;
   onPress: () => void;
 }) => {
+  const { theme } = useTheme();
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
 
   useEffect(() => {
@@ -68,7 +70,7 @@ const AutoHeightMedia = ({
       style={{
         width: '100%',
         height: calculatedHeight,
-        backgroundColor: '#F5F5F5',
+        backgroundColor: theme.inputBackground,
         position: 'relative',
       }}
     >
@@ -93,6 +95,9 @@ export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
   onSelectMedia,
   themeColor = '#4597f5f6',
 }) => {
+  const { theme, isDark } = useTheme();
+  const styles = dynamicStyles(theme);
+
   const renderItem = ({ item }: { item: Message }) => {
     const rawUrl = (item as any).media_url || item.media_file;
     const url = resolveImageUrl(rawUrl);
@@ -122,12 +127,12 @@ export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
       statusBarTranslucent={true}
       onRequestClose={onClose}
     >
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent={true} />
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={theme.background} translucent={true} />
       <SafeAreaView style={[styles.container, Platform.OS === 'android' && { paddingTop: StatusBar.currentHeight }]}>
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} style={styles.backButton}>
-            <Icon name="arrow-back" size={24} color="#1A1A1A" />
+            <Icon name="arrow-back" size={24} color={theme.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
             {messages.length} Photos
@@ -149,13 +154,13 @@ export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.background,
   },
   list: {
-    backgroundColor: '#F7F7F7',
+    backgroundColor: theme.background,
   },
   header: {
     height: 56,
@@ -163,15 +168,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
+    borderBottomColor: theme.border,
   },
   backButton: {
     padding: 8,
   },
   headerTitle: {
-    color: '#1A1A1A',
+    color: theme.textPrimary,
     fontSize: 17,
     fontWeight: '600',
   },
@@ -180,11 +185,11 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.surface,
     borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#EEEEEE',
+    borderColor: theme.border,
     // card shadow
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -201,11 +206,11 @@ const styles = StyleSheet.create({
   captionContainer: {
     padding: 12,
     borderTopWidth: 1,
-    borderTopColor: '#EEEEEE',
-    backgroundColor: '#FFFFFF',
+    borderTopColor: theme.border,
+    backgroundColor: theme.surface,
   },
   captionText: {
-    color: '#1A1A1A',
+    color: theme.textPrimary,
     fontSize: 15,
     lineHeight: 20,
   },

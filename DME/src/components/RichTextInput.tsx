@@ -1,5 +1,6 @@
 import React, { useRef, useImperativeHandle, forwardRef } from 'react';
-import { requireNativeComponent, NativeSyntheticEvent, findNodeHandle, UIManager } from 'react-native';
+import { requireNativeComponent, NativeSyntheticEvent, findNodeHandle, UIManager, Keyboard } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
 
 interface ContentCommittedEvent {
   uri: string;
@@ -37,7 +38,8 @@ export interface RichTextInputRef {
 const NativeRichTextInput = requireNativeComponent<any>('RichTextInput');
 
 const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
-  const { onTextChange, onChangeText, onContentSizeChange, text, ...rest } = props;
+  const { theme } = useTheme();
+  const { onTextChange, onChangeText, onContentSizeChange, text, style, placeholderTextColor, ...rest } = props;
   const nativeRef = useRef<any>(null);
   useImperativeHandle(ref, () => ({
     clear: () => {
@@ -64,7 +66,17 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
       nativeRef.current?.focus?.();
     },
     blur: () => {
-      nativeRef.current?.blur?.();
+      Keyboard.dismiss();
+      const handle = findNodeHandle(nativeRef.current);
+      if (handle != null) {
+        try {
+          UIManager.dispatchViewManagerCommand(handle, 'blur', []);
+        } catch (e) {
+          nativeRef.current?.blur?.();
+        }
+      } else {
+        nativeRef.current?.blur?.();
+      }
     },
   }));
 
@@ -81,6 +93,8 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
     <NativeRichTextInput
       {...rest}
       ref={nativeRef}
+      style={[{ color: theme.textPrimary }, style]}
+      placeholderTextColor={placeholderTextColor ?? theme.textMuted}
       onTextChange={_onTextChange}
       onContentSizeChange={onContentSizeChange}
       onContentCommitted={_onContentCommitted}

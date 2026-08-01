@@ -68,19 +68,20 @@ export interface ThemeColors {
 }
 
 // ─── Brand Gradient ─────────────────────────────────────────────────────────────
-// Use anywhere a gradient is needed: ['#6A00F4', '#8F00FF', '#B026FF']
+export const brandGradient = ['#020912', '#050f1e', '#071524'];
+export const brandGradientDark = ['#020912', '#050f1e', '#071524'];
 
 // ─── Light Theme ─────────────────────────────────────────────────────────────────
 
 export const lightTheme: ThemeColors = {
-  // Violet brand
-  primary:      '#8F00FF',
-  primaryDark:  '#7B00E6',
-  primaryLight: '#B026FF',
-  secondary:    '#B026FF',
-  accent:       '#D580FF',
+  // Brand accents
+  primary:      '#0F62FE',
+  primaryDark:  '#020912',
+  primaryLight: '#38BDF8',
+  secondary:    '#38BDF8',
+  accent:       '#071524',
 
-  // Backgrounds — clean off-white, not pure white
+  // Backgrounds
   background:   '#FAFAFC',
   surface:      '#FFFFFF',
   card:         '#FFFFFF',
@@ -88,14 +89,14 @@ export const lightTheme: ThemeColors = {
 
   // Chat
   chatBackground: '#F2F2F7',
-  myMessage:      '#8F00FF',   // violet sent bubble
+  myMessage:      '#0F62FE',   // blue sent bubble
   theirMessage:   '#F2F2F7',   // neutral received bubble
 
   // Text
   textPrimary:   '#111827',
   textSecondary: '#6B7280',
   textMuted:     '#9CA3AF',
-  textOnPrimary: '#FFFFFF',    // white text on violet bubbles
+  textOnPrimary: '#FFFFFF',
 
   // Borders
   border:      '#E5E7EB',
@@ -123,7 +124,7 @@ export const lightTheme: ThemeColors = {
   info:    '#3B82F6',
 
   // Message ticks
-  messageRead:      '#8F00FF',
+  messageRead:      '#0F62FE',
   messageSent:      '#9CA3AF',
   messageDelivered: '#9CA3AF',
 
@@ -133,53 +134,53 @@ export const lightTheme: ThemeColors = {
 
   // Misc
   skeleton:  '#E5E7EB',
-  ripple:    'rgba(143,0,255,0.1)',
+  ripple:    'rgba(15,98,254,0.1)',
   headerTint: '#111827',
 };
 
-// ─── Dark Theme — deep dark with violet identity ──────────────────────────────────
+// ─── Dark Theme — Midnight Obsidian (#020912 / #050f1e / #071524) ─────────────
 
 export const darkTheme: ThemeColors = {
-  // Violet brand (slightly lighter for dark bg contrast)
-  primary:      '#A940FF',
-  primaryDark:  '#8F00FF',
-  primaryLight: '#C26EFF',
-  secondary:    '#C26EFF',
-  accent:       '#D580FF',
+  // Brand accents
+  primary:      '#38BDF8',
+  primaryDark:  '#071524',
+  primaryLight: '#60A5FA',
+  secondary:    '#38BDF8',
+  accent:       '#050F1E',
 
-  // Backgrounds — deep dark, not pitch black
-  background:   '#0D0D14',
-  surface:      '#181824',
-  card:         '#181824',
-  tabBar:       '#181824',
+  // Backgrounds — Obsidian Navy Palette
+  background:   '#020912',
+  surface:      '#050F1E',
+  card:         '#050F1E',
+  tabBar:       '#050F1E',
 
   // Chat
-  chatBackground: '#0D0D14',
-  myMessage:      '#8F00FF',   // violet sent bubble (same brand)
-  theirMessage:   '#262636',   // dark neutral received bubble
+  chatBackground: '#020912',
+  myMessage:      '#0B3C68',   // deep navy sent bubble
+  theirMessage:   '#0B1B2D',   // neutral dark received bubble
 
   // Text
-  textPrimary:   '#F5F5F5',
-  textSecondary: '#A0A0B0',
-  textMuted:     '#6B6B80',
+  textPrimary:   '#F1F5F9',
+  textSecondary: '#94A3B8',
+  textMuted:     '#64748B',
   textOnPrimary: '#FFFFFF',
 
   // Borders
-  border:      '#2A2A3D',
-  borderLight: '#222232',
-  separator:   '#1E1E2E',
+  border:      '#0E2238',
+  borderLight: '#0C1A2B',
+  separator:   '#081726',
 
   // Icons
-  icon:      '#A0A0B0',
-  iconMuted: '#6B6B80',
+  icon:      '#94A3B8',
+  iconMuted: '#64748B',
 
   // Inputs
-  inputBackground: '#1E1E2E',
-  inputText:       '#F5F5F5',
-  placeholder:     '#6B6B80',
+  inputBackground: '#0B1B2D',
+  inputText:       '#F1F5F9',
+  placeholder:     '#64748B',
 
   // Bars
-  statusBar:      '#0D0D14',
+  statusBar:      '#020912',
   navBar:         '#00000000',
   statusBarStyle: 'light-content',
 
@@ -190,40 +191,38 @@ export const darkTheme: ThemeColors = {
   info:    '#60A5FA',
 
   // Message ticks
-  messageRead:      '#A940FF',
-  messageSent:      '#6B6B80',
-  messageDelivered: '#6B6B80',
+  messageRead:      '#38BDF8',
+  messageSent:      '#64748B',
+  messageDelivered: '#64748B',
 
   // Modal
   modalOverlay:    'rgba(0,0,0,0.75)',
-  modalBackground: '#1E1E2E',
+  modalBackground: '#050F1E',
 
   // Misc
-  skeleton:  '#1E1E2E',
-  ripple:    'rgba(169,64,255,0.15)',
-  headerTint: '#F5F5F5',
+  skeleton:  '#0B1B2D',
+  ripple:    'rgba(56,189,248,0.15)',
+  headerTint: '#F1F5F9',
 };
 
 // ─── Legacy exports (backward compatibility) ─────────────────────────────────────
-// Still used by files not yet on useTheme(). Mirrors the light theme values.
-
 export const colors = {
-  primary:      '#8F00FF',
-  primaryDark:  '#7B00E6',
-  primaryLight: '#B026FF',
-  secondary:    '#B026FF',
-  accent:       '#D580FF',
+  primary:      '#0F62FE',
+  primaryDark:  '#020912',
+  primaryLight: '#38BDF8',
+  secondary:    '#38BDF8',
+  accent:       '#071524',
 
   background:     '#FAFAFC',
-  backgroundDark: '#0D0D14',
+  backgroundDark: '#020912',
   surface:        '#FFFFFF',
-  surfaceDark:    '#181824',
+  surfaceDark:    '#050F1E',
 
   chatBackground:    '#F2F2F7',
-  myMessage:         '#8F00FF',
+  myMessage:         '#0F62FE',
   theirMessage:      '#F2F2F7',
-  myMessageDark:     '#8F00FF',
-  theirMessageDark:  '#262636',
+  myMessageDark:     '#0B3C68',
+  theirMessageDark:  '#0B1B2D',
 
   textPrimary:   '#111827',
   textSecondary: '#6B7280',
@@ -236,12 +235,12 @@ export const colors = {
   info:    '#3B82F6',
 
   border:     '#E5E7EB',
-  borderDark: '#2A2A3D',
+  borderDark: '#0E2238',
 
   icon:      '#6B7280',
-  iconLight: '#A0A0B0',
+  iconLight: '#94A3B8',
 
-  messageRead:      '#8F00FF',
+  messageRead:      '#0F62FE',
   messageSent:      '#9CA3AF',
   messageDelivered: '#9CA3AF',
 };
@@ -260,7 +259,7 @@ export const borderRadius = {
   md:   8,
   lg:   12,
   xl:   16,
-  xxl:  24,   // cards & bubbles — Material 3 style
+  xxl:  24,
   full: 9999,
 };
 
@@ -274,13 +273,9 @@ export const fontSize = {
   xxxl: 24,
 };
 
-// Violet brand gradient — use in LinearGradient components
-export const brandGradient = ['#6A00F4', '#8F00FF', '#B026FF'];
-export const brandGradientDark = ['#7B00E6', '#A940FF', '#C26EFF'];
-
 export const shadows = {
   small: {
-    shadowColor: '#8F00FF',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.08,
     shadowRadius: 3,

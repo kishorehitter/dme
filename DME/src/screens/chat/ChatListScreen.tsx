@@ -71,8 +71,8 @@ const PopoverMenu = ({
   onSettings: () => void, onAppUpdate: () => void, onShareApp: () => void
 }) => {
   const { hasUpdate } = useUpdateInfo();
-  const { theme } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+  const { theme, isDark } = useTheme();
+  const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
@@ -223,9 +223,9 @@ const renderMessageTicks = (lastMessage: any) => {
   }
 };
 
-export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) => {
+export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+  const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
       const cached = localDatabase.getConversations();
@@ -235,7 +235,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
     }
   });
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
-  const [activeTab, setActiveTab] = useState<'all' | 'friends' | 'groups' | 'pending'>('all');
+  const initialTabParam = route?.params?.initialTab || route?.params?.tab;
+  const [activeTab, setActiveTab] = useState<'all' | 'friends' | 'groups' | 'pending'>(
+    initialTabParam === 'pending' || initialTabParam === 'friends' || initialTabParam === 'groups'
+      ? initialTabParam
+      : 'all'
+  );
   const [friends, setFriends] = useState<any[]>([]);
   const [messageRequests, setMessageRequests] = useState<any[]>([]);
   const [friendRequestsCount, setFriendRequestsCount] = useState<number>(0);
@@ -261,6 +266,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   const [containerHeight, setContainerHeight] = useState<number | null>(null);
   const searchRef = useRef<TextInput>(null);
+  const userTouchedSearch = useRef(false);
 
   // ── Auto-reset countdown after 1 s of idle typing ───────────────────────────
   const [countdownActive, setCountdownActive] = useState(false);
@@ -365,19 +371,22 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
-      setIsKeyboardActive(true);
+      if (searchRef.current?.isFocused()) {
+        setIsKeyboardActive(true);
+      }
     });
     const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
-      setIsKeyboardActive(false);
-      DeviceEventEmitter.emit('show_tab_bar_smoothly');
-      searchRef.current?.blur();
+      if (isKeyboardActive) {
+        setIsKeyboardActive(false);
+        searchRef.current?.blur();
+      }
     });
 
     return () => {
       showSubscription.remove();
       hideSubscription.remove();
     };
-  }, []);
+  }, [isKeyboardActive]);
 
   // ── Onboarding tour ────────────────────────────────────────────────────────
   const ONBOARDING_KEY = `dme_onboarding_done_v1_${user?.id || 'default'}`;
@@ -487,6 +496,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 
   useFocusEffect(
     useCallback(() => {
+      userTouchedSearch.current = false;
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
       loadConversations();
     }, [loadConversations])
@@ -648,6 +658,21 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                     });
                 });
             }
+        } else if (message.type === 'message_request_status') {
+            // Update the conversation's message_request_status inline so the
+            // conversation moves between Pending / All / Friends immediately.
+            const { conversation_id, status: reqStatus } = message.data || {};
+            if (conversation_id) {
+                setConversations(prev => prev.map(c =>
+                    c.id === conversation_id
+                        ? { ...c, message_request_status: reqStatus }
+                        : c
+                ));
+            }
+            // Refresh friends list too — friendship state may have changed.
+            chatAPI.getFriends().then(data => {
+                setFriends(Array.isArray(data) ? data : (data?.results || []));
+            }).catch(() => {});
         }
     });
 
@@ -663,12 +688,26 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
         }));
     });
 
+    // When a friend request is accepted from FriendListScreen, reload everything
+    // so the conversation appears in All/Friends with the correct status.
+    const friendAcceptedSub = DeviceEventEmitter.addListener('friend_request_accepted', () => {
+        loadConversations();
+    });
+
     return () => { 
         websocketService.disconnectRoom();
         unsubscribe();
         readSub.remove();
+        friendAcceptedSub.remove();
     };
   }, [loadConversations]);
+
+  useEffect(() => {
+    const tabParam = route?.params?.initialTab || route?.params?.tab;
+    if (tabParam && ['all', 'friends', 'groups', 'pending'].includes(tabParam)) {
+      setActiveTab(tabParam);
+    }
+  }, [route?.params?.initialTab, route?.params?.tab]);
 
   const handleLogout = async () => {
     Alert.alert('Logout', 'Are you sure you want to logout?', [
@@ -749,7 +788,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
           </TouchableOpacity>
         ) : (
-          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#8F00FF', marginLeft: 16 }}>Inaivo</Text>
+          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#222', marginLeft: 16 }}>Inaivo</Text>
         )
       ),
       headerRight: () => (
@@ -1029,9 +1068,14 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
           </Animated.View>
         </View>
       </Modal>
-      <View style={{ paddingHorizontal: 16, paddingBottom: 4, paddingTop: 4, backgroundColor: theme.surface }}>
+      <View
+        style={{ paddingHorizontal: 16, paddingBottom: 4, paddingTop: 4, backgroundColor: theme.surface }}
+        onTouchStart={() => { userTouchedSearch.current = true; }}
+      >
         {/* ── Search bar with rotating pink glow border ── */}
         <View 
+          focusable={true}
+          focusableInTouchMode={true}
           onLayout={e => {
             const w = e.nativeEvent.layout.width;
             if (w > 0 && w !== searchBarWidth) {
@@ -1086,11 +1130,17 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               placeholder="Search by name..."
               placeholderTextColor={theme.placeholder || "#888"}
               value={searchQuery}
+              caretHidden={!isSearchFocused}
               onChangeText={v => {
                 setSearchQuery(v);
                 if (countdownActive) clearCountdown();
               }}
               onFocus={() => {
+                if (!userTouchedSearch.current) {
+                  // Android auto-assigned focus — reject it immediately
+                  searchRef.current?.blur();
+                  return;
+                }
                 setIsSearchFocused(true);
                 startSpinForward();
                 setIsKeyboardActive(true);
@@ -1229,8 +1279,27 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
             const lastMsgContent = lastMsg ? renderLastMessageContent(lastMsg) : 'Sent you a message request';
             const lastMsgTime = lastMsg ? formatMessageTime(lastMsg.created_at) : '';
 
+            const convId = item.conversation || item.conversation_id;
+
             return (
-              <View style={s.conversationItem}>
+              <TouchableOpacity
+                style={s.conversationItem}
+                activeOpacity={0.7}
+                onPress={() => {
+                  if (convId) {
+                    navigation.navigate('ChatRoom', { 
+                      conversationId: Number(convId),
+                      name: displayName,
+                      avatarUri: reqSender?.profile_picture,
+                      avatarSticker: reqSender?.avatar_sticker,
+                      isGroup: false,
+                      otherUser: reqSender,
+                      messageRequestStatus: item.status || 'pending',
+                      messageRequestSenderId: reqSender?.id,
+                    });
+                  }
+                }}
+              >
                 <AvatarWithFallback
                   uri={reqSender?.profile_picture}
                   sticker={reqSender?.avatar_sticker}
@@ -1247,18 +1316,24 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                   {lastMsgTime ? <Text style={[s.time, { marginRight: 8 }]}>{lastMsgTime}</Text> : null}
                   <TouchableOpacity
                     style={[s.smallBtn, { backgroundColor: '#fff', marginRight: 6 }]}
-                    onPress={() => handleAcceptRequest(item.id)}
+                    onPress={(e) => {
+                      e?.stopPropagation?.();
+                      handleAcceptRequest(item.id);
+                    }}
                   >
                     <Icon name="checkmark" size={14} color="#000" />
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[s.smallBtn, { backgroundColor: '#fff' }]}
-                    onPress={() => handleRejectRequest(item.id)}
+                    onPress={(e) => {
+                      e?.stopPropagation?.();
+                      handleRejectRequest(item.id);
+                    }}
                   >
                     <Icon name="close" size={14} color="#000" />
                   </TouchableOpacity>
                 </View>
-              </View>
+              </TouchableOpacity>
             );
           }
 
@@ -1292,15 +1367,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
                 if (selectionMode) {
                   toggleSelection(item.id);
                 } else {
-                  InteractionManager.runAfterInteractions(() => {
-                    navigation.navigate('ChatRoom', { 
-                      conversationId: item.id, 
-                      name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User'),
-                      avatarUri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
-                      avatarSticker: item.is_group ? null : item.other_user?.avatar_sticker,
-                      isGroup: item.is_group,
-                      otherUser: item.is_group ? null : item.other_user,
-                    });
+                  navigation.navigate('ChatRoom', { 
+                    conversationId: item.id, 
+                    name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User'),
+                    avatarUri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
+                    avatarSticker: item.is_group ? null : item.other_user?.avatar_sticker,
+                    isGroup: item.is_group,
+                    otherUser: item.is_group ? null : item.other_user,
                   });
                 }
               }}
@@ -1454,10 +1527,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
       <View 
         ref={fabRef} 
         collapsable={false} 
-        style={s.fabWrapper}
+        style={[s.fabWrapper, { bottom: 80 + insets.bottom }]}
       >
         <TouchableOpacity style={s.composeButton} onPress={() => navigation.navigate('FriendList')}>
-          <Icon name="person-add-outline" size={25} color="#FFF" />
+          <Icon name="person-add-outline" size={25} color={theme.textPrimary} />
           {friendRequestsCount > 0 && (
             <View style={{
               position: 'absolute',
@@ -1471,7 +1544,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
               alignItems: 'center',
               paddingHorizontal: 4,
               borderWidth: 2,
-              borderColor: '#FFF',
+              borderColor: theme.background,
             }}>
               <Text style={{
                 color: '#FFF',
@@ -1498,8 +1571,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation }) =>
 const THEME_COLOR = '#4597f5f6';
 const BG_COLOR = '#E8DEF8';
 
-const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.background },
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = false) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.surface },
   avatar: { width: 50, height: 50, borderRadius: 25 },
   avatarPlaceholder: { backgroundColor: theme.surface, borderWidth: 1, borderColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' },
   avatarText: { color: THEME_COLOR, fontSize: fontSize.lg, fontWeight: 'bold' },
@@ -1510,10 +1583,10 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   lastMessage: { fontSize: fontSize.md, color: theme.textSecondary, flex: 1 },
   tabContainer: { flexDirection: 'row', padding: spacing.sm, justifyContent: 'space-evenly' },
   tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
-  activeTabButton: { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, elevation: 2, shadowRadius: 2, marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
-  inactiveTabButton: { borderWidth: 1, borderColor: theme.border, marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
+  activeTabButton: { backgroundColor: isDark ? '#2C2C2E' : '#F0F0F0', borderWidth: 1.2, borderColor: isDark ? 'rgba(255, 255, 255, 0.35)' : '#444444', elevation: 2, shadowRadius: 2, marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
+  inactiveTabButton: { borderWidth: 1, borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : '#CCCCCC', marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
   tabText: { fontSize: fontSize.md, fontWeight: '500', color: theme.textSecondary },
-  activeTabText: { color: theme.textPrimary, fontWeight: 'bold' },
+  activeTabText: { color: isDark ? '#FFFFFF' : '#111111', fontWeight: 'bold' },
   logItemSelected: {
     backgroundColor: theme.surface,
   },
@@ -1537,7 +1610,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     fontWeight: '600',
   },
   fabWrapper: { position: 'absolute', bottom: 80, right: 16 },
-  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: '#8F00FF', justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: theme.background, borderWidth: 1, borderColor: isDark ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.12)', justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
 
   onlineDot: {
     position: 'absolute',
@@ -1593,7 +1666,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   },
   requestsCountBadge: {
     marginLeft: 5,
-    backgroundColor: theme.border,
+    backgroundColor: theme.textMuted,
     borderRadius: 10,
     minWidth: 18,
     height: 18,

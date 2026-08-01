@@ -30,6 +30,9 @@ export interface Status {
   caption_y:  number;
   caption_scale: number;
   caption_rotation: number;
+  text_color?: string;
+  text_bg_style?: string;
+  font_index?: number;
   created_at: string;
   view_count: number;
   is_viewed:  boolean;
@@ -102,6 +105,9 @@ export const StatusService = {
     captionY: number = 0,
     captionScale: number = 1,
     captionRotation: number = 0,
+    textColor: string = '#FFFFFF',
+    textBgStyle: string = 'none',
+    fontIndex: number = 0,
   ): Promise<Status> {
     const form = new FormData();
     const filename  = mediaUri.split('/').pop() ?? 'upload';
@@ -120,6 +126,9 @@ export const StatusService = {
     form.append('caption_y', captionY.toString());
     form.append('caption_scale', captionScale.toString());
     form.append('caption_rotation', captionRotation.toString());
+    form.append('text_color', textColor);
+    form.append('text_bg_style', textBgStyle);
+    form.append('font_index', fontIndex.toString());
 
     // Add restricted users as JSON string
     if (restrictedTo && restrictedTo.length > 0) {

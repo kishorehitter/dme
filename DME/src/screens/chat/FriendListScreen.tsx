@@ -12,7 +12,10 @@ import {
   Animated,
   Easing,
   Modal,
+  DeviceEventEmitter,
+  InteractionManager,
 } from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { chatAPI, callsAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
@@ -127,7 +130,12 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   }, [navigation, isAdding, isInvitingToCall, theme]);
 
   const [conversationId, setConversationId] = useState(initialConversationId);
-  const [activeTab, setActiveTab] = useState<HubTab>('friends');
+  const initialTabParam = route?.params?.initialTab || route?.params?.tab;
+  const [activeTab, setActiveTab] = useState<HubTab>(
+    initialTabParam === 'approve' || initialTabParam === 'requests' || initialTabParam === 'friends'
+      ? (initialTabParam as HubTab)
+      : 'friends'
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [isNewFriendSearchActive, setIsNewFriendSearchActive] = useState(false);
 
@@ -151,6 +159,33 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
   const [addModeUsers, setAddModeUsers] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // ── Bounce animation for search button ────────────────────────────────────
+  const findBtnBounceAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      const bounceLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(findBtnBounceAnim, {
+            toValue: 1.12,
+            duration: 600,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(findBtnBounceAnim, {
+            toValue: 1,
+            duration: 600,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      bounceLoop.start();
+      return () => bounceLoop.stop();
+    });
+    return () => task.cancel();
+  }, [findBtnBounceAnim]);
 
   // ── Fallback: fetch conversationId for call invite ──────────────────────────
   useEffect(() => {
@@ -282,13 +317,23 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   }, [isAdding, isInvitingToCall]);
 
   useEffect(() => {
-    if (isAdding || isInvitingToCall) {
-      loadAddModeUsers();
-    } else {
-      loadFriends();
-      loadFriendRequests();
-    }
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (isAdding || isInvitingToCall) {
+        loadAddModeUsers();
+      } else {
+        loadFriends();
+        loadFriendRequests();
+      }
+    });
+    return () => task.cancel();
   }, [isAdding, isInvitingToCall]);
+
+  useEffect(() => {
+    const tabParam = route?.params?.initialTab || route?.params?.tab;
+    if (tabParam && (tabParam === 'approve' || tabParam === 'requests' || tabParam === 'friends')) {
+      setActiveTab(tabParam as HubTab);
+    }
+  }, [route?.params?.initialTab, route?.params?.tab]);
 
   // ── Find new friend manually ──────────────────────────────────────────────────
   const handleFindNewFriend = async () => {
@@ -395,6 +440,8 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     try {
       await chatAPI.acceptFriendRequest(requestId);
       showToast('Friend Request Accepted');
+      // Notify ChatListScreen to refresh conversations + friends list.
+      DeviceEventEmitter.emit('friend_request_accepted');
       await loadFriendRequests();
       await loadFriends();
     } catch {
@@ -482,16 +529,22 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const renderFriendItem = ({ item }: { item: User }) => {
     const displayName = item.display_name || item.email || 'Unknown';
     return (
-      <TouchableOpacity style={s.userRow} onPress={() => startChat(item)} activeOpacity={0.7}>
-        <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={s.avatar} />
-        <View style={s.userInfo}>
-          <Text style={s.userName}>{displayName}</Text>
-          <Text style={s.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
-        </View>
+      <View style={s.userRow}>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+          onPress={() => navigation.navigate('Profile', { user: item })}
+          activeOpacity={0.7}
+        >
+          <AvatarWithFallback uri={item.profile_picture} displayName={displayName} sticker={item.avatar_sticker} style={s.avatar} />
+          <View style={s.userInfo}>
+            <Text style={s.userName}>{displayName}</Text>
+            <Text style={s.userSub} numberOfLines={1}>{item.username ? `@${item.username}` : item.email}</Text>
+          </View>
+        </TouchableOpacity>
         <TouchableOpacity style={s.chatBtn} onPress={() => startChat(item)}>
           <Icon name="chatbubble-ellipses" size={20} color={theme.textSecondary} />
         </TouchableOpacity>
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -500,11 +553,17 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     const displayName = receiver?.display_name || receiver?.username || receiver?.email || 'User';
     return (
       <View style={s.userRow}>
-        <AvatarWithFallback uri={receiver?.profile_picture} displayName={displayName} sticker={receiver?.avatar_sticker} style={s.avatar} />
-        <View style={s.userInfo}>
-          <Text style={s.userName}>{displayName}</Text>
-          <Text style={s.userSub}>Request sent · waiting</Text>
-        </View>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+          onPress={() => receiver && navigation.navigate('Profile', { user: receiver })}
+          activeOpacity={0.7}
+        >
+          <AvatarWithFallback uri={receiver?.profile_picture} displayName={displayName} sticker={receiver?.avatar_sticker} style={s.avatar} />
+          <View style={s.userInfo}>
+            <Text style={s.userName}>{displayName}</Text>
+            <Text style={s.userSub}>Request sent · waiting</Text>
+          </View>
+        </TouchableOpacity>
         <TouchableOpacity
           style={s.rejectBtn}
           onPress={() => handleCancelSentRequest(item.id)}
@@ -520,11 +579,17 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     const displayName = sender?.display_name || sender?.username || sender?.email || 'User';
     return (
       <View style={s.userRow}>
-        <AvatarWithFallback uri={sender?.profile_picture} displayName={displayName} sticker={sender?.avatar_sticker} style={s.avatar} />
-        <View style={s.userInfo}>
-          <Text style={s.userName}>{displayName}</Text>
-          <Text style={s.userSub}>Wants to be your friend</Text>
-        </View>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+          onPress={() => sender && navigation.navigate('Profile', { user: sender })}
+          activeOpacity={0.7}
+        >
+          <AvatarWithFallback uri={sender?.profile_picture} displayName={displayName} sticker={sender?.avatar_sticker} style={s.avatar} />
+          <View style={s.userInfo}>
+            <Text style={s.userName}>{displayName}</Text>
+            <Text style={s.userSub}>Wants to be your friend</Text>
+          </View>
+        </TouchableOpacity>
         <View style={s.choiceRow}>
           <TouchableOpacity style={s.acceptBtn} onPress={() => handleAcceptFriendRequest(item.id)}>
             <Icon name="checkmark" size={15} color={theme.textPrimary} />
@@ -695,11 +760,19 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               {!isGroupMode && (
                 <TouchableOpacity 
-                  style={s.findNewBtn} 
                   onPress={handleFindNewFriend}
-                  activeOpacity={0.7}
+                  activeOpacity={0.8}
                 >
-                  <Text style={s.findNewText}>Tap to Find</Text>
+                  <Animated.View style={{ transform: [{ scale: findBtnBounceAnim }] }}>
+                    <LinearGradient
+                      colors={['#FF4081', '#00E676']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={s.findNewBtn}
+                    >
+                      <Text style={s.findNewText}>Tap to Find</Text>
+                    </LinearGradient>
+                  </Animated.View>
                 </TouchableOpacity>
               )}
               <TouchableOpacity onPress={handleClearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -812,13 +885,12 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
 };
 
 const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.background },
+  container: { flex: 1, backgroundColor: theme.surface },
   searchWrapper: {
     paddingHorizontal: 16,
     paddingVertical: 10,
     backgroundColor: theme.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+    
   },
   searchBar: {
     flexDirection: 'row',
@@ -838,8 +910,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     backgroundColor: theme.surface,
     paddingHorizontal: 12,
     paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+    
     gap: 8,
   },
   tabBtn: {
@@ -862,8 +933,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     paddingHorizontal: 16,
     paddingVertical: 12,
     backgroundColor: theme.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.separator,
+   
   },
   avatar: { width: 46, height: 46, borderRadius: 23, marginRight: 12 },
   userInfo: { flex: 1 },
@@ -957,7 +1027,6 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   },
   floatBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
   findNewBtn: {
-    backgroundColor: theme.primary,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 14,

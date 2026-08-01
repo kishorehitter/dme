@@ -11,7 +11,11 @@ import {
   Modal,
   FlatList,
   ScrollView,
+  StatusBar,
+  NativeModules,
+  Platform,
 } from 'react-native';
+import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';

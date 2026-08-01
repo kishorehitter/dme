@@ -57,10 +57,38 @@ export interface FCMData {
 export type TokenCallback = (token: string) => void;
 export type PressCallback = (data: FCMData) => void;
 
-let currentAppState: AppStateStatus = AppState.currentState;
-AppState.addEventListener('change', (nextState: AppStateStatus) => {
-  currentAppState = nextState;
-});
+function sanitizeNotifBody(body?: string, msgType?: string): string {
+  if (!body) return '';
+  const type = (msgType || '').toLowerCase();
+  if (type === 'lottie_sticker' || type === 'sticker') return '🎭 Sticker';
+  if (type === 'image') return '📷 Photo';
+  if (type === 'video') return '🎥 Video';
+  if (type === 'audio' || type === 'voice') return '🎵 Voice message';
+  if (type === 'document' || type === 'file') return '📄 Document';
+  if (type === 'gif') return '👾 GIF';
+  if (type === 'location') return '📍 Location';
+
+  const clean = body.trim();
+  if (clean.startsWith('http://') || clean.startsWith('https://')) {
+    const lower = clean.toLowerCase();
+    if (lower.includes('/stickers/') || lower.includes('/lottie/') || lower.endsWith('.json') || lower.includes('sticker')) {
+      return '🎭 Sticker';
+    }
+    if (['.jpg', '.jpeg', '.png', '.webp', '.heic'].some(ext => lower.endsWith(ext))) {
+      return '📷 Photo';
+    }
+    if (['.mp4', '.mov', '.mkv', '.webm'].some(ext => lower.endsWith(ext))) {
+      return '🎥 Video';
+    }
+    if (['.mp3', '.wav', '.m4a', '.aac', '.ogg'].some(ext => lower.endsWith(ext))) {
+      return '🎵 Voice message';
+    }
+    if (lower.endsWith('.gif')) {
+      return '👾 GIF';
+    }
+  }
+  return clean;
+}
 
 class FCMService {
   private _initialNotificationHandled = false;
@@ -327,8 +355,10 @@ class FCMService {
       }
     }
 
+    const notifBodyText = sanitizeNotifBody(data.notif_body, data.msg_type);
+
     messages.push({
-      text: data.notif_body || '',
+      text: notifBodyText,
       timestamp: Date.now(),
       person: { name: data.sender || 'Someone' },
     });
@@ -346,7 +376,7 @@ class FCMService {
     const notificationPayload: any = {
       id: notifId,
       title: data.sender || 'New Message',
-      body: data.notif_body || '',
+      body: notifBodyText,
       data: {
         ...(data as { [key: string]: string }),
         msg_ids: JSON.stringify(msgIds),

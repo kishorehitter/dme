@@ -23,6 +23,7 @@ import { User } from '../../types';
 import { getApiUrl } from '../../config/network';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useTheme } from '../../context/ThemeContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface FriendListScreenProps {
   navigation: any;
@@ -105,6 +106,7 @@ const AnimatedAddButton = ({
 
 // ── Main Screen ──────────────────────────────────────────────────────────────
 export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, route }) => {
+  const insets = useSafeAreaInsets();
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const isAdding = route?.params?.isAdding || false;
@@ -317,16 +319,25 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   }, [isAdding, isInvitingToCall]);
 
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
+    const loadData = () => {
       if (isAdding || isInvitingToCall) {
         loadAddModeUsers();
       } else {
         loadFriends();
         loadFriendRequests();
       }
+    };
+
+    // Load initially
+    loadData();
+
+    // Reload when screen gains focus
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadData();
     });
-    return () => task.cancel();
-  }, [isAdding, isInvitingToCall]);
+
+    return unsubscribe;
+  }, [isAdding, isInvitingToCall, loadFriends, loadFriendRequests, loadAddModeUsers, navigation]);
 
   useEffect(() => {
     const tabParam = route?.params?.initialTab || route?.params?.tab;
@@ -497,10 +508,12 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     setIsSubmitting(true);
     try {
       await chatAPI.addParticipant(conversationId, selectedUserIds);
-      Alert.alert('Success', 'Members added successfully');
-      navigation.goBack();
+      showToast('Members Added');
+      setTimeout(() => {
+        navigation.goBack();
+      }, 700);
     } catch {
-      Alert.alert('Error', 'Failed to add members');
+      showToast('Failed to Add Members');
     } finally {
       setIsSubmitting(false);
     }
@@ -515,10 +528,12 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     try {
       if (!currentRoomName) throw new Error('Missing roomName');
       await callsAPI.inviteToGroupCall(user.id, currentRoomName, currentCallId, callType);
-      Alert.alert('Success', `Invitation sent to ${user.display_name || user.email}`);
-      navigation.goBack();
+      showToast('Invitation Sent');
+      setTimeout(() => {
+        navigation.goBack();
+      }, 700);
     } catch {
-      Alert.alert('Error', 'Failed to send invite');
+      showToast('Failed to Send Invite');
     } finally {
       setIsSubmitting(false);
     }
@@ -861,13 +876,20 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
               </Text>
             </View>
           }
-          contentContainerStyle={displayData.length === 0 ? s.emptyList : undefined}
+          contentContainerStyle={[
+            displayData.length === 0 && s.emptyList,
+            { paddingBottom: Math.max(insets.bottom, 16) + (isGroupMode && selectedUserIds.length > 0 ? 84 : 20) },
+          ]}
         />
       )}
 
       {isGroupMode && selectedUserIds.length > 0 && (
         <TouchableOpacity
-          style={[s.floatBtn, isSubmitting && { opacity: 0.7 }]}
+          style={[
+            s.floatBtn,
+            { bottom: Math.max(insets.bottom, 16) + 16 },
+            isSubmitting && { opacity: 0.7 },
+          ]}
           onPress={handleAddMembers}
           disabled={isSubmitting}
         >

@@ -1,131 +1,94 @@
-# DME - Backend
+# DME - Backend (Django ASGI)
 
-Django REST Framework + Django Channels backend for DME.
+A high-performance Django REST Framework and Django Channels backend providing real-time WebSocket communication, media streaming, LiveKit WebRTC signaling, push notifications, and entertainment services for DME.
 
-## Features
+---
 
-- **Email OTP Authentication** - Register and login with email verification
-- **JWT Tokens** - Secure API authentication
-- **Real-time Messaging** - WebSocket support with Django Channels
-- **One-on-One & Group Chats** - Full conversation support
-- **Message Reactions** - Emoji reactions to messages
-- **Typing Indicators** - Real-time typing status
-- **Read Receipts** - Track message read status
-- **Media Sharing** - Image, video, audio, document support
+## 🏗️ Backend Apps & Modules
 
-## Setup
+| App | Description | Key Capabilities |
+|---|---|---|
+| **`accounts`** | User Identity & Profiles | Google OAuth, JWT authentication, user profile setup, friend requests, user blocking, and account management. |
+| **`chat`** | Real-Time Messaging & Status | 1-on-1 & Group chat, typing indicators, read receipts, double-tap & emoji reactions, message unsend/delete, 24-hr multimedia Stories/Status with viewer tracking. |
+| **`calls`** | Voice & Video Calling | 1-on-1 and Group WebRTC call signaling, LiveKit SFU access token generation, call history logs. |
+| **`music`** | Collaborative Music Room | YouTube & Google Drive synchronized playback, DJ queue control, millisecond-accurate seek sync, room chat, watch history, and likes. |
+| **`trivia`** | Interactive Trivia Game | Solo scoring, multilingual questions (English & Tamil), custom question sets, and in-chat direct trivia challenge creation/claiming. |
+| **`notifications`** | Push Notifications | Firebase Cloud Messaging (FCM HTTP v1) integration for high-priority incoming calls, room invites, and background message delivery. |
+| **`youtube_search`** | YouTube Metadata Proxy | In-app YouTube video search, related video discovery, and stream metadata extraction with cookie rotation. |
 
-### Prerequisites
+---
 
-- Python 3.12+
-- Virtual environment (`.venv` in project root)
+## ⚡ Real-Time WebSocket Routes
 
-### Installation
+| WebSocket Endpoint | Consumer | Event Handlers |
+|---|---|---|
+| `ws/chat/<conversation_id>/` | `ChatConsumer` | New message, message edit, message delete, reactions, typing indicator, mark read. |
+| `ws/music/<room_code>/` | `MusicRoomConsumer` | Sync play/pause/seek, queue add/remove/reorder, live room reactions & chat, host delegation. |
+| `ws/calls/<user_id>/` | `CallConsumer` | Incoming call offer, call answer, call reject, call ended, group call invites. |
+| `ws/presence/` | `PresenceConsumer` | Online/offline status broadcasting and heartbeat ping. |
 
-1. Activate virtual environment:
+---
 
-   ```bash
-   cd C:\Agent\Qwen\.venv\Scripts
-   activate.bat
-   ```
+## 🚀 Setup & Execution
 
-2. Install dependencies:
+### 1. Prerequisites
+- Python 3.10+
+- Virtual environment in root (`.venv`)
+- Redis server (recommended for production Channel layers)
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 2. Installation
+```bash
+# Activate virtual environment
+cd C:\Dev\AndroidApp
+.venv\Scripts\activate
 
-3. Run migrations:
+# Navigate to backend
+cd backend
 
-   ```bash
-   python manage.py migrate
-   ```
+# Install dependencies
+pip install -r requirements.txt
 
-4. Create superuser (optional):
-
-   ```bash
-   python manage.py createsuperuser
-   ```
-
-5. Run development server:
-   ```bash
-   python manage.py runserver
-   ```
-
-## API Endpoints
-
-### Authentication
-
-| Method | Endpoint                        | Description                  |
-| ------ | ------------------------------- | ---------------------------- |
-| POST   | `/api/accounts/register/`       | Register new user            |
-| POST   | `/api/accounts/login/`          | Login with email/password    |
-| POST   | `/api/accounts/logout/`         | Logout (blacklist token)     |
-| POST   | `/api/accounts/request-otp/`    | Request OTP for verification |
-| POST   | `/api/accounts/verify-otp/`     | Verify OTP and get tokens    |
-| POST   | `/api/accounts/token/refresh/`  | Refresh access token         |
-| GET    | `/api/accounts/profile/`        | Get current user profile     |
-| PUT    | `/api/accounts/profile/update/` | Update profile               |
-
-### Chat
-
-| Method | Endpoint                                  | Description              |
-| ------ | ----------------------------------------- | ------------------------ |
-| GET    | `/api/chat/conversations/`                | List all conversations   |
-| POST   | `/api/chat/conversations/`                | Create new conversation  |
-| GET    | `/api/chat/conversations/{id}/`           | Get conversation details |
-| GET    | `/api/chat/conversations/{id}/messages/`  | List messages            |
-| POST   | `/api/chat/conversations/{id}/messages/`  | Send message             |
-| POST   | `/api/chat/conversations/{id}/mark-read/` | Mark messages as read    |
-| GET    | `/api/chat/users/search/`                 | Search users             |
-| GET    | `/api/chat/users/{id}/chat/`              | Get/create direct chat   |
-
-### WebSocket
-
-Connect to: `ws://localhost:8000/ws/chat/{conversation_id}/`
-
-Send JSON messages:
-
-```json
-{
-  "type": "message",
-  "content": "Hello!",
-  "message_type": "text"
-}
+# Run database migrations
+python manage.py migrate
 ```
 
-Receive messages:
-
-```json
-{
-  "type": "message",
-  "data": {
-    "id": 1,
-    "sender": {...},
-    "content": "Hello!",
-    "created_at": "2024-01-01T00:00:00"
-  }
-}
-```
-
-## Testing with curl
-
-### Register
+### 3. Running with Daphne (ASGI)
+Django Channels requires an ASGI server to handle both HTTP and WebSocket traffic:
 
 ```bash
-curl -X POST http://localhost:8000/api/accounts/register/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"password123","password_confirm":"password123","first_name":"Test"}'
+# Run with Daphne (port 8000)
+daphne -b 0.0.0.0 -p 8000 myproject.asgi:application
+
+# Or standard Django development server
+python manage.py runserver 0.0.0.0:8000
 ```
 
-### Login
+---
 
-```bash
-curl -X POST http://localhost:8000/api/accounts/login/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"password123"}'
-```
+## 📡 Core API Summary
 
-## Admin Panel
+### Authentication & Profile
+- `POST /api/accounts/google/` - Google OAuth authentication
+- `GET /api/accounts/profile/` - Current user profile
+- `POST /api/accounts/profile/update/` - Update profile details & avatar
+- `GET /api/accounts/friends/` - List user friends
+- `POST /api/accounts/friends/requests/` - Send/list friend requests
 
-Access at: `http://localhost:8000/admin/`
+### Chat & Status
+- `GET /api/chat/conversations/` - List conversations
+- `GET /api/chat/conversations/<id>/messages/` - Paginated message history
+- `POST /api/chat/conversations/<id>/messages/` - Upload & send message
+- `POST /api/chat/messages/<id>/react/` - Toggle message reaction
+- `GET /api/chat/statuses/` - Fetch 24-hr active stories/statuses
+- `POST /api/chat/statuses/` - Post text or media status
+
+### Music Room & Entertainment
+- `GET /api/music/youtube/search/?q=<query>` - Search YouTube
+- `GET /api/music/youtube/related/?videoId=<id>` - Suggested related tracks
+- `POST /api/music/invite/` - Send room invite notification
+- `POST /api/trivia/challenge/create/` - Create trivia challenge
+
+### Calls & WebRTC
+- `POST /api/calls/initiate/` - Start audio/video call
+- `POST /api/calls/livekit/token/` - Generate LiveKit token for SFU room
+- `GET /api/calls/history/` - Call logs & history

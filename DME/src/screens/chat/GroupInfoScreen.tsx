@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,12 +6,15 @@ import {
   ScrollView,
   Image,
   TouchableOpacity,
+  Pressable,
   Alert,
   ActivityIndicator,
   TextInput,
   FlatList,
   Modal,
+  Animated,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -25,6 +28,7 @@ import AvatarWithFallback from '../../components/AvatarWithFallback';
 import { useTheme } from '../../context/ThemeContext';
 
 export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
+  const insets = useSafeAreaInsets();
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const { conversationId } = route.params;
@@ -37,6 +41,30 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
   const [editDescription, setEditDescription] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
 
+  // ── Center-screen custom fade toast ──
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    setToastVisible(true);
+    toastOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+      Animated.delay(800),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToastVisible(false));
+  };
+
+  // Modern Confirmation Modal States
+  const [removeMemberModalVisible, setRemoveMemberModalVisible] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState<{ id: number; name: string; avatar?: string; sticker?: string } | null>(null);
+  const [isRemovingMember, setIsRemovingMember] = useState(false);
+
+  const [leaveGroupModalVisible, setLeaveGroupModalVisible] = useState(false);
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
+
   const loadDetails = async () => {
     try {
       const data = await chatAPI.getConversation(conversationId);
@@ -47,7 +75,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
       const participant = data.participants.find((p: any) => p.user.id === currentUser?.id);
       setIsAdmin(participant?.is_admin || false);
     } catch (error) {
-      Alert.alert('Error', 'Failed to load group details');
+      console.error('Failed to load group details:', error);
     } finally {
       setIsLoading(false);
     }
@@ -67,53 +95,53 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
       });
       setIsEditing(false);
       loadDetails();
+      showToast('Group Updated');
     } catch (error) {
-      Alert.alert('Error', 'Failed to update group');
+      showToast('Failed to Update Group');
     }
   };
 
-  const handleRemoveMember = (userId: number, userName: string) => {
-    Alert.alert(
-      'Remove Member',
-      `Are you sure you want to remove ${userName} from the group?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Remove', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await chatAPI.removeParticipant(conversationId, userId);
-              loadDetails();
-            } catch (error) {
-              Alert.alert('Error', 'Failed to remove member');
-            }
-          }
-        }
-      ]
-    );
+  const handleOpenRemoveMember = (user: any) => {
+    setMemberToRemove({
+      id: user.id,
+      name: user.display_name || user.username || user.email || 'Member',
+      avatar: user.profile_picture,
+      sticker: user.avatar_sticker,
+    });
+    setRemoveMemberModalVisible(true);
   };
 
-  const handleLeaveGroup = () => {
-    Alert.alert(
-      'Leave Group',
-      'Are you sure you want to leave this group?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Leave', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await chatAPI.deleteConversation(conversationId);
-              navigation.navigate('MainTabs', { screen: 'Chats' });
-            } catch (error) {
-              Alert.alert('Error', 'Failed to leave group');
-            }
-          }
-        }
-      ]
-    );
+  const confirmRemoveMember = async () => {
+    if (!memberToRemove) return;
+    setIsRemovingMember(true);
+    try {
+      await chatAPI.removeParticipant(conversationId, memberToRemove.id);
+      setRemoveMemberModalVisible(false);
+      setMemberToRemove(null);
+      loadDetails();
+      showToast('Member Removed');
+    } catch (error) {
+      showToast('Failed to Remove Member');
+    } finally {
+      setIsRemovingMember(false);
+    }
+  };
+
+  const handleOpenLeaveGroup = () => {
+    setLeaveGroupModalVisible(true);
+  };
+
+  const confirmLeaveGroup = async () => {
+    setIsLeavingGroup(true);
+    try {
+      await chatAPI.deleteConversation(conversationId);
+      setLeaveGroupModalVisible(false);
+      navigation.navigate('MainTabs', { screen: 'Chats' });
+    } catch (error) {
+      showToast('Failed to Leave Group');
+    } finally {
+      setIsLeavingGroup(false);
+    }
   };
 
   const handleUpdateImage = async () => {
@@ -136,9 +164,10 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
         await chatAPI.updateConversationProfile(conversationId, formData);
         loadDetails();
+        showToast('Group Photo Updated');
       } catch (error) {
         console.error("Upload error:", error);
-        Alert.alert('Error', 'Failed to update profile picture');
+        showToast('Failed to Update Photo');
       } finally {
         setIsUploading(false);
       }
@@ -151,8 +180,9 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
     try {
       await chatAPI.removeConversationProfile(conversationId);
       loadDetails();
+      showToast('Group Photo Removed');
     } catch (error) {
-      Alert.alert('Error', 'Failed to remove group image');
+      showToast('Failed to Remove Photo');
     } finally {
       setIsUploading(false);
     }
@@ -181,7 +211,22 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
   return (
     <View style={s.container}>
-      <ScrollView>
+      {/* Clean In-Screen Header */}
+      <View style={[s.customHeader, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}>
+        <Pressable
+          onPress={() => navigation.goBack()}
+          style={s.headerBackButton}
+          hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+          android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
+        >
+          <Icon name="arrow-back" size={24} color={theme.textPrimary} />
+        </Pressable>
+        <Text style={s.headerTitleText} numberOfLines={1}>
+          Group Info
+        </Text>
+      </View>
+
+      <ScrollView contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 24 }}>
         {/* Header Info */}
         <View style={s.header}>
           <View style={s.avatarContainer}>
@@ -325,7 +370,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
               </View>
               
               {isAdmin && p.user.id !== currentUser?.id && (
-                <TouchableOpacity onPress={() => handleRemoveMember(p.user.id, p.user.display_name || p.user.email)}>
+                <TouchableOpacity onPress={() => handleOpenRemoveMember(p.user)}>
                   <Text style={s.removeText}>Remove</Text>
                 </TouchableOpacity>
               )}
@@ -335,7 +380,7 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
 
         {/* Actions */}
         <View style={s.actions}>
-          <TouchableOpacity style={s.actionItem} onPress={handleLeaveGroup}>
+          <TouchableOpacity style={s.actionItem} onPress={handleOpenLeaveGroup}>
             <Text style={s.leaveText}>Leave Group</Text>
           </TouchableOpacity>
         </View>
@@ -346,6 +391,194 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
       )}
+
+      {/* MODERN REMOVE MEMBER CONFIRMATION MODAL */}
+      <Modal
+        visible={removeMemberModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => {
+          if (!isRemovingMember) {
+            setRemoveMemberModalVisible(false);
+            setMemberToRemove(null);
+          }
+        }}
+      >
+        <View style={s.confirmModalOverlay}>
+          <View
+            style={[
+              s.confirmModalCard,
+              {
+                backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
+                borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
+              },
+            ]}
+          >
+            {/* Red Glowing Icon Circle */}
+            <View style={s.confirmIconCircle}>
+              <Icon name="person-remove-outline" size={32} color="#EF4444" />
+            </View>
+
+            {/* Modal Title & Description */}
+            <Text style={[s.confirmModalTitle, { color: theme.textPrimary }]}>
+              Remove Member?
+            </Text>
+            <Text style={[s.confirmModalSubText, { color: theme.textSecondary }]}>
+              Are you sure you want to remove this member from the group? They will no longer have access to this conversation.
+            </Text>
+
+            {/* Member Preview Snippet */}
+            {memberToRemove && (
+              <View
+                style={[
+                  s.memberSnippet,
+                  {
+                    backgroundColor: isDark ? 'rgba(239, 68, 68, 0.08)' : '#FEF2F2',
+                    borderColor: isDark ? 'rgba(239, 68, 68, 0.25)' : 'rgba(239, 68, 68, 0.2)',
+                  },
+                ]}
+              >
+                <View style={{ marginRight: 12 }}>
+                  {memberToRemove.sticker ? (
+                    <Text style={{ fontSize: 26 }}>{memberToRemove.sticker}</Text>
+                  ) : (
+                    <AvatarWithFallback
+                      uri={memberToRemove.avatar}
+                      displayName={memberToRemove.name}
+                      style={{ width: 44, height: 44, borderRadius: 22 }}
+                    />
+                  )}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.memberSnippetName, { color: theme.textPrimary }]} numberOfLines={1}>
+                    {memberToRemove.name}
+                  </Text>
+                  <Text style={[s.memberSnippetRole, { color: '#EF4444' }]}>
+                    Will be removed from group
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Action Buttons */}
+            <View style={s.confirmBtnRow}>
+              <TouchableOpacity
+                style={[
+                  s.confirmCancelBtn,
+                  { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' },
+                ]}
+                onPress={() => {
+                  setRemoveMemberModalVisible(false);
+                  setMemberToRemove(null);
+                }}
+                disabled={isRemovingMember}
+                activeOpacity={0.8}
+              >
+                <Text style={[s.confirmCancelText, { color: theme.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={s.confirmDeleteBtn}
+                onPress={confirmRemoveMember}
+                disabled={isRemovingMember}
+                activeOpacity={0.85}
+              >
+                {isRemovingMember ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={s.confirmDeleteText}>Remove</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODERN LEAVE GROUP CONFIRMATION MODAL */}
+      <Modal
+        visible={leaveGroupModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => {
+          if (!isLeavingGroup) setLeaveGroupModalVisible(false);
+        }}
+      >
+        <View style={s.confirmModalOverlay}>
+          <View
+            style={[
+              s.confirmModalCard,
+              {
+                backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
+                borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
+              },
+            ]}
+          >
+            {/* Red Glowing Icon Circle */}
+            <View style={s.confirmIconCircle}>
+              <Icon name="log-out-outline" size={32} color="#EF4444" />
+            </View>
+
+            {/* Modal Title & Description */}
+            <Text style={[s.confirmModalTitle, { color: theme.textPrimary }]}>
+              Leave Group?
+            </Text>
+            <Text style={[s.confirmModalSubText, { color: theme.textSecondary }]}>
+              Are you sure you want to leave <Text style={{ fontWeight: '700', color: theme.textPrimary }}>{conversation?.name || 'this group'}</Text>? You will no longer receive messages from this group.
+            </Text>
+
+            {/* Action Buttons */}
+            <View style={s.confirmBtnRow}>
+              <TouchableOpacity
+                style={[
+                  s.confirmCancelBtn,
+                  { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' },
+                ]}
+                onPress={() => setLeaveGroupModalVisible(false)}
+                disabled={isLeavingGroup}
+                activeOpacity={0.8}
+              >
+                <Text style={[s.confirmCancelText, { color: theme.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={s.confirmDeleteBtn}
+                onPress={confirmLeaveGroup}
+                disabled={isLeavingGroup}
+                activeOpacity={0.85}
+              >
+                {isLeavingGroup ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={s.confirmDeleteText}>Leave</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Center-screen fade toast ── */}
+      <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
+        <View style={s.toastOverlay} pointerEvents="none">
+          <Animated.View
+            style={[
+              s.toastBox,
+              {
+                opacity: toastOpacity,
+                backgroundColor: isDark ? '#1E293B' : '#0F172A',
+              },
+            ]}
+          >
+            <Icon
+              name={toastMessage.includes('Failed') ? 'close-circle' : 'checkmark-circle'}
+              size={22}
+              color={toastMessage.includes('Failed') ? '#EF4444' : '#10B981'}
+              style={{ marginRight: 8 }}
+            />
+            <Text style={s.toastText}>{toastMessage}</Text>
+          </Animated.View>
+        </View>
+      </Modal>
 
       <CustomGalleryPicker
         visible={galleryPickerVisible}
@@ -517,6 +750,142 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 100,
+  },
+  customHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  headerBackButton: {
+    padding: 6,
+    marginRight: 12,
+    borderRadius: 20,
+  },
+  headerTitleText: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: theme.textPrimary,
+  },
+  // Modern Confirmation Modal Styles
+  confirmModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  confirmModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 26,
+    alignItems: 'center',
+    elevation: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    borderWidth: 1,
+  },
+  confirmIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  confirmModalSubText: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  memberSnippet: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 22,
+  },
+  memberSnippetName: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  memberSnippetRole: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  confirmBtnRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  confirmDeleteBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 3,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  confirmDeleteText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  toastOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  toastBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    borderRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  toastText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
 });
 

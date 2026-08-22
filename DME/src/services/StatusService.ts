@@ -219,8 +219,9 @@ export const StatusService = {
     }
   },
 
-  async replyToStatus(statusId: number, message: string): Promise<void> {
-    await api.post(`/chat/statuses/${statusId}/reply/`, { message });
+  async replyToStatus(statusId: number, message: string): Promise<any> {
+    const res = await api.post(`/chat/statuses/${statusId}/reply/`, { message });
+    return res.data;
   },
 
 

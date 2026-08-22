@@ -798,6 +798,46 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             message = Message.objects.create(**message_data)
 
+            # Auto-accept pending/rejected MessageRequest if the sender is the receiver of the request
+            try:
+                msg_req = conversation.message_request
+                if msg_req.receiver == user and msg_req.status in ['pending', 'rejected']:
+                    msg_req.status = 'accepted'
+                    msg_req.save()
+                    # Broadcast the update via WebSocket
+                    try:
+                        from channels.layers import get_channel_layer
+                        from asgiref.sync import async_to_sync
+                        channel_layer = get_channel_layer()
+                        if channel_layer:
+                            event_data = {
+                                'conversation_id': conversation.id,
+                                'status': 'accepted',
+                                'sender_id': msg_req.sender_id,
+                                'receiver_id': msg_req.receiver_id
+                            }
+                            # Broadcast to chat room
+                            async_to_sync(channel_layer.group_send)(
+                                f'chat_{conversation.id}',
+                                {
+                                    'type': 'message_request_status',
+                                    'data': event_data
+                                }
+                            )
+                            # Broadcast to both users' update groups
+                            for u_id in [msg_req.sender_id, msg_req.receiver_id]:
+                                async_to_sync(channel_layer.group_send)(
+                                    f'user_updates_{u_id}',
+                                    {
+                                        'type': 'message_request_status',
+                                        'data': event_data
+                                    }
+                                )
+                    except Exception as ws_err:
+                        print(f"Warning: WebSocket broadcast for consumer auto-approve failed: {ws_err}")
+            except MessageRequest.DoesNotExist:
+                pass
+
             # Update conversation updated_at
             conversation.save()
 

@@ -20,6 +20,7 @@ import AvatarWithFallback from '../../components/AvatarWithFallback';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useTheme } from '../../context/ThemeContext';
 import { getApiUrl } from '../../config/network';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface CreateGroupScreenProps {
   navigation: any;
@@ -28,6 +29,7 @@ interface CreateGroupScreenProps {
 export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   navigation,
 }) => {
+  const insets = useSafeAreaInsets();
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
   const [step, setStep] = useState<1 | 2>(1);
@@ -300,11 +302,14 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
               </Text>
             </View>
           )}
+          contentContainerStyle={{
+            paddingBottom: Math.max(insets.bottom, 16) + (selectedUsers.length > 0 ? 84 : 20),
+          }}
         />
 
         {selectedUsers.length > 0 && (
           <TouchableOpacity
-            style={s.nextButton}
+            style={[s.nextButton, { bottom: Math.max(insets.bottom, 16) + 16 }]}
             onPress={() => setStep(2)}
           >
             <Text style={s.nextButtonText}>Next</Text>
@@ -315,7 +320,12 @@ export const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   }
 
   return (
-    <ScrollView style={s.container}>
+    <ScrollView
+      style={s.container}
+      contentContainerStyle={{
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
+      }}
+    >
       <View style={s.form}>
         <View style={s.avatarPicker}>
           <TouchableOpacity onPress={handlePickImage} style={s.avatarLarge}>

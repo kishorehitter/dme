@@ -532,14 +532,18 @@ def check_message_allowed(conversation, sender):
         if msg_request.status == 'accepted':
             return (True, False, '')
         elif msg_request.status == 'rejected':
+            if msg_request.receiver == sender:
+                # The user who previously rejected/declined the request is sending a message back.
+                # Allow it (will auto-accept on message save).
+                return (True, False, '')
             return (False, False, 'Your message request was declined.')
         elif msg_request.status == 'pending':
             if msg_request.sender == sender:
                 # Original requester already sent 1 message, block additional ones
                 return (False, False, 'Waiting for approval or to become friends.')
             else:
-                # Receiver trying to reply before accepting, block until they accept/approve
-                return (False, False, 'Please approve the chat request first to reply.')
+                # Receiver trying to reply before accepting - allow it (will auto-accept).
+                return (True, False, '')
     except MessageRequest.DoesNotExist:
         pass
 

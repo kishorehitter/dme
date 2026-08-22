@@ -164,6 +164,10 @@ export const useMusicRoom = (
           break;
 
         case 'watch_load':
+          if (isPlayerReadyRef) isPlayerReadyRef.current = false;
+          if (playerRef?.current) {
+            try { playerRef.current.pauseVideo?.(); } catch (_) {}
+          }
           setRoomState(prev => ({
             ...prev,
             currentSong: message.data.video,

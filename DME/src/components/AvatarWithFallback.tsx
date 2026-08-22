@@ -44,7 +44,6 @@ const AvatarWithFallback = ({
   const { theme } = useTheme();
 
   useEffect(() => { 
-    if (uri) console.log('AvatarWithFallback: Loading URI:', resolveImageUrl(uri));
     setError(false); 
   }, [uri]);
 

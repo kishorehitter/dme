@@ -26,11 +26,11 @@ import {
   Keyboard,
   Dimensions,
   InteractionManager,
+  StatusBar,
+  NativeModules,
 } from 'react-native';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 
@@ -57,7 +57,13 @@ import { StatusService, Status, UserStatusGroup } from '../../services/StatusSer
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useTheme } from '../../context/ThemeContext';
 import { Conversation, User } from '../../types';
-import { resolveImageUrl } from '../../utils/image';
+import {
+  isTriviaChallengeMessage,
+  isScoreSubmissionMessage,
+  getScoreSubmissionFromContent,
+  getChallengePayloadFromContent,
+  syncChallengeFromMessage,
+} from '../../services/TriviaChallengeService';
 
 interface ChatListScreenProps {
   navigation: any;
@@ -146,7 +152,12 @@ const formatMessageTime = (dateString: string | undefined | null) => {
 const renderLastMessageContent = (lastMessage: Conversation['last_message']) => {
   if (!lastMessage) return 'No messages yet';
   
-  const { message_type, content } = lastMessage;
+  if (isTriviaChallengeMessage(lastMessage) || isScoreSubmissionMessage(lastMessage)) {
+    return 'No messages yet';
+  }
+
+  const message_type = lastMessage.message_type;
+  const content = lastMessage.content || '';
 
   if (
     message_type === 'lottie_sticker' || 
@@ -154,6 +165,16 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
     (content && (content.includes('/stickers/') || content.endsWith('.json')))
   ) {
     return <><Icon name="image-outline" size={14} color="#666" /> Sticker</>;
+  }
+
+  // Guard against any raw JSON or TRIVIA prefix leaks
+  if (
+    typeof content === 'string' &&
+    (content.startsWith('[TRIVIA_') ||
+      content.includes('[TRIVIA_') ||
+      (content.includes('"challengeId"') && (content.includes('"questions"') || content.includes('"entry"') || content.includes('"leaderboard"'))))
+  ) {
+    return 'No messages yet';
   }
   
   switch (message_type) {
@@ -165,6 +186,8 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
       return <><Icon name="mic" size={14} color="#666" /> Audio</>;
     case 'document':
       return <><Icon name="document-text" size={14} color="#666" /> Document</>;
+    case 'trivia_challenge':
+      return 'No messages yet';
     case 'text':
     default:
       return content || '';
@@ -226,6 +249,18 @@ const renderMessageTicks = (lastMessage: any) => {
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
+
+  useFocusEffect(
+    useCallback(() => {
+      StatusBar.setTranslucent(true);
+      StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
+      StatusBar.setBackgroundColor('transparent');
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
+      }
+    }, [isDark])
+  );
+
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
       const cached = localDatabase.getConversations();
@@ -498,8 +533,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     useCallback(() => {
       userTouchedSearch.current = false;
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
-      loadConversations();
-    }, [loadConversations])
+    }, [])
   );
 
   useEffect(() => {
@@ -550,6 +584,134 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     visible: false, uri: null, isGroup: false, displayName: '', sticker: null,
   });
 
+  const conversationsRef = useRef<Conversation[]>([]);
+  conversationsRef.current = conversations;
+
+  const fetchRealLastMessage = useCallback(async (conversationId: number) => {
+    try {
+      const msgs = await chatAPI.getMessages(conversationId);
+      const msgsList = Array.isArray(msgs) ? msgs : (msgs?.results || []);
+      const realMsgs = msgsList.filter(
+        (m: any) => !isTriviaChallengeMessage(m) && !isScoreSubmissionMessage(m)
+      );
+      if (realMsgs.length > 0) {
+        const latestReal = realMsgs[realMsgs.length - 1];
+        const formattedLastMsg = {
+          id: latestReal.id || 0,
+          content: latestReal.content || '',
+          message_type: latestReal.message_type || 'text',
+          created_at: latestReal.created_at,
+          sender_id: latestReal.sender?.id || latestReal.sender_id || 0,
+          status: latestReal.status || (latestReal.is_read ? 'read' : 'sent'),
+        };
+        setConversations(prev => {
+          const updated = prev.map(c =>
+            c.id === conversationId ? { ...c, last_message: formattedLastMsg } : c
+          );
+          localDatabase.saveConversations(updated);
+          return updated;
+        });
+        localDatabase.saveMessages(msgsList, conversationId);
+      }
+    } catch (err) {
+      console.warn('Could not fetch real last message for conv', conversationId, err);
+    }
+  }, []);
+
+  const cleanConversationLastMessage = useCallback(
+    (conv: Conversation): Conversation => {
+      if (!conv.last_message) {
+        const inMemory = conversationsRef.current.find(c => c.id === conv.id);
+        if (
+          inMemory?.last_message &&
+          !isTriviaChallengeMessage(inMemory.last_message) &&
+          !isScoreSubmissionMessage(inMemory.last_message)
+        ) {
+          return { ...conv, last_message: inMemory.last_message };
+        }
+        try {
+          const cachedConvs = localDatabase.getConversations();
+          const cached = cachedConvs.find(c => c.id === conv.id);
+          if (
+            cached?.last_message &&
+            !isTriviaChallengeMessage(cached.last_message) &&
+            !isScoreSubmissionMessage(cached.last_message)
+          ) {
+            return { ...conv, last_message: cached.last_message };
+          }
+        } catch {}
+        return conv;
+      }
+
+      if (isTriviaChallengeMessage(conv.last_message) || isScoreSubmissionMessage(conv.last_message)) {
+        if (conv.last_message.content) {
+          syncChallengeFromMessage(conv.last_message.content, conv.id);
+        }
+
+        // 1. Check in-memory previous conversations state
+        const existingConv = conversationsRef.current.find(c => c.id === conv.id);
+        if (
+          existingConv?.last_message &&
+          !isTriviaChallengeMessage(existingConv.last_message) &&
+          !isScoreSubmissionMessage(existingConv.last_message)
+        ) {
+          return {
+            ...conv,
+            last_message: existingConv.last_message,
+          };
+        }
+
+        // 2. Check local database cached messages
+        try {
+          const recentMsgs = localDatabase.getRecentMessages(conv.id, 30);
+          const realMsgs = recentMsgs.filter(
+            m => !isTriviaChallengeMessage(m) && !isScoreSubmissionMessage(m)
+          );
+          if (realMsgs.length > 0) {
+            const latestReal = realMsgs[realMsgs.length - 1];
+            return {
+              ...conv,
+              last_message: {
+                id: latestReal.id || 0,
+                content: latestReal.content || '',
+                message_type: latestReal.message_type || 'text',
+                created_at: latestReal.created_at,
+                sender_id: latestReal.sender?.id || latestReal.sender_id || 0,
+                status: latestReal.status || (latestReal.is_read ? 'read' : 'sent'),
+              },
+            };
+          }
+        } catch {}
+
+        // 3. Check local database cached conversation
+        try {
+          const cachedConvs = localDatabase.getConversations();
+          const cached = cachedConvs.find(c => c.id === conv.id);
+          if (
+            cached?.last_message &&
+            !isTriviaChallengeMessage(cached.last_message) &&
+            !isScoreSubmissionMessage(cached.last_message)
+          ) {
+            return {
+              ...conv,
+              last_message: cached.last_message,
+            };
+          }
+        } catch {}
+
+        // 4. Trigger asynchronous fetch of actual messages from server to restore real message
+        fetchRealLastMessage(conv.id);
+
+        return {
+          ...conv,
+          last_message: null,
+        };
+      }
+      return conv;
+    },
+    [fetchRealLastMessage]
+  );
+
   const loadConversations = useCallback(async () => {
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
@@ -566,6 +728,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       else if (convs?.results) conversationsArray = convs.results;
       conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
       
+      // Clean contest/score submission messages so chat list stays 100% clean
+      conversationsArray = conversationsArray.map(cleanConversationLastMessage);
+
       // Cache fresh data to local DB
       localDatabase.saveConversations(conversationsArray);
 
@@ -588,7 +753,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       setIsRefreshing(false);
       isLoadingRef.current = false;
     }
-  }, [user?.id]);
+  }, [user?.id, cleanConversationLastMessage]);
 
   useEffect(() => {
     loadConversations();
@@ -597,6 +762,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     const unsubscribe = websocketService.onMessage((message) => {
         if (message.type === 'new_message_summary') {
             const newMessage = message.data;
+            if (isTriviaChallengeMessage(newMessage) || isScoreSubmissionMessage(newMessage)) {
+                if (newMessage.content) {
+                    syncChallengeFromMessage(newMessage.content, newMessage.conversation);
+                }
+                return;
+            }
             setConversations(prev => {
                 const existing = prev.find(c => c.id === newMessage.conversation);
                 if (existing) {
@@ -663,11 +834,25 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
             // conversation moves between Pending / All / Friends immediately.
             const { conversation_id, status: reqStatus } = message.data || {};
             if (conversation_id) {
-                setConversations(prev => prev.map(c =>
-                    c.id === conversation_id
-                        ? { ...c, message_request_status: reqStatus }
-                        : c
-                ));
+                setConversations(prev => {
+                    const exists = prev.some(c => c.id === conversation_id);
+                    if (!exists) {
+                        // Conversation isn't in the list yet (e.g., sender's convo was hidden
+                        // by the receiver-pending filter). Do a full reload to fetch it.
+                        loadConversations();
+                        return prev;
+                    }
+                    return prev.map(c =>
+                        c.id === conversation_id
+                            ? { ...c, message_request_status: reqStatus }
+                            : c
+                    );
+                });
+                // For accepted/rejected, always do a full reload to ensure correct ordering
+                // and friend-status enrichment from the server.
+                if (reqStatus === 'accepted') {
+                    loadConversations();
+                }
             }
             // Refresh friends list too — friendship state may have changed.
             chatAPI.getFriends().then(data => {
@@ -701,6 +886,22 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         friendAcceptedSub.remove();
     };
   }, [loadConversations]);
+
+  // Reload conversations whenever the screen comes back into focus
+  // (e.g. after returning from ChatRoomScreen or ProfileScreen)
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      // Defer network call until back navigation transition completes smoothly
+      const timer = setTimeout(() => {
+        InteractionManager.runAfterInteractions(() => {
+          loadConversations();
+        });
+      }, 200);
+
+      return () => clearTimeout(timer);
+    });
+    return unsubscribe;
+  }, [navigation, loadConversations]);
 
   useEffect(() => {
     const tabParam = route?.params?.initialTab || route?.params?.tab;
@@ -772,7 +973,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         ) : (
           <View ref={triviaBtnRef} collapsable={false}>
             <TouchableOpacity
-              onPress={() => navigation.navigate('TriviaSolo')}
+              onPress={() => navigation.navigate('TriviaHub')}
             >
               <View style={{ alignItems: 'center' }}>
                 <Icon name="book-outline" size={30} color={theme.textPrimary} />
@@ -788,7 +989,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
           </TouchableOpacity>
         ) : (
-          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#222', marginLeft: 16 }}>Inaivo</Text>
+          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#222', marginLeft: 16 }}>Yesenta</Text>
         )
       ),
       headerRight: () => (
@@ -845,7 +1046,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 </View>
                 <View ref={menuBtnRef} collapsable={false}>
                   <TouchableOpacity onPress={() => setMenuVisible(true)}>
-                      <Icon name="ellipsis-vertical" size={24} color="#4597f5f6" />
+                      <Icon name="menu" size={26} color={theme.textPrimary} />
                   </TouchableOpacity>
                 </View>
              </>
@@ -860,7 +1061,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     try {
       const shareUrl = 'https://dme-19zq.onrender.com/invite';
       await Share.share({
-        message: `Join me on Inaivo! It's a fast, secured messaging app with Learn and Watch together. Download it here: ${shareUrl}`,
+        message: `Join me on Yesenta! It's a fast, secured messaging app with Learn and Watch together. Download it here: ${shareUrl}`,
       });
     } catch (error) {
       console.warn('Error sharing app', error);
@@ -898,8 +1099,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   const handleRejectRequest = async (requestId: number) => {
     try {
-      await chatAPI.rejectMessageRequest(requestId);
-      showToast('Message request declined.', 'info');
+      showToast('Message request declined. You can accept it later to continue chatting.', 'info');
       loadConversations();
     } catch (error) {
       console.error(error);
@@ -914,7 +1114,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const filteredConversations = conversations.filter(c => {
     let matchesTab = true;
     
-    // Filter out 1-to-1 chats with no messages
+    // Filter out 1-to-1 chats with no messages (groups always stay visible)
     if (!c.is_group && c.last_message === null) {
       return false;
     }
@@ -986,6 +1186,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         }
       }}
     >
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
       <PopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -1004,7 +1205,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           if (updateInfo.hasUpdate && updateInfo.downloadUrl) {
             handleDownloadUpdate(updateInfo.downloadUrl);
           } else {
-            Alert.alert('App Update', 'You are on the latest version of Inaivo.');
+            Alert.alert('App Update', 'You are on the latest version of Yesenta.');
           }
         }}
       />
@@ -1173,104 +1374,120 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
       <FlatList
         ListHeaderComponent={
-          <View style={[s.tabContainer, { backgroundColor: theme.surface, paddingBottom: 8 }]}>
-            {/* All Tab */}
-            {activeTab === 'all' ? (
-              <TouchableOpacity 
-                style={[s.tabButton, s.activeTabButton]} 
-                onPress={() => setActiveTab('all')}
+          <View style={[s.tabContainer, { backgroundColor: theme.surface }]}>
+            {/* ── Category Switcher: Left-aligned (< Category >) ── */}
+            <View style={s.tabNavRow}>
+              {/* Prev arrow */}
+              <TouchableOpacity
+                onPress={() => {
+                  if (activeTab === 'pending') {
+                    setActiveTab('all');
+                    return;
+                  }
+                  const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
+                  const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
+                  const next = (cur - 1 + cycle.length) % cycle.length;
+                  setActiveTab(cycle[next]);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                activeOpacity={0.7}
+                style={{ padding: 2 }}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[s.tabText, s.activeTabText]}>All</Text>
-                </View>
+                <Icon
+                  name="chevron-back"
+                  size={14}
+                  color={activeTab === 'pending' ? (isDark ? '#38BDF8' : '#0EA5E9') : (isDark ? '#93C5FD' : '#0B192C')}
+                />
               </TouchableOpacity>
-            ) : (
-              <TouchableOpacity 
-                style={[s.tabButton, s.inactiveTabButton]} 
-                onPress={() => setActiveTab('all')}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={s.tabText}>All</Text>
-                </View>
-              </TouchableOpacity>
-            )}
 
-            {/* Friends Tab */}
-            {activeTab === 'friends' ? (
-              <TouchableOpacity 
-                style={[s.tabButton, s.activeTabButton]} 
-                onPress={() => setActiveTab('friends')}
+              {/* Category label */}
+              <TouchableOpacity
+                onPress={() => {
+                  if (activeTab === 'pending') {
+                    setActiveTab('all');
+                  } else {
+                    const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
+                    const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
+                    const next = (cur + 1) % cycle.length;
+                    setActiveTab(cycle[next]);
+                  }
+                }}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                style={{ marginHorizontal: 6 }}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[s.tabText, s.activeTabText]}>Friends</Text>
-                </View>
+                <Text
+                  style={[
+                    s.tabNavLabel,
+                    activeTab === 'pending' && s.tabNavLabelInactive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {activeTab === 'all'
+                    ? 'All Messages'
+                    : activeTab === 'friends'
+                    ? 'Friends Chat'
+                    : activeTab === 'groups'
+                    ? 'Groups Chat'
+                    : 'All Messages'}
+                </Text>
               </TouchableOpacity>
-            ) : (
-              <TouchableOpacity 
-                style={[s.tabButton, s.inactiveTabButton]} 
-                onPress={() => setActiveTab('friends')}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={s.tabText}>Friends</Text>
-                </View>
-              </TouchableOpacity>
-            )}
 
-            {/* Groups Tab */}
-            {activeTab === 'groups' ? (
-              <TouchableOpacity 
-                style={[s.tabButton, s.activeTabButton]} 
-                onPress={() => setActiveTab('groups')}
+              {/* Next arrow */}
+              <TouchableOpacity
+                onPress={() => {
+                  if (activeTab === 'pending') {
+                    setActiveTab('all');
+                    return;
+                  }
+                  const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
+                  const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
+                  const next = (cur + 1) % cycle.length;
+                  setActiveTab(cycle[next]);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                activeOpacity={0.7}
+                style={{ padding: 2 }}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[s.tabText, s.activeTabText]}>Groups</Text>
-                </View>
+                <Icon
+                  name="chevron-forward"
+                  size={14}
+                  color={activeTab === 'pending' ? (isDark ? '#38BDF8' : '#0EA5E9') : (isDark ? '#93C5FD' : '#0B192C')}
+                />
               </TouchableOpacity>
-            ) : (
-              <TouchableOpacity 
-                style={[s.tabButton, s.inactiveTabButton]} 
-                onPress={() => setActiveTab('groups')}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={s.tabText}>Groups</Text>
-                </View>
-              </TouchableOpacity>
-            )}
+            </View>
 
-            {/* Pending Tab - incoming message requests for receiver */}
-            {activeTab === 'pending' ? (
-              <TouchableOpacity 
-                style={[s.tabButton, s.activeTabButton]} 
-                onPress={() => setActiveTab('pending')}
+            {/* ── Pending: Right-aligned ── */}
+            <TouchableOpacity
+              style={s.pendingTabBtn}
+              onPress={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  s.pendingTabText,
+                  activeTab === 'pending' ? s.pendingTabTextActive : s.pendingTabTextInactive,
+                ]}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[s.tabText, s.activeTabText]}>Pending</Text>
-                  {pendingRequestsCount > 0 && (
-                    <View style={s.requestsCountBadge}>
-                      <Text style={s.requestsCountText}>{pendingRequestsCount}</Text>
-                    </View>
-                  )}
+                Pending
+              </Text>
+              {pendingRequestsCount > 0 && (
+                <View
+                  style={[
+                    s.requestsCountBadge,
+                    activeTab === 'pending' ? s.requestsCountBadgeActive : s.requestsCountBadgeInactive,
+                  ]}
+                >
+                  <Text style={s.requestsCountText}>{pendingRequestsCount}</Text>
                 </View>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity 
-                style={[s.tabButton, s.inactiveTabButton]} 
-                onPress={() => setActiveTab('pending')}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={s.tabText}>Pending</Text>
-                  {pendingRequestsCount > 0 && (
-                    <View style={s.requestsCountBadge}>
-                      <Text style={s.requestsCountText}>{pendingRequestsCount}</Text>
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-            )}
+              )}
+            </TouchableOpacity>
           </View>
         }
+
         data={listData}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: 110 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 110) }}
         renderItem={({ item }) => {
           if ((item as any).isMessageRequest) {
             const reqSender = item.sender;
@@ -1285,6 +1502,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               <TouchableOpacity
                 style={s.conversationItem}
                 activeOpacity={0.7}
+                delayPressIn={0}
                 onPress={() => {
                   if (convId) {
                     navigation.navigate('ChatRoom', { 
@@ -1312,26 +1530,42 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                     {lastMsgContent}
                   </Text>
                 </View>
-                <View style={[s.rightContent, { flexDirection: 'row', alignItems: 'center' }]}>
+                                <View style={[s.rightContent, { flexDirection: 'row', alignItems: 'center' }]}>
                   {lastMsgTime ? <Text style={[s.time, { marginRight: 8 }]}>{lastMsgTime}</Text> : null}
-                  <TouchableOpacity
-                    style={[s.smallBtn, { backgroundColor: '#fff', marginRight: 6 }]}
-                    onPress={(e) => {
-                      e?.stopPropagation?.();
-                      handleAcceptRequest(item.id);
-                    }}
-                  >
-                    <Icon name="checkmark" size={14} color="#000" />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[s.smallBtn, { backgroundColor: '#fff' }]}
-                    onPress={(e) => {
-                      e?.stopPropagation?.();
-                      handleRejectRequest(item.id);
-                    }}
-                  >
-                    <Icon name="close" size={14} color="#000" />
-                  </TouchableOpacity>
+                  {item.status === 'pending' ? (
+                    <>
+                      <TouchableOpacity
+                        style={[s.smallBtn, { backgroundColor: '#fff', marginRight: 6 }]}
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          handleAcceptRequest(item.id);
+                        }}>
+                        <Icon name="checkmark" size={14} color="#000" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[s.smallBtn, { backgroundColor: '#fff' }]}
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          handleRejectRequest(item.id);
+                        }}>
+                        <Icon name="close" size={14} color="#000" />
+                      </TouchableOpacity>
+                    </>
+                  ) : item.status === 'rejected' ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={{ color: '#f00', marginRight: 8, fontSize: 12 }}>
+                        Request rejected. You can accept to continue chatting.
+                      </Text>
+                      <TouchableOpacity
+                        style={[s.smallBtn, { backgroundColor: '#fff' }]}
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          handleAcceptRequest(item.id);
+                        }}>
+                        <Icon name="checkmark" size={14} color="#000" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
                 </View>
               </TouchableOpacity>
             );
@@ -1363,6 +1597,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           return (
             <TouchableOpacity
               style={[s.conversationItem, isSelected && s.logItemSelected]}
+              activeOpacity={0.7}
+              delayPressIn={0}
               onPress={() => {
                 if (selectionMode) {
                   toggleSelection(item.id);
@@ -1460,6 +1696,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                       <><Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined</>
                     ) : !item.is_group && item.message_request_status === 'accepted' && item.message_request_sender_id === user?.id && item.last_message === null ? (
                       <><Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved</>
+                    ) : item.is_group && item.last_message === null ? (
+                      <><Icon name="chatbubble-outline" size={13} color={isDark ? '#64748B' : '#94A3B8'} /> Tap to start chatting</>
                     ) : (
                       renderLastMessageContent(item.last_message)
                     )}
@@ -1467,7 +1705,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 </View>
               </View>
               <View style={s.rightContent}>
-                <Text style={s.time}>{formatMessageTime(item.last_message?.created_at)}</Text>
+                <Text style={s.time}>{formatMessageTime(item.last_message?.created_at || item.updated_at)}</Text>
                 {item.unread_count > 0 && (
                   <View style={s.unreadBadge}>
                       <Text style={s.unreadCount}>{item.unread_count}</Text>
@@ -1482,26 +1720,38 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadConversations} tintColor={THEME_COLOR} />}
         ListEmptyComponent={
           !isLoading ? (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 220 }}>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 320, paddingHorizontal: 24, paddingVertical: 40 }}>
               <Icon 
                 name={
-                  activeTab === 'groups' 
+                  activeTab === 'pending'
+                    ? 'mail-unread-outline'
+                    : activeTab === 'groups' 
                     ? 'people-outline' 
-                    : activeTab === 'unread' 
-                    ? 'mail-unread-outline' 
+                    : activeTab === 'friends' 
+                    ? 'person-outline' 
                     : 'chatbubble-ellipses-outline'
                 } 
-                size={44} 
-                color="#E0D0F5" 
+                size={48} 
+                color={isDark ? '#4A4A4D' : '#D0C8E0'} 
               />
-              <Text style={{ fontSize: 16, fontWeight: '400', color: '#c2c2c2', marginTop: 6 }}>
-                {activeTab === 'groups' 
-                  ? 'No Groups yet' 
-                  : activeTab === 'unread' 
-                  ? 'No unread messages' 
+              <Text style={{ fontSize: 17, fontWeight: '600', color: theme.textPrimary, marginTop: 12, textAlign: 'center' }}>
+                {activeTab === 'pending'
+                  ? 'No pending requests'
+                  : activeTab === 'groups' 
+                  ? 'No groups yet' 
+                  : activeTab === 'friends'
+                  ? 'No friend chats yet'
                   : 'No conversations yet'}
               </Text>
-              
+              <Text style={{ fontSize: 13, color: theme.textSecondary, marginTop: 4, textAlign: 'center' }}>
+                {activeTab === 'pending'
+                  ? 'Message and friend requests will appear here'
+                  : activeTab === 'groups'
+                  ? 'Group chats you join will appear here'
+                  : activeTab === 'friends'
+                  ? 'Chats with your friends will appear here'
+                  : 'Tap + to start a new chat'}
+              </Text>
             </View>
           ) : null
         }
@@ -1529,28 +1779,38 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         collapsable={false} 
         style={[s.fabWrapper, { bottom: 80 + insets.bottom }]}
       >
-        <TouchableOpacity style={s.composeButton} onPress={() => navigation.navigate('FriendList')}>
-          <Icon name="person-add-outline" size={25} color={theme.textPrimary} />
+        <TouchableOpacity 
+          style={s.composeButton} 
+          onPress={() => navigation.navigate('FriendList')}
+          activeOpacity={0.82}
+        >
+          {/* Theme-Consistent Premium Glass Gradient */}
+          <LinearGradient
+            colors={
+              isDark
+                ? ['#0E2849', '#071527']
+                : ['#FFFFFF', '#F0F5FF']
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[
+              StyleSheet.absoluteFillObject,
+              {
+                borderTopLeftRadius: 25,
+                borderTopRightRadius: 10,
+                borderBottomLeftRadius: 10,
+                borderBottomRightRadius: 10,
+              },
+            ]}
+          />
+
+          {/* Icon */}
+          <Icon name="person-add" size={24} color={isDark ? theme.primary : '#205CB8'} />
+
+          {/* Notification Badge */}
           {friendRequestsCount > 0 && (
-            <View style={{
-              position: 'absolute',
-              top: -6,
-              right: -6,
-              backgroundColor: '#0e6d12', // Green
-              borderRadius: 12,
-              minWidth: 24,
-              height: 24,
-              justifyContent: 'center',
-              alignItems: 'center',
-              paddingHorizontal: 4,
-              borderWidth: 2,
-              borderColor: theme.background,
-            }}>
-              <Text style={{
-                color: '#FFF',
-                fontSize: 11,
-                fontWeight: 'bold',
-              }}>
+            <View style={s.badgeContainer}>
+              <Text style={s.badgeText}>
                 {friendRequestsCount}
               </Text>
             </View>
@@ -1581,12 +1841,29 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
   name: { fontSize: fontSize.lg, fontWeight: '600', color: theme.textPrimary },
   lastMessageRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   lastMessage: { fontSize: fontSize.md, color: theme.textSecondary, flex: 1 },
-  tabContainer: { flexDirection: 'row', padding: spacing.sm, justifyContent: 'space-evenly' },
-  tabButton: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderRadius: borderRadius.lg, shadowRadius: 2 },
-  activeTabButton: { backgroundColor: isDark ? '#2C2C2E' : '#F0F0F0', borderWidth: 1.2, borderColor: isDark ? 'rgba(255, 255, 255, 0.35)' : '#444444', elevation: 2, shadowRadius: 2, marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
-  inactiveTabButton: { borderWidth: 1, borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : '#CCCCCC', marginHorizontal: 4, paddingVertical: (spacing.sm || 8) - 1 },
-  tabText: { fontSize: fontSize.md, fontWeight: '500', color: theme.textSecondary },
-  activeTabText: { color: isDark ? '#FFFFFF' : '#111111', fontWeight: 'bold' },
+  tabContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    backgroundColor: theme.surface,
+  },
+  tabNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  tabNavLabel: { fontSize: 13.5, fontWeight: '700', color: isDark ? '#93C5FD' : '#0B192C', letterSpacing: 0.1 },
+  tabNavLabelInactive: { color: isDark ? '#38BDF8' : '#0EA5E9', fontWeight: '500' },
+  pendingTabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 'auto' as any,
+    paddingHorizontal: 4,
+    paddingVertical: 3,
+  },
+  pendingTabText: { fontSize: 13.5 },
+  pendingTabTextInactive: { color: isDark ? '#38BDF8' : '#0EA5E9', fontWeight: '500' },
+  pendingTabTextActive: { color: isDark ? '#93C5FD' : '#0B192C', fontWeight: '700' },
   logItemSelected: {
     backgroundColor: theme.surface,
   },
@@ -1609,13 +1886,53 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     fontSize: 11,
     fontWeight: '600',
   },
-  fabWrapper: { position: 'absolute', bottom: 80, right: 16 },
-  composeButton: { width: 60, height: 50, borderTopLeftRadius: 25, borderBottomLeftRadius: 10, borderBottomEndRadius: 10, backgroundColor: theme.background, borderWidth: 1, borderColor: isDark ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.12)', justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  fabWrapper: { position: 'absolute', bottom: 80, right: 16, zIndex: 50 },
+  composeButton: {
+    width: 60,
+    height: 50,
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 10,
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10,
+    borderWidth: 1.5,
+    borderColor: isDark
+      ? 'rgba(56, 189, 248, 0.4)'
+      : 'rgba(32, 92, 184, 0.22)',
+    backgroundColor: isDark
+      ? '#071527'
+      : '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4, // Clean contained depth (no bottom shadow bleed)
+    shadowColor: isDark ? '#000000' : '#205CB8',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.35 : 0.16,
+    shadowRadius: 6,
+  },
+  badgeContainer: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#10B981',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 2,
+    borderColor: theme.background,
+  },
+  badgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
 
   onlineDot: {
     position: 'absolute',
     right: 0,
-    bottom: 0,
+    bottom: 0, 
     width: 14,
     height: 14,
     borderRadius: 7,
@@ -1665,19 +1982,25 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     borderColor: theme.border,
   },
   requestsCountBadge: {
-    marginLeft: 5,
-    backgroundColor: theme.textMuted,
-    borderRadius: 10,
-    minWidth: 18,
-    height: 18,
+    marginLeft: 4,
+    borderRadius: 3, // Small square shape
+    minWidth: 15,
+    height: 15,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
+    paddingHorizontal: 2.5,
+  },
+  requestsCountBadgeInactive: {
+    backgroundColor: isDark ? '#38BDF8' : '#0EA5E9', // Light blue when pending is inactive
+  },
+  requestsCountBadgeActive: {
+    backgroundColor: isDark ? '#1E3A8A' : '#0B192C', // Dark navy blue when pending is clicked
   },
   requestsCountText: {
     color: '#FFF',
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '700',
+    lineHeight: 11,
   },
   mutedCountBadge: {
     marginLeft: 5,

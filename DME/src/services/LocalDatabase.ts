@@ -68,9 +68,14 @@ export const localDatabase = {
         );
       `);
 
-      // Migration: Add sender_id column to messages table if it doesn't exist
+      // Migration: Add sender_id and sender columns to messages table if they don't exist
       try {
         db.execute('ALTER TABLE messages ADD COLUMN sender_id INTEGER;');
+      } catch (err) {
+        // Column already exists, safe to ignore
+      }
+      try {
+        db.execute('ALTER TABLE messages ADD COLUMN sender TEXT;');
       } catch (err) {
         // Column already exists, safe to ignore
       }
@@ -92,9 +97,20 @@ export const localDatabase = {
         (conv.last_message?.is_read ? 'read' : (conv.last_message?.delivered_at ? 'delivered' : 'sent'));
 
       db.execute(
-        `INSERT OR REPLACE INTO conversations (
+        `INSERT INTO conversations (
           id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = COALESCE(excluded.name, conversations.name),
+          is_group = excluded.is_group,
+          profile_picture = COALESCE(excluded.profile_picture, conversations.profile_picture),
+          last_message_content = COALESCE(excluded.last_message_content, conversations.last_message_content),
+          last_message_timestamp = COALESCE(excluded.last_message_timestamp, conversations.last_message_timestamp),
+          unread_count = excluded.unread_count,
+          updated_at = COALESCE(excluded.updated_at, conversations.updated_at),
+          other_user = COALESCE(excluded.other_user, conversations.other_user),
+          last_message_status = COALESCE(excluded.last_message_status, conversations.last_message_status),
+          last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id);`,
         [
           conv.id,
           conv.name || null,
@@ -126,9 +142,20 @@ export const localDatabase = {
             (conv.last_message?.is_read ? 'read' : (conv.last_message?.delivered_at ? 'delivered' : 'sent'));
 
           tx.execute(
-            `INSERT OR REPLACE INTO conversations (
+            `INSERT INTO conversations (
               id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name = COALESCE(excluded.name, conversations.name),
+              is_group = excluded.is_group,
+              profile_picture = COALESCE(excluded.profile_picture, conversations.profile_picture),
+              last_message_content = COALESCE(excluded.last_message_content, conversations.last_message_content),
+              last_message_timestamp = COALESCE(excluded.last_message_timestamp, conversations.last_message_timestamp),
+              unread_count = excluded.unread_count,
+              updated_at = COALESCE(excluded.updated_at, conversations.updated_at),
+              other_user = COALESCE(excluded.other_user, conversations.other_user),
+              last_message_status = COALESCE(excluded.last_message_status, conversations.last_message_status),
+              last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id);`,
             [
               conv.id,
               conv.name || null,
@@ -203,8 +230,8 @@ export const localDatabase = {
 
       db.execute(
         `INSERT OR REPLACE INTO messages (
-          local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id, sender
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         [
           localId,
           msg.id || null, // Can be NULL for optimistic messages
@@ -219,7 +246,8 @@ export const localDatabase = {
           status,
           0, // is_deleted = 0
           msg.edited_at || null,
-          msg.sender?.id || null,
+          msg.sender?.id || msg.sender_id || (msg.user_id ? Number(msg.user_id) : null),
+          msg.sender ? JSON.stringify(msg.sender) : null,
         ]
       );
     } catch (error) {
@@ -230,13 +258,14 @@ export const localDatabase = {
   /**
    * Bulk saves/caches messages from the server for a specific conversation.
    */
-  saveMessages(msgs: any[], conversationId: number) {
+  saveMessages(msgs: any[], conversationId: number | string) {
     try {
+      const convId = Number(conversationId);
       db.transaction((tx) => {
         // Ensure conversation exists in conversations table to satisfy FOREIGN KEY constraint
         tx.execute(
           'INSERT OR IGNORE INTO conversations (id, name) VALUES (?, ?);',
-          [conversationId, 'Chat']
+          [convId, 'Chat']
         );
 
         for (const msg of msgs) {
@@ -244,12 +273,12 @@ export const localDatabase = {
           const localId = msg.local_id || msg.id.toString();
           tx.execute(
             `INSERT OR REPLACE INTO messages (
-              local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+              local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id, sender
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
             [
               localId,
               msg.id,
-              conversationId,
+              convId,
               msg.sender?.display_name || msg.sender?.email || msg.user || null,
               msg.content || null,
               msg.message_type || 'text',
@@ -260,7 +289,8 @@ export const localDatabase = {
               msg.is_read ? 'read' : 'sent',
               msg.is_deleted ? 1 : 0,
               msg.edited_at || null,
-              msg.sender?.id || null,
+              msg.sender?.id || msg.sender_id || (msg.user_id ? Number(msg.user_id) : null),
+              msg.sender ? JSON.stringify(msg.sender) : null,
             ]
           );
         }
@@ -271,38 +301,102 @@ export const localDatabase = {
   },
 
   /**
+   * Retrieves recent messages for instant chat room render (fast indexed query with LIMIT).
+   */
+  getRecentMessages(conversationId: number | string, limit: number = 30): any[] {
+    try {
+      const convId = Number(conversationId);
+      const { results } = db.execute(
+        `SELECT * FROM (
+           SELECT * FROM messages 
+           WHERE conversation_id = ? AND is_deleted = 0 
+           ORDER BY created_at DESC 
+           LIMIT ?
+         ) ORDER BY created_at ASC;`,
+        [convId, limit]
+      );
+      if (!results) return [];
+
+      return results.map((row) => {
+        let senderObj = null;
+        if (row.sender) {
+          try { senderObj = JSON.parse(row.sender); } catch {}
+        }
+        if (!senderObj) {
+          senderObj = {
+            id: row.sender_id || (typeof row.user === 'number' ? row.user : 0),
+            display_name: row.user || 'Unknown',
+            email: row.user || '',
+          };
+        }
+        return {
+          local_id: row.local_id,
+          id: row.id,
+          sender: senderObj,
+          sender_id: row.sender_id || senderObj.id,
+          user: row.user,
+          content: row.content,
+          message_type: row.message_type,
+          media_file: row.media_file,
+          is_read: row.status === 'read',
+          delivered_at: null,
+          created_at: row.created_at,
+          edited_at: row.edited_at,
+          status: row.status,
+          reply_to: row.reply_to ? JSON.parse(row.reply_to) : null,
+          reactions: row.reactions ? JSON.parse(row.reactions) : null,
+        };
+      });
+    } catch (error) {
+      console.error(`❌ Error getting recent messages for conv ${conversationId}:`, error);
+      return [];
+    }
+  },
+
+  /**
    * Retrieves messages for a conversation, ordered chronologically.
    */
-  getMessages(conversationId: number): any[] {
+  getMessages(conversationId: number | string): any[] {
     try {
+      const convId = Number(conversationId);
       const { results } = db.execute(
         `SELECT * FROM messages 
          WHERE conversation_id = ? AND is_deleted = 0 
          ORDER BY created_at ASC;`,
-        [conversationId]
+        [convId]
       );
       if (!results) return [];
 
-      return results.map((row) => ({
-        local_id: row.local_id,
-        id: row.id,
-        sender: {
-          id: row.sender_id || 0,
-          display_name: row.user,
-          email: row.user,
-        },
-        user: row.user,
-        content: row.content,
-        message_type: row.message_type,
-        media_file: row.media_file,
-        is_read: row.status === 'read',
-        delivered_at: null,
-        created_at: row.created_at,
-        edited_at: row.edited_at,
-        status: row.status,
-        reply_to: row.reply_to ? JSON.parse(row.reply_to) : null,
-        reactions: row.reactions ? JSON.parse(row.reactions) : null,
-      }));
+      return results.map((row) => {
+        let senderObj = null;
+        if (row.sender) {
+          try { senderObj = JSON.parse(row.sender); } catch {}
+        }
+        if (!senderObj) {
+          senderObj = {
+            id: row.sender_id || (typeof row.user === 'number' ? row.user : 0),
+            display_name: row.user || 'Unknown',
+            email: row.user || '',
+          };
+        }
+        return {
+          local_id: row.local_id,
+          id: row.id,
+          sender: senderObj,
+          sender_id: row.sender_id || senderObj.id,
+          user: row.user,
+          content: row.content,
+          message_type: row.message_type,
+          media_file: row.media_file,
+          is_read: row.status === 'read',
+          delivered_at: null,
+          created_at: row.created_at,
+          edited_at: row.edited_at,
+          status: row.status,
+          reply_to: row.reply_to ? JSON.parse(row.reply_to) : null,
+          reactions: row.reactions ? JSON.parse(row.reactions) : null,
+        };
+      });
     } catch (error) {
       console.error(`❌ Error getting messages for conv ${conversationId}:`, error);
       return [];

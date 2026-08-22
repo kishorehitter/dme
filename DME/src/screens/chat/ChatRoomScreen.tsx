@@ -10,11 +10,12 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import FastImage from 'react-native-fast-image';
 import {
   View,
-  Text,
+  Text as RNText,
   Image,
   FlatList,
   TextInput,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   KeyboardAvoidingView,
   Keyboard,
@@ -30,7 +31,18 @@ import {
   Dimensions,
   InteractionManager,
   ScrollView,
+  StatusBar,
+  LayoutChangeEvent,
 } from 'react-native';
+
+const SafeText = (props: any) => {
+  const children = React.Children.map(props.children, child => {
+    if (typeof child === 'string' || typeof child === 'number') return String(child);
+    return child;
+  });
+  return <RNText {...props}>{children}</RNText>;
+};
+const Text = SafeText;
 import RNFetchBlob from 'rn-fetch-blob';
 import FileViewer from 'react-native-file-viewer';
 import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
@@ -42,12 +54,12 @@ import Toast from 'react-native-toast-message';
 import { chatAPI } from '../../services/api';
 import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
-import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
+import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, withSpring, Easing } from 'react-native-reanimated';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
 import { pinNavBarColor } from '../../utils/navBarPin';
 import { useAuth } from '../../context/AuthContext';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { NativeModules } from 'react-native';
 import { useTheme } from '../../context/ThemeContext';
 import audioRecorder from '../../modules/AudioRecorder';
@@ -72,9 +84,15 @@ import { ChatMediaGrid } from '../../components/ChatMediaGrid';
 import { MediaGroupListModal } from '../../components/MediaGroupListModal';
 import { CustomGalleryPicker } from '../../components/CustomGalleryPicker';
 import StickerPickerSheet from '../../components/StickerPickerSheet';
+import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../../components/DoubleTapHeartOverlay';
 import LottieStickerMessage from '../../components/LottieStickerMessage';
 import LottieView from 'lottie-react-native';
 import { BUILT_IN_STICKER_PACKS, Sticker } from '../../stickers/stickerPacks';
+import {
+  isTriviaChallengeMessage,
+  isScoreSubmissionMessage,
+  syncChallengeFromMessage,
+} from '../../services/TriviaChallengeService';
 
 const FRESH_CHAT_STICKERS = [
   {
@@ -105,47 +123,8 @@ const SENT_COLOR = '#B0B0B0';
 const BASE_URL = API_BASE_URL.replace('/api', '');
 
 const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, conversationId }: any) => {
-  const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
-
-  const [hasStatus, setHasStatus] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    const checkStatus = async () => {
-      try {
-        const statuses = await StatusService.getStatuses();
-        if (active) {
-          setHasStatus(statuses.some(s => s.user_id === userId));
-        }
-      } catch (err) {
-        console.error('Status check error in MessageAvatar:', err);
-      }
-    };
-    checkStatus();
-    return () => {
-      active = false;
-    };
-  }, [userId]);
-
-  const handleAvatarPress = async () => {
-    try {
-      const statuses = await StatusService.getStatuses();
-      const userStatuses = statuses.filter(s => s.user_id === userId);
-      
-      if (userStatuses.length > 0) {
-        navigation.navigate('StatusViewer', { statuses: userStatuses, initialIndex: 0 });
-      } else {
-        navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
-      }
-    } catch (err) {
-      navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
-    }
-  };
-
-  const avatarStyle = {
-    ...style,
-    ...(hasStatus && { borderWidth: 2, borderColor: theme.primary, padding: 2 }),
+  const handleAvatarPress = () => {
+    navigation.navigate('Profile', { user: { id: userId, display_name: sName }, conversationId });
   };
 
   return (
@@ -153,7 +132,7 @@ const MessageAvatar = ({ uri, sticker, sName, userId, style, navigation, convers
       uri={uri}
       sticker={sticker}
       displayName={sName}
-      style={avatarStyle}
+      style={style}
       onPress={handleAvatarPress}
       isGroup={false}
     />
@@ -168,7 +147,23 @@ const getInitials = (name: string) => {
 };
 
 // ... inside HeaderAvatar, MessageAvatar, and renderMessage:
-// Replace .charAt(0).toUpperCase() with getInitials(name)
+const EMOJI_MATCH_REGEX = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?)*/gu;
+
+const isOnlyEmojis = (text: string | undefined | null): { isOnly: boolean; count: number } => {
+  if (!text || typeof text !== 'string') return { isOnly: false, count: 0 };
+  const trimmed = text.trim();
+  const nonWs = trimmed.replace(/\s+/g, '');
+  if (!nonWs) return { isOnly: false, count: 0 };
+  const remaining = nonWs.replace(EMOJI_MATCH_REGEX, '');
+  if (remaining.length === 0) {
+    const m = nonWs.match(EMOJI_MATCH_REGEX);
+    const count = m ? m.length : 0;
+    if (count > 0 && count <= 6) {
+      return { isOnly: true, count };
+    }
+  }
+  return { isOnly: false, count: 0 };
+};
 
 interface OtherUser {
   id: number;
@@ -390,13 +385,45 @@ const saveDimensionsToStorage = async () => {
   }
 };
 
-const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: any) => {
+const calculateImageDimensions = (width: number, height: number, isSticker: boolean) => {
+  const MAX_W = isSticker ? 100 : 200;
+  const MAX_H = isSticker ? 150 : 300;
+
+  let dW = width;
+  let dH = height;
+
+  const aspectRatio = width / height;
+
+  if (dW > MAX_W) {
+    dW = MAX_W;
+    dH = MAX_W / aspectRatio;
+  }
+
+  if (dH > MAX_H) {
+    dH = MAX_H;
+    dW = MAX_H * aspectRatio;
+  }
+
+  return { width: dW, height: dH };
+};
+
+const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker, origWidth, origHeight, localUri }: any) => {
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
 
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>(() => {
     if (url && imageDimensionsCache.has(url)) {
       return imageDimensionsCache.get(url)!;
+    }
+    if (localUri && imageDimensionsCache.has(localUri)) {
+      const cached = imageDimensionsCache.get(localUri)!;
+      if (url) imageDimensionsCache.set(url, cached);
+      return cached;
+    }
+    if (origWidth && origHeight) {
+      const resolved = calculateImageDimensions(origWidth, origHeight, !!isSticker);
+      if (url) imageDimensionsCache.set(url, resolved);
+      return resolved;
     }
     return isSticker ? { width: 100, height: 100 } : { width: 200, height: 150 };
   });
@@ -407,7 +434,19 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
     let task: any = null;
     if (url) {
       if (imageDimensionsCache.has(url)) {
-        setLoading(false);
+        setDimensions(imageDimensionsCache.get(url)!);
+        return;
+      }
+      if (localUri && imageDimensionsCache.has(localUri)) {
+        const cached = imageDimensionsCache.get(localUri)!;
+        imageDimensionsCache.set(url, cached);
+        setDimensions(cached);
+        return;
+      }
+      if (origWidth && origHeight) {
+        const resolved = calculateImageDimensions(origWidth, origHeight, !!isSticker);
+        imageDimensionsCache.set(url, resolved);
+        setDimensions(resolved);
         return;
       }
       // Defer getSize to prevent mid-transition layout shifts
@@ -416,29 +455,11 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
         Image.getSize(url, (width, height) => {
           if (!isActive) return;
           if (width && height) {
-            const MAX_W = isSticker ? 100 : 200;
-            const MAX_H = isSticker ? 150 : 300;
-
-            let dW = width;
-            let dH = height;
-
-            const aspectRatio = width / height;
-
-            if (dW > MAX_W) {
-              dW = MAX_W;
-              dH = MAX_W / aspectRatio;
-            }
-
-            if (dH > MAX_H) {
-              dH = MAX_H;
-              dW = MAX_H * aspectRatio;
-            }
-
-            const resolved = { width: dW, height: dH };
+            const resolved = calculateImageDimensions(width, height, !!isSticker);
             imageDimensionsCache.set(url, resolved);
+            if (localUri) imageDimensionsCache.set(localUri, resolved);
             saveDimensionsToStorage();
             setDimensions(resolved);
-            setLoading(false);
           }
         }, () => {
           if (!isActive) return;
@@ -446,7 +467,6 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
           imageDimensionsCache.set(url, fallback);
           saveDimensionsToStorage();
           setDimensions(fallback);
-          setLoading(false);
         });
       });
     }
@@ -454,7 +474,7 @@ const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker }: 
       isActive = false;
       if (task) task.cancel();
     };
-  }, [url, isSticker]);
+  }, [url, isSticker, origWidth, origHeight, localUri]);
 
   return (
     <TouchableOpacity 
@@ -500,7 +520,7 @@ let uniqueCounter = 0;
 const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingView;
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 90 };
 
-export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
+const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
 
@@ -509,10 +529,10 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   useFocusEffect(
     useCallback(() => {
-      pinNavBarColor(theme.background);
+      if ((global as any).activeMusicRoomCode) return;
+      pinNavBarColor(theme.background, isDark);
       if (Platform.OS === 'android' && NativeModules.SystemBar) {
-        NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark);
-        NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
       }
     }, [isDark, theme.background])
   );
@@ -522,7 +542,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   useEffect(() => {
     fcmService.setActiveConversation(String(conversationId));
 
-    const dismissNotifications = async () => {
+    const t = setTimeout(async () => {
       try {
         const notifications = await notifee.getDisplayedNotifications();
         for (const notification of notifications) {
@@ -536,16 +556,28 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       } catch (err) {
         console.error('Error dismissing notifications:', err);
       }
-    };
-    dismissNotifications();
+    }, 500);
 
     return () => {
+      clearTimeout(t);
       fcmService.setActiveConversation(null);
     };
   }, [conversationId]);
 
+  // Initial cached messages from SQLite (queried once with LIMIT 25 for instant 1ms load)
+  const initialCached = React.useMemo(() => {
+    if (route.params?.cleared || route.params?.deleted) return [];
+    try {
+      return localDatabase.getRecentMessages(Number(conversationId), 25) || [];
+    } catch {
+      return [];
+    }
+  }, [conversationId, route.params?.cleared, route.params?.deleted]);
+
   // inverted FlatList shows last item first (bottom) without any scrollToEnd
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    return initialCached.length > 0 ? [...initialCached].reverse() : [];
+  });
   const [conversation, setConversation] = useState<any>(null); 
   const [liveReadTimes, setLiveReadTimes] = useState<{ [userId: number]: string }>({});
   const [selectedReceiptUser, setSelectedReceiptUser] = useState<{ id: number; name: string; seenTime: string } | null>(null);
@@ -553,10 +585,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [groupDescription, setGroupDescription] = useState(''); 
   const [activeGroupCall, setActiveGroupCall] = useState<any>(null); 
   const [inputText, setInputText] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [hasLoadedInitialMessages, setHasLoadedInitialMessages] = useState<boolean>(() => {
+    return initialCached.length > 0;
+  });
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
-  const [oldestMessageId, setOldestMessageId] = useState<number | null>(null);
+  const [oldestMessageId, setOldestMessageId] = useState<number | null>(() => {
+    return initialCached.length > 0 ? (initialCached[0].id || null) : null;
+  });
   const [isSending, setIsSending] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -564,6 +601,31 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const [otherUser, setOtherUser] = useState<OtherUser | null>(route.params?.otherUser || null);
   const [friendStatus, setFriendStatus] = useState<string>(route.params?.otherUser?.friend_status || 'none'); // 'none' | 'sent_pending' | 'received_pending' | 'friends'
+  const [headerHasStatus, setHeaderHasStatus] = useState(false);
+  const [headerStatuses, setHeaderStatuses] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (isGroup || !otherUser?.id) return;
+    let active = true;
+    let task: any = null;
+    task = InteractionManager.runAfterInteractions(() => {
+      StatusService.getStatuses()
+        .then((statuses: any[]) => {
+          if (!active) return;
+          // Use Number() to safely compare regardless of string/number type from API
+          const userStatuses = statuses.filter(
+            (st: any) => Number(st.user_id) === Number(otherUser.id)
+          );
+          setHeaderHasStatus(userStatuses.length > 0);
+          setHeaderStatuses(userStatuses);
+        })
+        .catch(() => {/* silent */});
+    });
+    return () => {
+      active = false;
+      task?.cancel?.();
+    };
+  }, [isGroup, otherUser?.id]);
   const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(null); // null | 'pending' | 'accepted' | 'rejected'
   const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(null);
   const [isUserBlocked, setIsUserBlocked] = useState(false); // Whether current user blocked other
@@ -589,6 +651,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
+  const [isStickerSheetReady, setIsStickerSheetReady] = useState(false);
+
+  useEffect(() => {
+    // Pre-mount sticker sheet offscreen in background 350ms after screen transition
+    const timer = setTimeout(() => {
+      setIsStickerSheetReady(true);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, []);
   const [multiPreviewVisible, setMultiPreviewVisible] = useState(false);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [selectedMultiMedia, setSelectedMultiMedia] = useState<SelectedMedia[]>([]);
@@ -602,19 +673,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   // Double-tap reaction animation state
   const [mediaErrorIds, setMediaErrorIds] = useState<number[]>([]);
-  const [doubleTapReaction, setDoubleTapReaction] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    messageId: number | null;
-  }>({
-    visible: false,
-    x: 0,
-    y: 0,
-    messageId: null,
-  });
-  const doubleTapScale = useRef(new Animated.Value(0)).current;
-  const doubleTapOpacity = useRef(new Animated.Value(0)).current;
+  const doubleTapHeartRef = useRef<DoubleTapHeartOverlayRef>(null);
   const lastTapTimeRef = useRef<number>(0);
   const doubleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -622,6 +681,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
 
   const safeBottomPadding = insets.bottom + spacing.md;
+  const insetsBottomRef = useRef(insets.bottom);
+  insetsBottomRef.current = insets.bottom;
   const spacerHeight = useSharedValue(0);
 
   const animatedSpacerStyle = useAnimatedStyle(() => {
@@ -630,73 +691,130 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     };
   });
 
+  const stickerPickerVisibleRef = useRef(false);
+  stickerPickerVisibleRef.current = stickerPickerVisible;
+
+  const lastKeyboardHeightRef = useRef(290);
+
   useEffect(() => {
+    if (stickerPickerVisible) {
+      Keyboard.dismiss();
+      spacerHeight.value = withTiming(286, { duration: 120 });
+    } else if (!isKeyboardOpen) {
+      spacerHeight.value = withTiming(0, { duration: 100 });
+    }
+  }, [stickerPickerVisible, isKeyboardOpen]);
+
+  const isFocusedRef = useRef(true);
+
+  useEffect(() => {
+    try {
+      if (Platform.OS === 'android' && NativeModules.SystemBar?.startKeyboardHeightObserver) {
+        NativeModules.SystemBar.startKeyboardHeightObserver();
+      }
+    } catch (_) {}
+
     const handleShow = (e: any) => {
-      const h = e.endCoordinates ? e.endCoordinates.height : 300;
-      setIsKeyboardOpen(true);
-      setStickerPickerVisible(false);
-      setShowFullEmojiPicker(false);
-      const targetHeight = Platform.OS === 'android' ? h : Math.max(0, h - safeBottomPadding);
-      spacerHeight.value = withTiming(targetHeight, {
-        duration: e.duration || 250,
-        easing: Easing.out(Easing.quad),
-      });
-      setTimeout(() => {
-        flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-      }, 50);
+      if (!isFocusedRef.current) return;
+      const rawHeight = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 285;
+      if (rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setIsKeyboardOpen(true);
+        setStickerPickerVisible(false);
+        setShowFullEmojiPicker(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+      }
+    };
+
+    const handleFrameChange = (e: any) => {
+      if (!isFocusedRef.current) return;
+      const rawHeight = e?.endCoordinates?.height;
+      if (rawHeight && rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setIsKeyboardOpen(true);
+        setStickerPickerVisible(false);
+        setShowFullEmojiPicker(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+      }
     };
 
     const handleHide = (e: any) => {
+      if (!isFocusedRef.current) return;
       setIsKeyboardOpen(false);
-      spacerHeight.value = withTiming(0, {
-        duration: e.duration || 250,
-        easing: Easing.out(Easing.quad),
-      });
+      if (!stickerPickerVisibleRef.current) {
+        spacerHeight.value = Platform.OS === 'ios'
+          ? withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) })
+          : 0;
+      }
     };
 
+    const dynamicSub = DeviceEventEmitter.addListener('onDynamicKeyboardHeight', (data: { height: number; isVisible: boolean }) => {
+      if (!isFocusedRef.current) return;
+      const rawHeight = data?.height || 0;
+      if (rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setIsKeyboardOpen(true);
+        setStickerPickerVisible(false);
+        setShowFullEmojiPicker(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+      } else if (rawHeight === 0 && !stickerPickerVisibleRef.current) {
+        setIsKeyboardOpen(false);
+        spacerHeight.value = 0;
+      }
+    });
+
     const listeners = [
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardWillShow', handleShow),
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardWillHide', handleHide),
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleShow),
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleHide),
+      Keyboard.addListener('keyboardDidChangeFrame', handleFrameChange),
     ];
 
-    if (Platform.OS === 'android') {
-      listeners.push(
-        Keyboard.addListener('keyboardDidShow', handleShow),
-        Keyboard.addListener('keyboardDidHide', handleHide)
-      );
-    }
-
     return () => {
+      dynamicSub.remove();
       listeners.forEach(l => l.remove());
     };
   }, [safeBottomPadding]);
 
-  // Dismiss keyboard when leaving screen to prevent autofocusing previous screen inputs
+  const isNavigatingBack = useRef(false);
+
+  const handleGoBack = useCallback(() => {
+    if (isNavigatingBack.current) return;
+    isNavigatingBack.current = true;
+    setTimeout(() => {
+      isNavigatingBack.current = false;
+    }, 350);
+
+    // Navigate FIRST — do NOT dismiss keyboard before goBack.
+    // Keyboard.dismiss() fires keyboardDidHide → setIsKeyboardOpen(false)
+    // which triggers a full FlatList re-render BEFORE the slide starts, causing the 0.5s hang.
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('MainTabs', { screen: 'Chats' });
+    }
+    // Dismiss keyboard after navigation is dispatched (non-blocking)
+    setTimeout(() => Keyboard.dismiss(), 50);
+  }, [navigation]);
+
   useEffect(() => {
-    const unsubBlur = navigation.addListener('blur', () => {
-      Keyboard.dismiss();
-    });
-    const unsubBeforeRemove = navigation.addListener('beforeRemove', () => {
-      Keyboard.dismiss();
-    });
     const onBackPress = () => {
-      Keyboard.dismiss();
-      return false;
+      if (!isFocusedRef.current) return false;
+      if (stickerPickerVisibleRef.current) {
+        setStickerPickerVisible(false);
+        return true;
+      }
+      handleGoBack();
+      return true;
     };
     const subBack = BackHandler.addEventListener('hardwareBackPress', onBackPress);
 
     return () => {
-      Keyboard.dismiss();
-      unsubBlur();
-      unsubBeforeRemove();
       subBack.remove();
     };
-  }, [navigation]);
-
-  const handleGoBack = useCallback(() => {
-    Keyboard.dismiss();
-    navigation.goBack();
-  }, [navigation]);
+  }, [handleGoBack]);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [isCancelled, setIsCancelled] = useState(false);
@@ -725,40 +843,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const EMOJIS = ['❤️', '😂', '😮', '😢', '😡', '👍', '👎', '🎉'];
 
-  // Defer cache load until after the slide transition completes to avoid mid-animation re-renders
-  useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      if (route.params?.cleared || route.params?.deleted) {
-        return;
-      }
-      try {
-        const cached = localDatabase.getMessages(conversationId);
-        if (cached && cached.length > 0) {
-          const latestCached = cached.slice(-15);
-          const mappedCached = latestCached.map(msg => {
-            if (!msg.sender?.id && currentUser) {
-              const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
-              if (isMe) {
-                msg.sender = {
-                  ...msg.sender,
-                  id: currentUser.id
-                };
-              }
-            }
-            return msg;
-          });
-          setOldestMessageId(mappedCached[0].id || null);
-          setHasMoreMessages(cached.length >= 50);
-          setMessages([...mappedCached].reverse());
-          setIsLoading(false);
-        }
-      } catch (e) {
-        console.warn('⚠️ Failed to load cached messages on mount:', e);
-      }
-    });
-    return () => task.cancel();
-  }, [conversationId, currentUser, route.params?.cleared, route.params?.deleted]);
-
   useEffect(() => {
     // Check if chat should be cleared or deleted (from navigation params)
     const params = route?.params;
@@ -782,19 +866,15 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       console.log('Chat cleared - skipping message load');
     }
 
-    const task = InteractionManager.runAfterInteractions(() => {
-      // Add a small delay (100ms) after the navigation animation settles
-      // to guarantee zero stutters or mid-animation jumps
-      setTimeout(() => {
-        loadConversationDetails();
-        connectWebSocket();
+    // Background fetch & websocket connection asynchronously without blocking frame 1 render
+    const syncTimer = setTimeout(() => {
+      loadConversationDetails();
+      connectWebSocket();
 
-        // Only load messages if not cleared
-        if (!isCleared) {
-          loadMessages();
-        }
-      }, 100);
-    });
+      if (!isCleared) {
+        loadMessages();
+      }
+    }, 50);
 
     // Scroll to specific message if ID provided
     const scrollToId = route.params?.scrollToMessageId;
@@ -824,6 +904,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const focusSub = navigation.addListener('focus', () => {
       chatIsActiveRef.current = true;
+      isFocusedRef.current = true;
+      isNavigatingBack.current = false;
       InteractionManager.runAfterInteractions(() => {
         // Add a slight delay to ensure the native slide transition is 100% complete
         // before we trigger the `conversation_read` event which re-renders the heavy ChatListScreen
@@ -839,10 +921,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
     const blurSub = navigation.addListener('blur', () => {
       chatIsActiveRef.current = false;
+      isFocusedRef.current = false;
     });
 
     return () => {
-      task.cancel();
+      clearTimeout(syncTimer);
       websocketService.disconnectRoom();
       if (focusSub) focusSub();
       if (blurSub) blurSub();
@@ -1078,33 +1161,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       return;
     }
 
-    // Load from local SQLite cache first for instant offline rendering
-    try {
-      const cached = localDatabase.getMessages(conversationId);
-      if (cached && cached.length > 0) {
-        // Fallback for pre-existing cached messages (where sender_id was stored as 0)
-        const mappedCached = cached.map(msg => {
-          if (!msg.sender?.id && currentUser) {
-            const isMe = msg.user === (currentUser.display_name || currentUser.first_name || currentUser.email);
-            if (isMe) {
-              msg.sender = {
-                ...msg.sender,
-                id: currentUser.id
-              };
-            }
-          }
-          return msg;
-        });
-        setOldestMessageId(mappedCached[0].id || null);
-        setHasMoreMessages(mappedCached.length >= 50);
-        // Reverse because inverted FlatList expects index 0 to be the newest message (at the bottom)
-        setMessages([...mappedCached].reverse());
-        setIsLoading(false); // Can hide loading indicator early
-      }
-    } catch (e) {
-      console.warn('⚠️ Failed to load cached messages:', e);
-    }
-
     try {
       const data = await chatAPI.getMessages(conversationId);
       const arr: Message[] = Array.isArray(data) ? data : data?.results ?? [];
@@ -1131,6 +1187,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       setMessages(prev => (prev.length > 0 ? prev : []));
     } finally {
       setIsLoading(false);
+      setHasLoadedInitialMessages(true);
     }
   };
 
@@ -1429,7 +1486,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         );
         setInputText(''); 
         clearInputRef.current?.();
-        setInputClearKey(k => k + 1);
         setEditingMessageId(null);
       } catch (error) {
         Toast.show({
@@ -1444,7 +1500,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     setIsSending(true);
     setInputText('');
     clearInputRef.current?.();
-    setInputClearKey(k => k + 1);
     setHighlightMessageId(null); // Clear any active highlight when sending a new message
 
     if (websocketService.getConnectionState()) {
@@ -1488,6 +1543,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       setIsSending(false);
       setInputText('');
       clearInputRef.current?.();
+      // Optimistically show the pending banner immediately so the sender can't
+      // type a 2nd message before the WS message_request_created event arrives.
+      if (!isGroup && friendStatus !== 'friends' && messageRequestStatus === null) {
+        setMessageRequestStatus('pending');
+        setMessageRequestSenderId(currentUser!.id);
+      }
 
       // Auto-scroll to bottom after sending reply
       setTimeout(() => {
@@ -1514,7 +1575,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
           setReplyToMessage(null);
           setInputText('');
-          clearInputRef.current?.();  
+          clearInputRef.current?.();
+          // If this was the first message (created a MessageRequest), show the
+          // pending banner immediately without waiting for a WS event.
+          if (nm.is_message_request) {
+            setMessageRequestStatus('pending');
+            setMessageRequestSenderId(currentUser!.id);
+          }
           // Query backend conversation details to instantly update friendship/message-gating status
           loadConversationDetails();
           setTimeout(() => {
@@ -1667,7 +1734,6 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
   const sendLottieSticker = useCallback(async (sticker: Sticker) => {
-    setStickerPickerVisible(false);
     uniqueCounter++;
     const localId = `lsticker_${Date.now()}_${uniqueCounter}`;
     const tempId = Date.now() + uniqueCounter + 2000000000;
@@ -1720,6 +1786,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           ),
         );
         localDatabase.saveMessage(nm, localId, 'sent');
+        // Show pending banner immediately if this was the first message
+        if (nm.is_message_request) {
+          setMessageRequestStatus('pending');
+          setMessageRequestSenderId(currentUser!.id);
+        }
       } else {
         // Non-critical: mark as failed
         setMessages(prev =>
@@ -1793,6 +1864,11 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           ),
         );
         localDatabase.saveMessage(nm, localId, 'sent');
+        // Show pending banner immediately if this was the first message
+        if (nm.is_message_request) {
+          setMessageRequestStatus('pending');
+          setMessageRequestSenderId(currentUser!.id);
+        }
       } else {
         setMessages(prev =>
           prev.map(m =>
@@ -1894,6 +1970,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       content: caption,
       message_type: messageType,
       media_file: asset.uri, // Use local URI temporarily
+      media_file_local: asset.uri,
+      width: asset.width,
+      height: asset.height,
       is_read: false, delivered_at: null, created_at: new Date().toISOString(),
       reactions: {}, reply_to: null, status: 'sending',
     };
@@ -1920,8 +1999,23 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       if (res.ok) {
         const nm = await res.json();
-        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...nm, local_id: localId, status: 'sent' } : m));
-        localDatabase.saveMessage(nm, localId, 'sent');
+        const serverUrl = resolveImageUrl(nm.media_url || nm.media_file);
+        if (asset.uri && imageDimensionsCache.has(asset.uri)) {
+          imageDimensionsCache.set(serverUrl, imageDimensionsCache.get(asset.uri)!);
+        } else if (asset.width && asset.height) {
+          const resolved = calculateImageDimensions(asset.width, asset.height, false);
+          imageDimensionsCache.set(serverUrl, resolved);
+        }
+        const updatedMsg = {
+          ...nm,
+          local_id: localId,
+          status: 'sent',
+          width: asset.width || optimisticMsg.width,
+          height: asset.height || optimisticMsg.height,
+          media_file_local: asset.uri,
+        };
+        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? updatedMsg : m));
+        localDatabase.saveMessage(updatedMsg, localId, 'sent');
       } else {
         throw new Error(`Upload failed: ${res.status}`);
       }
@@ -2342,8 +2436,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   // Handle scroll to show/hide scroll-to-bottom button
   const handleOnScroll = (event: any) => {
     const offset = event.nativeEvent.contentOffset.y;
-    // Show button when scrolled up more than 200px from bottom
-    setShowScrollToBottom(offset > 200);
+    // Show button when scrolled up more than 120px from bottom
+    setShowScrollToBottom(offset > 120);
 
     // If we are highlighted and scroll back to very bottom, clear highlight
     if (highlightMessageId && offset < 20) {
@@ -2399,43 +2493,12 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
   const handleDoubleTapReaction = (item: Message, x: number = 0, y: number = 0) => {
     const targetId = (item as any).type === 'media_group' ? (item as any).messages[0].id : item.id;
-    // Show the heart animation at tap location
-    setDoubleTapReaction({ visible: true, x, y, messageId: targetId });
-
-    // Run the pop animation
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(doubleTapScale, {
-          toValue: 1.5,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(doubleTapOpacity, {
-          toValue: 1,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(doubleTapScale, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(doubleTapOpacity, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-      ]),
-    ]).start(() => {
-      setDoubleTapReaction({ visible: false, x: 0, y: 0, messageId: null });
-      doubleTapScale.setValue(0);
-      doubleTapOpacity.setValue(0);
-    });
-
-    // Toggle the user's quick reaction (add if not present, remove if present)
     const reactionEmoji = currentUser?.quick_reaction || '❤️';
+    
+    // Snappy Native UI Pop Animation (Zero React state re-render lag)
+    doubleTapHeartRef.current?.trigger(x, y, reactionEmoji);
+
+    // Toggle the user's quick reaction
     toggleReaction(targetId, reactionEmoji);
   };
 
@@ -2751,6 +2814,13 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
     const seenIds = new Set<string | number>();
     const deduplicated = (Array.isArray(messages) ? messages : []).filter(msg => {
       if (!msg) return false;
+      // Sync challenge & score payloads in the background for Trivia Hub, but keep chat 100% clean
+      if (isTriviaChallengeMessage(msg) || isScoreSubmissionMessage(msg)) {
+        if (msg.content) {
+          syncChallengeFromMessage(msg.content, conversationId);
+        }
+        return false;
+      }
       const uid = msg.local_id || msg.id;
       if (seenIds.has(uid)) {
         return false;
@@ -3055,6 +3125,9 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             onPress={(e: any) => handleMessagePress(item, e)}
             onLongPress={(e: any) => handleMessageLongPress(item, e)}
             isSticker={isSticker}
+            origWidth={(item as any).width}
+            origHeight={(item as any).height}
+            localUri={(item as any).media_file_local || item.media_file}
           />
           {(item as any).status === 'sending' && (
             <View style={{
@@ -3250,6 +3323,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
             <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
               <LottieStickerMessage
                 url={item.content}
+                size={60}
+                autoPlay={index === 0}
                 onLongPress={() => handleMessageLongPress(item, {} as any)}
                 onPress={() => {}}
               />
@@ -3316,68 +3391,85 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               );
             })()
           ) : (
-            isMe ? (
-              <View style={{ maxWidth: '80%', minWidth: 50, alignSelf: 'flex-end' }}>
-                <TouchableOpacity
-                  style={[
-                    s.messageBubble,
-                    s.myMessageBubble,
-                    {
-                      width: '100%',
+            (() => {
+              const emojiInfo = isOnlyEmojis(item.content);
+              const isEmojiOnly = emojiInfo.isOnly && !item.reply_to;
+              const emojiFontSize = emojiInfo.count === 1 ? 36 : emojiInfo.count === 2 ? 30 : emojiInfo.count === 3 ? 26 : 22;
+              const emojiLineHeight = emojiFontSize + 8;
+
+              return isMe ? (
+                <View style={{ maxWidth: '80%', minWidth: isEmojiOnly ? undefined : 50, alignSelf: 'flex-end' }}>
+                  <TouchableOpacity
+                    style={isEmojiOnly ? {
+                      backgroundColor: 'transparent',
+                      paddingHorizontal: 4,
+                      paddingVertical: 2,
                       alignItems: 'flex-end',
-                      backgroundColor: theme.myMessage,
-                      borderTopRightRadius: 4,
-                      padding: spacing.md,
-                      borderRadius: borderRadius.lg,
-                    }
-                  ]}
-                  onPress={(e) => handleMessagePress(item, e)}
-                  onLongPress={(e) => handleMessageLongPress(item, e)}
-                  activeOpacity={0.8}
-                  delayLongPress={500}
-                >
-                  {item.reply_to && renderReplyIndicator(item.reply_to, true)}
-                  {!!item.edited_at && (
-                    <Text style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
-                  )}
-                  <Text style={[s.messageText, { color: '#FFFFFF' }]}>
-                    {String(item.content || '')}
-                  </Text>
-                </TouchableOpacity>
-                {hasReactions && renderReactionsBadge(true)}
-              </View>
-            ) : (
-              <View style={{ maxWidth: '70%', minWidth: 50, alignSelf: 'flex-start' }}>
-                <TouchableOpacity
-                  style={[
-                    s.messageBubble,
-                    s.theirMessageBubble,
-                    {
-                      width: '100%',
+                    } : [
+                      s.messageBubble,
+                      s.myMessageBubble,
+                      {
+                        width: '100%',
+                        alignItems: 'flex-end',
+                        backgroundColor: theme.myMessage,
+                        borderTopRightRadius: 4,
+                        padding: spacing.md,
+                        borderRadius: borderRadius.lg,
+                      }
+                    ]}
+                    onPress={(e) => handleMessagePress(item, e)}
+                    onLongPress={(e) => handleMessageLongPress(item, e)}
+                    activeOpacity={0.8}
+                    delayLongPress={500}
+                  >
+                    {item.reply_to && renderReplyIndicator(item.reply_to, true)}
+                    {!!item.edited_at && (
+                      <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                    )}
+                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: '#FFFFFF' }]}>
+                      {String(item.content || '')}
+                    </Text>
+                  </TouchableOpacity>
+                  {hasReactions && renderReactionsBadge(true)}
+                </View>
+              ) : (
+                <View style={{ maxWidth: '70%', minWidth: isEmojiOnly ? undefined : 50, alignSelf: 'flex-start' }}>
+                  <TouchableOpacity
+                    style={isEmojiOnly ? {
+                      backgroundColor: 'transparent',
+                      paddingHorizontal: 4,
+                      paddingVertical: 2,
                       alignItems: 'flex-start',
-                      backgroundColor: theme.theirMessage,
-                      borderTopLeftRadius: 4,
-                      padding: spacing.md,
-                      borderRadius: borderRadius.lg,
-                    }
-                  ]}
-                  onPress={(e) => handleMessagePress(item, e)}
-                  onLongPress={(e) => handleMessageLongPress(item, e)}
-                  activeOpacity={0.8}
-                  delayLongPress={500}
-                >
-                  {item.reply_to && renderReplyIndicator(item.reply_to, false)}
-                  {!isMe && isGroup && <Text style={s.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
-                  {!!item.edited_at && (
-                    <Text style={{ fontSize: 11, color: '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
-                  )}
-                  <Text style={[s.messageText, { color: theme.textPrimary }]}>
-                    {String(item.content || '')}
-                  </Text>
-                </TouchableOpacity>
-                {hasReactions && renderReactionsBadge(false)}
-              </View>
-            )
+                    } : [
+                      s.messageBubble,
+                      s.theirMessageBubble,
+                      {
+                        width: '100%',
+                        alignItems: 'flex-start',
+                        backgroundColor: theme.theirMessage,
+                        borderTopLeftRadius: 4,
+                        padding: spacing.md,
+                        borderRadius: borderRadius.lg,
+                      }
+                    ]}
+                    onPress={(e) => handleMessagePress(item, e)}
+                    onLongPress={(e) => handleMessageLongPress(item, e)}
+                    activeOpacity={0.8}
+                    delayLongPress={500}
+                  >
+                    {item.reply_to && renderReplyIndicator(item.reply_to, false)}
+                    {!isMe && isGroup && <Text style={s.senderName} numberOfLines={1} ellipsizeMode="tail">{String(sName || '')}</Text>}
+                    {!!item.edited_at && (
+                      <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                    )}
+                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: theme.textPrimary }]}>
+                      {String(item.content || '')}
+                    </Text>
+                  </TouchableOpacity>
+                  {hasReactions && renderReactionsBadge(false)}
+                </View>
+              );
+            })()
           )}
         </View>
         
@@ -3421,41 +3513,74 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   return (
-    <KeyboardWrapperView
+    <View style={{ flex: 1 }}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
+      <KeyboardWrapperView
       style={[s.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
       {...keyboardWrapperProps}
     >
       {/* Header */}
       {searchMode ? renderSearchBar() : (
       <View style={s.customHeader}>
-        <TouchableOpacity 
+        <Pressable 
            style={s.headerBackButton}
            onPress={handleGoBack}
+           hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+           android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
         >
           <Icon name="arrow-back" size={24} color={theme.textPrimary} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={s.headerCenter}
-          onPress={() =>
-            isGroup
-              ? navigation.navigate('GroupInfo', { conversationId })
-              : otherUser &&
-                navigation.navigate('Profile', {
-                  user: otherUser,
-                  conversationId,
-                })
-          }
-          activeOpacity={0.7}
-        >
-          <AvatarWithFallback
-            uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
-            sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
-            displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
-            isGroup={isGroup}
-            style={s.headerAvatar}
-          />
+        </Pressable>
+        <View style={s.headerCenter}>
+          <Pressable
+            onPress={() => {
+              if (!isGroup && headerHasStatus && headerStatuses.length > 0) {
+                navigation.navigate('StatusViewer', { statuses: headerStatuses, initialIndex: 0 });
+              } else if (isGroup) {
+                navigation.navigate('GroupInfo', { conversationId });
+              } else {
+                const targetUser = otherUser || conversation?.other_user;
+                if (targetUser) {
+                  navigation.navigate('Profile', { user: targetUser, conversationId });
+                }
+              }
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+          >
+            <View
+              style={[
+                {
+                  width: 40, height: 40, borderRadius: 20,
+                  marginRight: 8,
+                  borderWidth: (!isGroup && headerHasStatus) ? 2.5 : 0,
+                  borderColor: (!isGroup && headerHasStatus) ? theme.primary : 'transparent',
+                  padding: (!isGroup && headerHasStatus) ? 2 : 0,
+                }
+              ]}
+            >
+              <AvatarWithFallback
+                uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
+                sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
+                displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
+                isGroup={isGroup}
+                style={{ width: '100%', height: '100%', borderRadius: 20 }}
+              />
+            </View>
+          </Pressable>
 
-          <View style={s.headerTextContainer}>
+          <Pressable
+            style={s.headerTextContainer}
+            onPress={() => {
+              if (isGroup) {
+                navigation.navigate('GroupInfo', { conversationId });
+              } else {
+                const targetUser = otherUser || conversation?.other_user;
+                if (targetUser) {
+                  navigation.navigate('Profile', { user: targetUser, conversationId });
+                }
+              }
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 12 }}
+          >
             <Text style={s.headerName} numberOfLines={1}>
               {chatTitle}
             </Text>
@@ -3472,8 +3597,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   : `Last seen ${fmtLastSeen(otherUser.last_seen)}`
                 : ''}
             </Text>
-          </View>
-        </TouchableOpacity>
+          </Pressable>
+        </View>
 
         <View style={s.headerRight}>
           {/* Call buttons are disabled and muted if users are not friends (except in groups) */}
@@ -3533,78 +3658,78 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
 
       {renderGroupCallBanner()}
 
-      {/* FIX 1: inverted FlatList - always starts at bottom, no scrollToEnd needed */}
-      <FlatList
-        ref={flatListRef}
-        data={groupedMessages}
-        renderItem={renderMessage}
-        keyExtractor={item => (item.local_id || item.id).toString()}
-        contentContainerStyle={[s.messagesList, { paddingBottom: 8 }]}
-        inverted={true}
-        // Load older messages when user scrolls to top (= onEndReached in inverted list)
-        onEndReached={loadOlderMessages}
-        onEndReachedThreshold={0.3}
-        onScroll={handleOnScroll}
-        onScrollToIndexFailed={info => {
-          console.warn('ScrollToIndex failed, scrolling to estimated offset and retrying...', info);
-          flatListRef.current?.scrollToOffset({
-            offset: info.averageItemLength * info.index,
-            animated: true,
-          });
-          setTimeout(() => {
-            try {
-              flatListRef.current?.scrollToIndex({ 
-                index: info.index, 
-                animated: true, 
-                viewPosition: 0.5 
-              });
-            } catch (err) {
-              console.warn('ScrollToIndex retry failed:', err);
-            }
-          }, 100);
-        }}
-        scrollEventThrottle={16}
-        ListFooterComponent={
-          isLoadingOlder ? (
-            <View style={s.loadingOlderContainer}>
-              <ActivityIndicator size="small" color={theme.primary} />
-              <Text style={s.loadingOlderText}>
-                Loading older messages...
-              </Text>
-            </View>
-          ) : null
-        }
-        initialNumToRender={30}
-        maxToRenderPerBatch={20}
-        windowSize={10}
-        removeClippedSubviews={false}
-        ListEmptyComponent={
-          !isLoading && searchText ? (
-            <View style={s.emptySearchContainer}>
-              <Icon name="search-outline" size={48} color="#DDD" />
-              <Text style={s.emptySearchText}>No messages found</Text>
-            </View>
-          ) : null
-        }
-      />
+      {/* Messages list container with relative positioning for FAB and overlays */}
+      <View style={{ flex: 1, position: 'relative' }}>
+        <FlatList
+          ref={flatListRef}
+          data={groupedMessages}
+          renderItem={renderMessage}
+          keyExtractor={item => (item.local_id || item.id).toString()}
+          contentContainerStyle={[s.messagesList, { paddingBottom: 8 }]}
+          inverted={true}
+          // Disable scroll during back navigation so the FlatList gesture responder
+          // does not compete with the back button tap and cause 500ms input latency.
+          scrollEnabled={!isNavigatingBack.current}
+          // Load older messages when user scrolls to top (= onEndReached in inverted list)
+          onEndReached={loadOlderMessages}
+          onEndReachedThreshold={0.3}
+          onScroll={handleOnScroll}
+          onScrollToIndexFailed={info => {
+            console.warn('ScrollToIndex failed, scrolling to estimated offset and retrying...', info);
+            flatListRef.current?.scrollToOffset({
+              offset: info.averageItemLength * info.index,
+              animated: true,
+            });
+            setTimeout(() => {
+              try {
+                flatListRef.current?.scrollToIndex({ 
+                  index: info.index, 
+                  animated: true, 
+                  viewPosition: 0.5 
+                });
+              } catch (err) {
+                console.warn('ScrollToIndex retry failed:', err);
+              }
+            }, 100);
+          }}
+          scrollEventThrottle={16}
+          ListFooterComponent={
+            isLoadingOlder ? (
+              <View style={s.loadingOlderContainer}>
+                <ActivityIndicator size="small" color={theme.primary} />
+                <Text style={s.loadingOlderText}>
+                  Loading older messages...
+                </Text>
+              </View>
+            ) : null
+          }
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          updateCellsBatchingPeriod={30}
+          removeClippedSubviews={Platform.OS === 'android'}
+          ListEmptyComponent={
+            !isLoading && searchText ? (
+              <View style={s.emptySearchContainer}>
+                <Icon name="search-outline" size={48} color="#DDD" />
+                <Text style={s.emptySearchText}>No messages found</Text>
+              </View>
+            ) : null
+          }
+        />
 
-      {/* Initial loading spinner — centered absolute overlay */}
-      {isLoading && (
-        <View style={s.loadingOverlay} pointerEvents="none">
-          <ActivityIndicator size="large" color="rgba(180,180,180,0.7)" />
-        </View>
-      )}
-
-      {/* Scroll to bottom button */}
-      {showScrollToBottom && (
-        <TouchableOpacity
-          style={s.scrollToBottomButton}
-          onPress={scrollToBottom}
-          activeOpacity={0.8}
-        >
-          <Icon name="chevron-down" size={24} color="#FFF" />
-        </TouchableOpacity>
-      )}
+        {/* Scroll to bottom button */}
+        {showScrollToBottom && (
+          <TouchableOpacity
+            style={s.scrollToBottomButton}
+            onPress={scrollToBottom}
+            activeOpacity={0.8}
+            accessibilityLabel="Scroll to bottom"
+          >
+            <Icon name="chevron-down" size={22} color={theme.textPrimary} />
+          </TouchableOpacity>
+        )}
+      </View>
 
       {/* Typing */}
       {typingUsers.length > 0 && (
@@ -3641,100 +3766,86 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
       )}
 
       {/* Emoji picker */}
-      <Modal
-        visible={showEmojiPicker}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          setShowEmojiPicker(false);
-          setSelectedMessage(null);
-        }}
-      >
-        <TouchableOpacity
-          style={s.modalOverlay}
-          activeOpacity={1}
-          onPress={() => {
+      {showEmojiPicker && (
+        <Modal
+          visible={showEmojiPicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => {
             setShowEmojiPicker(false);
             setSelectedMessage(null);
           }}
         >
-          <View style={s.emojiPicker}>
-            <Text style={s.emojiPickerTitle}>React with</Text>
-            <View style={s.emojiGrid}>
-              {EMOJIS.map(e => (
-                <TouchableOpacity
-                  key={e}
-                  style={s.emojiButton}
-                  onPress={() => {
-                    if (selectedMessage) {
-                      const targetId = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0].id : selectedMessage.id;
-                      sendReaction(targetId, e);
-                    }
-                  }}
-                >
-                  <Text style={s.emoji}>{e}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {selectedMessage && (
-              <View style={s.messageActions}>
-                <TouchableOpacity
-                  style={s.actionButton}
-                  onPress={() => {
-                    if (selectedMessage) {
-                      const targetMsg = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0] : selectedMessage;
-                      setReplyToMessage(targetMsg);
-                      setShowEmojiPicker(false);
-                      setSelectedMessage(null);
-                    }
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Icon
-                      name="arrow-undo-outline"
-                      size={20}
-                      color={theme.primary}
-                      style={{ marginRight: 8 }}
-                    />
-                    <Text style={s.actionButtonText}>Reply</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Double-tap reaction animation overlay */}
-      {doubleTapReaction.visible && (
-        <View style={s.doubleTapOverlay}>
-          <Animated.View
-            style={[
-              s.doubleTapReaction,
-              {
-                top: doubleTapReaction.y,
-                left: doubleTapReaction.x,
-                transform: [{ scale: doubleTapScale }],
-                opacity: doubleTapOpacity,
-              },
-            ]}
-            pointerEvents="none"
+          <TouchableOpacity
+            style={s.modalOverlay}
+            activeOpacity={1}
+            onPress={() => {
+              setShowEmojiPicker(false);
+              setSelectedMessage(null);
+            }}
           >
-            <Text style={s.doubleTapHeart}>{currentUser?.quick_reaction || '❤️'}</Text>
-          </Animated.View>
-        </View>
+            <View style={s.emojiPicker}>
+              <Text style={s.emojiPickerTitle}>React with</Text>
+              <View style={s.emojiGrid}>
+                {EMOJIS.map(e => (
+                  <TouchableOpacity
+                    key={e}
+                    style={s.emojiButton}
+                    onPress={() => {
+                      if (selectedMessage) {
+                        const targetId = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0].id : selectedMessage.id;
+                        sendReaction(targetId, e);
+                      }
+                    }}
+                  >
+                    <Text style={s.emoji}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {selectedMessage && (
+                <View style={s.messageActions}>
+                  <TouchableOpacity
+                    style={s.actionButton}
+                    onPress={() => {
+                      if (selectedMessage) {
+                        const targetMsg = (selectedMessage as any).type === 'media_group' ? (selectedMessage as any).messages[0] : selectedMessage;
+                        setReplyToMessage(targetMsg);
+                        setShowEmojiPicker(false);
+                        setSelectedMessage(null);
+                      }
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Icon
+                        name="arrow-undo-outline"
+                        size={20}
+                        color={theme.primary}
+                        style={{ marginRight: 8 }}
+                      />
+                      <Text style={s.actionButtonText}>Reply</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
+        </Modal>
       )}
 
+      {/* Double-tap reaction animation overlay */}
+      <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={currentUser?.quick_reaction || '❤️'} />
+
       {/* Instagram-style message actions menu */}
-      <Modal
-        visible={showMessageActions}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setShowMessageActions(false);
-          setSelectedMessage(null);
-        }}
-      >
+      {showMessageActions && (
+        <Modal
+          visible={showMessageActions}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setShowMessageActions(false);
+            setSelectedMessage(null);
+          }}
+        >
         <TouchableOpacity
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }}
           activeOpacity={1}
@@ -3937,111 +4048,116 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
           })()}
         </TouchableOpacity>
       </Modal>
+      )}
 
       {/* Full emoji picker overlay */}
-      <Modal
-        visible={showFullEmojiPicker}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowFullEmojiPicker(false)}
-      >
-        <TouchableOpacity
-          style={s.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowFullEmojiPicker(false)}
+      {showFullEmojiPicker && (
+        <Modal
+          visible={showFullEmojiPicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowFullEmojiPicker(false)}
         >
-          <View style={s.emojiPicker}>
-            <Text style={s.emojiPickerTitle}>All Emojis</Text>
-            <View style={s.emojiGrid}>
-              {[
-                '❤️',
-                '😂',
-                '😍',
-                '😮',
-                '😢',
-                '😡',
-                '👍',
-                '👎',
-                '🎉',
-                '🔥',
-                '✨',
-                '💯',
-                '😎',
-                '🤔',
-                '👏',
-                '🙏',
-              ].map(e => (
-                <TouchableOpacity
-                  key={e}
-                  style={s.emojiButton}
-                  onPress={() => {
-                    handleQuickReaction(e);
-                    setShowFullEmojiPicker(false);
-                  }}
-                >
-                  <Text style={s.emoji}>{e}</Text>
-                </TouchableOpacity>
-              ))}
+          <TouchableOpacity
+            style={s.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowFullEmojiPicker(false)}
+          >
+            <View style={s.emojiPicker}>
+              <Text style={s.emojiPickerTitle}>All Emojis</Text>
+              <View style={s.emojiGrid}>
+                {[
+                  '❤️',
+                  '😂',
+                  '😍',
+                  '😮',
+                  '😢',
+                  '😡',
+                  '👍',
+                  '👎',
+                  '🎉',
+                  '🔥',
+                  '✨',
+                  '💯',
+                  '😎',
+                  '🤔',
+                  '👏',
+                  '🙏',
+                ].map(e => (
+                  <TouchableOpacity
+                    key={e}
+                    style={s.emojiButton}
+                    onPress={() => {
+                      handleQuickReaction(e);
+                      setShowFullEmojiPicker(false);
+                    }}
+                  >
+                    <Text style={s.emoji}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+          </TouchableOpacity>
+        </Modal>
+      )}
 
       {/* Permission modal */}
-      <Modal
-        visible={showPermissionModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {}}
-      >
-        <View style={s.permissionModalOverlay}>
-          <View style={s.permissionModal}>
-            <Icon
-              name="mic"
-              size={48}
-              color={theme.primary}
-              style={{ marginBottom: spacing.md }}
-            />
-            <Text style={s.permissionModalTitle}>
-              Microphone Access Required
-            </Text>
-            <Text style={s.permissionModalMessage}>
-              Allow microphone access to record voice messages.
-            </Text>
-            <View style={s.permissionModalButtons}>
-              <TouchableOpacity
-                style={[s.permissionButton, s.allowButton]}
-                onPress={() => {
-                  setShowPermissionModal(false);
-                  Linking.openSettings();
-                }}
-              >
-                <Text
-                  style={[
-                    s.permissionButtonText,
-                    s.permissionButtonTextWhite,
-                  ]}
+      {showPermissionModal && (
+        <Modal
+          visible={showPermissionModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {}}
+        >
+          <View style={s.permissionModalOverlay}>
+            <View style={s.permissionModal}>
+              <Icon
+                name="mic"
+                size={48}
+                color={theme.primary}
+                style={{ marginBottom: spacing.md }}
+              />
+              <Text style={s.permissionModalTitle}>
+                Microphone Access Required
+              </Text>
+              <Text style={s.permissionModalMessage}>
+                Allow microphone access to record voice messages.
+              </Text>
+              <View style={s.permissionModalButtons}>
+                <TouchableOpacity
+                  style={[s.permissionButton, s.allowButton]}
+                  onPress={() => {
+                    setShowPermissionModal(false);
+                    Linking.openSettings();
+                  }}
                 >
-                  Allow Access
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[s.permissionButton, s.notNowButton]}
-                onPress={() => setShowPermissionModal(false)}
-              >
-                <Text
-                  style={[
-                    s.permissionButtonText,
-                    s.permissionButtonTextDark,
-                  ]}
+                  <Text
+                    style={[
+                      s.permissionButtonText,
+                      s.permissionButtonTextWhite,
+                    ]}
+                  >
+                    Allow Access
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.permissionButton, s.notNowButton]}
+                  onPress={() => setShowPermissionModal(false)}
                 >
-                  Not Now
-                </Text>
-              </TouchableOpacity>
+                  <Text
+                    style={[
+                      s.permissionButtonText,
+                      s.permissionButtonTextDark,
+                    ]}
+                  >
+                    Not Now
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
 
       {/* Input bar */}
       {isUserBlocked ? (
@@ -4102,7 +4218,7 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
         </View>
       ) : (
         <>
-          {messages.length === 0 && !isLoading && (
+          {hasLoadedInitialMessages && messages.length === 0 && (
             <View style={s.quickStickersRowWrapper}>
               <View style={s.quickStickersContainerEvenly}>
                 {FRESH_CHAT_STICKERS.map((st) => (
@@ -4114,8 +4230,8 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                   >
                     <LottieView
                       source={{ uri: st.url }}
-                      autoPlay
-                      loop
+                      autoPlay={false}
+                      progress={1}
                       style={s.quickStickerLottie}
                       resizeMode="contain"
                     />
@@ -4124,74 +4240,84 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
               </View>
             </View>
           )}
-          <View style={s.inputContainer}>
-            {/* Scenario A: The sender is waiting for approval */}
-            {!isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' && messageRequestSenderId === currentUser?.id ? (
+          {!isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' ? (
+            /* Scenario A & B: Message request banner */
+            <View style={{
+              width: '100%',
+              paddingHorizontal: spacing.md,
+              paddingBottom: spacing.md,
+              backgroundColor: theme.background,
+            }}>
               <View style={{
-                backgroundColor: 'rgba(30, 30, 30, 0.95)',
-                borderTopWidth: 0.5,
-                borderTopColor: 'rgba(255, 255, 255, 0.1)',
-                paddingHorizontal: 16,
-                paddingVertical: 14,
+                backgroundColor: theme.surface,
+                borderRadius: borderRadius.lg,
+                borderWidth: 1,
+                borderColor: theme.border,
+                padding: spacing.lg,
                 alignItems: 'center',
                 justifyContent: 'center',
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 1 },
+                shadowOpacity: 0.1,
+                shadowRadius: 2,
+                elevation: 2,
               }}>
-                <Text style={{ fontSize: 13.5, color: 'rgba(255, 255, 255, 0.7)', fontWeight: '600', textAlign: 'center' }}>
-                  ⏳ Message request pending
-                </Text>
-                <Text style={{ fontSize: 11.5, color: 'rgba(255, 255, 255, 0.4)', marginTop: 2, textAlign: 'center' }}>
-                  You can send more messages once your request is approved.
-                </Text>
+                {messageRequestSenderId === currentUser?.id ? (
+                  /* Scenario A: The sender is waiting for approval */
+                  <View style={{ alignItems: 'center' }}>
+                    <Text style={{ fontSize: 14, color: theme.textPrimary, fontWeight: '700', textAlign: 'center', marginBottom: 4 }}>
+                      ⏳ Message Request Pending
+                    </Text>
+                    <Text style={{ fontSize: 12, color: theme.textMuted, textAlign: 'center' }}>
+                      You can send more messages once your request is approved.
+                    </Text>
+                  </View>
+                ) : (
+                  /* Scenario B: The receiver sees a pending request */
+                  <View style={{ alignItems: 'center', width: '100%' }}>
+                    <Text style={{ fontSize: 14, color: theme.textPrimary, fontWeight: '700', textAlign: 'center', marginBottom: 4 }}>
+                      💬 Message Request
+                    </Text>
+                    <Text style={{ fontSize: 12, color: theme.textMuted, textAlign: 'center', marginBottom: 16 }}>
+                      Do you want to let {otherUser?.display_name || otherUser?.first_name || 'this user'} message you?
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 12, width: '100%' }}>
+                      <TouchableOpacity
+                        onPress={handleRejectMessageRequest}
+                        style={{
+                          flex: 1,
+                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                          borderWidth: 1,
+                          borderColor: '#EF4444',
+                          borderRadius: borderRadius.md,
+                          paddingVertical: 10,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 13 }}>Reject</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={handleApproveMessageRequest}
+                        style={{
+                          flex: 1,
+                          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                          borderWidth: 1,
+                          borderColor: '#10B981',
+                          borderRadius: borderRadius.md,
+                          paddingVertical: 10,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#10B981', fontWeight: '700', fontSize: 13 }}>Approve</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
               </View>
-            ) : !isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' && messageRequestSenderId !== currentUser?.id ? (
-              /* Scenario B: The receiver sees a pending request */
-              <View style={{
-                backgroundColor: 'rgba(30, 30, 30, 0.95)',
-                borderTopWidth: 0.5,
-                borderTopColor: 'rgba(255, 255, 255, 0.1)',
-                paddingHorizontal: 16,
-                paddingVertical: 14,
-                alignItems: 'center',
-              }}>
-                <Text style={{ fontSize: 13.5, color: '#fff', fontWeight: '700', textAlign: 'center' }}>
-                  💬 Message Request
-                </Text>
-                <Text style={{ fontSize: 11.5, color: 'rgba(255, 255, 255, 0.5)', marginTop: 2, marginBottom: 12, textAlign: 'center' }}>
-                  Do you want to let {otherUser?.display_name || otherUser?.first_name || 'this user'} message you?
-                </Text>
-                <View style={{ flexDirection: 'row', gap: 12, width: '100%', paddingHorizontal: 12 }}>
-                  <TouchableOpacity
-                    onPress={handleRejectMessageRequest}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'rgba(255, 69, 58, 0.15)',
-                      borderWidth: 1,
-                      borderColor: 'rgb(255, 69, 58)',
-                      borderRadius: 20,
-                      paddingVertical: 8,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Text style={{ color: 'rgb(255, 69, 58)', fontWeight: '700', fontSize: 13 }}>Reject</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleApproveMessageRequest}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'rgba(52, 199, 89, 0.15)',
-                      borderWidth: 1,
-                      borderColor: 'rgb(52, 199, 89)',
-                      borderRadius: 20,
-                      paddingVertical: 8,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Text style={{ color: 'rgb(52, 199, 89)', fontWeight: '700', fontSize: 13 }}>Approve</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              /* Scenario C: Normal input composer */
+            </View>
+          ) : (
+            /* Scenario C: Normal input composer */
+            <View style={s.inputContainer}>
               <ChatInputArea
                 isRecording={isRecording}
                 editingMessageId={editingMessageId}
@@ -4209,168 +4335,189 @@ export const ChatRoomScreen: React.FC<any> = ({ navigation, route }) => {
                 onRegisterClear={(fn) => { clearInputRef.current = fn; }}
                 isDisabled={false}
                 onOpenStickerPicker={() => setStickerPickerVisible(true)}
+                isStickerPickerVisible={stickerPickerVisible}
+                onCloseStickerPicker={() => setStickerPickerVisible(false)}
+                onFocus={() => {
+                  setIsKeyboardOpen(true);
+                  setStickerPickerVisible(false);
+                }}
               />
-            )}
 
-            {isRecording && (
-              <Animated.View
-                style={[
-                  s.recordingContainerInline,
-                  { transform: [{ translateX: slideX }] },
-                ]}
-              >
+              {isRecording && (
                 <Animated.View
                   style={[
-                    s.recordingPulseSmall,
-                    { transform: [{ scale: micButtonScale }] },
+                    s.recordingContainerInline,
+                    { transform: [{ translateX: slideX }] },
                   ]}
                 >
-                  <View style={s.recordingDotSmall} />
+                  <Animated.View
+                    style={[
+                      s.recordingPulseSmall,
+                      { transform: [{ scale: micButtonScale }] },
+                    ]}
+                  >
+                    <View style={s.recordingDotSmall} />
+                  </Animated.View>
+                  <Text style={s.recordingTimerInline}>
+                    {fmtRec(recordingTime)}
+                  </Text>
+                  <Text
+                    style={[
+                      s.slideHint,
+                      isCancelled && s.slideHintCancel,
+                    ]}
+                  >
+                    {isCancelled ? '✕ Release to cancel' : '◀ Slide to cancel'}
+                  </Text>
                 </Animated.View>
-                <Text style={s.recordingTimerInline}>
-                  {fmtRec(recordingTime)}
-                </Text>
-                <Text
-                  style={[
-                    s.slideHint,
-                    isCancelled && s.slideHintCancel,
-                  ]}
-                >
-                  {isCancelled ? '✕ Release to cancel' : '◀ Slide to cancel'}
-                </Text>
-              </Animated.View>
-            )}
-          </View>
+              )}
+            </View>
+          )}
         </>
       )}
 
       <Toast />
 
-      {/* ── Lottie Sticker Picker Sheet ──────────────────────────────── */}
-      <StickerPickerSheet
-        visible={stickerPickerVisible}
-        stickerPacks={BUILT_IN_STICKER_PACKS}
-        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-        onClose={() => setStickerPickerVisible(false)}
-      />
+      {/* ── Lottie Sticker Picker Sheet (Root Level Overlay) ──────────────────────────────── */}
+      {(isStickerSheetReady || stickerPickerVisible) && (
+        <StickerPickerSheet
+          visible={stickerPickerVisible}
+          stickerPacks={BUILT_IN_STICKER_PACKS}
+          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+          onClose={() => setStickerPickerVisible(false)}
+          sheetHeight={286}
+        />
+      )}
 
-      <StickerPreviewModal
-        visible={!!stickerPreview}
-        mediaUri={stickerPreview?.uri ?? ''}
-        mimeType={stickerPreview?.mimeType ?? ''}
-        onClose={() => setStickerPreview(null)}
-        theme={isDark ? 'dark' : 'light'}
-        restoreNavBarColor={theme.background}
-        onSend={async (uri, mimeType, caption) => {
-          setStickerPreview(null);
-          await sendImageMessage({ uri, type: mimeType });
-        }}
-      />
-      <MediaPickerModal
-          visible={cameraMenuVisible}
-          onClose={() => setCameraMenuVisible(false)}
-          mode="camera"
-          bottom={Platform.OS === 'ios' ? 70 : 60}
-          left={60}
-          onMediaSelected={async (assets: any[]) => {
-              if (assets.length > 0) {
-                  setSelectedMultiMedia(assets.map(asset => ({
-                      uri: asset.uri,
-                      type: asset.type || 'image/jpeg',
-                      fileName: asset.fileName
-                  })));
-                  setMultiPreviewVisible(true);
-              }
+      {!!stickerPreview && (
+        <StickerPreviewModal
+          visible={!!stickerPreview}
+          mediaUri={stickerPreview?.uri ?? ''}
+          mimeType={stickerPreview?.mimeType ?? ''}
+          onClose={() => setStickerPreview(null)}
+          theme={isDark ? 'dark' : 'light'}
+          restoreNavBarColor={theme.background}
+          onSend={async (uri, mimeType, caption) => {
+            setStickerPreview(null);
+            await sendImageMessage({ uri, type: mimeType });
           }}
-      />
-      <MediaPickerModal 
-          visible={attachmentMenuVisible} 
-          onClose={() => setAttachmentMenuVisible(false)}
-          mode="attachment"
-          bottom={Platform.OS === 'ios' ? 70 : 60}
-          left={20}
-          onMediaSelected={async (assets: any[]) => {
-              // This handler is now only for camera captures from attachment menu
-              if (assets.length > 0) {
-                  setSelectedMultiMedia(assets.map(asset => ({
-                      uri: asset.uri,
-                      type: asset.type || (asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov') ? 'video/mp4' : 'image/jpeg'),
-                      fileName: asset.fileName
-                  })));
-                  setMultiPreviewVisible(true);
-              }
+        />
+      )}
+      {cameraMenuVisible && (
+        <MediaPickerModal
+            visible={cameraMenuVisible}
+            onClose={() => setCameraMenuVisible(false)}
+            mode="camera"
+            bottom={Platform.OS === 'ios' ? 70 : 60}
+            left={60}
+            onMediaSelected={async (assets: any[]) => {
+                if (assets.length > 0) {
+                    setSelectedMultiMedia(assets.map(asset => ({
+                        uri: asset.uri,
+                        type: asset.type || 'image/jpeg',
+                        fileName: asset.fileName
+                    })));
+                    setCameraMenuVisible(false);
+                    setMultiPreviewVisible(true);
+                }
+            }}
+        />
+      )}
+      {attachmentMenuVisible && (
+        <MediaPickerModal 
+            visible={attachmentMenuVisible} 
+            onClose={() => setAttachmentMenuVisible(false)}
+            mode="attachment"
+            bottom={Platform.OS === 'ios' ? 70 : 60}
+            left={20}
+            onMediaSelected={async (assets: any[]) => {
+                if (assets.length > 0) {
+                    setSelectedMultiMedia(assets.map(asset => ({
+                        uri: asset.uri,
+                        type: asset.type || (asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov') ? 'video/mp4' : 'image/jpeg'),
+                        fileName: asset.fileName
+                    })));
+                    setAttachmentMenuVisible(false);
+                    setMultiPreviewVisible(true);
+                }
+            }}
+            onDocumentSelected={async (docs: any[]) => {
+                if (docs && docs.length > 0) {
+                    setAttachmentMenuVisible(false);
+                    docs.forEach(doc => sendDocumentMessage(doc));
+                }
+            }}
+            onOpenGallery={() => {
+                setAttachmentMenuVisible(false);
+                setGalleryPickerVisible(true);
+            }}
+        />
+      )}
+      {galleryPickerVisible && (
+        <CustomGalleryPicker
+          visible={galleryPickerVisible}
+          onClose={() => setGalleryPickerVisible(false)}
+          themeColor={theme.primary}
+          onSelect={(assets) => {
+            if (assets.length > 0) {
+              setSelectedMultiMedia(assets.map(asset => ({
+                uri: asset.uri,
+                type: asset.type,
+                fileName: asset.fileName,
+              })));
+              setGalleryPickerVisible(false);
+              setMultiPreviewVisible(true);
+            }
           }}
-          onDocumentSelected={async (docs: any[]) => {
-              if (docs && docs.length > 0) {
-                  docs.forEach(doc => sendDocumentMessage(doc));
-              }
+        />
+      )}
+      {multiPreviewVisible && (
+        <MultiMediaPreviewModal
+          visible={multiPreviewVisible}
+          mediaItems={selectedMultiMedia}
+          onClose={() => {
+            setMultiPreviewVisible(false);
+            setSelectedMultiMedia([]);
           }}
-          onOpenGallery={() => {
-              setAttachmentMenuVisible(false);
-              setGalleryPickerVisible(true);
+          onSend={(items) => {
+            setMultiPreviewVisible(false);
+            setSelectedMultiMedia([]);
+            items.forEach(item => {
+              sendImageMessage(item, item.caption);
+            });
           }}
-      />
-      <CustomGalleryPicker
-        visible={galleryPickerVisible}
-        onClose={() => setGalleryPickerVisible(false)}
-        themeColor={theme.primary}
-        onSelect={(assets) => {
-          if (assets.length > 0) {
-            setSelectedMultiMedia(assets.map(asset => ({
-              uri: asset.uri,
-              type: asset.type,
-              fileName: asset.fileName,
-            })));
-            setMultiPreviewVisible(true);
-          }
-        }}
-      />
-      <MultiMediaPreviewModal
-        visible={multiPreviewVisible}
-        mediaItems={selectedMultiMedia}
-        onClose={() => {
-          setMultiPreviewVisible(false);
-          setSelectedMultiMedia([]);
-        }}
-        onSend={(items) => {
-          items.forEach(item => {
-            sendImageMessage(item, item.caption);
-          });
-        }}
-        themeColor={theme.primary}
-      />
-      <MediaGroupListModal
-        visible={groupListVisible}
-        messages={selectedGroupMessages}
-        onClose={() => {
-          setGroupListVisible(false);
-          setSelectedGroupMessages([]);
-        }}
+          themeColor={theme.primary}
+        />
+      )}
+        <Reanimated.View style={animatedSpacerStyle} />
+    </KeyboardWrapperView>
+      {groupListVisible && (
+        <MediaGroupListModal
+          visible={groupListVisible}
+          messages={selectedGroupMessages}
+          onClose={() => {
+            setGroupListVisible(false);
+            setSelectedGroupMessages([]);
+          }}
         onSelectMedia={(msg) => {
-          // Close the vertical list modal
-          setGroupListVisible(false); 
-          
-          // Map all messages in the group to a compatible MediaItem format
+          setGroupListVisible(false);
           const mediaList = selectedGroupMessages.map(m => ({
             mediaUrl: resolveImageUrl((m as any).media_url || m.media_file),
             mediaType: m.message_type === 'video' ? 'video' : 'image' as 'image' | 'video',
             id: m.id,
             caption: m.content || '',
           }));
-          
           const initialIndex = selectedGroupMessages.findIndex(m => m.id === msg.id);
-          
-          navigation.navigate('MediaViewer', { 
-            mediaUrl: resolveImageUrl((msg as any).media_url || msg.media_file), 
+          navigation.navigate('MediaViewer', {
+            mediaUrl: resolveImageUrl((msg as any).media_url || msg.media_file),
             mediaType: msg.message_type === 'video' ? 'video' : 'image',
             mediaList,
             initialIndex: initialIndex >= 0 ? initialIndex : 0,
           });
         }}
-        themeColor={theme.primary}
       />
-        {Platform.OS === 'android' && <Reanimated.View style={animatedSpacerStyle} />}
-    </KeyboardWrapperView>
+      )}
+    </View>
       );
       };
 
@@ -4727,9 +4874,10 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   inputContainer: {
     flexDirection: 'row',
     padding: spacing.md,
-    backgroundColor: theme.background,
+    backgroundColor: 'transparent',
     alignItems: 'flex-end',
     minHeight: 56,
+    zIndex: 1000,
   },
   recordingContainerInline: {
     flex: 1,
@@ -4897,21 +5045,22 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   permissionButtonTextWhite: { color: '#FFFFFF' },
   scrollToBottomButton: {
     position: 'absolute',
-    bottom: 70,
-    left: '50%',
-    marginLeft: -22,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundcolor: theme.textMuted,
+    bottom: 12,
+    right: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: theme.card || theme.background,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowcolor: theme.textPrimary,
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.18,
     shadowRadius: 4,
-    elevation: 5,
-    zIndex: 1000,
+    elevation: 4,
+    zIndex: 50,
   },
   scrollToBottomIcon: {
     fontSize: 20,
@@ -5194,13 +5343,15 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     width: '100%',
   },
   quickStickerCard: {
-    width: 64,
-    height: 64,
+    width: 60,
+    height: 60,
     justifyContent: 'center',
     alignItems: 'center',
   },
   quickStickerLottie: {
-    width: 60,
-    height: 60,
+    width: 56,
+    height: 56,
   },
 });
+
+export const ChatRoomScreen = React.memo(ChatRoomScreenComponent);

@@ -19,8 +19,11 @@ import {
   ScrollView,
   NativeModules,
   BackHandler,
+  TouchableWithoutFeedback,
+  Pressable,
 } from 'react-native';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { pinNavBarColor } from '../utils/navBarPin';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import Video from 'react-native-video';
@@ -204,7 +207,8 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
       runOnJS(notifyTransform)(translateX.value, translateY.value, scale.value, rotation.value);
     });
 
-  const tap = Gesture.Tap()
+  const doubleTap = Gesture.Tap()
+    .numberOfTaps(2)
     .onEnd(() => {
       runOnJS(onEdit)(overlay);
     });
@@ -218,7 +222,7 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
     ],
   }));
 
-  const composedGesture = Gesture.Simultaneous(pan, pinch, rot, tap);
+  const composedGesture = Gesture.Simultaneous(pan, pinch, rot, doubleTap);
 
   return (
     <GestureDetector gesture={composedGesture}>
@@ -373,6 +377,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
 
   useEffect(() => {
     if (visible && Platform.OS === 'android') {
+      pinNavBarColor('#00000000');
       try {
         if (NativeModules.SystemBar?.setNavigationBarColor) {
           NativeModules.SystemBar.setNavigationBarColor('#00000000', false);
@@ -382,16 +387,28 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
       } catch (e) {}
 
       const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
-        if (isEditing) {
+        if (isTextMode) {
+          // exitTextMode is defined later, call via inline equivalent
+          setIsTextMode(false);
+          setIsEditingOverlayText(false);
+          setDraftText('');
+          setEditingId(null);
+          Keyboard.dismiss();
+        } else if (isEditing) {
           cancelEdits();
         } else {
           onClose();
         }
         return true;
       });
-      return () => backSub.remove();
+      return () => {
+        backSub.remove();
+        const navColor = theme?.navBar || theme?.background || '#FFFFFF';
+        pinNavBarColor(navColor);
+        try { changeNavigationBarColor(navColor, !isDark, false); } catch (_) {}
+      };
     }
-  }, [visible, isEditing, onClose]);
+  }, [visible, isEditing, isTextMode, onClose]);
 
 
 
@@ -432,6 +449,10 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
   const [hasDrawing, setHasDrawing] = useState(false);
   const [overlayText, setOverlayText] = useState('');
   const overlayInputRef = useRef<TextInput>(null);
+  // Hidden input that keeps keyboard mounted after tick is pressed
+  const keyboardKeeperRef = useRef<TextInput>(null);
+  // Whether we are in "text mode" (keyboard should stay up)
+  const [isTextMode, setIsTextMode] = useState(false);
 
   // Media rect aspect ratio containment — 100% full edge-to-edge
   const [mediaRect, setMediaRect] = useState<{ x: number; y: number; w: number; h: number }>({
@@ -517,10 +538,20 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
       if (prev === 'solid_black') return 'translucent_dark';
       return 'none';
     });
+    // Keep keyboard alive
+    setTimeout(() => {
+      if (isEditingOverlayText) overlayInputRef.current?.focus();
+      else keyboardKeeperRef.current?.focus();
+    }, 30);
   };
 
   const cycleFontStyle = () => {
     setFontIndex((prev) => (prev + 1) % FONT_STYLES.length);
+    // Keep keyboard alive
+    setTimeout(() => {
+      if (isEditingOverlayText) overlayInputRef.current?.focus();
+      else keyboardKeeperRef.current?.focus();
+    }, 30);
   };
 
   // Layout measurements for Ar containment
@@ -552,6 +583,9 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     setHasDrawing(false);
     setSizeReady(false);
     setNaturalSize(null);
+    setIsTextMode(false);
+    setIsEditingOverlayText(false);
+    Keyboard.dismiss();
   };
 
 
@@ -580,6 +614,15 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
   }, [isEditing, activeIndex, currentItem, isCurrentVideo]);
 
   const handleSend = async () => {
+    // Exit text mode and dismiss keyboard before sending
+    if (isTextMode) {
+      setIsTextMode(false);
+      setIsEditingOverlayText(false);
+      setDraftText('');
+      setEditingId(null);
+      Keyboard.dismiss();
+      await new Promise(r => setTimeout(r, 80));
+    }
     let finalItems = [...items];
 
     // If the user is still in edit mode (drew or added text but didn't tap checkmark),
@@ -631,6 +674,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     setFontIndex(0);
     setTextBgStyle('none');
     setIsEditingOverlayText(true);
+    setIsTextMode(true);
     setTimeout(() => overlayInputRef.current?.focus(), 100);
   };
 
@@ -643,6 +687,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     setFontIndex(overlay.fontIndex || 0);
     setTextBgStyle(overlay.textBgStyle || 'none');
     setIsEditingOverlayText(true);
+    setIsTextMode(true);
     setTimeout(() => overlayInputRef.current?.focus(), 100);
   };
 
@@ -659,6 +704,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
   const commitTextOverlay = () => {
     Keyboard.dismiss();
     setIsEditingOverlayText(false);
+    setIsTextMode(false);
     if (draftText.trim()) {
       if (editingId) {
         setOverlays((prev) =>
@@ -687,6 +733,14 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     }
     setDraftText('');
     setEditingId(null);
+  };
+
+  const exitTextMode = () => {
+    setIsTextMode(false);
+    setIsEditingOverlayText(false);
+    setDraftText('');
+    setEditingId(null);
+    Keyboard.dismiss();
   };
 
   // Saves drawing/text edits, updates items list, and returns to swipe preview
@@ -781,9 +835,16 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
     <Reanimated.View style={[StyleSheet.absoluteFill, { zIndex: 99999, backgroundColor: '#000000' }]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} animated={true} />
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000000' }}>
-        <View style={styles.container}>
-          {/* ── MAIN MEDIA AREA (Non-shrinking full screen canvas) ── */}
-          <View style={styles.canvasContainer}>
+        <TouchableWithoutFeedback
+          onPress={() => {
+            if (isEditingOverlayText || isTextMode) {
+              commitTextOverlay();
+            }
+          }}
+        >
+          <View style={styles.container}>
+            {/* ── MAIN MEDIA AREA (Non-shrinking full screen canvas) ── */}
+            <View style={styles.canvasContainer}>
               {/* Base ViewShot layer — stays mounted at all times to prevent blinks/flashes */}
               <ViewShot
                 ref={viewShotRef}
@@ -820,31 +881,37 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
 
                 {/* Centered TextInput modal for typing active draft */}
                 {isEditingOverlayText && (
-                  <View style={[{ position: 'absolute', top: '42%', alignSelf: 'center', zIndex: 100 }, getOverlayContainerStyle(textBgStyle)]}>
-                    <TextInput
-                      ref={overlayInputRef}
-                      style={[
-                        getOverlayTextStyle(textColor, fontIndex, textBgStyle),
-                        {
-                          minWidth: 60,
-                          maxWidth: width * 0.85,
-                          textAlign: 'center',
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
-                        }
-                      ]}
-                      value={draftText}
-                      onChangeText={setDraftText}
-                      onSubmitEditing={commitTextOverlay}
-                      placeholder="Type text…"
-                      placeholderTextColor="rgba(255,255,255,0.6)"
-                      multiline
-                      autoFocus
-                      blurOnSubmit
-                      returnKeyType="done"
-                      contextMenuHidden={true}
+                  <>
+                    <Pressable
+                      style={[StyleSheet.absoluteFillObject, { zIndex: 100 }]}
+                      onPress={commitTextOverlay}
                     />
-                  </View>
+                    <View style={[{ position: 'absolute', top: '42%', alignSelf: 'center', zIndex: 110 }, getOverlayContainerStyle(textBgStyle)]}>
+                      <TextInput
+                        ref={overlayInputRef}
+                        style={[
+                          getOverlayTextStyle(textColor, fontIndex, textBgStyle),
+                          {
+                            minWidth: 60,
+                            maxWidth: width * 0.85,
+                            textAlign: 'center',
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                          }
+                        ]}
+                        value={draftText}
+                        onChangeText={setDraftText}
+                        onSubmitEditing={commitTextOverlay}
+                        placeholder="Type text…"
+                        placeholderTextColor="rgba(255,255,255,0.6)"
+                        multiline
+                        autoFocus
+                        blurOnSubmit
+                        returnKeyType="done"
+                        contextMenuHidden={true}
+                      />
+                    </View>
+                  </>
                 )}
 
                 {/* Overlay capture layer */}
@@ -902,10 +969,11 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
                   <>
                     {/* 1. T Font Icon — Floating Text Overlay */}
                     <TouchableOpacity
-                      style={[styles.topBtn, (isEditing && editMode === 'text') && styles.topBtnActive]}
+                      style={[styles.topBtn, (isEditing && editMode === 'text' && isEditingOverlayText) && styles.topBtnActive]}
                       onPress={() => {
                         if (isEditingOverlayText) {
                           commitTextOverlay();
+                          startNewTextOverlay();
                         } else {
                           startNewTextOverlay();
                         }
@@ -914,15 +982,7 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
                       <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' }}>T</Text>
                     </TouchableOpacity>
 
-                    {/* Checkmark Commit Button for Text Overlay */}
-                    {isEditingOverlayText && (
-                      <TouchableOpacity
-                        style={[styles.topBtn, styles.topBtnActive]}
-                        onPress={commitTextOverlay}
-                      >
-                        <Icon name="checkmark" size={20} color="#FFFFFF" />
-                      </TouchableOpacity>
-                    )}
+
 
                     {/* 2. Pencil Icon — Sketch Mode Toggle */}
                     <TouchableOpacity
@@ -1046,8 +1106,12 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
                             setStrokeColor(c);
                           } else {
                             setTextColor(c);
-                            // Keep focus so keyboard stays mounted
-                            overlayInputRef.current?.focus();
+                            // Keep keyboard mounted — refocus active input
+                            if (isEditingOverlayText) {
+                              overlayInputRef.current?.focus();
+                            } else {
+                              keyboardKeeperRef.current?.focus();
+                            }
                           }
                         }}
                         style={[
@@ -1068,6 +1132,18 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
                   })}
                 </ScrollView>
               </View>
+            )}
+
+            {/* Invisible keyboard keeper — keeps keyboard mounted after tick */}
+            {isTextMode && !isEditingOverlayText && (
+              <TextInput
+                ref={keyboardKeeperRef}
+                style={{ position: 'absolute', opacity: 0, width: 1, height: 1, bottom: 0 }}
+                value=""
+                onChangeText={() => {}}
+                showSoftInputOnFocus
+                caretHidden
+              />
             )}
 
             {/* ── Industrial Standard Animated Keyboard Avoidance Layout (StatusEditor) ── */}
@@ -1128,7 +1204,8 @@ export const MultiMediaPreviewModal: React.FC<MultiMediaPreviewModalProps> = ({
                 </View>
               </View>
             </Reanimated.View>
-        </View>
+          </View>
+        </TouchableWithoutFeedback>
       </GestureHandlerRootView>
     </Reanimated.View>
   );
@@ -1152,7 +1229,7 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors, safeBottom: 
   header: {
     position: 'absolute',
     top: 0, left: 0, right: 0,
-    zIndex: 50,
+    zIndex: 150,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1187,7 +1264,7 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors, safeBottom: 
     position: 'absolute',
     left: 0,
     right: 0,
-    zIndex: 60,
+    zIndex: 160,
     height: 44,
     justifyContent: 'center',
   },
@@ -1260,6 +1337,8 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors, safeBottom: 
   },
   bottomSectionInner: {
     width: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    paddingTop: 8,
   },
   thumbnailContainer: {
     height: 62,

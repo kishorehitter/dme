@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,12 +18,14 @@ import {
   Image,
   TextInput,
   PanResponder,
+  InteractionManager,
+  Easing,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import { resolveImageUrl } from '../utils/image';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRoute } from '@react-navigation/native';
+import { useRoute, useFocusEffect } from '@react-navigation/native';
 import Sound from 'react-native-sound';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -41,6 +43,11 @@ import { StatusService } from '../services/StatusService';
 import { chatAPI, triviaAPI } from '../services/api';
 import { pickNextSet, saveSetScore, getCategorySummary } from '../services/TriviaScoreDB';
 import { getSetsForCategory, TRIVIA_SETS_PER_CATEGORY } from '../utils/triviaSetConfig';
+import {
+  submitChallengeScore,
+  TriviaChallengePayload,
+  getAllLocalChallenges,
+} from '../services/TriviaChallengeService';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 
@@ -75,8 +82,8 @@ interface Question {
   isCurrentAffairs?: boolean;
 }
 
-// 11 Categories configuration
 const CATEGORIES = [
+  { id: 'custom', name: 'My Questions', nameTa: 'எனது வினாக்கள்', emoji: '📤', icon: 'cloud-upload', color: '#FF6B6B', desc: 'Upload & play your own custom quiz files' },
   { id: 'current_affairs', name: 'Current Affairs', nameTa: 'நடப்பு நிகழ்வுகள்', emoji: '🔥', icon: 'newspaper', color: '#FF758F', desc: 'Recent events & news' },
   { id: 'polity', name: 'Polity', nameTa: 'ஆட்சி அமைப்பு', emoji: '🏛️', icon: 'school', color: '#FFB703', desc: 'Constitution & governance' },
   { id: 'history', name: 'History', nameTa: 'வரலாறு', emoji: '📜', icon: 'library', color: '#F77F00', desc: 'Historical events & history' },
@@ -103,22 +110,41 @@ const categoryPrepCache: Record<string, {
   questions: Question[];
 }> = {};
 
+export const isCategoryMatch = (qCategory?: string, targetCategory?: string): boolean => {
+  if (!qCategory || !targetCategory) return false;
+  const q = qCategory.toLowerCase().trim();
+  const t = targetCategory.toLowerCase().trim();
+  if (q === t) return true;
+  if ((q === 'economics' || q === 'economy') && (t === 'economics' || t === 'economy')) return true;
+  if ((q === 'technology' || q === 'tech') && (t === 'technology' || t === 'tech')) return true;
+  if ((q === 'aptitude' || q === 'math') && (t === 'aptitude' || t === 'math')) return true;
+  if ((q === 'literature' || q === 'tamil') && (t === 'literature' || t === 'tamil')) return true;
+  if ((q === 'current_affairs' || q === 'currentaffairs') && (t === 'current_affairs' || t === 'currentaffairs')) return true;
+  return false;
+};
+
 export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
+  const safeTopPadding = Math.max(insets.top || 0, Platform.OS === 'android' ? StatusBar.currentHeight || 24 : 44) + 8;
+  const safeBottomPadding = Math.max(insets.bottom || 0, Platform.OS === 'android' ? 24 : 16);
   const route = useRoute<any>();
   const { user } = useAuth();
   const { theme, isDark } = useTheme();
+
+  const currentMode: 'prepare' | 'challenge' = route.params?.mode || 'challenge';
+  const isPrepareMode = currentMode === 'prepare';
+
   // Game states
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState<Record<number, number>>({});
   const [timeLeft, setTimeLeft] = useState(720);
   const [gracePeriodUsed, setGracePeriodUsed] = useState(false);
-  const [showGraceModal, setShowGraceModal] = useState(false);
   const [score, setScore] = useState(0);
-  const [gameState, setGameState] = useState<'welcome' | 'categorySelect' | 'prepare' | 'playing' | 'summary'>('categorySelect');
-  const [selectedCategory, setSelectedCategory] = useState<string>('any');
+  const [gameState, setGameState] = useState<'welcome' | 'categorySelect' | 'prepare' | 'playing' | 'evaluating' | 'summary'>('categorySelect');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [language, setLanguage] = useState<'english' | 'tamil'>('english');
+  const [showGraceModal, setShowGraceModal] = useState(false);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [exitModalVisible, setExitModalVisible] = useState(false);
   const [viewedSet, setViewedSet] = useState<Set<number>>(new Set());
@@ -142,6 +168,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const [setResults, setSetResults] = useState<SetResult[]>([]);
   // The set IDs selected for the current multi-set game
   const [activeSetIds, setActiveSetIds] = useState<string[]>([]);
+  const [activeChallengeData, setActiveChallengeData] = useState<TriviaChallengePayload | null>(null);
+  const [challengeLeaderboardModalVisible, setChallengeLeaderboardModalVisible] = useState(false);
+  const [activeChallengeLeaderboard, setActiveChallengeLeaderboard] = useState<any[]>([]);
   
   // Challenge Friends Modal
   const [friendsModalVisible, setFriendsModalVisible] = useState(false);
@@ -306,6 +335,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   };
 
   const toggleLanguage = (newLang: 'english' | 'tamil') => {
+    if (selectedCategory === 'custom') return; // Custom questions are single-language
     if (newLang === language) return;
     setLanguage(newLang);
     const nextTriviaSource = newLang === 'tamil' ? tamilQuestions : englishQuestions;
@@ -364,7 +394,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
     // 3. Get pool of new category (excluding already answered questions)
     let newCategoryPool = questionsWithIndices.filter(
       (q: any) => !answeredIds.has(q.id) && 
-      (newCategoryId === 'any' || newCategoryId === 'current_affairs' || (q.category && q.category.toLowerCase() === newCategoryId.toLowerCase())) &&
+      (newCategoryId === 'any' || newCategoryId === 'current_affairs' || isCategoryMatch(q.category, newCategoryId)) &&
       (activeSetId && activeSetId !== 'mixed' ? q.set === activeSetId : true)
     );
 
@@ -411,6 +441,57 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       navigation.setParams({ challengeCategory: undefined, challengeSet: undefined });
     }
   }, [route.params?.challengeCategory, route.params?.challengeSet]);
+
+  // Handle playing custom uploaded question sets
+  useEffect(() => {
+    if (route.params?.customQuestions && route.params.customQuestions.length > 0) {
+      const qList = route.params.customQuestions;
+      setQuestions(qList);
+      setSelectedCategory('custom');
+      setActiveSetIds(['custom']);
+      setUserAnswers({});
+      setCurrentIndex(0);
+      setScore(0);
+      setGameState('playing');
+      navigation.setParams({ customQuestions: undefined, customSetName: undefined });
+    }
+  }, [route.params?.customQuestions]);
+
+  // Handle 24-Hour Ephemeral Tournament Challenge (from Chat / Custom Sets)
+  useEffect(() => {
+    if (route.params?.challengeData) {
+      const cData: TriviaChallengePayload = route.params.challengeData;
+      const qList = (cData.questions || []).map((q: any, idx: number) => ({
+        ...q,
+        originalIndex: idx,
+        category: 'custom',
+        set: cData.challengeId,
+      }));
+
+      const dynamicTime = cData.timeLimitSeconds || Math.max(120, qList.length * 48);
+
+      setActiveChallengeData(cData);
+      setQuestions(qList);
+      setSelectedCategory('custom');
+      setActiveSetIds([cData.challengeId]);
+      setActiveSetId(cData.challengeId);
+      setUserAnswers({});
+      setCurrentIndex(0);
+      setScore(0);
+      setTimeLeft(dynamicTime);
+      setGracePeriodUsed(false);
+      gameStartTimeRef.current = Date.now();
+      setGameState('playing');
+
+      Toast.show({
+        type: 'info',
+        text1: '⚔️ Group Contest Started!',
+        text2: `${qList.length} Questions • ${Math.floor(dynamicTime / 60)} mins limit`,
+      });
+
+      navigation.setParams({ challengeData: undefined });
+    }
+  }, [route.params?.challengeData]);
 
   // Handle deep-link challenge token (one-time link)
   useEffect(() => {
@@ -461,10 +542,15 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   // Animation values
   const progressAnim = useRef(new Animated.Value(0)).current;
   const cardScale = useRef(new Animated.Value(1)).current;
-  const resultsScale = useRef(new Animated.Value(0)).current;
+  const resultsScale = useRef(new Animated.Value(0.86)).current;
+  const resultsFadeAnim = useRef(new Animated.Value(0)).current;
   const optionScales = useRef(Array(4).fill(0).map(() => new Animated.Value(1))).current;
   const pointerAnim = useRef(new Animated.Value(0)).current;
   const pointerXAnim = useRef(new Animated.Value(0)).current;
+  const [evaluatingStep, setEvaluatingStep] = useState(0);
+  const evalPulseAnim = useRef(new Animated.Value(1)).current;
+  const evalProgressAnim = useRef(new Animated.Value(0)).current;
+  const evalFadeAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     if (gameState === 'prepare') {
@@ -568,12 +654,6 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       if (error) console.log('[Sound] Failed to load select sound', error);
     });
 
-    // Color the native bottom navigation bar to match theme background on mount
-    pinNavBarColor(theme.background);
-    if (Platform.OS === 'android') {
-      try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
-    }
-
     return () => {
       if (correctSoundTimerRef.current) {
         clearTimeout(correctSoundTimerRef.current);
@@ -581,34 +661,45 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       if (correctSoundRef.current) correctSoundRef.current.release();
       if (incorrectSoundRef.current) incorrectSoundRef.current.release();
       if (selectSoundRef.current) selectSoundRef.current.release();
-      // Restore standard bottom navigation bar color
-      pinNavBarColor(theme.background);
-      if (Platform.OS === 'android') {
-        try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
-      }
     };
-  }, [theme.background, isDark]);
+  }, []);
 
-  // Synchronize native bottom navigation bar color with active game state
-  useEffect(() => {
+  // Consistent solid navigation bar matching screen state
+  const updateNavBarColor = useCallback(() => {
+    let navColor = '#F8FAFC';
+    let lightIcons = false;
+
     if (gameState === 'prepare') {
-      pinNavBarColor('#0A1628');
-      if (Platform.OS === 'android') {
-        try { changeNavigationBarColor('#0A1628', false, false); } catch (_) {}
-        if (NativeModules.SystemBar) {
-          try { NativeModules.SystemBar.setNavigationBarColor('#0A1628', false); } catch (_) {}
-        }
-      }
-    } else {
-      pinNavBarColor(theme.background);
-      if (Platform.OS === 'android') {
-        try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
-        if (NativeModules.SystemBar) {
-          try { NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark); } catch (_) {}
-        }
-      }
+      navColor = '#0A1628';
+      lightIcons = true;
+    } else if (gameState === 'categorySelect') {
+      navColor = isPrepareMode ? '#0F172A' : '#F8FAFC';
+      lightIcons = isPrepareMode;
+    } else if (gameState === 'playing' || gameState === 'evaluating') {
+      navColor = isDark ? '#0B132B' : '#FFFDF9';
+      lightIcons = isDark;
+    } else if (gameState === 'summary') {
+      navColor = isDark ? '#0F172A' : '#FFFFFF';
+      lightIcons = isDark;
     }
-  }, [gameState, theme.background, isDark]);
+
+    pinNavBarColor(navColor, lightIcons);
+    try {
+      if (Platform.OS === 'android') {
+        changeNavigationBarColor(navColor, !lightIcons, false);
+      }
+    } catch (_) {}
+  }, [gameState, isPrepareMode, isDark]);
+
+  useFocusEffect(
+    useCallback(() => {
+      updateNavBarColor();
+    }, [updateNavBarColor])
+  );
+
+  useEffect(() => {
+    updateNavBarColor();
+  }, [updateNavBarColor]);
 
   useEffect(() => {
     let interval: any;
@@ -686,7 +777,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       isCurrentAffairs: targetCategory === 'current_affairs',
     })).filter((q: any) =>
       q.set === setId &&
-      (targetCategory === 'current_affairs' || q.category?.toLowerCase() === targetCategory.toLowerCase())
+      (targetCategory === 'current_affairs' || isCategoryMatch(q.category, targetCategory))
     );
 
     let selected = allForSet.sort(() => Math.random() - 0.5).slice(0, 15);
@@ -699,7 +790,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         isCurrentAffairs: targetCategory === 'current_affairs',
       })).filter((q: any) =>
         !usedIds.has(q.id) &&
-        (targetCategory === 'current_affairs' || q.category?.toLowerCase() === targetCategory.toLowerCase())
+        (targetCategory === 'current_affairs' || isCategoryMatch(q.category, targetCategory))
       ).sort(() => Math.random() - 0.5).slice(0, 15 - selected.length);
       selected = [...selected, ...extras];
     }
@@ -820,7 +911,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
     let filtered = [...questionsWithIndices];
     if (targetCategory !== 'any' && targetCategory !== 'current_affairs') {
-      filtered = filtered.filter((q: any) => q.category && q.category.toLowerCase() === targetCategory.toLowerCase());
+      filtered = filtered.filter((q: any) => isCategoryMatch(q.category, targetCategory));
     }
     if (filtered.length === 0) filtered = [...questionsWithIndices];
 
@@ -967,6 +1058,30 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
     setScore(finalScore);
 
+    // If this was a 24-Hour Tournament Challenge, record score to its leaderboard
+    if (activeChallengeData) {
+      const percentage = Math.round((finalScore / (questions.length || 1)) * 100);
+      submitChallengeScore(activeChallengeData.challengeId, {
+        userId: user?.id || 'me',
+        userName: user?.name || user?.username || 'Challenger',
+        userAvatar: user?.avatar,
+        score: finalScore,
+        totalQuestions: questions.length,
+        timeTakenSeconds: timeTaken,
+        percentage,
+        submittedAt: new Date().toISOString(),
+      }).then(updated => {
+        if (updated && updated.leaderboard) {
+          setActiveChallengeLeaderboard(updated.leaderboard);
+        }
+        Toast.show({
+          type: 'success',
+          text1: '🏆 Score Recorded!',
+          text2: `You scored ${finalScore}/${questions.length} in ${Math.floor(timeTaken / 60)}m ${timeTaken % 60}s`,
+        });
+      }).catch(err => console.error('Error recording challenge score:', err));
+    }
+
     // Refresh avg
     if (selectedCategory !== 'any') {
       getCategorySummary(selectedCategory, getSetsForCategory(selectedCategory))
@@ -974,23 +1089,86 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         .catch(() => {});
     }
 
+    const startEvaluatingSequence = () => {
+      setGameState('evaluating');
+      setEvaluatingStep(0);
+      evalProgressAnim.setValue(0);
+      evalPulseAnim.setValue(1);
+      evalFadeAnim.setValue(1);
+      resultsFadeAnim.setValue(0);
+      resultsScale.setValue(0.92);
+
+      const pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(evalPulseAnim, {
+            toValue: 1.14,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+          Animated.timing(evalPulseAnim, {
+            toValue: 1,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop.start();
+
+      Animated.timing(evalProgressAnim, {
+        toValue: 1,
+        duration: 4800,
+        useNativeDriver: false,
+      }).start();
+
+      setTimeout(() => {
+        setEvaluatingStep(1);
+      }, 1600);
+
+      setTimeout(() => {
+        setEvaluatingStep(2);
+      }, 3300);
+
+      // Smooth fade out of evaluating screen right before transition
+      setTimeout(() => {
+        Animated.timing(evalFadeAnim, {
+          toValue: 0,
+          duration: 400,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+      }, 4600);
+
+      // Transition to summary with smooth crossfade and slow, elegant zoom in
+      setTimeout(() => {
+        pulseLoop.stop();
+        setGameState('summary');
+        resultsScale.setValue(0.86);
+        resultsFadeAnim.setValue(0);
+        Animated.parallel([
+          Animated.timing(resultsFadeAnim, {
+            toValue: 1,
+            duration: 750,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(resultsScale, {
+            toValue: 1,
+            duration: 900,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]).start(() => {
+          updateNavBarColor();
+        });
+      }, 5000);
+    };
+
     Animated.timing(progressAnim, {
       toValue: 1,
       duration: 300,
       useNativeDriver: false,
     }).start(() => {
-      setGameState('summary');
-      Animated.spring(resultsScale, {
-        toValue: 1,
-        friction: 5,
-        tension: 40,
-        useNativeDriver: true,
-      }).start(() => {
-        pinNavBarColor(theme.background);
-        if (Platform.OS === 'android') {
-          try { changeNavigationBarColor(theme.background, !isDark, false); } catch (_) {}
-        }
-      });
+      startEvaluatingSequence();
     });
   };
 
@@ -1128,19 +1306,45 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   });
 
   return (
-    <LinearGradient
-      colors={['rgba(255, 255, 255, 0)', 'rgba(255, 255, 255, 0)', 'rgba(255, 255, 255, 0)']}
-      style={styles.container}
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor:
+            gameState === 'prepare'
+              ? '#0A1628'
+              : gameState === 'categorySelect'
+              ? isPrepareMode
+                ? '#0F172A'
+                : '#F8FAFC'
+              : isDark
+              ? '#0B132B'
+              : '#FFFDF9',
+        },
+      ]}
     >
-      <StatusBar barStyle="dark-content" translucent={true} backgroundColor="transparent" />
-      <SafeAreaView style={styles.safeArea}>
+      <StatusBar
+        barStyle={
+          gameState === 'categorySelect'
+            ? isPrepareMode
+              ? 'light-content'
+              : 'dark-content'
+            : isDark
+            ? 'light-content'
+            : 'dark-content'
+        }
+        translucent={true}
+        backgroundColor="transparent"
+      />
+      <View style={styles.safeArea}>
         {gameState === 'summary' && (
           <View style={{
             flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'space-between',
             paddingHorizontal: 16,
-            paddingVertical: 12,
+            paddingTop: safeTopPadding,
+            paddingBottom: 4,
             borderBottomWidth: 1,
             borderBottomColor: 'rgba(30, 58, 95, 0.08)',
             backgroundColor: '#ffffff',
@@ -1159,196 +1363,302 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             </TouchableOpacity>
           </View>
         )}
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContent,
-            gameState === 'summary' && { justifyContent: 'flex-start', paddingTop: 8, paddingBottom: 16 }
-          ]}
-          showsVerticalScrollIndicator={gameState !== 'playing'}
-          style={styles.scrollView}
-          scrollEnabled={gameState !== 'playing'}
-        >
-          
-          {/* WELCOME SCREEN */}
-          {gameState === 'welcome' && (
-            <View style={styles.welcomeContainer}>
-              <View style={styles.iconCircle}>
-                <Icon name="game-controller" size={54} color="#1E3A5F" />
-              </View>
-              <Text style={styles.welcomeTitle}>DME Trivia Solo</Text>
-              <Text style={styles.welcomeSubtitle}>
-                Test your logic and general knowledge! 10 random questions across multiple categories. Let's see how smart you are.
-              </Text>
-
-              <TouchableOpacity style={styles.primaryButton} onPress={() => setGameState('categorySelect')}>
-                <LinearGradient
-                  colors={['#FF007F', '#4597f5f6']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.gradientButton}
-                >
-                  <Text style={styles.buttonText}>Choose Category</Text>
-                  <Icon name="arrow-forward" size={20} color="#FFFDF9" style={{ marginLeft: 8 }} />
-                </LinearGradient>
+        {gameState === 'categorySelect' ? (
+          <View style={[styles.categorySelectContainer, { backgroundColor: isPrepareMode ? '#0F172A' : '#F8FAFC' }]}>
+            {/* Header */}
+            <View style={[
+              styles.categoryHeaderRow,
+              {
+                paddingTop: safeTopPadding,
+                paddingLeft: Math.max(insets.left || 0, 16),
+                paddingRight: Math.max(insets.right || 0, 16),
+              },
+            ]}>
+              <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+                <Icon name="chevron-back" size={28} color={isPrepareMode ? '#F8FAFC' : '#1E3A5F'} />
               </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.closeTextButton}
-                onPress={() => navigation.goBack()}
+              <Text
+                style={[
+                  styles.categoryHeaderTitle,
+                  { color: isPrepareMode ? '#F8FAFC' : '#1E3A5F' },
+                  language === 'tamil' && styles.categoryHeaderTitleTamil,
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
               >
-                <Text style={styles.closeText}>Go Back</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* CATEGORY SELECT SCREEN */}
-          {gameState === 'categorySelect' && (
-            <View style={styles.categorySelectContainer}>
-              {/* Header */}
-              <View style={styles.categoryHeaderRow}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-                  <Icon name="chevron-back" size={28} color="#1E3A5F" />
-                </TouchableOpacity>
-                <Text style={[styles.categoryHeaderTitle, language === 'tamil' && styles.categoryHeaderTitleTamil]}>
-                  {language === 'tamil' ? 'விளையாட்டுப் பிரிவு' : 'Quiz Challenge'}
-                </Text>
-                {/* Language Toggle in Header */}
-                <View style={[styles.gameLanguageToggleContainer, { marginHorizontal: 0 }]}>
-                  <TouchableOpacity 
-                    style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
-                    onPress={() => toggleLanguage('english')}
-                  >
-                    <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
-                    onPress={() => toggleLanguage('tamil')}
-                  >
-                    <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>TA</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* CATEGORIES GRID */}
-              <View style={styles.categoriesGrid}>
-                {/* Scoreboard Card as the 1st grid item (row 1, left) */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  style={styles.categoryCard}
-                  onPress={() => {
-                    playSelectTone();
-                    navigation.navigate('TriviaScoreboard');
-                  }}
+                {isPrepareMode
+                  ? (language === 'tamil' ? 'தயாராகு' : 'Prepare')
+                  : (language === 'tamil' ? 'பயிற்சி' : 'Practice')}
+              </Text>
+              {/* Language Toggle in Header (Matching TriviaHubScreen) */}
+              <View style={[
+                styles.languageToggleBox,
+                {
+                  backgroundColor: isPrepareMode ? '#1E293B' : '#E2E8F0',
+                },
+              ]}>
+                <TouchableOpacity 
+                  style={[
+                    styles.langBtn,
+                    language === 'english' && styles.langBtnActive,
+                  ]}
+                  onPress={() => toggleLanguage('english')}
                 >
-                  <Text style={styles.categoryEmoji}>📊</Text>
-                  <Text style={[styles.categoryName, language === 'tamil' && styles.categoryNameTamil]}>
-                    {language === 'tamil' ? 'மதிப்பெண் பலகை' : 'Scoreboard'}
-                  </Text>
+                  <Text style={[
+                    styles.langBtnText,
+                    language === 'english' && styles.langBtnTextActive,
+                  ]}>EN</Text>
                 </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[
+                    styles.langBtn,
+                    language === 'tamil' && styles.langBtnActive,
+                  ]}
+                  onPress={() => toggleLanguage('tamil')}
+                >
+                  <Text style={[
+                    styles.langBtnText,
+                    language === 'tamil' && styles.langBtnTextActive,
+                  ]}>TA</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
-                {/* Categories including Current Affairs (which is the first category in the array, making it row 1, right) */}
-                {CATEGORIES.map((cat) => {
+            {/* SCROLLABLE CATEGORIES LIST (Vertically Spacious Single-Column) */}
+            <ScrollView 
+              style={{ flex: 1 }}
+              contentContainerStyle={styles.categoryScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.categoriesList}>
+                {CATEGORIES.filter(cat => cat.id !== 'custom').map((cat) => {
                   const isSelected = selectedCategory === cat.id;
                   return (
                     <TouchableOpacity
                       key={cat.id}
-                      activeOpacity={0.8}
+                      activeOpacity={0.85}
                       style={[
-                        styles.categoryCard,
-                        isSelected && { borderColor: cat.color, backgroundColor: `${cat.color}18` },
+                        styles.categoryRowCard,
+                        {
+                          backgroundColor: isSelected
+                            ? '#FFFFFF'
+                            : (isPrepareMode ? '#1E293B' : '#FFFFFF'),
+                          borderColor: isSelected
+                            ? (isPrepareMode ? '#FFFFFF' : '#0F172A')
+                            : (isPrepareMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'),
+                          elevation: isSelected ? 4 : (isPrepareMode ? 0 : 1),
+                          shadowOpacity: isSelected ? 0.2 : (isPrepareMode ? 0 : 0.05),
+                        },
                       ]}
                       onPress={() => {
                         playSelectTone();
                         setSelectedCategory(cat.id);
                       }}
                     >
-                      {isSelected ? (
-                        <>
-                          <View style={[styles.selectIndicator, { backgroundColor: cat.color }]}>
-                            <Icon name="checkmark" size={10} color="#FFFDF9" />
-                          </View>
-                          <Text style={[styles.categoryDescSelected, { color: cat.color }]} numberOfLines={3}>
-                            {cat.desc}
-                          </Text>
-                        </>
-                      ) : (
-                        <>
-                          <Text style={styles.categoryEmoji}>{cat.emoji}</Text>
-                          <Text style={[styles.categoryName, language === 'tamil' && styles.categoryNameTamil]}>
-                            {language === 'tamil' && cat.nameTa ? cat.nameTa : cat.name}
-                          </Text>
-                        </>
-                      )}
+                      {/* Left: Emoji Circle */}
+                      <View
+                        style={[
+                          styles.categoryRowEmojiBox,
+                          {
+                            backgroundColor: isSelected
+                              ? '#F1F5F9'
+                              : (isPrepareMode ? 'rgba(255,255,255,0.08)' : '#F8FAFC'),
+                          },
+                        ]}
+                      >
+                        <Text style={styles.categoryRowEmoji}>{cat.emoji}</Text>
+                      </View>
+
+                      {/* Middle: Subject Title + Description */}
+                      <View style={styles.categoryRowCenter}>
+                        <Text
+                          style={[
+                            styles.categoryRowTitle,
+                            {
+                              color: isSelected
+                                ? '#0F172A'
+                                : (isPrepareMode ? '#F8FAFC' : '#1E293B'),
+                            },
+                            language === 'tamil' && styles.categoryRowTitleTamil,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {language === 'tamil' && cat.nameTa ? cat.nameTa : cat.name}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.categoryRowDesc,
+                            {
+                              color: isSelected
+                                ? '#475569'
+                                : (isPrepareMode ? '#94A3B8' : '#64748B'),
+                            },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {cat.desc}
+                        </Text>
+                      </View>
+
+                      {/* Right: Radio Selection Checkmark */}
+                      <View
+                        style={[
+                          styles.categoryRowRadio,
+                          {
+                            borderColor: isSelected
+                              ? '#0F172A'
+                              : (isPrepareMode ? 'rgba(255,255,255,0.25)' : '#CBD5E1'),
+                            backgroundColor: isSelected ? '#0F172A' : 'transparent',
+                          },
+                        ]}
+                      >
+                        {isSelected && (
+                          <Icon name="checkmark" size={13} color="#FFFFFF" />
+                        )}
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
               </View>
+            </ScrollView>
 
-              {/* PREPARE + CHALLENGE */}
-              <View style={styles.bottomButtonsRow}>
-                {/* Prepare — outlined */}
+            {/* BOTTOM START BUTTON (Matching TriviaHubScreen #0F62FE Cobalt Blue) */}
+            <View style={[
+              styles.bottomButtonWrapper,
+              {
+                paddingBottom: safeBottomPadding,
+                paddingLeft: Math.max(insets.left || 0, 16),
+                paddingRight: Math.max(insets.right || 0, 16),
+              },
+            ]}>
+              {isPrepareMode ? (
+                /* ONLY Start Prepare Button in Prepare Mode */
                 <TouchableOpacity
-                  style={[styles.prepareBtn, { borderColor: activeCategoryConfig.color }]}
-                  activeOpacity={0.8}
-                  onPress={startPrepare}
+                  style={[
+                    styles.singleActionButton,
+                    !selectedCategory && { opacity: 0.55 },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    if (!selectedCategory) {
+                      Toast.show({
+                        type: 'info',
+                        text1: language === 'tamil' ? 'பாடத்தை தேர்வு செய்க' : 'Select Subject',
+                        text2: language === 'tamil' ? 'தயாராக ஒரு பாடத்தை கிளிக் செய்யவும்' : 'Please tap a subject to start preparation',
+                      });
+                      return;
+                    }
+                    startPrepare();
+                  }}
                 >
-                  <Icon name="book-outline" size={17} color={activeCategoryConfig.color} />
-                  <Text style={[styles.prepareBtnText, { color: activeCategoryConfig.color }]}>Prepare</Text>
-                </TouchableOpacity>
-
-                {/* Challenge — gradient */}
-                <TouchableOpacity style={styles.challengeBtn} activeOpacity={0.85} onPress={() => setQuestionCountModal(true)}>
                   <LinearGradient
-                    colors={[activeCategoryConfig.color, '#4597f5']}
+                    colors={['#4F46E5', '#6366F1', '#38BDF8']}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 0 }}
-                    style={styles.challengeBtnGradient}
+                    style={styles.singleActionGradient}
                   >
-                    <Icon name="flash" size={17} color="#FFFDF9" />
-                    <Text style={styles.challengeBtnText}>Challenge</Text>
+                    <Icon name="book" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={[styles.singleActionText, { color: '#FFFFFF' }]}>
+                      {language === 'tamil' ? 'தயாராகத் தொடங்கு' : 'Start Prepare'}
+                    </Text>
                   </LinearGradient>
                 </TouchableOpacity>
-              </View>
-              <Text style={styles.feelGoodNote}> *** All the best *** </Text>
+              ) : (
+                /* ONLY Challenge Button in Challenge Mode */
+                <TouchableOpacity
+                  style={[
+                    styles.singleActionButton,
+                    !selectedCategory && { opacity: 0.55 },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    if (!selectedCategory) {
+                      Toast.show({
+                        type: 'info',
+                        text1: language === 'tamil' ? 'பாடத்தை தேர்வு செய்க' : 'Select Subject',
+                        text2: language === 'tamil' ? 'பயிற்சி செய்ய ஒரு பாடத்தை கிளிக் செய்யவும்' : 'Please tap a subject to start practice',
+                      });
+                      return;
+                    }
+                    setQuestionCountModal(true);
+                  }}
+                >
+                  <LinearGradient
+                    colors={['#4F46E5', '#6366F1', '#38BDF8']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.singleActionGradient}
+                  >
+                    <Icon name="flash" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={[styles.singleActionText, { color: '#FFFFFF' }]}>
+                      {language === 'tamil' ? 'பயிற்சியைத் தொடங்கு' : 'Start Practice'}
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
             </View>
-          )}
+          </View>
+        ) : (
+          <ScrollView
+            contentContainerStyle={[
+              styles.scrollContent,
+              (gameState === 'playing' || gameState === 'evaluating') && { justifyContent: 'space-between', paddingTop: 0, paddingBottom: 0 },
+              gameState === 'summary' && {
+                justifyContent: 'flex-start',
+                paddingTop: 4,
+                paddingBottom: Math.max((insets.bottom || 0) + 40, 64),
+              },
+            ]}
+            showsVerticalScrollIndicator={gameState !== 'playing' && gameState !== 'evaluating'}
+            style={styles.scrollView}
+            scrollEnabled={gameState !== 'playing' && gameState !== 'evaluating'}
+          >
 
           {/* ACTIVE QUIZ SCREEN */}
           {gameState === 'playing' && currentQuestion && (
             <View style={styles.quizContainer}>
               {/* Header: Score, Progress, Category */}
-              <View style={styles.headerRow}>
+              {/* Header Row 1: Back Button, Progress & Question Count, Language Toggle */}
+              <View style={[
+                styles.headerRow,
+                {
+                  paddingTop: safeTopPadding,
+                  paddingLeft: Math.max(insets.left || 0, 16),
+                  paddingRight: Math.max(insets.right || 0, 16),
+                },
+              ]}>
                 <TouchableOpacity onPress={() => setExitModalVisible(true)} style={styles.backButton}>
                   <Icon name="close" size={28} color="#1E3A5F" />
                 </TouchableOpacity>
                 <View style={styles.progressContainer}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <Text style={styles.questionIndexText}>
-                      Question {currentIndex + 1} of {questions.length}
+                      <Text style={styles.qLabel}>Q: </Text>
+                      <Text style={styles.qCountBlue}>{currentIndex + 1}/{questions.length}</Text>
                     </Text>
                     {/* Multi-Set indicator Row */}
                     {activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
                       <View style={{
                         flexDirection: 'row',
                         alignItems: 'center',
-                        backgroundColor: 'rgba(30, 58, 95, 0.05)',
+                        backgroundColor: 'rgba(0, 0, 0, 0.04)',
                         borderWidth: 1,
-                        borderColor: 'rgba(30, 58, 95, 0.12)',
+                        borderColor: 'rgba(0, 0, 0, 0.15)',
                         borderRadius: 8,
                         paddingHorizontal: 8,
-                        paddingVertical: 3,
+                        paddingVertical: 2,
                       }}>
-                        <Text style={{ fontSize: 11, fontFamily: 'Kalam-Bold', color: '#1E3A5F' }}>Set : </Text>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#000000' }}>Set: </Text>
                         {activeSetIds.map((sid, index) => {
                           const isCurrent = Math.floor(currentIndex / 15) === index;
                           const numStr = sid.replace('set', '');
                           return (
                             <React.Fragment key={index}>
-                              {index > 0 && <Text style={{ fontSize: 11, fontFamily: 'Kalam-Bold', color: 'rgba(30,58,95,0.3)' }}>|</Text>}
+                              {index > 0 && <Text style={{ fontSize: 11, fontWeight: '700', color: 'rgba(0,0,0,0.25)' }}>|</Text>}
                               <Text style={{
                                 fontSize: 11,
-                                fontFamily: 'Kalam-Bold',
-                                color: isCurrent ? '#FF007F' : '#1E3A5F',
+                                fontWeight: '700',
+                                color: '#000000',
                                 paddingHorizontal: 2,
                               }}>
                                 {numStr}
@@ -1378,32 +1688,37 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   />
                 </View>
               </View>
-              <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                <View style={styles.scoreContainer}>
-                  <Text style={styles.scoreText}>
-                    <Text style={styles.scoreGreen}>{Object.keys(userAnswers).length}/{questions.length}</Text>
-                    <Text style={styles.scoreAns}> Ans</Text>
-                  </Text>
-                </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                {selectedCategory !== 'custom' ? (
+                  <View style={styles.gameLanguageToggleContainer}>
+                    <TouchableOpacity 
+                      style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
+                      onPress={() => toggleLanguage('english')}
+                    >
+                      <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
+                      onPress={() => toggleLanguage('tamil')}
+                    >
+                      <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>TA</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={{ width: 44 }} />
+                )}
               </View>
             </View>
 
-            {/* Category Tag, Points Indicator & Timer Row */}
+            {/* Category Tag, Unanswered Indicator & Timer Row */}
             <View style={styles.categoryAndTimerRow}>
               <View style={styles.headerRowLeft}>
-                <View style={styles.gameLanguageToggleContainer}>
-                  <TouchableOpacity 
-                    style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
-                    onPress={() => toggleLanguage('english')}
-                  >
-                    <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
-                    onPress={() => toggleLanguage('tamil')}
-                  >
-                    <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>TA</Text>
-                  </TouchableOpacity>
+                <View style={styles.scoreContainer}>
+                  <Text style={styles.scoreText}>
+                    <Text style={{ color: '#E11D48', fontWeight: '700', fontFamily: 'Kalam-Bold' }}>
+                      UA : {questions.length - Object.keys(userAnswers).length}
+                    </Text>
+                  </Text>
                 </View>
               </View>
 
@@ -1429,7 +1744,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               <Animated.View
                 style={[styles.card, { transform: [{ scale: cardScale }] }, { position: 'relative' }]}
               >
-                <Text style={styles.questionText}>{currentQuestion.text}</Text>
+                <Text style={[styles.questionText, language === 'tamil' && styles.questionTextTamil]}>{currentQuestion.text}</Text>
               </Animated.View>
 
               {/* Choices Grid */}
@@ -1444,24 +1759,28 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
                   let optionBgColor = 'rgba(30, 58, 95, 0.04)';
                   let optionBorderColor = 'rgba(30, 58, 95, 0.12)';
-                  let textColor = '#1E3A5F';
-                  let circleTextColor = '#1E3A5F';
+                  let badgeBgColor = 'rgba(30, 58, 95, 0.06)';
+                  let badgeTextColor = '#1E3A5F';
+                  let badgeBorderColor = 'rgba(30, 58, 95, 0.15)';
 
                   if (showCorrect) {
                     optionBgColor = '#2EC4B6';
                     optionBorderColor = '#2EC4B6';
-                    textColor = '#FFFDF9';
-                    circleTextColor = '#FFFDF9';
+                    badgeBgColor = '#2EC4B6';
+                    badgeTextColor = '#FFFDF9';
+                    badgeBorderColor = '#2EC4B6';
                   } else if (showWrong) {
                     optionBgColor = '#FF3366';
                     optionBorderColor = '#FF3366';
-                    textColor = '#FFFDF9';
-                    circleTextColor = '#FFFDF9';
+                    badgeBgColor = '#FF3366';
+                    badgeTextColor = '#FFFDF9';
+                    badgeBorderColor = '#FF3366';
                   } else if (isSelected) {
                     optionBgColor = 'rgba(30, 58, 95, 0.12)';
                     optionBorderColor = '#1E3A5F';
-                    textColor = '#1E3A5F';
-                    circleTextColor = '#1E3A5F';
+                    badgeBgColor = '#1E3A5F';
+                    badgeTextColor = '#FFFDF9';
+                    badgeBorderColor = '#1E3A5F';
                   }
 
                   return (
@@ -1471,32 +1790,36 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                     >
                       <TouchableOpacity
                         disabled={isLocked}
-                        style={[
+                        activeOpacity={0.8}
+                        style={styles.choiceOuterRow}
+                        onPress={() => handleAnswerSelect(index)}
+                      >
+                        {/* Outside Letter */}
+                        <Text style={[
+                          styles.outsideLetterText,
+                          {
+                            color: showCorrect ? '#2EC4B6' : showWrong ? '#FF3366' : isSelected ? '#0F172A' : '#94A3B8',
+                          }
+                        ]}>
+                          {String.fromCharCode(65 + index)}.
+                        </Text>
+
+                        {/* Choice Container */}
+                        <View style={[
                           styles.choiceButton,
                           {
                             backgroundColor: optionBgColor,
                             borderColor: optionBorderColor,
                           },
-                        ]}
-                        onPress={() => handleAnswerSelect(index)}
-                      >
-                        <View style={choiceRowStyle(isSelected || showCorrect || showWrong)}>
-                          <View style={[
-                            styles.indexCircle,
-                            { backgroundColor: isSelected || showCorrect || showWrong ? 'rgba(30,58,95,0.15)' : 'rgba(30,58,95,0.08)' }
-                          ]}>
-                            <Text style={[styles.indexText, { color: circleTextColor }]}>
-                              {String.fromCharCode(65 + index)}
-                            </Text>
-                          </View>
-                          <Text style={[styles.choiceText, { color: '#111111' }]}>
+                        ]}>
+                          <Text style={[styles.choiceText, language === 'tamil' && styles.choiceTextTamil, { color: showCorrect || showWrong ? '#FFFDF9' : '#0F172A' }]}>
                             {choice}
                           </Text>
                           {showCorrect && (
-                            <Icon name="checkmark-circle" size={24} color="#FFFDF9" style={styles.feedbackIcon} />
+                            <Icon name="checkmark-circle" size={22} color="#FFFDF9" style={styles.feedbackIcon} />
                           )}
                           {showWrong && (
-                            <Icon name="close-circle" size={24} color="#FFFDF9" style={styles.feedbackIcon} />
+                            <Icon name="close-circle" size={22} color="#FFFDF9" style={styles.feedbackIcon} />
                           )}
                         </View>
                       </TouchableOpacity>
@@ -1507,7 +1830,14 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             </View>
 
             {/* Chevron Navigation Row for all questions in Challenge Mode */}
-            <View style={styles.navigationRow}>
+            <View style={[
+              styles.navigationRow,
+              {
+                paddingBottom: Math.max((insets.bottom || 0) + 16, 28),
+                paddingLeft: Math.max(insets.left || 0, 20),
+                paddingRight: Math.max(insets.right || 0, 20),
+              },
+            ]}>
               {currentIndex > 0 ? (
                 <TouchableOpacity style={styles.chevronCircleBtn} onPress={() => goToPrev()}>
                   <Icon name="chevron-back" size={24} color="#1E3A5F" />
@@ -1528,9 +1858,87 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
           </View>
         )}
 
+        {/* EVALUATING / SUSPENSE SCREEN */}
+        {gameState === 'evaluating' && (
+          <Animated.View style={[
+            styles.evaluatingContainer,
+            {
+              opacity: evalFadeAnim,
+              paddingTop: safeTopPadding + 48,
+              paddingBottom: Math.max((insets.bottom || 0) + 24, 36),
+            },
+          ]}>
+            {/* Glowing Pulsing Icon Circle */}
+            <View style={styles.evaluatingGlowRingWrapper}>
+              <Animated.View
+                style={[
+                  styles.evaluatingOuterRing,
+                  {
+                    transform: [{ scale: evalPulseAnim }],
+                    borderColor: isDark ? 'rgba(99, 102, 241, 0.35)' : 'rgba(79, 70, 229, 0.25)',
+                  },
+                ]}
+              />
+              <LinearGradient
+                colors={['#4F46E5', '#6366F1', '#38BDF8']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.evaluatingCircleGradient}
+              >
+                <Animated.View style={{ transform: [{ scale: evalPulseAnim }] }}>
+                  <Text style={styles.evaluatingEmoji}>
+                    {evaluatingStep === 0 ? '🧠' : evaluatingStep === 1 ? '⚡' : '🏆'}
+                  </Text>
+                </Animated.View>
+              </LinearGradient>
+            </View>
+
+            {/* Modern Activity Indicator */}
+            <ActivityIndicator
+              size="large"
+              color={isDark ? '#818CF8' : '#4F46E5'}
+              style={{ marginTop: 32, marginBottom: 18 }}
+            />
+
+            {/* Dynamic Step Messages */}
+            <Text style={[styles.evaluatingTitle, { color: isDark ? '#F8FAFC' : '#1E293B' }]}>
+              {evaluatingStep === 0
+                ? (language === 'tamil' ? 'உங்கள் பதில்களை மதிப்பீடு செய்கிறது...' : 'Evaluating your answers...')
+                : evaluatingStep === 1
+                ? (language === 'tamil' ? 'துல்லியம் மற்றும் வேகத்தைக் கணக்கிடுகிறது...' : 'Calculating accuracy & speed...')
+                : (language === 'tamil' ? 'முடிவுகளைத் தயார் செய்கிறது...' : 'Finalizing your score...')}
+            </Text>
+
+            <Text style={[styles.evaluatingSub, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+              {language === 'tamil' ? 'தயவுசெய்து காத்திருக்கவும்' : 'Please hold on a moment'}
+            </Text>
+
+            {/* Smooth Progress Track */}
+            <View style={styles.evaluatingProgressTrack}>
+              <Animated.View
+                style={[
+                  styles.evaluatingProgressFill,
+                  {
+                    width: evalProgressAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0%', '100%'],
+                    }),
+                  },
+                ]}
+              />
+            </View>
+          </Animated.View>
+        )}
+
         {/* RESULTS / SUMMARY SCREEN */}
         {gameState === 'summary' && (
-          <Animated.View style={[styles.summaryContainer, { transform: [{ scale: resultsScale }] }]}>
+          <Animated.View style={[
+            styles.summaryContainer,
+            {
+              opacity: resultsFadeAnim,
+              transform: [{ scale: resultsScale }],
+            },
+          ]}>
 
             <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={styles.viewShotContainer}>
               <LinearGradient
@@ -1626,21 +2034,67 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               </TouchableOpacity>
             </View>
 
-            {/* View full scoreboard */}
-            <TouchableOpacity
-              style={styles.scoreboardOutlineBtn}
-              onPress={() => navigation.navigate('TriviaScoreboard')}
-            >
-              <Text style={{ fontSize: 16 }}>📊</Text>
-              <Text style={styles.scoreboardOutlineBtnText}>View Full Scoreboard</Text>
-            </TouchableOpacity>
+            {/* View Challenge Leaderboard or Full Scoreboard */}
+            {activeChallengeData ? (
+              <View style={{ width: '100%', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={styles.challengeLeaderboardActionBtn}
+                  onPress={() => {
+                    getAllLocalChallenges().then(all => {
+                      if (all[activeChallengeData.challengeId]) {
+                        setActiveChallengeLeaderboard(all[activeChallengeData.challengeId].leaderboard || []);
+                      }
+                    });
+                    setChallengeLeaderboardModalVisible(true);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={['#4F46E5', '#7C3AED']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.challengeLeaderboardGradient}
+                  >
+                    <Icon name="trophy" size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={styles.challengeLeaderboardBtnText}>View Contest Leaderboard</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.scoreboardOutlineBtn, { marginTop: 0 }]}
+                  onPress={() => navigation.navigate('TriviaChallenges')}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="trophy-outline" size={18} color="#8B5CF6" style={{ marginRight: 6 }} />
+                  <Text style={[styles.scoreboardOutlineBtnText, { color: isDark ? '#A78BFA' : '#6D28D9' }]}>All Group Contests</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.scoreboardOutlineBtn, { marginTop: 0 }]}
+                  onPress={() => navigation.goBack()}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="chatbubbles-outline" size={18} color={isDark ? '#38BDF8' : '#0F62FE'} style={{ marginRight: 6 }} />
+                  <Text style={styles.scoreboardOutlineBtnText}>Return to Chat</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.scoreboardOutlineBtn}
+                onPress={() => navigation.navigate('TriviaScoreboard')}
+              >
+                <Text style={{ fontSize: 16 }}>📊</Text>
+                <Text style={styles.scoreboardOutlineBtnText}>View Full Scoreboard</Text>
+              </TouchableOpacity>
+            )}
 
 
            </Animated.View>
         )}
 
         </ScrollView>
-      </SafeAreaView>
+        )}
+      </View>
 
       {/* ── PREPARE MODE FULL-SCREEN VIEWER ── */}
       {gameState === 'prepare' && (
@@ -1649,36 +2103,44 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
 
             {/* Floating header */}
-            <View style={[prepStyles.floatingHeader, { paddingTop: (insets.top || StatusBar.currentHeight || 24) + 20 }]}>
+            <View style={[
+              prepStyles.floatingHeader,
+              {
+                paddingTop: safeTopPadding,
+                paddingLeft: Math.max(insets.left || 0, 16),
+                paddingRight: Math.max(insets.right || 0, 16),
+              },
+            ]}>
               <View style={prepStyles.headerRow}>
                 <TouchableOpacity style={prepStyles.headerBackBtn} onPress={() => setGameState('categorySelect')}>
                   <Icon name="arrow-back" size={22} color="#fff" />
                 </TouchableOpacity>
                 <View style={prepStyles.headerCenter}>
-                  <Text style={prepStyles.headerTitle}>
-                    {language === 'tamil' ? '📖 பயிற்சி முறை' : '📖 Prepare Mode'}
+                  <Text style={prepStyles.headerTitle} numberOfLines={1}>
+                    {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                   </Text>
                   <Text style={prepStyles.headerSub}>
-                    {activeCategoryConfig.emoji} {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
                     {questions.length > 0
-                      ? `  ·  ${Math.round((viewedSet.size / questions.length) * 100)}%`
+                      ? `${viewedSet.size} / ${questions.length}  ·  ${Math.round((viewedSet.size / questions.length) * 100)}%`
                       : ''}
                   </Text>
                 </View>
-                <View style={prepStyles.langToggleContainer}>
-                  <TouchableOpacity 
-                    style={[prepStyles.langBtn, language === 'english' && prepStyles.langBtnActive]}
-                    onPress={() => toggleLanguage('english')}
-                  >
-                    <Text style={[prepStyles.langBtnTxt, language === 'english' && prepStyles.langBtnTxtActive]}>EN</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[prepStyles.langBtn, language === 'tamil' && prepStyles.langBtnActive]}
-                    onPress={() => toggleLanguage('tamil')}
-                  >
-                    <Text style={[prepStyles.langBtnTxt, language === 'tamil' && prepStyles.langBtnTxtActive]}>TA</Text>
-                  </TouchableOpacity>
-                </View>
+                {selectedCategory !== 'custom' && (
+                  <View style={prepStyles.langToggleContainer}>
+                    <TouchableOpacity 
+                      style={[prepStyles.langBtn, language === 'english' && prepStyles.langBtnActive]}
+                      onPress={() => toggleLanguage('english')}
+                    >
+                      <Text style={[prepStyles.langBtnTxt, language === 'english' && prepStyles.langBtnTxtActive]}>EN</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={[prepStyles.langBtn, language === 'tamil' && prepStyles.langBtnActive]}
+                      onPress={() => toggleLanguage('tamil')}
+                    >
+                      <Text style={[prepStyles.langBtnTxt, language === 'tamil' && prepStyles.langBtnTxtActive]}>TA</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
               {/* Coverage progress bar */}
               {questions.length > 0 && (
@@ -1725,7 +2187,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   <View style={[
                     prepStyles.slideContent,
                     {
-                      paddingTop: insets.top + 88,
+                      paddingTop: safeTopPadding + 58,
                       paddingBottom: Math.max(36, insets.bottom + 12)
                     }
                   ]}>
@@ -1756,21 +2218,26 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                         {item.choices.map((choice, ci) => {
                           const isCorrect = isAnswerRevealed && ci === item.correctIndex;
                           return (
-                            <View
-                              key={ci}
-                              style={[prepStyles.choiceItem, isCorrect && prepStyles.choiceCorrect]}
-                            >
-                              <View style={[prepStyles.choiceLetter, isCorrect && prepStyles.choiceLetterCorrect]}>
-                                <Text style={[prepStyles.choiceLetterText, isCorrect && { color: '#fff' }]}>
-                                  {String.fromCharCode(65 + ci)}
-                                </Text>
-                              </View>
-                              <Text style={[prepStyles.choiceText, isCorrect && prepStyles.choiceTextCorrect, language === 'english' && prepStyles.choiceTextEnglish]}>
-                                {choice}
+                            <View key={ci} style={prepStyles.choiceOuterRow}>
+                              {/* Outside Letter */}
+                              <Text style={[
+                                prepStyles.outsideLetterText,
+                                isCorrect && { color: '#00C853' }
+                              ]}>
+                                {String.fromCharCode(65 + ci)}.
                               </Text>
-                              {isCorrect && (
-                                <Icon name="checkmark-circle" size={16} color="#00C853" style={{ marginLeft: 8 }} />
-                              )}
+
+                              {/* Choice Container */}
+                              <View
+                                style={[prepStyles.choiceItem, isCorrect && prepStyles.choiceCorrect]}
+                              >
+                                <Text style={[prepStyles.choiceText, isCorrect && prepStyles.choiceTextCorrect, language === 'english' && prepStyles.choiceTextEnglish]}>
+                                  {choice}
+                                </Text>
+                                {isCorrect && (
+                                  <Icon name="checkmark-circle" size={18} color="#00C853" style={{ marginLeft: 8 }} />
+                                )}
+                              </View>
                             </View>
                           );
                         })}
@@ -1779,21 +2246,17 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
                     {/* Bottom row: View button (right) */}
                     <View style={[prepStyles.bottomRow, { justifyContent: 'flex-end' }]}>
-                      {/* VIEW button — bottom right */}
+                      {/* VIEW button — rounded circle eye button */}
                       <TouchableOpacity
                         style={[prepStyles.viewBtn, isAnswerRevealed && prepStyles.viewBtnActive]}
                         onPress={() => toggleRevealAnswer(index)}
+                        activeOpacity={0.75}
                       >
                         <Icon
                           name={isAnswerRevealed ? 'eye' : 'eye-outline'}
-                          size={18}
-                          color={isAnswerRevealed ? '#00C853' : 'rgba(255,255,255,0.85)'}
+                          size={24}
+                          color={isAnswerRevealed ? '#00C853' : 'rgba(255,255,255,0.9)'}
                         />
-                        <Text style={[prepStyles.viewBtnText, isAnswerRevealed && prepStyles.viewBtnTextActive]}>
-                          {isAnswerRevealed 
-                            ? (language === 'tamil' ? 'காண்பிக்கப்பட்டது' : 'Revealed') 
-                            : (language === 'tamil' ? 'பதிலைக் காண்' : 'View Answer')}
-                        </Text>
                       </TouchableOpacity>
                     </View>
 
@@ -2210,7 +2673,106 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
           </View>
         </View>
       </Modal>
-    </LinearGradient>
+
+      {/* ── 24-HOUR CHALLENGE LIVE LEADERBOARD MODAL ── */}
+      <Modal
+        visible={challengeLeaderboardModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setChallengeLeaderboardModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modalContent,
+              { backgroundColor: isDark ? '#0F172A' : '#FFFFFF', maxHeight: '80%', paddingBottom: 20 },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Icon name="trophy" size={22} color="#F59E0B" />
+                <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>Contest Leaderboard</Text>
+              </View>
+              <TouchableOpacity onPress={() => setChallengeLeaderboardModalVisible(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Icon name="close" size={24} color={theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 12 }}>
+              {activeChallengeData?.title || 'Contest Standings'} • {activeChallengeLeaderboard.length} Players Completed
+            </Text>
+
+            {activeChallengeLeaderboard.length === 0 ? (
+              <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                <Text style={{ color: theme.textSecondary, fontSize: 13 }}>No scores submitted yet.</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+                {activeChallengeLeaderboard.map((entry, idx) => {
+                  const medals = ['🥇', '🥈', '🥉'];
+                  const isTop3 = idx < 3;
+                  const mins = Math.floor(entry.timeTakenSeconds / 60);
+                  const secs = entry.timeTakenSeconds % 60;
+                  const timeStr = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+                  const isCurrent = String(entry.userId) === String(user?.id);
+
+                  return (
+                    <View
+                      key={idx}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        borderRadius: 12,
+                        backgroundColor: isCurrent
+                          ? (isDark ? 'rgba(99,102,241,0.2)' : 'rgba(99,102,241,0.08)')
+                          : (isDark ? 'rgba(255,255,255,0.03)' : '#F8FAFC'),
+                        marginBottom: 6,
+                        borderWidth: isCurrent ? 1 : 0,
+                        borderColor: '#6366F1',
+                      }}
+                    >
+                      <Text style={{ fontSize: isTop3 ? 18 : 13, fontWeight: '800', width: 32, textAlign: 'center', color: theme.textPrimary }}>
+                        {medals[idx] || `#${idx + 1}`}
+                      </Text>
+
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: theme.textPrimary }} numberOfLines={1}>
+                          {entry.userName} {isCurrent && '(You)'}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: theme.textSecondary }}>
+                          ⏱ {timeStr} • {entry.percentage}% Accuracy
+                        </Text>
+                      </View>
+
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: '#10B981' }}>
+                          {entry.score}/{entry.totalQuestions}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity
+              style={{
+                marginTop: 14,
+                backgroundColor: isDark ? '#1E293B' : '#E2E8F0',
+                paddingVertical: 12,
+                borderRadius: 12,
+                alignItems: 'center',
+              }}
+              onPress={() => setChallengeLeaderboardModalVisible(false)}
+            >
+              <Text style={{ color: theme.textPrimary, fontWeight: '700', fontSize: 14 }}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </View>
   );
 };
 
@@ -2331,21 +2893,79 @@ const styles = StyleSheet.create({
   categorySelectContainer: {
     flex: 1,
     paddingHorizontal: 8,
+    position: 'relative',
+  },
+  categoryScrollContent: {
+    paddingTop: 4,
+    paddingBottom: 16,
+  },
+  bottomButtonWrapper: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  singleActionButton: {
+    width: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    marginBottom: 4,
+  },
+  singleActionGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 15,
+  },
+  singleActionText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  quickAccessRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 0,
+  },
+  quickAccessBtn: {
+    flex: 1,
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(30, 58, 95, 0.06)',
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(30, 58, 95, 0.12)',
+  },
+  quickAccessBtnText: {
+    color: '#1E3A5F',
+    fontFamily: 'Kalam-Bold',
+    fontSize: 13,
   },
   categoryHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    minHeight: 48,
+    marginBottom: 4,
   },
   categoryHeaderTitle: {
-    fontSize: 22,
+    flex: 1,
+    fontSize: 20,
     fontFamily: 'Kalam-Bold',
     color: '#1E3A5F',
     textAlign: 'center',
+    marginHorizontal: 8,
   },
   categoryHeaderTitleTamil: {
-    fontSize: 18,
+    fontSize: 17,
     lineHeight: 22,
   },
   scoreboardBtn: {
@@ -2370,6 +2990,30 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#4597f5',
     letterSpacing: 0.3,
+  },
+  // Challenge Leaderboard button on summary
+  challengeLeaderboardActionBtn: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: '#4F46E5',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  challengeLeaderboardGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+  },
+  challengeLeaderboardBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
   // "View Full Scoreboard" button on summary
   scoreboardOutlineBtn: {
@@ -2460,79 +3104,71 @@ const styles = StyleSheet.create({
     fontFamily: 'Kalam-Bold',
     letterSpacing: 0.5,
   },
-  // 2×5 grid cards
-  categoriesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
+  // Spacious Single-Column Categories List
+  categoriesList: {
+    flexDirection: 'column',
     width: '100%',
-    gap: 14,
-    marginTop: 12,
-    marginBottom: 12,
+    gap: 11,
+    paddingHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 16,
   },
-  categoryCard: {
-    width: '48%',
-    backgroundColor: 'rgba(30, 58, 95, 0.04)',
+  categoryRowCard: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
     borderWidth: 1.5,
-    borderColor: 'rgba(30, 58, 95, 0.12)',
-    borderRadius: borderRadius.lg,
-    paddingVertical: 10,
-    paddingHorizontal: 6,
-    position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 5,
+  },
+  categoryRowEmojiBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    minHeight: 76,
   },
-  categoryEmoji: {
-    fontSize: 28,
-    marginBottom: 4,
+  categoryRowEmoji: {
+    fontSize: 23,
   },
-  categoryName: {
-    fontSize: 16,
-    fontFamily: 'Kalam-Bold',
-    color: '#1E3A5F',
-    textAlign: 'center',
-    lineHeight: 19,
-  },
-  categoryNameTamil: {
-    fontSize: 13,
-    lineHeight: 16,
-  },
-  categoryDescSelected: {
-    fontSize: 16,
-    fontFamily: 'Kalam-Bold',
-    textAlign: 'center',
-    marginTop: 3,
-    lineHeight: 17,
-  },
-  categoryIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  categoryRowCenter: {
+    flex: 1,
+    marginLeft: 14,
+    marginRight: 10,
     justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 4,
   },
-  categoryDesc: {
-    fontSize: 11,
-    fontFamily: 'Kalam-Regular',
-    color: 'rgba(30, 58, 95, 0.6)',
-    lineHeight: 14,
+  categoryRowTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 20,
   },
-  selectIndicator: {
-    position: 'absolute',
-    top: 6,
-    right: 6,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+  categoryRowTitleTamil: {
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  categoryRowDesc: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2.5,
+    lineHeight: 15,
+  },
+  categoryRowRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
     justifyContent: 'center',
     alignItems: 'center',
   },
   // Prepare + Challenge buttons
   prepareBtn: {
     flex: 1,
-    height: 48,
+    height: 44,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
@@ -2547,7 +3183,7 @@ const styles = StyleSheet.create({
   },
   challengeBtn: {
     flex: 1,
-    height: 48,
+    height: 44,
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     elevation: 4,
@@ -2597,11 +3233,18 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
   },
   questionIndexText: {
-    color: '#1E3A5F',
-    fontSize: 16,
-    fontFamily: 'Kalam-Bold',
-    marginBottom: 6,
-    textAlign: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  qLabel: {
+    color: '#000000',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  qCountBlue: {
+    color: '#0F62FE',
+    fontSize: 15,
+    fontWeight: '700',
   },
   progressBarBg: {
     height: 8,
@@ -2656,6 +3299,27 @@ const styles = StyleSheet.create({
     width: 80,
     alignItems: 'flex-end',
   },
+  languageToggleBox: {
+    flexDirection: 'row',
+    borderRadius: 16,
+    padding: 2,
+  },
+  langBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 14,
+  },
+  langBtnActive: {
+    backgroundColor: '#0F62FE',
+  },
+  langBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  langBtnTextActive: {
+    color: '#FFFFFF',
+  },
   gameLanguageToggleContainer: {
     flexDirection: 'row',
     backgroundColor: 'rgba(0, 110, 255, 0.05)',
@@ -2670,7 +3334,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   gameLanguageButtonActive: {
-    backgroundColor: '#006EFF',
+    backgroundColor: '#0F62FE',
   },
   gameLanguageButtonText: {
     color: 'rgba(30, 58, 95, 0.6)',
@@ -2775,21 +3439,17 @@ const styles = StyleSheet.create({
   },
   mainGameBox: {
     flex: 1,
-    borderWidth: 1.5,
-    borderColor: 'rgba(30, 58, 95, 0.15)',
-    paddingTop: 6,
-    paddingBottom: 24,
-    paddingHorizontal: 10,
-    backgroundColor: 'rgba(30, 58, 95, 0.02)',
+    paddingTop: 8,
+    paddingBottom: 8,
+    paddingHorizontal: 6,
     marginHorizontal: 0,
-    borderRadius: borderRadius.md,
   },
   navigationRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    marginTop: 10,
-    marginBottom: 10,
+    marginTop: 8,
+    marginBottom: 4,
   },
   chevronCircleBtn: {
     width: 44,
@@ -2818,16 +3478,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   card: {
-    backgroundColor: 'rgba(30, 58, 95, 0.04)',
-    borderRadius: borderRadius.lg,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    minHeight: 90,
+    paddingTop: 16,
+    paddingBottom: 8,
+    paddingHorizontal: 6,
     justifyContent: 'center',
     alignItems: 'flex-start',
-    borderWidth: 1,
-    borderColor: 'rgba(30, 58, 95, 0.12)',
-    marginBottom: 20,
+    marginTop: 8,
+    marginBottom: 16,
     width: '100%',
   },
   swipeHintLeft: {
@@ -2844,24 +3501,47 @@ const styles = StyleSheet.create({
   },
   questionText: {
     fontSize: 18,
-    color: '#1E3A5F',
+    color: '#0F172A',
     textAlign: 'left',
     lineHeight: 26,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  questionTextTamil: {
+    fontSize: 15,
+    lineHeight: 23,
+    fontWeight: '700',
+    color: '#0F172A',
   },
   choicesContainer: {
-    flex: 1,
-    justifyContent: 'space-evenly',
-    marginVertical: 8,
+    flexDirection: 'column',
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 10,
+    width: '100%',
+  },
+  choiceOuterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    gap: 6,
+  },
+  outsideLetterText: {
+    fontSize: 16,
+    fontWeight: '700',
+    minWidth: 20,
+    textAlign: 'left',
+    color: '#94A3B8',
   },
   choiceButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     borderWidth: 1.5,
     borderRadius: borderRadius.md,
-    padding: 6,
-    minHeight: 40,
-    justifyContent: 'center',
-    width: '92%',
-    alignSelf: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 46,
   },
   choiceRow: {
     flexDirection: 'row',
@@ -2876,16 +3556,88 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   indexText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: 'bold',
   },
   choiceText: {
-    fontSize: 16,
+    fontSize: 15,
     flex: 1,
     fontWeight: '600',
+    lineHeight: 21,
+    color: '#0F172A',
+  },
+  choiceTextTamil: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    fontWeight: '600',
+    letterSpacing: 0.15,
+    color: '#0F172A',
   },
   feedbackIcon: {
     marginLeft: 10,
+  },
+
+  // Evaluating / Calculation Suspense Screen
+  evaluatingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    minHeight: 450,
+  },
+  evaluatingGlowRingWrapper: {
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 120,
+    height: 120,
+  },
+  evaluatingOuterRing: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 3,
+  },
+  evaluatingCircleGradient: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#4F46E5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+  },
+  evaluatingEmoji: {
+    fontSize: 42,
+  },
+  evaluatingTitle: {
+    fontSize: 18,
+    fontFamily: 'Kalam-Bold',
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  evaluatingSub: {
+    fontSize: 13,
+    fontFamily: 'Kalam-Regular',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  evaluatingProgressTrack: {
+    width: 220,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(79, 70, 229, 0.12)',
+    overflow: 'hidden',
+  },
+  evaluatingProgressFill: {
+    height: '100%',
+    backgroundColor: '#4F46E5',
+    borderRadius: 3,
   },
 
   // Summary View
@@ -3350,9 +4102,9 @@ const prepStyles = StyleSheet.create({
   },
   questionText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-    lineHeight: 23,
+    lineHeight: 22,
     marginBottom: 14,
   },
   questionTextEnglish: {
@@ -3367,12 +4119,28 @@ const prepStyles = StyleSheet.create({
   choicesWrap: {
     gap: 10,
   },
-  choiceItem: {
+  choiceOuterRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    width: '100%',
+    gap: 6,
+  },
+  outsideLetterText: {
+    fontSize: 15,
+    fontWeight: '700',
+    minWidth: 20,
+    textAlign: 'left',
+    color: 'rgba(255, 255, 255, 0.45)',
+  },
+  choiceItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderRadius: 12,
-    padding: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
   },
@@ -3380,33 +4148,16 @@ const prepStyles = StyleSheet.create({
     backgroundColor: 'rgba(0,200,83,0.15)',
     borderColor: '#00C853',
   },
-  choiceLetter: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    flexShrink: 0,
-  },
-  choiceLetterCorrect: {
-    backgroundColor: '#00C853',
-  },
-  choiceLetterText: {
-    color: 'rgba(255,255,255,0.8)',
-    fontWeight: '700',
-    fontSize: 13,
-  },
   choiceText: {
     flex: 1,
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 14,
+    color: 'rgba(255,255,255,0.88)',
+    fontSize: 13.5,
     lineHeight: 20,
+    letterSpacing: 0.15,
   },
   choiceTextEnglish: {
-    fontSize: 15.5,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 21,
   },
   choiceTextCorrect: {
     color: '#00C853',
@@ -3432,13 +4183,12 @@ const prepStyles = StyleSheet.create({
   },
   // View button
   viewBtn: {
-    flexDirection: 'row',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
     backgroundColor: 'rgba(255,255,255,0.1)',
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 24,
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.2)',
   },

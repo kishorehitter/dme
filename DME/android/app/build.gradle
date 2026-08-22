@@ -112,12 +112,12 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
-            resValue "string", "app_name", "DME (Debug 1)"
+            resValue "string", "app_name", "Yesenta"
         }
         debug2 {
             signingConfig signingConfigs.debug
             applicationIdSuffix ".debug2"
-            resValue "string", "app_name", "DME (Debug 2)"
+            resValue "string", "app_name", "Yesenta (Debug 2)"
             debuggable true
             matchingFallbacks = ['debug']
         }

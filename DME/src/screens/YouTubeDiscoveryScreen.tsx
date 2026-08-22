@@ -5,7 +5,7 @@
  * - Unified History/Likes management
  */
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity,
   StatusBar, Text, DeviceEventEmitter,
@@ -13,6 +13,7 @@ import {
   Platform, Dimensions, Image, FlatList, ActivityIndicator,
   KeyboardAvoidingView,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -129,7 +130,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const insets = useSafeAreaInsets();
 
   const [activeTab, setActiveTab]       = useState<TabType>(requireDriveAuth ? 'drive' : 'youtube');
-  const [roomName, setRoomName]         = useState('');
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
@@ -187,17 +187,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   useEffect(() => {
     isNavigating.current = false;
     loadInitialData();
+  }, []);
 
-    // Set the navigation bar to transparent so the edge-to-edge screen content naturally bleeds through it
-    const unsubscribeFocus = navigation.addListener('focus', () => {
-      pinNavBarColor('#00000000');
-    });
-    pinNavBarColor('#00000000');
-
-    return () => {
-      unsubscribeFocus();
-    };
-  }, [navigation]);
+  useFocusEffect(
+    useCallback(() => {
+      pinNavBarColor('#00000000', true);
+    }, [])
+  );
 
   const handleRetry = async () => {
     setIsRetrying(true);
@@ -388,12 +384,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }
   };
 
-  // ─── Start new party (Flow 1) ──────────────────────────────────────────────
+  const [isStartingParty, setIsStartingParty] = useState(false);
+
   const handleStartParty = async () => {
-    if (!roomName.trim()) { alert('Please enter a party name'); return; }
     if (!selectedVideoId) return;
     if (isNavigating.current) return;
     isNavigating.current = true;
+    setIsStartingParty(true);
 
     let finalTitle = undefined;
     if (selectedSource === 'drive') {
@@ -415,25 +412,31 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`
       : selectedItem?.thumbnail;
 
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Pre-cache the thumbnail BEFORE opening MusicRoom — user stays on
+    // Discovery screen with a spinner until the image is fully downloaded.
+    if (initThumbnail) {
+      try {
+        await Image.prefetch(initThumbnail);
+      } catch (_) {
+        // Continue even if prefetch fails — overlay will still work
+      }
+    }
 
     DeviceEventEmitter.emit('open_music_room', {
       roomCode: newRoomCode,
       isDJMode: true,
-      roomName: roomName,
+      roomName: finalTitle || 'Watch Party',
       initialVideoId: selectedVideoId,
       initialSource: selectedSource,
       initialTitle: finalTitle,
       initialThumbnail: initThumbnail,
     });
 
-    setTimeout(() => {
-      if (typeof navigation.setOptions === 'function') {
-        navigation.setOptions({ animationEnabled: false });
-      }
-      navigation.goBack();
-    }, 150);
-
+    if (typeof navigation?.setOptions === 'function') {
+      navigation.setOptions({ animationEnabled: false });
+    }
+    navigation?.goBack?.();
+    setIsStartingParty(false);
   };
 
   const handleAddToQueue = async () => {
@@ -456,7 +459,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       finalTitle = selectedItem?.title;
     }
 
-    navigation.goBack();
+    navigation?.goBack?.();
 
     setTimeout(() => {
       DeviceEventEmitter.emit('VIDEO_SELECTED', {
@@ -560,15 +563,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         colors={['rgba(0,120,255,0.13)', 'rgba(0,60,160,0.05)', 'transparent']}
         style={[StyleSheet.absoluteFillObject, { height: '55%' }]}
       />
-      {/* Subtle cobalt bottom accent */}
-      <LinearGradient
-        colors={['transparent', 'rgba(0,80,200,0.07)']}
-        style={[StyleSheet.absoluteFillObject, { top: '60%' }]}
-      />
 
       {/* ── Header ── */}
       <View style={[styles.header, { paddingTop: (insets.top || 28) + 8 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => navigation?.goBack?.()} style={styles.backBtn}>
           <Icon name="arrow-back" size={22} color="rgba(255,255,255,0.9)" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
@@ -638,6 +636,12 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 source={{ uri: 'https://m.youtube.com' }}
                 onNavigationStateChange={handleYouTubeNavChange}
                 onError={() => setYtError(true)}
+                startInLoadingState={true}
+                renderLoading={() => (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#FFFFFF" />
+                  </View>
+                )}
                 renderError={() => (
                   <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying}
                     title="Unable to Load YouTube"
@@ -664,8 +668,21 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 sharedCookiesEnabled={true}
                 allowsInlineMediaPlayback={true}
                 mediaPlaybackRequiresUserAction={false}
-                backgroundColor="#000"
-                style={{ flex: 1, borderRadius: 20 }}
+                backgroundColor="#0F0F0F"
+                style={{ flex: 1, borderRadius: 20, backgroundColor: '#0F0F0F' }}
+                injectedJavaScript={`
+                  (function() {
+                    try {
+                      document.cookie = "PREF=f6=400; domain=.youtube.com; path=/";
+                      document.documentElement.setAttribute('dark', 'true');
+                      if (document.body) {
+                        document.body.style.backgroundColor = "#0F0F0F";
+                        document.body.setAttribute('dark', 'true');
+                      }
+                    } catch(e) {}
+                  })();
+                  true;
+                `}
               />
           )
         )}
@@ -841,7 +858,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             </TouchableOpacity>
 
             {/* Source badge */}
-            <View style={styles.overlaySourceRow}>
+            <View style={[styles.overlaySourceRow, { justifyContent: 'center' }]}>
               <View style={[
                 styles.overlaySourceBadge,
                 { backgroundColor: selectedSource === 'drive' ? '#4285F418' : '#FF000018',
@@ -859,36 +876,32 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               </View>
             </View>
 
-            <Text style={styles.overlayTitle}>Video Selected ✓</Text>
-            <Text style={styles.overlaySubtitle}>
-              {isFlow2 ? 'Add this video to the party queue?' : 'Give your room a name to start'}
+            <Text style={[styles.overlayTitle, { textAlign: 'center' }]} numberOfLines={2}>
+              {selectedItem?.title || 'Video Selected ✓'}
+            </Text>
+            <Text style={[styles.overlaySubtitle, { textAlign: 'center' }]}>
+              {isFlow2 ? 'Add this video to the party queue?' : 'Start a new watch party with this video!'}
             </Text>
 
             {/* Flow 1 — name & play */}
             {!isFlow2 && (
               <>
-                <TextInput
-                  style={styles.namingInput}
-                  placeholder="Type the Room Name here.."
-                  placeholderTextColor="rgba(255,255,255,0.25)"
-                  value={roomName}
-                  onChangeText={setRoomName}
-                  maxLength={25}
-                  returnKeyType="done"
-                  onSubmitEditing={handleStartParty}
-                />
                 <TouchableOpacity
-                  style={[styles.overlayActionBtn, !roomName.trim() && { opacity: 0.35 }]}
+                  style={[styles.overlayActionBtn, isStartingParty && { opacity: 0.7 }]}
                   onPress={handleStartParty}
-                  disabled={!roomName.trim()}
+                  disabled={isStartingParty}
                 >
                   <LinearGradient
                     colors={['#b10000', '#FF007F']}
                     start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                     style={styles.overlayActionBtnGrad}
                   >
-                    <Icon name="play" size={18} color="#fff" style={{ marginRight: 8 }} />
-                    <Text style={styles.overlayActionBtnText}>Start Watching</Text>
+                    {isStartingParty ? (
+                      <ActivityIndicator size={18} color="#fff" style={{ marginRight: 8 }} />
+                    ) : (
+                      <Icon name="play" size={18} color="#fff" style={{ marginRight: 8 }} />
+                    )}
+                    <Text style={styles.overlayActionBtnText}>{isStartingParty ? 'Preparing...' : 'Start Watching'}</Text>
                   </LinearGradient>
                 </TouchableOpacity>
               </>
@@ -920,6 +933,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#020912' },
+  loadingContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#020912',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
 
   // Header
   header: {
@@ -1006,16 +1026,13 @@ const styles = StyleSheet.create({
   overlayBackdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 10,
-    backgroundColor: '#050f1e',
+    backgroundColor: '#121212',
     borderRadius: 24,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    // Content anchored to top — never moves with keyboard
-    justifyContent: 'flex-start',
-    paddingHorizontal: 22,
-    paddingTop: 48,
-    paddingBottom: 24,
+    justifyContent: 'center',
+    padding: 24,
   },
   overlayCard: {
     // inner layout container — no background, overlay bg handles it
@@ -1044,7 +1061,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
     marginBottom: 16,
   },
-  overlayActionBtn: { borderRadius: 25, overflow: 'hidden', marginTop: 4 },
+  overlayActionBtn: { borderRadius: 25, overflow: 'hidden', marginTop: 4, alignSelf: 'center' },
   overlayActionBtnGrad: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     paddingVertical: 15, paddingHorizontal: 24,

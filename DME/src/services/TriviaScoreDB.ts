@@ -68,18 +68,47 @@ interface DBData {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const emptyDB = (): DBData => ({ sets: {}, cycleState: {} });
+let _memoryCachedDB: DBData | null = null;
 
 async function loadDB(): Promise<DBData> {
+  if (_memoryCachedDB) return _memoryCachedDB;
   try {
     const raw = await AsyncStorage.getItem(DB_KEY);
-    if (!raw) return emptyDB();
-    return JSON.parse(raw) as DBData;
+    if (!raw) {
+      _memoryCachedDB = emptyDB();
+      return _memoryCachedDB;
+    }
+    _memoryCachedDB = JSON.parse(raw) as DBData;
+    return _memoryCachedDB;
   } catch {
-    return emptyDB();
+    _memoryCachedDB = emptyDB();
+    return _memoryCachedDB;
   }
 }
 
+export function getCachedScoreboardDataSync(
+  setsPerCategory: Record<string, string[]>,
+): { summaries: Record<string, CategorySummary>; overallAverage: number } | null {
+  if (!_memoryCachedDB) return null;
+  const summaries: Record<string, CategorySummary> = {};
+  let overallSum = 0;
+  let attemptedCategoryCount = 0;
+
+  for (const [cat, sets] of Object.entries(setsPerCategory)) {
+    const summary = computeCategorySummary(_memoryCachedDB, cat, sets);
+    summaries[cat] = summary;
+    if (summary.setsCompleted > 0) {
+      overallSum += summary.overallAverage;
+      attemptedCategoryCount++;
+    }
+  }
+
+  const overallAverage = attemptedCategoryCount > 0 ? Math.round(overallSum / attemptedCategoryCount) : 0;
+  return { summaries, overallAverage };
+}
+
 async function saveDB(db: DBData): Promise<void> {
+  _memoryCachedDB = db;
   await AsyncStorage.setItem(DB_KEY, JSON.stringify(db));
 }
 
@@ -152,17 +181,17 @@ export async function getSetRecords(
 }
 
 /**
- * Get full summary for a category — all sets with their scores.
+ * Helper to compute summary for a single category given a DB snapshot.
  */
-export async function getCategorySummary(
+export function computeCategorySummary(
+  db: DBData,
   category: string,
   allSetsInCategory: string[],
-): Promise<CategorySummary> {
-  const db = await loadDB();
+): CategorySummary {
   let overallSum = 0;
   let attemptedCount = 0;
 
-  const sets: SetSummary[] = allSetsInCategory.map(setId => {
+  const sets: SetSummary[] = (allSetsInCategory || []).map(setId => {
     const records = db.sets[`${category}/${setId}`] ?? [];
     const totalAttempts = records.length;
     const pcts = records.map(r => r.percentage);
@@ -191,8 +220,44 @@ export async function getCategorySummary(
     sets,
     overallAverage: attemptedCount > 0 ? Math.round(overallSum / attemptedCount) : 0,
     setsCompleted: attemptedCount,
-    totalSets: allSetsInCategory.length,
+    totalSets: (allSetsInCategory || []).length,
   };
+}
+
+/**
+ * Get full summary for a category — all sets with their scores.
+ */
+export async function getCategorySummary(
+  category: string,
+  allSetsInCategory: string[],
+): Promise<CategorySummary> {
+  const db = await loadDB();
+  return computeCategorySummary(db, category, allSetsInCategory);
+}
+
+/**
+ * Optimized batch loader: reads DB once and computes all category summaries and overall average.
+ */
+export async function getFullScoreboardData(
+  setsPerCategory: Record<string, string[]>,
+): Promise<{ summaries: Record<string, CategorySummary>; overallAverage: number }> {
+  const db = await loadDB();
+  const summaries: Record<string, CategorySummary> = {};
+  let overallSum = 0;
+  let attemptedCategoryCount = 0;
+
+  for (const [cat, sets] of Object.entries(setsPerCategory)) {
+    const summary = computeCategorySummary(db, cat, sets);
+    summaries[cat] = summary;
+    if (summary.setsCompleted > 0) {
+      overallSum += summary.overallAverage;
+      attemptedCategoryCount++;
+    }
+  }
+
+  const overallAverage = attemptedCategoryCount > 0 ? Math.round(overallSum / attemptedCategoryCount) : 0;
+
+  return { summaries, overallAverage };
 }
 
 /**
@@ -201,11 +266,8 @@ export async function getCategorySummary(
 export async function getAllCategorySummaries(
   setsPerCategory: Record<string, string[]>,
 ): Promise<CategorySummary[]> {
-  const results: CategorySummary[] = [];
-  for (const [cat, sets] of Object.entries(setsPerCategory)) {
-    results.push(await getCategorySummary(cat, sets));
-  }
-  return results;
+  const { summaries } = await getFullScoreboardData(setsPerCategory);
+  return Object.values(summaries);
 }
 
 /**
@@ -223,16 +285,14 @@ export async function getCycleState(category: string): Promise<CycleState | null
 export async function getOverallAverage(
   setsPerCategory: Record<string, string[]>,
 ): Promise<number> {
-  const summaries = await getAllCategorySummaries(setsPerCategory);
-  const attempted = summaries.filter(s => s.setsCompleted > 0);
-  if (attempted.length === 0) return 0;
-  const sum = attempted.reduce((a, s) => a + s.overallAverage, 0);
-  return Math.round(sum / attempted.length);
+  const { overallAverage } = await getFullScoreboardData(setsPerCategory);
+  return overallAverage;
 }
 
 /**
  * Wipe all score data (for testing).
  */
 export async function clearAllScores(): Promise<void> {
+  _memoryCachedDB = emptyDB();
   await AsyncStorage.removeItem(DB_KEY);
 }

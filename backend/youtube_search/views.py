@@ -33,6 +33,7 @@ NOTE: Re-export cookies every ~2 weeks or when stream errors return.
 import os
 import base64
 import tempfile
+import time
 import requests
 import yt_dlp
 from django.conf import settings
@@ -45,6 +46,37 @@ from rest_framework.permissions import IsAuthenticated
 
 import logging
 logger = logging.getLogger(__name__)
+
+# ─── In-process format cache (keyed by video_id, TTL = 3 hours) ──────────────
+_FORMAT_CACHE: dict = {}          # { video_id: { 'ts': float, 'formats': dict } }
+_FORMAT_CACHE_TTL = 3 * 60 * 60  # 3 hours in seconds
+
+# YouTube quality label → yt-dlp height selector
+_QUALITY_MAP = {
+    'highres': 2160,
+    'hd2160':  2160,
+    'hd1440':  1440,
+    'hd1080':  1080,
+    'hd720':   720,
+    'large':   480,
+    'medium':  360,
+    'small':   240,
+    'tiny':    144,
+}
+
+def _cache_get(video_id: str):
+    entry = _FORMAT_CACHE.get(video_id)
+    if entry and (time.time() - entry['ts']) < _FORMAT_CACHE_TTL:
+        return entry['formats']
+    return None
+
+def _cache_set(video_id: str, formats: dict):
+    _FORMAT_CACHE[video_id] = {'ts': time.time(), 'formats': formats}
+    # Prune old entries (keep at most 200 to avoid unbounded memory growth)
+    if len(_FORMAT_CACHE) > 200:
+        oldest = sorted(_FORMAT_CACHE.items(), key=lambda x: x[1]['ts'])[:50]
+        for k, _ in oldest:
+            _FORMAT_CACHE.pop(k, None)
 
 # ─── Cookie file — written once at module load from the env var ───────────────
 _COOKIE_FILE: str | None = None
@@ -428,33 +460,71 @@ class YouTubeStreamView(APIView):
         return None
 
 
-class YouTubeStreamProxyView(APIView):
+class YouTubeFormatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         video_id = request.data.get('videoId', '').strip()
         if not video_id:
-            return Response({'error': 'Video ID required'}, status=400)
+            return Response({'error': 'Video ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 1. Check in-memory 3-hour cache (0ms, 0 CPU, 0 bandwidth)
+        cached = _cache_get(video_id)
+        if cached:
+            logger.info(f'⚡ [CACHE HIT] Returning cached video formats for {video_id}')
+            return Response(cached)
+
+        logger.info(f'🎬 Extracting video format ladder for {video_id}')
         cookie_file = _get_cookie_file()
         strategies = _build_ytdlp_strategies(cookie_file)
 
+        target_url = f'https://www.youtube.com/watch?v={video_id}'
+        info = None
+
         for label, ydl_opts in strategies:
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(
-                        f'https://www.youtube.com/watch?v={video_id}',
-                        download=False
-                    )
-                    if info.get('url'):
-                        return Response({
-                            'url': info.get('url'),
-                            'title': info.get('title'),
-                            'thumbnail': info.get('thumbnail'),
-                            'duration': info.get('duration'),
-                        })
+                # Use generic format selection to extract all formats list
+                opts = {**ydl_opts, 'format': None}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+                if info and info.get('formats'):
+                    break
             except Exception as e:
-                logger.warning(f'⚠️ ProxyView [{label}] failed: {e}')
+                logger.warning(f'⚠️ Formats extraction [{label}] failed for {video_id}: {e}')
                 continue
 
-        return Response({'error': 'Stream unavailable'}, status=503)
+        if not info or not info.get('formats'):
+            return Response({'error': 'Failed to extract video formats'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Extract available video stream URLs mapped by quality label
+        formats_list = info.get('formats', [])
+        quality_urls = {}
+        
+        # Filter formats strictly for progressive streams (BOTH video and audio)
+        # This guarantees we never return a video-only or audio-only DASH stream that causes black screens.
+        muxed_fmts = [
+            f for f in formats_list
+            if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('height') and f.get('url')
+        ]
+
+        for fmt in muxed_fmts:
+            h = fmt.get('height')
+            u = fmt.get('url')
+
+            for q_label, target_h in _QUALITY_MAP.items():
+                if h == target_h and q_label not in quality_urls:
+                    quality_urls[q_label] = u
+
+        result_data = {
+            'videoId': video_id,
+            'title': info.get('title'),
+            'thumbnail': info.get('thumbnail') or f'https://i.ytimg.com/vi/{video_id}/mqdefault.jpg',
+            'duration': info.get('duration') or 0,
+            'formats': quality_urls,
+            'availableQualities': list(quality_urls.keys()) + ['auto'],
+        }
+
+        # Cache for 3 hours
+        _cache_set(video_id, result_data)
+        logger.info(f'✅ Cached {len(quality_urls)} quality levels for {video_id}')
+        return Response(result_data)

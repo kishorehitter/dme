@@ -244,4 +244,4 @@ class StatusViewSet(viewsets.ModelViewSet):
         except Exception as e:
             print(f"Error broadcasting status reply: {e}")
 
-        return Response({'detail': 'Reply sent.'}, status=status.HTTP_200_OK)
+        return Response({'detail': 'Reply sent.', 'conversation_id': conversation.id}, status=status.HTTP_200_OK)

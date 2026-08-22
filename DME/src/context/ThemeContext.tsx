@@ -83,13 +83,9 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setThemeMode(isDark ? 'light' : 'dark');
   }, [isDark, setThemeMode]);
 
-  // Update StatusBar when theme changes
+  // Update StatusBar when theme changes - disabled here to let AppNavigator handle it without race conditions
   useEffect(() => {
-    if (!isLoaded) return;
-    StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content', true);
-    if (Platform.OS === 'android') {
-      StatusBar.setBackgroundColor(isDark ? '#0D0D14' : '#FAFAFC', true);
-    }
+    // Handled by AppNavigator central configuration to avoid startup flash during splash screen
   }, [isDark, isLoaded]);
 
   const value = useMemo<ThemeContextValue>(

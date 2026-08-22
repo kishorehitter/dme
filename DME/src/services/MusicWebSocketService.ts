@@ -175,7 +175,7 @@ class MusicWebSocketService {
     this.send({ type: 'typing', is_typing: isTyping });
   }
 
-  sendChatMessage(text: string, replyTo?: any, mediaUrl?: string, messageType: 'text' | 'image' | 'gif' = 'text') {
+  sendChatMessage(text: string, replyTo?: any, mediaUrl?: string, messageType: 'text' | 'image' | 'gif' | 'lottie_sticker' = 'text') {
     this.send({ type: 'chat_message', text, reply_to: replyTo, media_url: mediaUrl, message_type: messageType });
   }
 

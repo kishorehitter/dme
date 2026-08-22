@@ -41,6 +41,34 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
         }
     }
 
+    private var lastEmittedContentHeight = 0.0
+
+    fun emitContentSizeChange() {
+        val density = context.resources.displayMetrics.density
+        if (density <= 0f) return
+        val textLayout = this.layout
+        val contentHeight = if (textLayout != null) {
+            (textLayout.height + paddingTop + paddingBottom).toDouble() / density
+        } else {
+            (lineCount * lineHeight + paddingTop + paddingBottom).toDouble() / density
+        }
+        val contentWidth = width.toDouble() / density
+        
+        if (Math.abs(contentHeight - lastEmittedContentHeight) >= 0.5) {
+            lastEmittedContentHeight = contentHeight
+            val event = Arguments.createMap()
+            val contentSize = Arguments.createMap()
+            contentSize.putDouble("width", contentWidth)
+            contentSize.putDouble("height", contentHeight)
+            event.putMap("contentSize", contentSize)
+            
+            try {
+                (context as? ReactContext)?.getJSModule(RCTEventEmitter::class.java)
+                    ?.receiveEvent(id, "topContentSizeChange", event)
+            } catch (_: Exception) {}
+        }
+    }
+
     init {
         // Ensure standard keyboard behavior is enabled
         setSingleLine(false)
@@ -59,29 +87,27 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
 
                 val event = Arguments.createMap()
                 event.putString("text", s.toString())
-                (context as ReactContext).getJSModule(RCTEventEmitter::class.java)
-                    .receiveEvent(id, "topTextChange", event)
+                try {
+                    (context as? ReactContext)?.getJSModule(RCTEventEmitter::class.java)
+                        ?.receiveEvent(id, "topTextChange", event)
+                } catch (_: Exception) {}
+                
+                post { emitContentSizeChange() }
             }
-            override fun afterTextChanged(s: Editable?) {}
+            override fun afterTextChanged(s: Editable?) {
+                post { emitContentSizeChange() }
+            }
         })
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        post { emitContentSizeChange() }
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        if (changed) {
-            val density = context.resources.displayMetrics.density
-            val contentHeight = exactContentHeight.toDouble() / density
-            val contentWidth = (right - left).toDouble() / density
-            
-            val event = Arguments.createMap()
-            val contentSize = Arguments.createMap()
-            contentSize.putDouble("width", contentWidth)
-            contentSize.putDouble("height", contentHeight)
-            event.putMap("contentSize", contentSize)
-            
-            (context as ReactContext).getJSModule(RCTEventEmitter::class.java)
-                .receiveEvent(id, "topContentSizeChange", event)
-        }
+        emitContentSizeChange()
     }
 
     fun setRichText(text: String?) {
@@ -91,6 +117,7 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
             setText(nextText)
             setSelection(nextText.length)
             isSettingText = false
+            post { emitContentSizeChange() }
         }
     }
 

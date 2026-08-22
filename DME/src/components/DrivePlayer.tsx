@@ -22,11 +22,12 @@ interface Props {
   onProgress?: (currentTime: number, duration: number) => void;
   onError?: (e: any) => void;
   onStreamResolved?: (cdnUrl: string, cdnHeaders: Record<string, string>) => void;
+  onAspectRatio?: (aspectRatio: number) => void;
   isFullscreen?: boolean;
 }
 
 const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
-  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, isFullscreen = false } = props;
+  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, onAspectRatio, isFullscreen = false } = props;
   const webViewRef = useRef<WebView>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -117,11 +118,6 @@ function toRN(obj) {
   try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
 }
 
-// DIAGNOSTIC ONLY — added on top of the known-working baseline, nothing
-// else changed. document.cookie only shows non-HttpOnly cookies, so an
-// empty result here doesn't prove no session exists, but a real Google
-// session cookie showing up here would prove the sign-in WebView's
-// session IS reaching this WebView.
 toRN({ type: 'log', msg: 'document.cookie at load: [' + document.cookie + ']' });
 toRN({ type: 'log', msg: 'navigator.userAgent: [' + navigator.userAgent + ']' });
 
@@ -163,11 +159,19 @@ function attachEvents() {
     }
   }
 
+  function reportAR() {
+    if (v && v.videoWidth > 0 && v.videoHeight > 0) {
+      toRN({ type: 'aspectRatio', aspectRatio: v.videoWidth / v.videoHeight });
+    }
+  }
+
   v.addEventListener('loadedmetadata', function() {
+    reportAR();
     toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
   });
 
   v.addEventListener('canplay', function() {
+    reportAR();
     if (!ready) {
       ready = true;
       showPlayer();
@@ -199,112 +203,105 @@ function attachEvents() {
   v.addEventListener('playing', function() { 
     toRN({ type: 'stateChange', state: 'playing' }); 
     if (bgV) bgV.play().catch(function(){});
-    syncBgVideo();
   });
-  v.addEventListener('seeking', syncBgVideo);
-  v.addEventListener('seeked', syncBgVideo);
-
-  v.addEventListener('error', function() {
-    attemptWarningBypass();
+  v.addEventListener('error',   function(e) {
+    var err = v.error;
+    var code = err ? err.code : 0;
+    var msg = err ? err.message : 'unknown';
+    toRN({ type: 'log', msg: 'HTML5 Video error: code=' + code + ' msg=' + msg });
+    
+    // Check if Google Drive returned a virus scan warning page
+    // (which causes a decode or network error on the video tag)
+    if (code === 4 || code === 2) {
+      attemptWarningBypass();
+    } else {
+      toRN({ type: 'playerError', code: code, msg: msg });
+    }
   });
 }
 
-attachEvents();
-
-window.addEventListener('message', function(event) {
-  if (!v) return;
-  try {
-    var data = JSON.parse(event.data);
-    if (data.action === 'play') {
-      v.play().catch(function(e) {
-        toRN({ type: 'log', msg: 'play() msg error: ' + e.message });
-      });
-      if (bgV) bgV.play().catch(function() {});
-    } else if (data.action === 'pause') {
-      v.pause();
-      if (bgV) bgV.pause();
-    } else if (data.action === 'mute') {
-      v.muted = true;
-    } else if (data.action === 'unmute') {
-      v.muted = false;
-    }
-  } catch(e) {}
-});
-
-var isFullscreen = false;
 function syncFullscreenState() {
-  var v = document.getElementById('dmevideo');
   if (!v) return;
   if (window.isFullscreen) {
     v.style.objectFit = 'contain';
   } else {
-    v.style.objectFit = 'cover';
+    v.style.objectFit = 'contain';
   }
 }
-// Initial playback is handled via the injected messages.
+window.syncFullscreenState = syncFullscreenState;
+
+attachEvents();
 </script>
 </body>
-</html>`;
+</html>
+  `;
 
   const resolveWarningBypass = async () => {
     try {
-      console.log('🎬 [DRIVE RESOLVER] React Native intercepting warning page to bypass CORS...');
-      const res = await fetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
-      console.log('🎬 [DRIVE RESOLVER] response status=', res.status, 'redirected=', res.redirected, 'finalUrl=', res.url);
-      const text = await res.text();
-      console.log('🎬 [DRIVE RESOLVER] FULL BODY:', text);
+      console.log('🔄 [DRIVE BYPASS] Attempting fetch bypass for fileId:', fileId);
+      const downloadPageUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      const res = await fetch(downloadPageUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      const htmlText = await res.text();
 
-      // Parse the real warning-page form generically: its action URL and
-      // EVERY hidden input, rather than assuming a fixed field set. Drive's
-      // current form includes id, export, authuser, confirm, uuid, AND a
-      // time-stamped anti-CSRF/freshness token named "at" — all six fields
-      // are required together; sending only some of them gets you served
-      // the warning page again (which is what every earlier attempt did,
-      // since none of them included "at").
-      const formActionMatch = text.match(/<form[^>]*action="([^"]+)"/);
-      const allInputs = [...text.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g)];
-      console.log('🎬 [DRIVE RESOLVER] form action=', formActionMatch ? formActionMatch[1] : null);
-      console.log('🎬 [DRIVE RESOLVER] all hidden inputs=', JSON.stringify(allInputs.map(m => ({ name: m[1], value: m[2] }))));
+      // Check for confirm token
+      const match = htmlText.match(/href="(\/uc\?export=download[^"]+confirm=([^"&]+)[^"]*)"/) ||
+                    htmlText.match(/confirm=([0-9A-Za-z_-]+)/);
 
-      if (formActionMatch && allInputs.length > 0) {
-        const actionUrl = formActionMatch[1];
-        const params = new URLSearchParams();
-        allInputs.forEach(([, name, value]) => {
-          params.set(name, value);
-        });
-        const bypassUrl = `${actionUrl}?${params.toString()}`;
-        console.log('🎬 [DRIVE RESOLVER] Built bypass URL from real form fields:', bypassUrl);
+      let finalDownloadUrl = '';
+      if (match) {
+        const confirmToken = match[2] || match[1];
+        finalDownloadUrl = `https://drive.google.com/uc?export=download&confirm=${confirmToken}&id=${fileId}`;
+        console.log('✅ [DRIVE BYPASS] Extracted confirm token:', confirmToken);
+      } else {
+        // Look for direct download link or form action
+        const formMatch = htmlText.match(/action="([^"]+)"/);
+        if (formMatch && formMatch[1].includes('drive.google.com')) {
+          finalDownloadUrl = formMatch[1].replace(/&amp;/g, '&');
+        }
+      }
 
+      if (finalDownloadUrl) {
+        console.log('🎬 [DRIVE BYPASS] Loading bypass URL into video tags:', finalDownloadUrl);
         inject(`
-          var v = document.getElementById('dmevideo');
-          var bgV = document.getElementById('bg-video');
-          var statusEl = document.getElementById('status');
-          if (v && statusEl) {
-            statusEl.innerText = "Stream secured, buffering...";
-            v.src = "${bypassUrl}";
-            if (bgV) bgV.src = "${bypassUrl}";
-            v.load();
-            if (bgV) bgV.load();
-            v.play().catch(function(e){
-              window.ReactNativeWebView.postMessage(JSON.stringify({type:'log', msg:'play() after form-bypass rejected: ' + e.message}));
-            });
-            if (bgV) bgV.play().catch(function(){});
-          }
+          (function() {
+            var v = document.getElementById('dmevideo');
+            var bgV = document.getElementById('bg-video');
+            var statusEl = document.getElementById('status');
+            if (statusEl) statusEl.innerText = "Loading stream...";
+            if (v) {
+              v.src = "${finalDownloadUrl}";
+              v.load();
+              v.play().catch(function(){});
+            }
+            if (bgV) {
+              bgV.src = "${finalDownloadUrl}";
+              bgV.load();
+            }
+          })();
         `);
       } else {
-        console.warn('🎬 [DRIVE RESOLVER] Could not find a download form on the warning page.');
-        onError?.(-1);
+        console.warn('⚠️ [DRIVE BYPASS] Could not extract bypass token from response');
+        // Let user know or report error
+        inject(`
+          (function() {
+            var statusEl = document.getElementById('status');
+            if (statusEl) statusEl.innerText = "Video unavailable or restricted.";
+          })();
+        `);
       }
-    } catch (e) {
-      console.error('🎬 [DRIVE RESOLVER] Native fetch failed:', e);
-      onError?.(-1);
+    } catch (e: any) {
+      console.error('❌ [DRIVE BYPASS] Fetch error:', e);
+      onError?.(e);
     }
   };
 
   const handleMessage = (event: any) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
-
       if (msg.type === 'log') {
         console.log('🎬 [DRIVE]', msg.msg);
         return;
@@ -323,6 +320,11 @@ function syncFullscreenState() {
           break;
         case 'stateChange':
           onStateChange?.(msg.state);
+          break;
+        case 'aspectRatio':
+          if (msg.aspectRatio && typeof onAspectRatio === 'function') {
+            onAspectRatio(msg.aspectRatio);
+          }
           break;
         case 'progress':
           positionRef.current = msg.currentTime;
@@ -357,6 +359,17 @@ function syncFullscreenState() {
     inject(`window.isFullscreen = ${isFullscreen ? 'true' : 'false'}; if (window.syncFullscreenState) window.syncFullscreenState();`);
   }, [isFullscreen]);
 
+  React.useEffect(() => {
+    return () => {
+      try {
+        inject(`
+          var v = document.getElementById('dmevideo');
+          if (v) { v.muted = true; v.pause(); v.src = ''; }
+        `);
+      } catch (_) {}
+    };
+  }, []);
+
   useImperativeHandle(ref, () => ({
     seekTo: (s) => {
       inject(`
@@ -388,23 +401,48 @@ function syncFullscreenState() {
         javaScriptEnabled
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
-        domStorageEnabled
-        sharedCookiesEnabled
-        thirdPartyCookiesEnabled
-        originWhitelist={['*']}
-        mixedContentMode="always"
+        scalesPageToFit={false}
+        scrollEnabled={false}
+        bounces={false}
         style={styles.webview}
-        onShouldStartLoadWithRequest={() => true}
+        userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        injectedJavaScriptBeforeContentLoaded={`
+          (function() {
+            var block = (e) => { e.stopImmediatePropagation(); e.stopPropagation(); };
+            window.addEventListener('visibilitychange', block, true);
+            window.addEventListener('webkitvisibilitychange', block, true);
+            window.addEventListener('blur', block, true);
+            window.addEventListener('focus', block, true);
+
+            Object.defineProperty(document, 'hidden', { value: false, writable: false });
+            Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: false });
+            Object.defineProperty(document, 'webkitVisibilityState', { value: 'visible', writable: false });
+            Object.defineProperty(document, 'hasFocus', { value: function() { return true; }, writable: false });
+
+            var original = window.addEventListener;
+            window.addEventListener = function(type, listener, options) {
+              if (['visibilitychange','blur','focusout','pagehide'].includes(type)) return;
+              return original.apply(this, arguments);
+            };
+          })();
+          true;
+        `}
       />
     </View>
   );
 });
 
-DrivePlayer.displayName = 'DrivePlayer';
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  webview:   { flex: 1, backgroundColor: '#000' },
+  container: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
 });
 
 export default DrivePlayer;

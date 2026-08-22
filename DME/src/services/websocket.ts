@@ -15,7 +15,10 @@ export type WebSocketMessage = {
     | 'new_message_summary'
     | 'connection_established'
     | 'message_edit'
-    | 'message_delete';
+    | 'message_delete'
+    | 'message_request_status'
+    | 'message_request_created'
+    | 'friend_request_update';
   data: any;
 };
 
@@ -111,8 +114,8 @@ class WebSocketService {
     return new Promise(async (resolve, reject) => {
       try {
         this.isLoggedOut = false;
-        this.currentConversationId = conversationId;
         this.disconnectRoom();
+        this.currentConversationId = conversationId;
 
         try {
           await api.get('/accounts/profile/');
@@ -174,7 +177,7 @@ class WebSocketService {
                 `WebSocket closed before connecting (code: ${event.code})`,
               ),
             );
-          } else {
+          } else if (this.currentConversationId === conversationId && !this.isLoggedOut) {
             this.attemptReconnect(conversationId);
           }
         };
@@ -193,8 +196,8 @@ class WebSocketService {
   }
 
   private attemptReconnect(conversationId: number | string) {
-    if (this.isLoggedOut) {
-      console.log('WebSocket reconnection skipped - user logged out');
+    if (this.isLoggedOut || this.currentConversationId !== conversationId) {
+      console.log('WebSocket reconnection skipped - inactive or logged out');
       return;
     }
 
@@ -206,6 +209,7 @@ class WebSocketService {
       );
 
       this.reconnectTimeoutId = setTimeout(async () => {
+        if (this.currentConversationId !== conversationId) return;
         const token = await AsyncStorage.getItem('access_token');
         if (!token) {
           this.isLoggedOut = true;
@@ -229,11 +233,18 @@ class WebSocketService {
       clearTimeout(this.reconnectTimeoutId);
       this.reconnectTimeoutId = null;
     }
+    this.currentConversationId = null;
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
       this.isConnected = false;
-      this.currentConversationId = null;
+      try {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        socket.close();
+      } catch (err) {}
     }
   }
 

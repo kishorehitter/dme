@@ -3,20 +3,20 @@ import {
   View,
   Text,
   StyleSheet,
-  Modal,
   FlatList,
   Dimensions,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   Platform,
   Image,
+  BackHandler,
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { Message } from '../types';
 import { resolveImageUrl } from '../utils/image';
 import { useTheme } from '../context/ThemeContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width } = Dimensions.get('window');
 
@@ -80,7 +80,7 @@ const AutoHeightMedia = ({
         resizeMode={FastImage.resizeMode.contain}
       />
       {isVideo && (
-        <View style={styles.playOverlay}>
+        <View style={overlayStyles.playOverlay}>
           <Icon name="play-circle" size={50} color="#FFF" />
         </View>
       )}
@@ -88,15 +88,39 @@ const AutoHeightMedia = ({
   );
 };
 
+const overlayStyles = StyleSheet.create({
+  playOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
+
 export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
   visible,
   messages,
   onClose,
   onSelectMedia,
-  themeColor = '#4597f5f6',
 }) => {
   const { theme, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = dynamicStyles(theme);
+
+  // Hard block hardware back button
+  useEffect(() => {
+    if (!visible) return;
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => backSub.remove();
+  }, [visible, onClose]);
+
+  if (!visible) return null;
+
+  // Status bar height on Android
+  const statusBarHeight = Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : insets.top;
 
   const renderItem = ({ item }: { item: Message }) => {
     const rawUrl = (item as any).media_url || item.media_file;
@@ -120,100 +144,95 @@ export const MediaGroupListModal: React.FC<MediaGroupListModalProps> = ({
   };
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
-      statusBarTranslucent={true}
-      onRequestClose={onClose}
-    >
-      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={theme.background} translucent={true} />
-      <SafeAreaView style={[styles.container, Platform.OS === 'android' && { paddingTop: StatusBar.currentHeight }]}>
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.backButton}>
-            <Icon name="arrow-back" size={24} color={theme.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>
-            {messages.length} Photos
-          </Text>
-          <View style={{ width: 40 }} />
-        </View>
+    // Render as absolute overlay over the activity — NOT as a Modal dialog
+    // This keeps the same Window as the activity so nav bar color applies correctly
+    <View style={[styles.root, StyleSheet.absoluteFillObject]}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor="transparent"
+        translucent={true}
+      />
 
-        {/* Scrollable Feed */}
-        <FlatList
-          data={messages}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.id.toString()}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          style={styles.list}
-        />
-      </SafeAreaView>
-    </Modal>
+      {/* Header — sits below status bar */}
+      <View style={[styles.header, { paddingTop: statusBarHeight }]}>
+        <TouchableOpacity onPress={onClose} style={styles.backButton}>
+          <Icon name="arrow-back" size={24} color={theme.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>
+          {messages.length} Photos
+        </Text>
+        <View style={{ width: 40 }} />
+      </View>
+
+      {/* Scrollable Feed — extends fully to bottom edge, no padding for nav bar */}
+      <FlatList
+        data={messages}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id.toString()}
+        contentContainerStyle={[styles.listContent, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}
+        showsVerticalScrollIndicator={false}
+        style={styles.list}
+      />
+    </View>
   );
 };
 
-const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.background,
-  },
-  list: {
-    backgroundColor: theme.background,
-  },
-  header: {
-    height: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    backgroundColor: theme.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
-  },
-  backButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    color: theme.textPrimary,
-    fontSize: 17,
-    fontWeight: '600',
-  },
-  listContent: {
-    padding: 16,
-    gap: 16,
-  },
-  card: {
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: theme.border,
-    // card shadow
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  playOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  captionContainer: {
-    padding: 12,
-    borderTopWidth: 1,
-    borderTopColor: theme.border,
-    backgroundColor: theme.surface,
-  },
-  captionText: {
-    color: theme.textPrimary,
-    fontSize: 15,
-    lineHeight: 20,
-  },
-});
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors) =>
+  StyleSheet.create({
+    root: {
+      backgroundColor: theme.background,
+      zIndex: 9999,
+      elevation: 20,
+    },
+    list: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingBottom: 12,
+      backgroundColor: theme.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    backButton: {
+      padding: 8,
+    },
+    headerTitle: {
+      color: theme.textPrimary,
+      fontSize: 17,
+      fontWeight: '600',
+    },
+    listContent: {
+      padding: 16,
+      gap: 16,
+    },
+    card: {
+      backgroundColor: theme.surface,
+      borderRadius: 14,
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: theme.border,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    captionContainer: {
+      padding: 12,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      backgroundColor: theme.surface,
+    },
+    captionText: {
+      color: theme.textPrimary,
+      fontSize: 15,
+      lineHeight: 20,
+    },
+  });
 
 export default MediaGroupListModal;

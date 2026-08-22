@@ -15,7 +15,7 @@
  *       (ended with empty queue OR paused with no active playback)
  */
 
-import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   FlatList, Image, ActivityIndicator,
@@ -23,7 +23,9 @@ import {
   Dimensions, Keyboard, Platform, ScrollView,
   KeyboardAvoidingView, Modal, BackHandler,
   Animated, PanResponder, DeviceEventEmitter, AppState, Vibration,
+  LayoutChangeEvent, NativeModules, LayoutAnimation,
 } from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
 import DrivePlayer from '../components/DrivePlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
 import TrackPlayerService from '../services/TrackPlayerService';
@@ -33,7 +35,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
 import { useAuth } from '../context/AuthContext';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useCall } from '../context/CallContext';
 import api, { musicAPI } from '../services/api';
 import InviteModal from '../components/InviteModal';
@@ -43,7 +45,7 @@ import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Orientation from 'react-native-orientation-locker';
-import { pinNavBarColor } from '../utils/navBarPin';
+import { pinNavBarColor, clearNavBarPin } from '../utils/navBarPin';
 import { resolveImageUrl } from '../utils/image';
 import { colors } from '../utils/theme';
 import { API_BASE_URL } from '../config/network';
@@ -55,6 +57,11 @@ import StickerPreviewModal from '../components/StickerPreviewModal';
 import { CustomGalleryPicker } from '../components/CustomGalleryPicker';
 import FastImage from 'react-native-fast-image';
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
+import StickerPickerSheet from '../components/StickerPickerSheet';
+import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../components/DoubleTapHeartOverlay';
+import LottieStickerMessage from '../components/LottieStickerMessage';
+import { BUILT_IN_STICKER_PACKS, Sticker } from '../stickers/stickerPacks';
+import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
@@ -69,6 +76,80 @@ const fmtTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 };
 
+const fetchChannelLogo = async (videoId: string): Promise<string | null> => {
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    const html = await res.text();
+    const ownerMatch = html.match(/"videoOwnerRenderer"\s*:\s*\{[^}]*?"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
+    if (ownerMatch && ownerMatch[1]) {
+      return ownerMatch[1].replace(/\\u0026/g, '&');
+    }
+    const avatarMatch = html.match(/"avatar"\s*:\s*\{\s*"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
+    if (avatarMatch && avatarMatch[1]) {
+      return avatarMatch[1].replace(/\\u0026/g, '&');
+    }
+    const matches = html.match(/https:\/\/yt3\.(?:ggpht|googleusercontent)\.com\/[a-zA-Z0-9_\-=/]+/g);
+    if (matches && matches.length > 0) {
+      return matches[0];
+    }
+  } catch (e) {
+    console.warn('🎵 Channel logo fetch failed:', e);
+  }
+  return null;
+};
+
+const fetchVideoAspectRatio = async (videoId: string): Promise<number | null> => {
+  // 1. Check YouTube video stream formats (provides exact pixel aspect ratio e.g. 1.437 for Pavazha Malli)
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});(?:var|\s*<\/script>)/);
+      if (m) {
+        const data = JSON.parse(m[1]);
+        const formats = data?.streamingData?.adaptiveFormats || data?.streamingData?.formats || [];
+        const videoFormats = formats.filter((f: any) => f.width && f.height);
+        if (videoFormats.length > 0) {
+          videoFormats.sort((a: any, b: any) => b.width - a.width);
+          const top = videoFormats[0];
+          const ar = top.width / top.height;
+          if (ar >= 0.4 && ar <= 3.5) {
+            console.log(`📐 [EXACT FORMAT AR] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${ar.toFixed(3)}`);
+            return ar;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 2. YouTube official oEmbed API fallback
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    const oembedRes = await fetch(oembedUrl);
+    if (oembedRes.ok) {
+      const data = await oembedRes.json();
+      if (data.width && data.height) {
+        const ar = data.width / data.height;
+        if (ar >= 0.4 && ar <= 3.5) {
+          console.log(`📐 [AUTO AR] Video ${videoId} oEmbed dimensions: ${data.width}x${data.height} -> Aspect Ratio: ${ar.toFixed(3)}`);
+          return ar;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('🎵 Video oEmbed aspect ratio fetch error:', e);
+  }
+  return null;
+};
+
 const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Promise<Song> => {
   const base: Song = {
     videoId,
@@ -78,6 +159,7 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
     addedBy:      fallbackName ?? 'Someone',
   };
   try {
+    const channelLogo = await fetchChannelLogo(videoId);
     const resp = await api.post('/music/youtube/search/', {
       query:      `https://www.youtube.com/watch?v=${videoId}`,
       maxResults: 1,
@@ -89,12 +171,34 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
         title:        item.snippet.title,
         thumbnail:    item.snippet.thumbnails.medium.url,
         channelTitle: item.snippet.channelTitle,
+        channelLogo:  channelLogo || undefined,
       };
+    }
+    if (channelLogo) {
+      return { ...base, channelLogo };
     }
   } catch (e) {
     console.warn('🎵 Metadata fetch failed:', e);
   }
   return base;
+};
+
+const EMOJI_MATCH_REGEX = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?)*/gu;
+
+const isOnlyEmojis = (text: string | undefined | null): { isOnly: boolean; count: number } => {
+  if (!text || typeof text !== 'string') return { isOnly: false, count: 0 };
+  const trimmed = text.trim();
+  const nonWs = trimmed.replace(/\s+/g, '');
+  if (!nonWs) return { isOnly: false, count: 0 };
+  const remaining = nonWs.replace(EMOJI_MATCH_REGEX, '');
+  if (remaining.length === 0) {
+    const m = nonWs.match(EMOJI_MATCH_REGEX);
+    const count = m ? m.length : 0;
+    if (count > 0 && count <= 6) {
+      return { isOnly: true, count };
+    }
+  }
+  return { isOnly: false, count: 0 };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +225,8 @@ interface ControlsProps {
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
   position, duration,
-  onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, onSettings, isFullscreen,
+  onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, onSettings,
+  isFullscreen,
   isDrivePlayer,
 }) => {
   const insets = useSafeAreaInsets();
@@ -133,15 +238,11 @@ const VideoControls: React.FC<ControlsProps> = ({
 
   const opacity    = useRef(new Animated.Value(1)).current;
   const knobX      = useRef(new Animated.Value(0)).current;
-  // Independent from `opacity` — drives the track's thumb/expanded-height
-  // reveal. In non-fullscreen mode the thin progress line must stay
-  // visible even while `opacity` fades the rest of the controls out, so
-  // it needs its own animated value rather than sharing `opacity`.
-  const trackExpand = useRef(new Animated.Value(0)).current;
+  const knobOpacity = useRef(new Animated.Value(0)).current;
   const isSeeking  = useRef(false);
   const seekTarget = useRef(0);
   const barLayoutX = useRef(0);
-  const barWidth   = useRef(width - 32);
+  const barWidth   = useRef(width);
   const pct = duration > 0 ? Math.min(position / duration, 1) : 0;
 
   useEffect(() => {
@@ -150,19 +251,17 @@ const VideoControls: React.FC<ControlsProps> = ({
       duration:        200,
       useNativeDriver: true,
     }).start();
-    if (!isFullscreen) {
-      Animated.timing(trackExpand, {
-        toValue:         visible ? 1 : 0,
-        duration:        200,
-        useNativeDriver: false, // animates height, which native driver can't handle
-      }).start();
-    }
-  }, [visible, isFullscreen]);
+    Animated.timing(knobOpacity, {
+      toValue:         visible ? 1 : 0,
+      duration:        200,
+      useNativeDriver: true,
+    }).start();
+  }, [visible]);
 
   useEffect(() => {
     if (!isSeeking.current) {
       const rawX = pct * barWidth.current;
-      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
       knobX.setValue(clampedX);
     }
   }, [pct]);
@@ -174,7 +273,7 @@ const VideoControls: React.FC<ControlsProps> = ({
     onPanResponderGrant: (evt) => {
       isSeeking.current = true;
       const rawX = Math.max(0, Math.min(barWidth.current, evt.nativeEvent.locationX));
-      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
       knobX.setValue(clampedX);
       if (durationRef.current > 0 && barWidth.current > 0) {
         seekTarget.current = (rawX / barWidth.current) * durationRef.current;
@@ -186,7 +285,7 @@ const VideoControls: React.FC<ControlsProps> = ({
     onPanResponderMove: (evt) => {
       const touchX = evt.nativeEvent.pageX - barLayoutX.current;
       const rawX = Math.max(0, Math.min(barWidth.current, touchX));
-      const clampedX = Math.max(5, Math.min(Math.max(5, barWidth.current - 5), rawX));
+      const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
       knobX.setValue(clampedX);
       if (durationRef.current > 0 && barWidth.current > 0) {
         seekTarget.current = (rawX / barWidth.current) * durationRef.current;
@@ -288,20 +387,14 @@ const VideoControls: React.FC<ControlsProps> = ({
               barWidth.current = w;
             }}
           >
-            <View style={[cv.track, { borderRadius: 0, backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-              <View style={[cv.fill, { width: `${pct * 100}%`, borderRadius: 0 }]} />
-              <Animated.View style={[cv.knob, { transform: [{ translateX: knobX }], bottom: -3, top: undefined }]} />
+            <View style={cv.track}>
+              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
+              <Animated.View style={[cv.knob, { opacity: knobOpacity, transform: [{ translateX: knobX }] }]} />
             </View>
           </View>
         </View>
       ) : (
-        // ── NON-FULLSCREEN: YouTube-style. Time/skip row fades in/out
-        // with the rest of the controls (shares `opacity`). The thin
-        // progress line below it is ALWAYS visible — pinned flush to the
-        // video's absolute bottom edge, full width, no padding — and only
-        // its thumb + taller interactive hit area expand on tap, via the
-        // independent `trackExpand` value so it never disappears with the
-        // rest of the controls.
+        // ── NON-FULLSCREEN: Static height track, knob appears on tap ──
         <>
           <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
@@ -316,25 +409,18 @@ const VideoControls: React.FC<ControlsProps> = ({
               barWidth.current = w;
             }}
           >
-            <Animated.View
-              style={[
-                cv.bottomEdgeTrack,
-                {
-                  height: trackExpand.interpolate({ inputRange: [0, 1], outputRange: [2, 4] }),
-                },
-              ]}
-            >
+            <View style={cv.bottomEdgeTrack}>
               <View style={[cv.fill, { width: `${pct * 100}%` }]} />
               <Animated.View
                 style={[
                   cv.knob,
                   {
-                    opacity: trackExpand,
+                    opacity: knobOpacity,
                     transform: [{ translateX: knobX }],
                   },
                 ]}
               />
-            </Animated.View>
+            </View>
           </View>
         </>
       )}
@@ -361,22 +447,24 @@ const cv = StyleSheet.create({
     left: 0,
     right: 0,
     height: 24, // generous invisible drag area
-    justifyContent: 'flex-end', // Aligns the line flush to the absolute bottom edge
+    justifyContent: 'flex-end', // Aligns the line flush to the absolute bottom edge (bottom: 0)
   },
   bottomEdgeTrack: {
     width: '100%',
-    backgroundColor: '#202020',
+    height: 1.5,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    position: 'relative',
     justifyContent: 'center',
   },
   timeRowFloating: {
     position: 'absolute',
-    left: 2,
+    left: 8,
     right: 8,
-    bottom: 8, // slightly lower — closer to the always-visible progress track
+    bottom: 8,
   },
-  track:            { height: 1, backgroundColor: '#fff', borderRadius: 1, justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#ccc', borderRadius: 1 },
-  knob:             { position: 'absolute', top: -1, marginLeft: -5, width: 6, height: 6, borderRadius: 6, backgroundColor: '#fff' },
+  track:            { width: '100%', height: 1.5, backgroundColor: 'rgba(255,255,255,0.2)', position: 'relative', justifyContent: 'center' },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#fff' },
+  knob:             { position: 'absolute', left: 0, marginLeft: -3.5, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#fff', top: -2.75, elevation: 6, zIndex: 99 },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
   timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
   watchBadge:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
@@ -438,19 +526,13 @@ const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
   );
 };
 
-const QUALITY_ORDER = ['highres', 'hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny', 'auto'];
-const QUALITY_LABELS: Record<string, string> = {
-  highres: '4K (High)',
-  hd2160: '4K (2160p)',
-  hd1440: '2K (1440p)',
-  hd1080: '1080p (FHD)',
-  hd720: '720p (HD)',
-  large: '480p (SD)',
-  medium: '360p',
-  small: '240p',
-  tiny: '144p',
-  auto: 'Auto',
-};
+const STREAM_QUALITY_MODES = [
+  { key: 'auto', label: 'Auto (Best Quality)', subtitle: 'Full HD / High quality stream' },
+  { key: 'medium', label: 'Data Saver (Low)', subtitle: '360p low-bandwidth stream' },
+];
+
+const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingView;
+const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 0 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main MusicRoomScreen
@@ -465,6 +547,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, roomName: initialRoomName } = route.params || {};
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
+  const lastNonZeroBottomInsetRef = useRef(insets.bottom || 24);
+  if (insets.bottom > 0) {
+    lastNonZeroBottomInsetRef.current = insets.bottom;
+  }
+  const stableBottomInset = fullscreen ? 0 : (insets.bottom > 0 ? insets.bottom : (lastNonZeroBottomInsetRef.current || 0));
   
   // Calculate initial position from background cache on mount
   const cachedRoomState = musicWebSocketService.getLastRoomState();
@@ -528,8 +615,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     richInputRef.current?.focus();
   };
 
-  // State management
   const [playerError, setPlayerError] = useState<string | null>(null);
+  const [fetchedChannelLogo, setFetchedChannelLogo] = useState<string | null>(null);
   const [currentRoomName, setCurrentRoomName] = useState(initialRoomName || '');
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
@@ -541,15 +628,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [mentionListVisible, setMentionListVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [chatMessage, setChatMessage] = useState('');
-  const [inputClearKey, setInputClearKey] = useState(0);
   const [inputHeight, setInputHeight] = useState(40);
   const [preparingVideoId, setPreparingVideoId] = useState<string | null>(initialVideoId || null);
   const [isFirstCreation, setIsFirstCreation] = useState(!!initialVideoId);
   const [prepTime, setPrepTime] = useState(0);
   const [adFinished, setAdFinished] = useState(false);
   const [adStatus, setAdStatus] = useState('');
-  const [roomNameInput, setRoomNameInput] = useState('');
-  const [hasSubmittedName, setHasSubmittedName] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
   const [isBuffering, setIsBuffering] = useState(false);
   const [showControls, setShowControls] = useState(true);
@@ -562,17 +646,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isMediaModalVisible, setIsMediaModalVisible] = useState(false);
   const [isSendingMedia, setIsSendingMedia] = useState(false);
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
+  const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
+  const [isStickerSheetReady, setIsStickerSheetReady] = useState(false);
+
+  useEffect(() => {
+    // Pre-mount sticker sheet offscreen in background 350ms after screen transition
+    const timer = setTimeout(() => {
+      setIsStickerSheetReady(true);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, []);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
   const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
-  const [videoQuality, setVideoQuality] = useState('highres');
+  const [videoQuality, setVideoQuality] = useState('auto');
   const [availableQualities, setAvailableQualities] = useState<string[]>(['auto']);
-
-  useEffect(() => {
-    setAvailableQualities(['auto']);
-  }, [currentSong?.videoId]);
+  const videoFormatsRef = useRef<Record<string, string>>({});
   const [showQualityOptions, setShowQualityOptions] = useState(false);
   const [previewData, setPreviewData] = useState<{
     visible: boolean;
@@ -589,25 +680,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       displayName
     });
   };
-
-  const bufferingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  useEffect(() => {
-    if (isBuffering && videoQuality !== 'auto' && isPlayerReady) {
-      bufferingTimerRef.current = setTimeout(() => {
-        console.log('📶 [NETWORK] Buffering detected. Silently switching quality to auto...');
-        setVideoQuality('auto');
-        playerRef.current?.setPlaybackQuality('auto');
-      }, 6000);
-    } else {
-      if (bufferingTimerRef.current) {
-        clearTimeout(bufferingTimerRef.current);
-        bufferingTimerRef.current = null;
-      }
-    }
-    return () => {
-      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
-    };
-  }, [isBuffering, videoQuality, isPlayerReady]);
 
   useEffect(() => {
     if (currentSong?.source === 'drive') {
@@ -750,9 +822,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const lastTapTimeRef = useRef(0);
   const doubleTapTimeoutRef = useRef<any>(null);
-  const doubleTapScale = useRef(new Animated.Value(0)).current;
-  const doubleTapOpacity = useRef(new Animated.Value(0)).current;
-  const [doubleTapReaction, setDoubleTapReaction] = useState({ visible: false, x: 0, y: 0 });
+  const doubleTapHeartRef = useRef<DoubleTapHeartOverlayRef>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [relatedVideos, setRelatedVideos] = useState<Song[]>([]);
   const [isLoadingRelated, setIsLoadingRelated] = useState(false);
@@ -766,31 +836,137 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     showRelatedRef.current = showRelated;
   }, [showRelated]);
   const [fullscreen, setFullscreen] = useState(false);
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [editedName, setEditedName] = useState('');
-  const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
   const [roomScreenReady, setRoomScreenReady] = useState(false);
   const roomRevealedOnceRef = useRef(false);
+  const overlayFadeAnim = useRef(new Animated.Value(1)).current;
+  const stickerPickerVisibleRef = useRef(false);
+  stickerPickerVisibleRef.current = stickerPickerVisible;
+  const safeBottomPadding = insets.bottom + 12;
+  const spacerHeight = useSharedValue(0);
 
+  const animatedSpacerStyle = useAnimatedStyle(() => {
+    return {
+      height: spacerHeight.value,
+    };
+  });
+
+  const lastKeyboardHeightRef = useRef(290);
+  const insetsBottomRef = useRef(insets.bottom);
+  insetsBottomRef.current = insets.bottom;
 
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+    if (isMinimized) {
+      setStickerPickerVisible(false);
+      spacerHeight.value = 0;
+    }
+  }, [isMinimized, spacerHeight]);
+
+  useEffect(() => {
+    if (stickerPickerVisible) {
+      Keyboard.dismiss();
+      spacerHeight.value = withTiming(286, { duration: 120 });
+    } else if (!isKeyboardVisible) {
+      spacerHeight.value = withTiming(0, { duration: 100 });
+    }
+  }, [stickerPickerVisible, isKeyboardVisible, spacerHeight]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setStickerPickerVisible(false);
+        spacerHeight.value = 0;
+      };
+    }, [spacerHeight])
+  );
+
+  const isFocused = useIsFocused();
+  const isFocusedRef = useRef(isFocused);
+  isFocusedRef.current = isFocused;
+  useEffect(() => {
+    try {
+      if (Platform.OS === 'android' && NativeModules.SystemBar?.startKeyboardHeightObserver) {
+        NativeModules.SystemBar.startKeyboardHeightObserver();
+      }
+    } catch (_) {}
+
+    const handleShow = (e: any) => {
+      if (isMinimized || !isFocusedRef.current) return;
+      const rawHeight = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 285;
+      if (rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setKeyboardVisible(true);
+        setStickerPickerVisible(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+        scrollToBottom(true);
+      }
+    };
+
+    const handleWillShow = (e: any) => {
+      if (isMinimized || !isFocusedRef.current) return;
       setKeyboardVisible(true);
-      scrollToBottom(true);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setStickerPickerVisible(false);
+      const h = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 290;
+      const targetHeight = Math.max(0, h - insetsBottomRef.current);
+      spacerHeight.value = targetHeight;
+    };
+
+    const handleFrameChange = (e: any) => {
+      if (isMinimized || !isFocusedRef.current) return;
+      const rawHeight = e?.endCoordinates?.height;
+      if (rawHeight && rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setKeyboardVisible(true);
+        setStickerPickerVisible(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+        scrollToBottom(true);
+      }
+    };
+
+    const handleHide = (e: any) => {
+      if (isMinimized || !isFocusedRef.current) return;
       setKeyboardVisible(false);
       if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
       lastTypingState.current = false;
       musicWebSocketService.sendTyping(false);
       scrollToBottom(true);
-    });
-    return () => {
-      showSub.remove();
-      hideSub.remove();
+
+      if (!stickerPickerVisibleRef.current) {
+        spacerHeight.value = Platform.OS === 'ios'
+          ? withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) })
+          : 0;
+      }
     };
-  }, [scrollToBottom]);
+
+    const dynamicSub = DeviceEventEmitter.addListener('onDynamicKeyboardHeight', (data: { height: number; isVisible: boolean }) => {
+      if (isMinimized || !isFocusedRef.current) return;
+      const rawHeight = data?.height || 0;
+      if (rawHeight > 50) {
+        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
+        lastKeyboardHeightRef.current = targetHeight;
+        setKeyboardVisible(true);
+        setStickerPickerVisible(false);
+        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
+        scrollToBottom(true);
+      } else if (rawHeight === 0 && !stickerPickerVisibleRef.current) {
+        setKeyboardVisible(false);
+        spacerHeight.value = 0;
+      }
+    });
+
+    const listeners = [
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleShow),
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleHide),
+      Keyboard.addListener('keyboardDidChangeFrame', handleFrameChange),
+    ];
+
+    return () => {
+      dynamicSub.remove();
+      listeners.forEach(l => l.remove());
+    };
+  }, [safeBottomPadding, scrollToBottom]);
 
 
   const handleRateVideo = (videoId: string, rating: number) => {
@@ -811,22 +987,33 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const pinnerName = currentSong.addedBy || 'Someone';
     const pinner = participants.find(p => p.name === currentSong.addedBy) || user;
     const likers = isLiked ? [user] : [];
+    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || currentSong?.thumbnail;
 
     return (
       <View style={s.npBar}>
-        <View style={{ width: 50, height: 28, position: 'relative' }}>
-          <Image source={{ uri: currentSong.thumbnail }} style={s.npThumb} />
+        <View style={{ width: 36, height: 36, position: 'relative' }}>
+          {logoUri ? (
+            <Image 
+              source={{ uri: logoUri }} 
+              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.1)' }} 
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#282828', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
+              <Icon name="musical-notes" size={18} color="#FF453A" />
+            </View>
+          )}
           <TouchableOpacity 
-            style={{ position: 'absolute', bottom: -4, right: -4 }}
+            style={{ position: 'absolute', bottom: -2, right: -2 }}
             onPress={() => handleAvatarPress(pinner?.avatar || pinner?.profile_picture, pinner?.avatar_sticker, pinnerName)}
           >
             <AvatarWithFallback 
               uri={pinner?.avatar || pinner?.profile_picture} 
               displayName={pinnerName} 
               style={{ 
-                width: 16, 
-                height: 16, 
-                borderRadius: 8, 
+                width: 14, 
+                height: 14, 
+                borderRadius: 7, 
                 borderWidth: 1, 
                 borderColor: '#1E1E1E' 
               }} 
@@ -939,13 +1126,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       StatusBar.setHidden(false);
       
       if (wasFullscreen.current) {
-        pinNavBarColor('#000000');
+        pinNavBarColor('#00000000', true);
       }
     }
   }, [fullscreen]);
 
   useEffect(() => {
     return () => {
+      clearNavBarPin();
       Orientation.lockToPortrait();
       StatusBar.setHidden(false);
       
@@ -974,14 +1162,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     (global as any).keepMusicRoomAlive = false;
     
-    // Force navigation bar to black instantly and after transition settles
-    pinNavBarColor('#000000');
+    // Set navigation bar to 100% transparent so artwork bleeds edge-to-edge
+    pinNavBarColor('#00000000', true);
     const t1 = setTimeout(() => {
-      pinNavBarColor('#000000');
-    }, 200);
+      pinNavBarColor('#00000000', true);
+    }, 100);
     const t2 = setTimeout(() => {
-      pinNavBarColor('#000000');
-    }, 600);
+      pinNavBarColor('#00000000', true);
+    }, 400);
     
     return () => {
       clearTimeout(t1);
@@ -1072,8 +1260,75 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const { callState } = useCall();
 
-  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateRoomName, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
+  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
+
+  // ─── Dynamic Video Container Aspect Ratio ────────────────────────────────────
+  const [detectedAspectRatio, setDetectedAspectRatio] = useState<number | null>(null);
+
+  useEffect(() => {
+    setAvailableQualities(['auto']);
+    const videoId = currentSong?.videoId || initialVideoId;
+    if (!videoId) {
+      setDetectedAspectRatio(null);
+      return;
+    }
+
+    if (currentSong?.source === 'drive') {
+      // Drive videos report their exact dimensions dynamically via DrivePlayer onAspectRatio callback
+      return;
+    }
+
+    let isMounted = true;
+    fetchVideoAspectRatio(videoId).then((ar) => {
+      if (isMounted && ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
+        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || videoId}" detected AR: ${ar.toFixed(3)} -> Target Height: ${Math.round(width / ar)}px`);
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setDetectedAspectRatio(ar);
+      }
+    });
+
+    api.post('/youtube/formats/', { videoId })
+      .then((res: any) => {
+        if (isMounted) {
+          if (res.data?.formats) {
+            videoFormatsRef.current = res.data.formats;
+          }
+          if (res.data?.availableQualities && Array.isArray(res.data.availableQualities) && res.data.availableQualities.length > 1) {
+            setAvailableQualities(res.data.availableQualities);
+          }
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentSong?.videoId, currentSong?.source, initialVideoId]);
+
+  const handleAspectRatio = useCallback((ar: number) => {
+    if (ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setDetectedAspectRatio(ar);
+    }
+  }, []);
+
+  const dynamicVideoHeight = useMemo(() => {
+    if (fullscreen) return height;
+    if (detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio > 0) {
+      if (detectedAspectRatio < 1.0) {
+        // Vertical Short / Portrait Video: allocate top half of screen (~48% height)
+        // so the full vertical short fits completely without cropping, leaving bottom half for chat & keyboard
+        return Math.round(height * 0.48);
+      }
+      // Standard / Landscape / 4:3 videos
+      const targetHeight = width / detectedAspectRatio;
+      const minH = width * (9 / 24); // ~150px min bound (cinema / ultrawide)
+      const maxH = width * 0.85;     // ~340px max bound (tall 4:3 videos like Pavazha Malli)
+      return Math.max(minH, Math.min(maxH, targetHeight));
+    }
+    return VIDEO_HEIGHT; // Default standard 16:9
+  }, [fullscreen, detectedAspectRatio]);
 
   const participantsRef = useRef(participants);
   useEffect(() => {
@@ -1263,6 +1518,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     let cancelled = false;
+    setIsPlayerReady(false);
     setIsTrackPlayerReady(false);
     // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
     // until the rendezvous effect below confirms both engines are ready
@@ -1406,11 +1662,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (mediaFullySynced && isSongInfoReady) {
       const t = setTimeout(() => {
         roomRevealedOnceRef.current = true;
-        setRoomScreenReady(true);
+        // Fade out the loading overlay smoothly before setting ready
+        Animated.timing(overlayFadeAnim, {
+          toValue: 0,
+          duration: 350,
+          useNativeDriver: true,
+        }).start(() => {
+          setRoomScreenReady(true);
+        });
       }, 120);
       return () => clearTimeout(t);
     }
-  }, [mediaFullySynced, currentSong?.videoId, currentSong?.title]);
+  }, [mediaFullySynced, currentSong?.videoId, currentSong?.title, overlayFadeAnim]);
 
   // ✅ NEW: lightweight play/pause reflection — reacts to room isPlaying
   // WITHOUT ever calling setMediaItem/reloading. This is the only place
@@ -1554,6 +1817,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       } else if (nextState === 'active' && prevState === 'background') {
         isInBackgroundRef.current = false; // ✅ Back in foreground
 
+        // Re-apply transparent nav bar after unlock
+        pinNavBarColor('#00000000', true);
+
         // ✅ KEY FIX: Re-enforce whatever play/pause state the room has now.
         // If the DJ paused from the lock screen, isPlayingRef.current is false
         // but the WebView may not have received the pause command while backgrounded.
@@ -1581,6 +1847,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     return () => subscription.remove();
   }, [isPlaying, isDJ, isDJMode, syncPlay]);
+
+  useEffect(() => {
+    if (!currentSong?.videoId || currentSong?.source === 'drive') {
+      setFetchedChannelLogo(null);
+      return;
+    }
+    if (currentSong?.channelLogo) {
+      setFetchedChannelLogo(currentSong.channelLogo);
+      return;
+    }
+    let isMounted = true;
+    fetchChannelLogo(currentSong.videoId).then(logo => {
+      if (isMounted && logo) {
+        setFetchedChannelLogo(logo);
+      }
+    });
+    return () => { isMounted = false; };
+  }, [currentSong?.videoId, currentSong?.channelLogo, currentSong?.source]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Remaining effects (unchanged from original)
@@ -1626,6 +1910,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     let durationSamples: number[] = [];
     let stableDuration: number | null = null;
     let lastCurrentTime = 0;
+    let consecutiveDropCount = 0;
 
     const interval = setInterval(async () => {
       if (!isPlayerReadyRef.current || playerState === 'unstarted') return;
@@ -1654,25 +1939,28 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           }
         }
 
-        const isAdByTimeReset = (pos < 1 && lastCurrentTime > 10) ||
-          (pos !== undefined && lastCurrentTime > 0 && pos < lastCurrentTime - 5);
+        if (pos !== undefined && ((pos < 1 && lastCurrentTime > 10) || (lastCurrentTime > 0 && pos < lastCurrentTime - 5))) {
+          consecutiveDropCount++;
+        } else {
+          consecutiveDropCount = 0;
+        }
+
+        const isAdByTimeReset = consecutiveDropCount >= 3;
         const isAdByDuration = (stableDuration && dur && Math.abs(dur - stableDuration) > 10);
         const isAd = isAdByTimeReset || isAdByDuration;
 
         if (isAd && !isAdPlayingRef.current) {
           isAdPlayingRef.current = true;
           setIsAdPlaying(true);
-          // ✅ Ticker is now the only ad detector — perform the actual skip
-          // here too (previously split between this effect and the removed
-          // onReady interval, which is what caused duration to thrash).
           playerRef.current?.fastForwardAd?.();
-          playerRef.current?.seekTo?.(0, true);
         } else if (!isAd && isAdPlayingRef.current) {
           isAdPlayingRef.current = false;
           setIsAdPlaying(false);
         }
 
-        lastCurrentTime = pos;
+        if (pos !== undefined && pos > 0) {
+          lastCurrentTime = pos;
+        }
 
 
 
@@ -1689,6 +1977,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const hasActiveVideo = !!currentSongRef.current?.videoId && playerState !== 'ended';
 
     if (forcePlay || (!hasActiveVideo && queue.length === 0)) {
+      try {
+        playerRef.current?.pauseVideo?.();
+      } catch (_) {}
       setIsPlayerReady(false);
       setIsBuffering(true);
       let richSong = song;
@@ -1887,6 +2178,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => { showControlsFor(); }, [isPlaying, showControlsFor]);
 
+
+
   useEffect(() => {
     if (isDJMode && initialVideoId && isConnected && !hasInitialized.current) {
       hasInitialized.current = true;
@@ -1907,30 +2200,22 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       if (isDrive) {
         // Drive: we have the title already from params or fallback
-        setTimeout(() => {
-          buildAndLoad(
-            initialTitle || 'Drive Video',
-            initialThumbnail || 'https://via.placeholder.com/150/1a1a2e/FFFFFF?text=Drive',
-            'Google Drive',
-          );
-        }, 500);
+        buildAndLoad(
+          initialTitle || 'Drive Video',
+          initialThumbnail || 'https://via.placeholder.com/150/1a1a2e/FFFFFF?text=Drive',
+          'Google Drive',
+        );
       } else if (initialTitle && initialThumbnail) {
         // YouTube: all info already available from route params (selected from history/likes)
-        setTimeout(() => {
-          buildAndLoad(
-            initialTitle,
-            initialThumbnail,
-            'YouTube',
-          );
-        }, 500);
+        buildAndLoad(
+          initialTitle,
+          initialThumbnail,
+          'YouTube',
+        );
       } else {
         // YouTube: WebView interception — no title captured. Fetch metadata then load.
-        // Start loading the video immediately with a placeholder so playback isn't delayed,
-        // then update with real metadata as soon as the fetch returns.
         const fallbackThumb = `https://img.youtube.com/vi/${initialVideoId}/mqdefault.jpg`;
-        setTimeout(() => {
-          buildAndLoad('Loading...', fallbackThumb, 'YouTube');
-        }, 500);
+        buildAndLoad('Loading...', fallbackThumb, 'YouTube');
 
         // Fetch real metadata in parallel and update once resolved
         fetchYouTubeMetadata(initialVideoId, user?.display_name)
@@ -2007,15 +2292,29 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (isMinimized) return;
 
     const backAction = () => {
+      if (isKeyboardVisible) {
+        richInputRef.current?.blur();
+        Keyboard.dismiss();
+        setKeyboardVisible(false);
+        spacerHeight.value = 0;
+        return true;
+      }
+      if (stickerPickerVisible) {
+        richInputRef.current?.blur();
+        Keyboard.dismiss();
+        setStickerPickerVisible(false);
+        spacerHeight.value = 0;
+        return true;
+      }
       if (previewData.visible) { setPreviewData(p => ({ ...p, visible: false })); return true; }
       if (showDiscovery) { setShowDiscovery(false); return true; }
       if (fullscreen) { setFullscreen(false); return true; }
-      setShowLeaveConfirm(true);
+      handleMinimize();
       return true;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized, previewData.visible]);
+  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, isKeyboardVisible, stickerPickerVisible, handleMinimize]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -2222,7 +2521,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       if (state === 'buffering' || state === 'unstarted' || state === 'cued') setIsBuffering(true);
       else setIsBuffering(false);
     }
-    if (['unstarted', 'playing', 'paused', 'cued', 'buffering'].includes(state)) setIsPlayerReady(true);
+    if (['playing', 'paused', 'cued', 'buffering'].includes(state)) setIsPlayerReady(true);
 
     if (state === 'ended') {
       if (duration > 0) {
@@ -2262,6 +2561,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       // silently fetching suggestions in the background with no UI change.
       setShowRelated(true);
     } else {
+      try {
+        playerRef.current?.pauseVideo?.();
+      } catch (_) {}
+      setIsPlayerReady(false);
+      setIsBuffering(true);
       setIsSyncing(true);
       passAux();
     }
@@ -2323,22 +2627,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const emojiToSend = alreadyReacted ? '' : reactionEmoji;
 
     if (!alreadyReacted) {
-      setDoubleTapReaction({ visible: true, x, y });
-      doubleTapScale.setValue(0);
-      doubleTapOpacity.setValue(0);
-
-      Animated.sequence([
-        Animated.parallel([
-          Animated.timing(doubleTapScale, { toValue: 1.5, duration: 300, useNativeDriver: true }),
-          Animated.timing(doubleTapOpacity, { toValue: 1, duration: 100, useNativeDriver: true }),
-        ]),
-        Animated.timing(doubleTapScale, { toValue: 1, duration: 200, useNativeDriver: true }),
-        Animated.timing(doubleTapOpacity, { toValue: 0, duration: 200, delay: 500, useNativeDriver: true }),
-      ]).start(() => {
-        setDoubleTapReaction({ visible: false, x: 0, y: 0 });
-        doubleTapScale.setValue(0);
-        doubleTapOpacity.setValue(0);
-      });
+      doubleTapHeartRef.current?.trigger(x, y, reactionEmoji);
     }
 
     if (item.id) musicWebSocketService.sendReaction(item.id, emojiToSend);
@@ -2372,7 +2661,9 @@ const sendChatMessage = () => {
   musicWebSocketService.sendChatMessage(chatMessage, replyingTo);
   setChatMessage('');
   setInputHeight(40);
-  setInputClearKey(k => k + 1);
+  // Clear text imperatively (no key change) so the input stays mounted
+  // and the keyboard remains open after sending.
+  richInputRef.current?.clear();
   setReplyingTo(null);
 
   if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
@@ -2380,14 +2671,12 @@ const sendChatMessage = () => {
   musicWebSocketService.sendTyping(false);
 };
 
-  const handleUpdateRoomName = () => {
-    if (editedName.trim()) {
-      updateRoomName(editedName.trim());
-      setCurrentRoomName(editedName.trim());
-    }
-    setIsEditingName(false);
-    Keyboard.dismiss();
-  };
+const sendLottieSticker = useCallback((sticker: Sticker) => {
+  musicWebSocketService.sendChatMessage(sticker.url, replyingTo, undefined, 'lottie_sticker');
+  setReplyingTo(null);
+}, [replyingTo]);
+
+
 
 
   const renderLeaveModal = () => {
@@ -2425,15 +2714,7 @@ const sendChatMessage = () => {
     return null;
   }
 
-  if (isLoading) {
-    return (
-      <View style={s.loadingContainer}>
-        <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
-        <ActivityIndicator size="large" color="#ffffff" />
-        <Text style={s.loadingText}>{isDJMode ? 'Creating room...' : 'Joining room...'}</Text>
-      </View>
-    );
-  }
+
 
   const reversedMessages = [...messages].reverse();
 
@@ -2441,63 +2722,61 @@ const sendChatMessage = () => {
     <View style={s.root}>
       <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
 
-      {/* IMMERSIVE BACKGROUND */}
-      <View style={StyleSheet.absoluteFill}>
-        {currentSong?.thumbnail ? (
-          <Image source={{ uri: currentSong.thumbnail }} style={StyleSheet.absoluteFill} blurRadius={40} />
-        ) : (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: '#0D0D0D' }]} />
-        )}
-        {/* Glassy dark overlay instead of flat black scrim */}
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.82)' }]} />
+      {/* IMMERSIVE BACKGROUND — seamless artwork background extends edge-to-edge */}
+      <View style={{ position: 'absolute', top: -50, left: -50, right: -50, bottom: -100, overflow: 'visible', backgroundColor: '#0A0A0C' }}>
+        {(currentSong?.thumbnail || initialThumbnail) ? (
+          <Image source={{ uri: currentSong?.thumbnail || initialThumbnail }} style={StyleSheet.absoluteFill} blurRadius={40} />
+        ) : null}
+        {/* Glassy dark overlay */}
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.45)' }]} />
       </View>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={s.inner}
+      <KeyboardWrapperView
+        {...keyboardWrapperProps}
+        style={[s.inner, { paddingTop: fullscreen ? 0 : insets.top, paddingBottom: insets.bottom }]}
       >
-        <View style={{ flex: 1, paddingTop: fullscreen ? 0 : insets.top, paddingBottom: fullscreen ? 0 : insets.bottom }}>
+        <View style={{ flex: 1 }}>
           {renderLeaveModal()}
 
-          {/* HEADER */}
-          {!fullscreen && (!isKeyboardVisible || isEditingName) && (
+          {!fullscreen && !(isKeyboardVisible || stickerPickerVisible) && (
             <View style={s.header}>
-              <TouchableOpacity onPress={handleMinimize} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Icon name="arrow-back" size={28} color="#fff" />
-              </TouchableOpacity>
               <TouchableOpacity onPress={() => setShowLeaveConfirm(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Icon name="close" size={28} color="#fff" />
               </TouchableOpacity>
-              <View style={s.headerTitleContainer}>
-                {isEditingName ? (
-                  <TextInput
-                    style={s.headerTitleInput}
-                    value={editedName}
-                    onChangeText={setEditedName}
-                    onSubmitEditing={handleUpdateRoomName}
-                    onBlur={handleUpdateRoomName}
-                    autoFocus
-                    maxLength={25}
-                    returnKeyType="done"
-                    blurOnSubmit={true}
-                    placeholder="Room Name"
-                    placeholderTextColor="rgba(255,255,255,0.4)"
-                  />
-                ) : (
+
+              {/* Scrollable stacked participant avatars container */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ flex: 1, marginHorizontal: 10 }}
+                contentContainerStyle={{ alignItems: 'center', flexDirection: 'row', paddingVertical: 2 }}
+              >
+                {participants.map((p, idx) => (
                   <TouchableOpacity
-                    onPress={() => {
-                      if (isDJ || isDJMode) {
-                        setEditedName(currentRoomName);
-                        setIsEditingName(true);
-                      }
-                    }}
-                    style={s.headerTitleTouch}
+                    key={p.user_id || idx}
+                    onPress={() => handleAvatarPress(p.avatar, p.avatar_sticker, p.name)}
+                    style={{ marginRight: 6, position: 'relative' }}
                   >
-                    <Text style={s.headerTitleText} numberOfLines={1}>{currentRoomName || roomCode}</Text>
+                    <AvatarWithFallback
+                      uri={p.avatar}
+                      displayName={p.name}
+                      sticker={p.avatar_sticker}
+                      style={{ width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.2)' }}
+                    />
+                    {p.is_dj && (
+                      <View style={{ position: 'absolute', top: -4, right: -4, zIndex: 10 }}>
+                        <Icon name="star" size={12} color="#FFD700" />
+                      </View>
+                    )}
                   </TouchableOpacity>
-                )}
-              </View>
+                ))}
+              </ScrollView>
+
               <View style={s.headerRight}>
+                <TouchableOpacity onPress={() => setInviteModalVisible(true)} style={s.headerIconBtn}>
+                  <Icon name="person-add-outline" size={22} color="#fff" />
+                </TouchableOpacity>
+
                 <TouchableOpacity onPress={() => setShowDiscovery(true)} style={s.headerIconBtn}>
                   <Icon name="search" size={22} color="#fff" />
                 </TouchableOpacity>
@@ -2539,7 +2818,7 @@ const sendChatMessage = () => {
             backgroundColor: '#000',
             zIndex: 99,
             overflow: 'hidden'
-          } : s.videoWrap}>
+          } : [s.videoWrap, { height: dynamicVideoHeight }]}>
             <Animated.View style={fullscreen ? StyleSheet.absoluteFill : (showRelated ? {
               position: 'absolute',
               top: 0,
@@ -2554,7 +2833,7 @@ const sendChatMessage = () => {
                 outputRange: [1, 0],
                 extrapolate: 'clamp',
               }),
-            } : StyleSheet.absoluteFill)} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
+            } : [StyleSheet.absoluteFill, { overflow: 'hidden' }])} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
               {currentSong && currentSong.videoId ? (
                 
                 // ─── Drive Video ───────────────────────────────────────────────
@@ -2566,11 +2845,21 @@ const sendChatMessage = () => {
                     play={isPlaying && !playerError && isPlayerReady}
                     muted={false}
                     isFullscreen={fullscreen}
+                    onAspectRatio={handleAspectRatio}
                     onReady={() => {
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
                       setIsBuffering(false);
+
+                      if (livePositionRef.current > 1) {
+                        const currentPos = livePositionRef.current;
+                        setTimeout(() => {
+                          try {
+                            playerRef.current?.seekTo?.(currentPos, true);
+                          } catch (_) {}
+                        }, 100);
+                      }
                     }}
                     onStreamResolved={(cdnUrl, cdnHeaders) => {
                       if (!currentSong) return;
@@ -2579,7 +2868,10 @@ const sendChatMessage = () => {
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
                       if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current) setLivePosition(currentTime);
+                      if (!seekingRef.current && currentTime > 0) {
+                        livePositionRef.current = currentTime;
+                        setLivePosition(currentTime);
+                      }
                     }}
                     onError={() => {
                       setIsBuffering(false);
@@ -2595,6 +2887,9 @@ const sendChatMessage = () => {
                     play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
                     muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
                     quality={videoQuality}
+                    onQualityChange={(q) => console.log('📺 [QUALITY] Live stream confirmed quality:', q)}
+                    aspectRatio={detectedAspectRatio || 1.7777}
+                    onAspectRatio={handleAspectRatio}
                     isFullscreen={fullscreen}
                     onQualitiesAvailable={(levels) => {
                       let list = levels.filter(q => q);
@@ -2619,6 +2914,16 @@ const sendChatMessage = () => {
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
                       setIsBuffering(false);
+
+                      if (livePositionRef.current > 1) {
+                        const currentPos = livePositionRef.current;
+                        console.log('🔄 [RESTORE POSITION] Restoring playback position to:', currentPos);
+                        setTimeout(() => {
+                          try {
+                            playerRef.current?.seekTo?.(currentPos, true);
+                          } catch (_) {}
+                        }, 100);
+                      }
 
                       if (!isDJ && !isDJMode && joinSnapshot && !joinSnapshotConsumed.current) {
                         joinSnapshotConsumed.current = true;
@@ -2686,7 +2991,10 @@ const sendChatMessage = () => {
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
                       if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current) setLivePosition(currentTime);
+                      if (!seekingRef.current && currentTime > 0) {
+                        livePositionRef.current = currentTime;
+                        setLivePosition(currentTime);
+                      }
                     }}
                     onError={(error) => {
                       setIsBuffering(false);
@@ -2797,42 +3105,62 @@ const sendChatMessage = () => {
               isDrivePlayer={currentSong?.source === 'drive'}
             />
 
+
+
             {showQualityOptions && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', marginBottom: 12 }}>Video Quality</Text>
-                <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 16 }}>
-                  {[...availableQualities]
-                    .sort((a, b) => QUALITY_ORDER.indexOf(a) - QUALITY_ORDER.indexOf(b))
-                    .map((q) => {
-                      const label = QUALITY_LABELS[q] || q;
-                      return (
-                        <TouchableOpacity
-                          key={q}
-                          onPress={() => {
-                            setVideoQuality(q);
-                            playerRef.current?.setPlaybackQuality(q);
-                            setShowQualityOptions(false);
-                          }}
-                          style={{
-                            backgroundColor: videoQuality === q ? colors.primary : 'rgba(255,255,255,0.1)',
-                            paddingHorizontal: 16,
-                            paddingVertical: 8,
-                            borderRadius: 18,
-                            minWidth: 70,
-                            alignItems: 'center',
-                            marginBottom: 8
-                          }}
-                        >
-                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{label}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.88)', justifyContent: 'center', alignItems: 'center', zIndex: 1000, paddingHorizontal: 24 }]}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 16, letterSpacing: 0.3 }}>Video Quality</Text>
+                
+                <View style={{ width: '100%', maxWidth: 300, gap: 10 }}>
+                  {STREAM_QUALITY_MODES.map((mode) => {
+                    const isSelected = (videoQuality === mode.key) || (videoQuality === 'highres' && mode.key === 'auto');
+                    return (
+                      <TouchableOpacity
+                        key={mode.key}
+                        onPress={() => {
+                          setVideoQuality(mode.key);
+                          playerRef.current?.setPlaybackQuality(mode.key);
+                          setShowQualityOptions(false);
+                        }}
+                        activeOpacity={0.7}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'rgba(255,255,255,0.06)',
+                          borderColor: isSelected ? '#38BDF8' : 'rgba(255,255,255,0.1)',
+                          borderWidth: 1.5,
+                          borderRadius: 14,
+                          paddingHorizontal: 16,
+                          paddingVertical: 12,
+                          gap: 12,
+                        }}
+                      >
+                        <Icon
+                          name={mode.key === 'auto' ? 'sparkles' : 'leaf'}
+                          size={20}
+                          color={isSelected ? '#38BDF8' : 'rgba(255,255,255,0.6)'}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: isSelected ? '#38BDF8' : '#fff', fontSize: 14, fontWeight: '700' }}>
+                            {mode.label}
+                          </Text>
+                          <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 2 }}>
+                            {mode.subtitle}
+                          </Text>
+                        </View>
+                        {isSelected && (
+                          <Icon name="checkmark-circle" size={20} color="#38BDF8" />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
+
                 <TouchableOpacity
                   onPress={() => setShowQualityOptions(false)}
-                  style={{ marginTop: 12, padding: 8 }}
+                  style={{ marginTop: 16, paddingVertical: 8, paddingHorizontal: 20 }}
                 >
-                  <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>Cancel</Text>
+                  <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, fontWeight: '600' }}>Close</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -2903,44 +3231,8 @@ const sendChatMessage = () => {
             )}
           </View>
 
-          {!fullscreen && !isKeyboardVisible && (
-            <View>
-              {renderNpBar()}
-
-              {showRoomInfo && (
-                <View style={s.participantsRow}>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.participantsContent}>
-                    {participants.map(p => (
-                      <TouchableOpacity 
-                        key={p.user_id} 
-                        style={s.participantItem} 
-                        onPress={() => handleAvatarPress(p.avatar, p.avatar_sticker, p.name)}
-                      >
-                        <AvatarWithFallback 
-                          uri={p.avatar} 
-                          displayName={p.name} 
-                          sticker={p.avatar_sticker} 
-                          style={s.pAvatar} 
-                        />
-                        {p.is_dj && (
-                          <View style={{ position: 'absolute', top: -6, right: -4, zIndex: 10 }}>
-                            <Icon name="star" size={16} color="#ffffff" />
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    ))}
-                    <TouchableOpacity style={s.addAvatar} onPress={() => setInviteModalVisible(true)}>
-                      <Icon name="person-add-outline" size={20} color="#fdfdfd" />
-                    </TouchableOpacity>
-                  </ScrollView>
-                </View>
-              )}
-
-              <TouchableOpacity style={s.toggleBtn} onPress={() => setShowRoomInfo(!showRoomInfo)}>
-                <Text style={s.toggleText}>{showRoomInfo ? 'Hide Participants' : 'Show Participants'}</Text>
-                <Icon name={showRoomInfo ? 'chevron-up' : 'chevron-down'} size={14} color="rgba(255,255,255,0.5)" />
-              </TouchableOpacity>
-            </View>
+          {!fullscreen && !(isKeyboardVisible || stickerPickerVisible) && (
+            renderNpBar()
           )}
 
           {!fullscreen && (
@@ -3036,10 +3328,10 @@ const sendChatMessage = () => {
                             if (earliestIndex > 0) {
                               elements.push(remainingText.substring(0, earliestIndex));
                             }
-
+                            
                             const part = selectedMention.participant;
                             const avatarUri = part.avatar;
-
+                            
                             elements.push(
                               <View 
                                 key={`mention-${keyIdx++}`} 
@@ -3119,9 +3411,14 @@ const sendChatMessage = () => {
                       const isMe = messageUser === myName;
                       const showAvatar = !prevRawMsg || prevMessageUser !== messageUser;
                       const sender = participants.find(p => p.name === messageUser);
-                      const reactions = item.reactions ? Object.values(item.reactions) as string[] : [];
                       const isMedia = item.message_type === 'image' || item.message_type === 'gif' || item.message_type === 'sticker';
                       const isSticker = item.message_type === 'sticker';
+                      const isLottieSticker = item.message_type === 'lottie_sticker';
+
+                      const emojiInfo = isOnlyEmojis(displayText);
+                      const isEmojiOnly = emojiInfo.isOnly && !item.reply_to && !isMedia && !isLottieSticker;
+                      const emojiFontSize = emojiInfo.count === 1 ? 36 : emojiInfo.count === 2 ? 30 : emojiInfo.count === 3 ? 26 : 22;
+                      const emojiLineHeight = emojiFontSize + 8;
 
                       const replySender = item.reply_to ? participants.find(p => p.name === item.reply_to.user) : null;
                       const isMyReply = item.reply_to ? item.reply_to.user === (user?.display_name || user?.email) : false;
@@ -3161,8 +3458,8 @@ const sendChatMessage = () => {
                                     onPress={() => handleAvatarPress(user?.profile_picture, undefined, messageUser)}
                                   >
                                     <AvatarWithFallback 
-                                      uri={user?.profile_picture}
-                                      displayName={messageUser}
+                                      uri={user?.profile_picture} 
+                                      displayName={messageUser} 
                                       style={s.messageAvatar} 
                                     />
                                   </TouchableOpacity>
@@ -3214,12 +3511,22 @@ const sendChatMessage = () => {
                               <View style={[
                                 s.msgContainer,
                                 isMe ? s.msgContainerMe : s.msgContainerThem,
-                                isMedia && s.mediaMsgContainer,
-                                isSticker && { backgroundColor: 'transparent' },
+                                (isMedia || isLottieSticker) && s.mediaMsgContainer,
+                                (isSticker || isLottieSticker || isEmojiOnly) && { backgroundColor: 'transparent', paddingHorizontal: 4, paddingVertical: 2 },
                                 !isMe && !showAvatar && { marginLeft: 36 },
                                 isMe && !showAvatar && { marginRight: 36 },
                               ]}>
-                                {isMedia ? (
+                                {isLottieSticker ? (
+                                  <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', marginVertical: 4 }}>
+                                    <LottieStickerMessage
+                                      url={item.text}
+                                      size={50}
+                                      autoPlay={index === 0}
+                                      onLongPress={() => handleMessageLongPress(item)}
+                                      onPress={() => {}}
+                                    />
+                                  </View>
+                                ) : isMedia ? (
                                   <View style={{ position: 'relative', alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
                                     <ScaledImage
                                       uri={resolveImageUrl(item.media_url)}
@@ -3236,6 +3543,12 @@ const sendChatMessage = () => {
                                       !item.media_url.toLowerCase().includes('webp') && (
                                       <View />
                                     )}
+                                  </View>
+                                ) : isEmojiOnly ? (
+                                  <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
+                                    <Text style={{ fontSize: emojiFontSize, lineHeight: emojiLineHeight, textAlign: isMe ? 'right' : 'left' }}>
+                                      {displayText}
+                                    </Text>
                                   </View>
                                 ) : (
                                   <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
@@ -3281,7 +3594,9 @@ const sendChatMessage = () => {
                     </View>
                   )}
 
-                  {replyingTo && (
+                  {roomScreenReady && (
+                    <>
+                      {replyingTo && (
                     <>
                       {/* Quick Reactions Row */}
                       <View style={s.quickReactionsRow}>
@@ -3355,28 +3670,57 @@ const sendChatMessage = () => {
                     <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
                       <Icon name="add" size={24} color="#fffffff6" />
                     </TouchableOpacity>
-                    <RichTextInput
-                      key={inputClearKey}
-                      ref={richInputRef}
-                      style={[s.chatInput, { height: inputHeight }]}
-                      underlineColorAndroid="transparent"
-                      autoFocus={inputClearKey > 0}
-                      onChangeText={handleTextChange}
-                      onContentSizeChange={(e) => {
-                        const h = e.nativeEvent?.contentSize?.height;
-                        if (h) setInputHeight(Math.max(40, Math.min(150, h)));
-                      }}
-                      onSubmitEditing={sendChatMessage}
-                      returnKeyType="send"
-                      multiline
-                      placeholder="Type a message..."
-                      placeholderTextColor="rgba(255,255,255,0.4)"
-                      onContentCommitted={(event) => {
-                        const { uri, mimeType } = event.nativeEvent;
-                        Keyboard.dismiss();
-                        setTimeout(() => { setStickerPreview({ uri, mimeType }); }, 100);
-                      }}
-                    />
+                    <View
+                      style={[s.inputWrapper, { minHeight: 40 }]}
+                    >
+                      <TouchableOpacity
+                        style={s.innerStickerButton}
+                        activeOpacity={0.7}
+                        delayPressIn={0}
+                        onPress={() => {
+                          if (stickerPickerVisible) {
+                            richInputRef.current?.blur();
+                            Keyboard.dismiss();
+                            setStickerPickerVisible(false);
+                          } else {
+                            richInputRef.current?.blur();
+                            Keyboard.dismiss();
+                            setKeyboardVisible(false);
+                            setStickerPickerVisible(true);
+                          }
+                        }}
+                        accessibilityLabel="Toggle sticker picker"
+                      >
+                        <Icon
+                          name={stickerPickerVisible ? "close-circle" : "sparkles-outline"}
+                          size={stickerPickerVisible ? 22 : 22}
+                          color={stickerPickerVisible ? "#8AB4F8" : "rgba(255,255,255,0.6)"}
+                        />
+                      </TouchableOpacity>
+                      <RichTextInput
+                        ref={richInputRef}
+                        onFocus={() => {
+                          setKeyboardVisible(true);
+                          setStickerPickerVisible(false);
+                        }}
+                        style={[s.chatInput, { height: inputHeight, paddingLeft: 42 }]}
+                        underlineColorAndroid="transparent"
+                        onChangeText={handleTextChange}
+                        onContentSizeChange={(e) => {
+                          const h = e.nativeEvent?.contentSize?.height;
+                          console.log('[INPUT_GROWTH_DEBUG] MusicRoom onContentSizeChange height:', h);
+                          if (h) setInputHeight(Math.max(40, Math.min(150, h)));
+                        }}
+                        multiline
+                        placeholder="Type a message..."
+                        placeholderTextColor="rgba(255,255,255,0.4)"
+                        onContentCommitted={(event) => {
+                          const { uri, mimeType } = event.nativeEvent;
+                          Keyboard.dismiss();
+                          setTimeout(() => { setStickerPreview({ uri, mimeType }); }, 100);
+                        }}
+                      />
+                    </View>
                     <TouchableOpacity style={s.sendBtn} onPress={sendChatMessage} disabled={isSendingMedia}>
                       {isSendingMedia ? (
                         <ActivityIndicator size="small" color="#f5f5f5f6" />
@@ -3385,6 +3729,8 @@ const sendChatMessage = () => {
                       )}
                     </TouchableOpacity>
                   </View>
+                    </>
+                  )}
                 </>
               ) : (
                 <View style={{ flex: 1 }}>
@@ -3463,10 +3809,24 @@ const sendChatMessage = () => {
         {/* DISCOVERY OVERLAY */}
         <Modal visible={showDiscovery} animationType="slide" onRequestClose={() => setShowDiscovery(false)}>
           <YouTubeDiscoveryScreen
-            navigation={{ goBack: () => setShowDiscovery(false) } as any}
+            navigation={{
+              goBack: () => setShowDiscovery(false),
+              addListener: () => () => {},
+              setOptions: () => {},
+            } as any}
             route={{ params: { roomCode } } as any}
           />
         </Modal>
+
+        {(isStickerSheetReady || stickerPickerVisible) && (
+          <StickerPickerSheet
+            visible={stickerPickerVisible}
+            stickerPacks={BUILT_IN_STICKER_PACKS}
+            onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+            onClose={() => setStickerPickerVisible(false)}
+            sheetHeight={286}
+          />
+        )}
 
         {/* STICKER PREVIEW MODAL */}
         <StickerPreviewModal
@@ -3475,7 +3835,7 @@ const sendChatMessage = () => {
           mimeType={stickerPreview?.mimeType ?? ''}
           onClose={() => setStickerPreview(null)}
           theme="dark"
-          restoreNavBarColor="#000000"
+          restoreNavBarColor="#00000000"
           onSend={async (uri, mimeType, caption) => {
             setStickerPreview(null);
             const ext = mimeType.split('/')[1] || 'png';
@@ -3496,7 +3856,7 @@ const sendChatMessage = () => {
           theme="dark"
           maxSelect={1}
           assetType="Photos"
-          restoreNavBarColor="#000000"
+          restoreNavBarColor="#00000000"
           onSelect={(assets) => {
             if (assets.length > 0) {
               const asset = assets[0];
@@ -3515,16 +3875,7 @@ const sendChatMessage = () => {
           videoId={currentSong?.videoId}
         />
 
-        {doubleTapReaction.visible && (
-          <View style={s.doubleTapOverlay}>
-            <Animated.View style={[
-              s.doubleTapReaction,
-              { top: doubleTapReaction.y, left: doubleTapReaction.x, transform: [{ scale: doubleTapScale }], opacity: doubleTapOpacity },
-            ]}>
-              <Text style={s.doubleTapHeart}>{user?.quick_reaction || '❤️'}</Text>
-            </Animated.View>
-          </View>
-        )}
+        <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={user?.quick_reaction || '❤️'} />
 
         {fullScreenMedia && (
           <FullScreenMediaViewer
@@ -3535,17 +3886,58 @@ const sendChatMessage = () => {
         )}
 
 
-
-      </KeyboardAvoidingView>
-      {/* ✅ NEW: plain black cover — hides the placeholder header/np-bar/
-          video/nav-bar flash until the first song is truly ready to play.
-          Sits above everything (header, video, controls, related panel)
-          via zIndex, and blocks taps until lifted. */}
+        <Reanimated.View style={animatedSpacerStyle} />
+      </KeyboardWrapperView>
       {!roomScreenReady && (
-        <View style={s.fullRoomLoadingOverlay} pointerEvents="auto">
-          <ActivityIndicator size="large" color="rgba(255,255,255,0.85)" />
-        </View>
+        <Animated.View
+          style={[s.fullRoomLoadingOverlay, { opacity: overlayFadeAnim }]}
+          pointerEvents="auto"
+        >
+          {/* Blurred thumbnail backdrop — seamless gradient into nav bar */}
+          {(currentSong?.thumbnail || initialThumbnail) ? (
+            <>
+              <View style={{ position: 'absolute', top: -50, left: -50, right: -50, bottom: -100, overflow: 'visible', backgroundColor: '#0A0A0C' }}>
+                <Image
+                  source={{ uri: currentSong?.thumbnail || initialThumbnail }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                  blurRadius={20}
+                />
+              </View>
+              {/* Dark tint over blurred thumbnail */}
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.45)' }]} />
+            </>
+          ) : (
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: '#0A0A0C' }]} />
+          )}
+
+          {/* Fixed-structure content container — prevents layout shifts & spinner jumping */}
+          <View style={s.overlayCenterContent}>
+            {(currentSong?.thumbnail || initialThumbnail) ? (
+              <Image
+                source={{ uri: currentSong?.thumbnail || initialThumbnail }}
+                style={s.overlayThumb}
+                resizeMode="contain"
+              />
+            ) : (
+              <View style={s.overlayThumbPlaceholder} />
+            )}
+
+            <View style={s.overlaySpinnerWrap}>
+              <ActivityIndicator size="large" color="#38BDF8" />
+            </View>
+
+            {(currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...') ? (
+              <Text style={s.overlayTitle} numberOfLines={2}>{currentSong.title}</Text>
+            ) : (initialTitle ? (
+              <Text style={s.overlayTitle} numberOfLines={2}>{initialTitle}</Text>
+            ) : (
+              <View style={s.overlayTitlePlaceholder} />
+            ))}
+          </View>
+        </Animated.View>
       )}
+
     </View>
   );
 };
@@ -3554,20 +3946,56 @@ const sendChatMessage = () => {
 const s = StyleSheet.create({
   fullRoomLoadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#000',
+    backgroundColor: '#0D0D0D',
     zIndex: 500,
     elevation: 20,
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'visible',
+  },
+  overlayCenterContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  overlayThumb: {
+    width: width * 0.72,
+    height: width * 0.72 * (9 / 16),
+    borderRadius: 12,
+    marginBottom: 0,
+  },
+  overlayThumbPlaceholder: {
+    width: width * 0.72,
+    height: width * 0.72 * (9 / 16),
+    borderRadius: 12,
+  },
+  overlaySpinnerWrap: {
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  overlayTitle: {
+    color: 'rgba(255,255,255,0.90)',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 14,
+    marginHorizontal: 32,
+    letterSpacing: 0.2,
+  },
+  overlayTitlePlaceholder: {
+    height: 20,
+    marginTop: 14,
   },
   relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000', zIndex: 15 },
   relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
-  root:              { flex: 1, backgroundColor: '#000' },
+  root:              { flex: 1, backgroundColor: 'transparent', overflow: 'visible' },
   inner:             { flex: 1, backgroundColor: 'transparent' },
   loadingContainer:  { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   loadingText:       { color: '#fff', marginTop: 12 },
-  header:            { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 10 },
-  headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  header:            { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, justifyContent: 'space-between' },
+  headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerIconBtn:     { padding: 6, position: 'relative' },
   badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
   badgeText:         { color: '#fff', fontSize: 9, fontWeight: '800' },
@@ -3576,12 +4004,12 @@ const s = StyleSheet.create({
   headerTitleInput:  { flex: 1, color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0 },
   headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5, padding: 0 },
   dot:               { width: 6, height: 6, borderRadius: 3 },
-  videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative' },
+  videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative', overflow: 'visible', zIndex: 20 },
   videoWrapFullscreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 99 },
   npBar:             { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 6, backgroundColor: 'transparent' },
   npThumb:           { width: 50, height: 28, borderRadius: 3 },
   npThumbEmpty:      { backgroundColor: '#1A1A1A', justifyContent: 'center', alignItems: 'center' },
-  npTitle:           { color: '#fff', fontSize: 13, fontWeight: '700' },
+  npTitle:           { color: '#fff', fontSize: 12, fontWeight: '600', lineHeight: 16 },
   npChannel:         { color: 'rgba(255,255,255,0.4)', fontSize: 10, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.5 },
   likeBtn:           { padding: 4, marginLeft: 8 },
   djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 8, paddingVertical: 1, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
@@ -3656,10 +4084,12 @@ const s = StyleSheet.create({
   mentionListContainer: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 12, borderTopRightRadius: 12, maxHeight: 150, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderBottomWidth: 0 },
   mentionItem:       { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   mentionName:       { color: '#fff', fontSize: 14, marginLeft: 10, fontWeight: '500' },
-  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 8, borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.07)', gap: 4, backgroundColor: 'transparent' },
-  chatInput:         { flex: 1, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 22, paddingHorizontal: 16, paddingVertical: Platform.OS === 'ios' ? 10 : 8, minHeight: 40, maxHeight: 150, color: '#fff', fontSize: 14, textAlignVertical: 'top' },
+  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 8, borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.07)', gap: 4, backgroundColor: 'transparent', zIndex: 1000 },
+  inputWrapper:      { flex: 1, position: 'relative', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 22, flexDirection: 'row', alignItems: 'flex-end' },
+  chatInput:         { flex: 1, backgroundColor: 'transparent', paddingRight: 14, paddingTop: Platform.OS === 'ios' ? 8 : 6, paddingBottom: Platform.OS === 'ios' ? 8 : 6, minHeight: 40, maxHeight: 150, color: '#fff', fontSize: 16, textAlignVertical: 'top' },
   sendBtn:           { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   plusBtn:           { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  innerStickerButton: { position: 'absolute', left: 8, bottom: 4, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
   mediaMsgContainer: { padding: 0, paddingHorizontal: 0, paddingVertical: 0, paddingBottom: 0, borderRadius: 12, overflow: 'hidden' },
   messageImage:      { width: width * 0.4, height: width * 0.3, borderRadius: 12 },
   stickerImage:      { width: width * 0.22, height: width * 0.22 },

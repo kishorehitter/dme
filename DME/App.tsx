@@ -9,6 +9,7 @@ import {
   NativeModules,
   Platform,
   Linking,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -466,22 +467,37 @@ export default function App() {
     checkPendingActions();
   }
 
+  const customInitialMetrics = React.useMemo(() => {
+    const { width, height } = Dimensions.get('screen');
+    const statusBarH = StatusBar.currentHeight || 24;
+    return {
+      frame: initialWindowMetrics?.frame || { x: 0, y: 0, width, height },
+      insets: {
+        top: initialWindowMetrics?.insets?.top || (Platform.OS === 'android' ? statusBarH : 0),
+        bottom: initialWindowMetrics?.insets?.bottom || (Platform.OS === 'android' ? 48 : 0),
+        left: initialWindowMetrics?.insets?.left || 0,
+        right: initialWindowMetrics?.insets?.right || 0,
+      },
+    };
+  }, []);
+
   return (
     <GestureHandlerRootView style={styles.container}>
-      <SafeAreaProvider initialWindowMetrics={initialWindowMetrics}>
+      <SafeAreaProvider initialWindowMetrics={customInitialMetrics}>
         <ThemeProvider>
           <UpdateProvider>
             <View style={styles.container}>
               <StatusBar
                 translucent={true}
                 backgroundColor="transparent"
-                barStyle="dark-content"
+                barStyle="light-content"
               />
               <AuthProvider>
                 <CallProvider>
                   <AppNavigator
                     setNavigationRef={setNavigationRef}
                     onNavigatorReady={onNavigatorReady}
+                    isSplashFinished={isSplashFinished}
                   />
                   <CallOverlay />
                   <Toast />
@@ -502,9 +518,9 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container:        { flex: 1 },
+  container:        { flex: 1, backgroundColor: '#050811' },
   safeAreaWrapper:  { 
     flex: 1, 
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#050811',
   },
 });

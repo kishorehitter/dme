@@ -142,3 +142,82 @@ class ClaimTriviaChallengeView(APIView):
             'set_id': challenge.set_id,
             'challenger_name': challenger_name,
         }, status=status.HTTP_200_OK)
+
+
+class ConvertQuizPdfView(APIView):
+    """
+    POST /api/trivia/convert-quiz/
+    Multipart form-data:
+      - file: the PDF file
+      - category (optional, defaults to "general")
+      - difficulty (optional, defaults to "medium")
+
+    Deterministic PDF parser — no external AI, no per-conversion cost.
+    Validates numbered questions, A-D choices, and single asterisk '*' correct marker.
+    """
+    parser_classes = [permissions.AllowAny and __import__('rest_framework.parsers').parsers.MultiPartParser,
+                      __import__('rest_framework.parsers').parsers.FormParser]
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response(
+                {'error': "No PDF file uploaded. Send it as form-data field 'file'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if uploaded_file.size > 10 * 1024 * 1024:
+            return Response(
+                {'error': "File size exceeds 10MB limit. Please upload a smaller PDF."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        category = request.data.get('category', 'general')
+        difficulty = request.data.get('difficulty', 'medium')
+
+        from .quiz_parser import parse_quiz_text, extract_text_from_pdf_stream
+
+        try:
+            raw_text = extract_text_from_pdf_stream(uploaded_file.read())
+        except Exception as e:
+            return Response(
+                {'error': f"Failed to extract text from PDF: {str(e)}"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        if not raw_text or not raw_text.strip():
+            return Response(
+                {'error': "Couldn't read any text from this PDF. If it's a scanned image, text extraction won't work — please upload a text-based PDF instead."},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        result = parse_quiz_text(raw_text, category=category, difficulty=difficulty)
+
+        if result['totalFound'] == 0:
+            return Response(
+                {
+                    'error': "No numbered questions were found. Make sure your PDF follows the format: '1. Question text' followed by 'A. / B. / C. / D.' choices.",
+                    'issues': result['issues'],
+                    'totalParsed': 0,
+                    'totalFound': 0,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        if not result['isFullyValid']:
+            return Response(
+                {
+                    'error': f"{len(result['issues'])} of {result['totalFound']} question(s) couldn't be parsed. Fix the issues below and re-upload.",
+                    'issues': result['issues'],
+                    'totalParsed': result['totalParsed'],
+                    'totalFound': result['totalFound'],
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        return Response({
+            'questions': result['questions'],
+            'totalParsed': result['totalParsed'],
+        }, status=status.HTTP_200_OK)
+

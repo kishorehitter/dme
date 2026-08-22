@@ -26,6 +26,7 @@ class MainApplication : Application(), ReactApplication {
           add(RichTextInputPackage())
           add(MusicServicePackage())
           add(NavBarPackage())   // ✅ new
+          add(SpeechRecognitionPackage())
         },
     )
   }

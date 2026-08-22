@@ -30,7 +30,10 @@ interface Props {
   onAdEnded?:     () => void;
   onError?:       (error: any) => void;
   onVideoData?:   (title: string, author: string) => void; // ✅ Callback for auto-extracted metadata
+  aspectRatio?:   number;
+  onAspectRatio?: (aspectRatio: number) => void;
   quality?:       string;
+  onQualityChange?: (quality: string) => void;
   style?:         any;
   onQualitiesAvailable?: (qualities: string[]) => void;
   isFullscreen?:  boolean;
@@ -46,7 +49,10 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     onReady, onStateChange, onProgress,
     onAdStarted, onAdEnded, onError,
     onVideoData,
+    aspectRatio = 1.7777,
+    onAspectRatio,
     quality = 'highres',
+    onQualityChange,
     style,
     onQualitiesAvailable,
     isFullscreen = false,
@@ -109,6 +115,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   var progressInt  = null;
   window.userPaused = false; 
   var selectedQuality = '${quality}';
+  window.videoAR = ${aspectRatio || 1.7777};
 
   function adjustPlayerSize(quality) {
     var p = document.getElementById('player');
@@ -121,32 +128,27 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       return;
     }
     
+    var ar = window.videoAR || ${aspectRatio || 1.7777};
     var W, H;
     switch(quality) {
       case 'tiny': // 144p
-        W = 2560; H = 1440;
+        W = 160;
         break;
       case 'small': // 240p
-        W = 2740; H = 1541;
+        W = 320;
         break;
       case 'medium': // 360p
-        W = 2920; H = 1642;
+        W = 480;
         break;
       case 'large': // 480p
-        W = 3100; H = 1743;
+        W = 720;
         break;
       case 'hd720': // 720p
-        W = 3280; H = 1845;
+        W = 1280;
         break;
       case 'hd1080': // 1080p
-        W = 3460; H = 1946;
-        break;
-      case 'hd1440': // 1440p (2K)
-        W = 3640; H = 2047;
-        break;
-      case 'hd2160': // 2160p (4K)
       case 'highres': // 4K/highres
-        W = 3840; H = 2160;
+        W = 1920;
         break;
       case 'auto':
       default:
@@ -155,10 +157,11 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         p.style.transform = 'none';
         return;
     }
+    H = Math.round(W / ar);
     
     var scaleX = containerWidth / W;
     var scaleY = containerHeight / H;
-    var scale = window.isFullscreen ? Math.min(scaleX, scaleY) : Math.max(scaleX, scaleY);
+    var scale = (window.isFullscreen || ar < 1.0) ? Math.min(scaleX, scaleY) : Math.max(scaleX, scaleY);
     
     var offsetX = (containerWidth - (W * scale)) / 2;
     var offsetY = (containerHeight - (H * scale)) / 2;
@@ -169,7 +172,10 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     p.style.transformOrigin = 'top left';
     
     if (player && typeof player.setPlaybackQuality === 'function') {
-      player.setPlaybackQuality(quality);
+      try {
+        var targetQ = quality === 'auto' ? 'default' : quality;
+        player.setPlaybackQuality(targetQ);
+      } catch(e) {}
     }
   }
   window.adjustPlayerSize = adjustPlayerSize;
@@ -255,9 +261,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     '.ytp-ad-skip-button-modern',
     '.ytp-skip-ad-button',
     '.ytp-ad-skip-button-container button',
-    'button[class*=\"skip\"]',
-    '[aria-label=\"Skip ad\"]',
-    '[aria-label=\"Skip Ad\"]',
+    'button[class*="skip"]',
+    '[aria-label="Skip ad"]',
+    '[aria-label="Skip Ad"]',
   ];
 
   function trySkip() {
@@ -318,6 +324,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         var t = player.getCurrentTime();
         var d = player.getDuration();
         if (!isNaN(t) && !isNaN(d)) {
+          if (t > 0) window.lastPlayerPosition = t;
           toRN({ type: 'progress', currentTime: t, duration: d });
         }
       } catch(e) {}
@@ -334,6 +341,99 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       }
     } catch(ex) {}
   }
+
+  function detectLetterbox(vId) {
+    if (!vId) return;
+    function checkThumb(url, isMaxRes) {
+      var img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.onload = function() {
+        try {
+          var W = 160;
+          var H = Math.round(W * (img.naturalHeight / img.naturalWidth));
+          if (!H || H <= 0) H = 90;
+          var cvs = document.createElement('canvas');
+          cvs.width = W; cvs.height = H;
+          var ctx = cvs.getContext('2d');
+          ctx.drawImage(img, 0, 0, W, H);
+          var imgData = ctx.getImageData(0, 0, W, H).data;
+          
+          function isPixelDark(x, y) {
+            var idx = (y * W + x) * 4;
+            return imgData[idx] < 30 && imgData[idx+1] < 30 && imgData[idx+2] < 30;
+          }
+          
+          // 1. Scan Top & Bottom Letterbox Bars (Cinema / Widescreen)
+          var topBar = 0;
+          while (topBar < H / 2.8) {
+            var darkCols = 0;
+            for (var x = 16; x < W - 16; x += 4) {
+              if (isPixelDark(x, topBar)) darkCols++;
+            }
+            if (darkCols / ((W - 32) / 4) > 0.85) topBar++;
+            else break;
+          }
+          
+          var bottomBar = 0;
+          while (bottomBar < H / 2.8) {
+            var darkCols = 0;
+            for (var x = 16; x < W - 16; x += 4) {
+              if (isPixelDark(x, H - 1 - bottomBar)) darkCols++;
+            }
+            if (darkCols / ((W - 32) / 4) > 0.85) bottomBar++;
+            else break;
+          }
+          
+          var letterboxH = Math.min(topBar, bottomBar);
+          if (letterboxH >= Math.round(H * 0.04)) {
+            var activeH = H - (letterboxH * 2);
+            var contentAR = (img.naturalWidth / img.naturalHeight) * (H / activeH);
+            if (contentAR >= 1.85 && contentAR <= 3.2) {
+              toRN({ type: 'aspectRatio', aspectRatio: contentAR });
+              return;
+            }
+          }
+          
+          // 2. Scan Left & Right Pillarbox Bars (Tall / 4:3 / Narrow)
+          var leftBar = 0;
+          while (leftBar < W / 3) {
+            var darkRows = 0;
+            for (var y = 10; y < H - 10; y += 4) {
+              if (isPixelDark(leftBar, y)) darkRows++;
+            }
+            if (darkRows / ((H - 20) / 4) > 0.85) leftBar++;
+            else break;
+          }
+          
+          var rightBar = 0;
+          while (rightBar < W / 3) {
+            var darkRows = 0;
+            for (var y = 10; y < H - 10; y += 4) {
+              if (isPixelDark(W - 1 - rightBar, y)) darkRows++;
+            }
+            if (darkRows / ((H - 20) / 4) > 0.85) rightBar++;
+            else break;
+          }
+          
+          var pillarboxW = Math.min(leftBar, rightBar);
+          if (pillarboxW >= Math.round(W * 0.04)) {
+            var activeW = W - (pillarboxW * 2);
+            var contentAR = (img.naturalWidth / img.naturalHeight) * (activeW / W);
+            if (contentAR >= 0.5 && contentAR <= 1.7) {
+              toRN({ type: 'aspectRatio', aspectRatio: contentAR });
+              return;
+            }
+          }
+        } catch(e) {}
+      };
+      img.onerror = function() {
+        if (isMaxRes) checkThumb('https://i.ytimg.com/vi/' + vId + '/sddefault.jpg', false);
+      };
+      img.src = url;
+    }
+    checkThumb('https://i.ytimg.com/vi/' + vId + '/maxresdefault.jpg', true);
+  }
+  detectLetterbox('${videoId}');
 
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
@@ -363,6 +463,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       events: {
         onReady:       function(e) {
           var p = e.target;
+          if (window.lastPlayerPosition && window.lastPlayerPosition > 1) {
+            try { p.seekTo(window.lastPlayerPosition, true); } catch(err) {}
+          }
           var originalPlay = p.playVideo;
           p.playVideo = function() {
             adjustPlayerSize('hd1080');
@@ -418,14 +521,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           setTimeout(hideYouTubeUI, 200);
         },
         onPlaybackQualityChange: function(e) {
-          try {
-            var state = player.getPlayerState();
-            if (state === 1) {
-              toRN({ type: 'playbackQualityChange', quality: e.data });
-            }
-          } catch(err) {
-            toRN({ type: 'playbackQualityChange', quality: e.data });
-          }
+          toRN({ type: 'playbackQualityChange', quality: e.data });
         },
         onError: function(e) {
           toRN({ type: 'playerError', code: e.data });
@@ -433,7 +529,47 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       }
     });
     window.player = player;
-    adjustPlayerSize('hd1080'); // Tiny on load
+    adjustPlayerSize(selectedQuality); // Use target quality from the very start
+
+    // ── Real-time Data Transfer Monitor ────────────────────────────────────────
+    var lastBytes = 0;
+    var lastTime = Date.now();
+    setInterval(function() {
+      try {
+        if (!window.performance || !window.performance.getEntriesByType) return;
+        var resources = window.performance.getEntriesByType('resource');
+        var totalBytes = 0;
+        var videoChunks = 0;
+        
+        for (var i = 0; i < resources.length; i++) {
+          var r = resources[i];
+          if (r.name && (r.name.indexOf('googlevideo.com') !== -1 || r.name.indexOf('videoplayback') !== -1)) {
+            videoChunks++;
+            var sz = r.transferSize || r.encodedBodySize || r.decodedBodySize || 0;
+            totalBytes += sz;
+          }
+        }
+        
+        var now = Date.now();
+        var elapsedSec = Math.max(1, (now - lastTime) / 1000);
+        var bytesDiff = Math.max(0, totalBytes - lastBytes);
+        var speedKBps = Math.round((bytesDiff / 1024) / elapsedSec);
+        
+        lastBytes = totalBytes;
+        lastTime = now;
+        
+        if (totalBytes > 0) {
+          var totalMB = (totalBytes / (1024 * 1024)).toFixed(2);
+          toRN({
+            type: 'dataTransferStats',
+            totalMB: totalMB,
+            speedKBps: speedKBps,
+            chunks: videoChunks,
+            quality: (player && player.getPlaybackQuality) ? player.getPlaybackQuality() : selectedQuality
+          });
+        }
+      } catch(e) {}
+    }, 3000);
   }
 
   document.addEventListener('message', handleCmd);
@@ -495,6 +631,11 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         case 'progress':
           onProgress?.(msg.currentTime, msg.duration);
           break;
+        case 'aspectRatio':
+          if (msg.aspectRatio && typeof onAspectRatio === 'function') {
+            onAspectRatio(msg.aspectRatio);
+          }
+          break;
         case 'videoData':
           onVideoData?.(msg.title, msg.author);
           break;
@@ -508,8 +649,15 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           }
           pendingCT.current = false;
           break;
+        case 'qualityDiagnostic':
+          console.log(`🔬 [QUALITY_DIAGNOSTIC] Requested: ${msg.target} | Active Quality: ${msg.current} | Available Levels: ${JSON.stringify(msg.available)}`);
+          break;
+        case 'dataTransferStats':
+          console.log(`📊 [DATA TRANSFER] Total: ${msg.totalMB} MB | Live Rate: ${msg.speedKBps} KB/s | Resolution: ${msg.quality} (${msg.chunks} segments)`);
+          break;
         case 'playbackQualityChange':
-          console.log(`📺 [YouTubePlayer] YouTube player successfully switched stream quality to: ${msg.quality}`);
+          console.log(`📺 [YouTubePlayer] YouTube player switched stream quality to: ${msg.quality}`);
+          onQualityChange?.(msg.quality);
           break;
         case 'duration':
           if (resolversRef.current[msg.id]) {
@@ -519,15 +667,12 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           pendingDur.current = false;
           break;
         case 'mediaSessionPlay':
-          // WebView's own navigator.mediaSession play handler fired (background-safe)
-          // Forward to the same channel as the native notification button
           try {
             const { DeviceEventEmitter } = require('react-native');
             DeviceEventEmitter.emit('WEBVIEW_MEDIA_PLAY');
           } catch (_) {}
           break;
         case 'mediaSessionPause':
-          // WebView's own navigator.mediaSession pause handler fired (background-safe)
           try {
             const { DeviceEventEmitter } = require('react-native');
             DeviceEventEmitter.emit('WEBVIEW_MEDIA_PAUSE');
@@ -550,6 +695,25 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   React.useEffect(() => {
     inject(`window.isFullscreen = ${isFullscreen ? 'true' : 'false'}; if (window.updatePlayerSizeByState) window.updatePlayerSizeByState();`);
   }, [isFullscreen]);
+
+  React.useEffect(() => {
+    return () => {
+      try {
+        inject(`
+          if (window.player) {
+            try { window.player.mute(); } catch(_) {}
+            try { window.player.stopVideo(); } catch(_) {}
+          }
+        `);
+      } catch (_) {}
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (aspectRatio) {
+      inject(`window.videoAR = ${aspectRatio}; if (window.updatePlayerSizeByState) window.updatePlayerSizeByState();`);
+    }
+  }, [aspectRatio]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds) => {
@@ -593,13 +757,56 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     setPlaybackQuality: (q) => {
       console.log(`⚡ [YouTubePlayer] Requesting quality switch to: ${q}`);
       inject(`
-        selectedQuality = '${q}';
-        if (window.updatePlayerSizeByState) {
-          window.updatePlayerSizeByState();
-        }
-        if (window.player && window.player.setPlaybackQuality) {
-          window.player.setPlaybackQuality('${q}');
-        }
+        (function() {
+          selectedQuality = '${q}';
+          var targetQ = '${q}' === 'auto' ? 'default' : '${q}';
+
+          if (window.playResizeTimeout) {
+            clearTimeout(window.playResizeTimeout);
+            window.playResizeTimeout = null;
+          }
+
+          if (typeof adjustPlayerSize === 'function') {
+            adjustPlayerSize(selectedQuality);
+          }
+
+          if (window.player) {
+            try {
+              if (typeof window.player.setPlaybackQualityRange === 'function') {
+                if (targetQ === 'default') {
+                  window.player.setPlaybackQualityRange('small', 'highres');
+                } else {
+                  window.player.setPlaybackQualityRange(targetQ, targetQ);
+                }
+              }
+            } catch(e) {}
+
+            try {
+              if (typeof window.player.setPlaybackQuality === 'function') {
+                window.player.setPlaybackQuality(targetQ);
+              }
+            } catch(e) {}
+          }
+
+          try {
+            var iframe = document.getElementById('player') || document.querySelector('iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage(JSON.stringify({
+                event: 'command',
+                func: 'setPlaybackQuality',
+                args: [targetQ]
+              }), '*');
+
+              if (targetQ !== 'default') {
+                iframe.contentWindow.postMessage(JSON.stringify({
+                  event: 'command',
+                  func: 'setPlaybackQualityRange',
+                  args: [targetQ, targetQ]
+                }), '*');
+              }
+            }
+          } catch(e) {}
+        })();
       `);
     }
   }), []);
@@ -646,6 +853,26 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
               if (['visibilitychange','blur','focusout','pagehide'].includes(type)) return;
               return original.apply(this, arguments);
             };
+
+            // 4. DYNAMIC NETWORK INFORMATION PROXY (Quality / Bitrate Controller)
+            window.__netDownlink = 25.0;
+            window.__netType = '4g';
+            window.__saveData = false;
+
+            var netConn = {
+              get downlink() { return window.__netDownlink || 25.0; },
+              get effectiveType() { return window.__netType || '4g'; },
+              get rtt() { return 80; },
+              get saveData() { return window.__saveData || false; },
+              addEventListener: function() {},
+              removeEventListener: function() {},
+            };
+            try {
+              Object.defineProperty(navigator, 'connection', {
+                get: function() { return netConn; },
+                configurable: true
+              });
+            } catch(e) {}
           })();
           true;
         `}
@@ -659,32 +886,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
               if (!window.userPaused && window.player && window.player.getPlayerState && window.player.getPlayerState() === 2) {
                 window.player.playVideo();
               }
-            }, 500);
-
-            // MEDIA SESSION (Official lockscreen controls)
-            // These handlers fire even in background when the YouTube player
-            // holds the OS media session (via its own audio focus).
-            // We postMessage back to React Native so the room can be synced.
-            if ('mediaSession' in navigator) {
-              navigator.mediaSession.metadata = new MediaMetadata({
-                title: 'Streaming Content',
-                artist: 'YouTube Player',
-                album: 'App Media'
-              });
-              navigator.mediaSession.playbackState = 'playing';
-              navigator.mediaSession.setActionHandler('play', function() {
-                window.userPaused = false;
-                if (window.player) window.player.playVideo();
-                // Signal React Native — works from background
-                try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPlay' })); } catch(e) {}
-              });
-              navigator.mediaSession.setActionHandler('pause', function() {
-                window.userPaused = true;
-                if (window.player) window.player.pauseVideo();
-                // Signal React Native — works from background
-                try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPause' })); } catch(e) {}
-              });
-            }
+            }, 3000);
           })();
           true;
         `}
@@ -693,11 +895,17 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   );
 }));
 
-YoutubePlayer.displayName = 'YoutubePlayer';
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  webview:   { flex: 1, backgroundColor: '#000' },
+  container: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
 });
 
 export default YoutubePlayer;

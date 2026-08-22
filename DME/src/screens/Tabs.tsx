@@ -256,6 +256,7 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
 
 export const StatusTabScreen = () => {
   const { theme, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const { user: currentUser } = useAuth();
   const navigation = useNavigation<any>();
@@ -289,12 +290,12 @@ export const StatusTabScreen = () => {
   }, [currentUser?.id]);
 
   useFocusEffect(useCallback(() => { 
-    if (Platform.OS === 'android' && NativeModules.SystemBar) {
-      NativeModules.SystemBar.setNavigationBarColor(theme.background, isDark);
-      NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
-    }
-    loadStatuses(); 
-  }, [loadStatuses, isDark]));
+    if ((global as any).activeMusicRoomCode) return;
+    const t = setTimeout(() => {
+      loadStatuses();
+    }, 120);
+    return () => clearTimeout(t);
+  }, [loadStatuses]));
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
@@ -455,7 +456,7 @@ export const StatusTabScreen = () => {
       <FlatList
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: 80 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 100) }}
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>
@@ -563,6 +564,7 @@ const CallLogMenuButton = ({ onPress }: { onPress: () => void }) => {
 
 export const CallLogTabScreen = () => {
   const { theme, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
   const navigation  = useNavigation<any>();
   const [logs,       setLogs]       = useState<CallLog[]>([]);
@@ -577,7 +579,12 @@ export const CallLogTabScreen = () => {
     finally { setRefreshing(false); }
   }, []);
 
-  useFocusEffect(useCallback(() => { loadLogs(); }, [loadLogs]));
+  useFocusEffect(useCallback(() => {
+    const t = setTimeout(() => {
+      loadLogs();
+    }, 120);
+    return () => clearTimeout(t);
+  }, [loadLogs]));
 
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.length === 0) return;
@@ -729,7 +736,7 @@ export const CallLogTabScreen = () => {
       <FlatList
         data={logs}
         keyExtractor={item => String(item.id)}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: 80 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 100) }}
         ListEmptyComponent={
           refreshing ? (
             <View style={styles.centerLoading}>

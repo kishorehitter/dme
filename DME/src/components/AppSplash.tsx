@@ -1,11 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { StyleSheet, Animated, Image } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
+import { StyleSheet, Animated, Image, Dimensions } from 'react-native';
 
 interface AppSplashProps {
   onFinish: () => void;
   startFadeOut: boolean;
 }
+
+const LOGO_SIZE = 140;
 
 const AppSplash: React.FC<AppSplashProps> = ({ onFinish, startFadeOut }) => {
   const opacityValue = useRef(new Animated.Value(1)).current;
@@ -22,12 +23,6 @@ const AppSplash: React.FC<AppSplashProps> = ({ onFinish, startFadeOut }) => {
 
   return (
     <Animated.View style={[styles.container, { opacity: opacityValue }]} pointerEvents="none">
-      <LinearGradient
-        colors={['#FFFFFF', '#B9DCED', '#96C5DC', '#7EB9D8', '#96C5DC', '#B9DCED', '#FFFFFF']}
-        useAngle={true}
-        angle={355}
-        style={StyleSheet.absoluteFill}
-      />
       <Image
         source={require('../assets/logo.png')}
         style={styles.logo}
@@ -37,17 +32,27 @@ const AppSplash: React.FC<AppSplashProps> = ({ onFinish, startFadeOut }) => {
   );
 };
 
+// Use Dimensions.get('screen') — this includes status bar + nav bar pixels
+// so the splash always covers the FULL physical screen regardless of any
+// parent layout shift caused by SafeAreaProvider inset measurement.
+const { width: SW, height: SH } = Dimensions.get('screen');
+
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: SW,
+    height: SH,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#050811',
     zIndex: 9999,
+    elevation: 9999,
   },
   logo: {
-    width: 160,
-    height: 160,
+    width: LOGO_SIZE,
+    height: LOGO_SIZE,
   },
 });
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import api from '../../services/api';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
@@ -10,7 +10,8 @@ import { useTheme } from '../../context/ThemeContext';
 
 export const StatusPrivacyScreen = () => {
   const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+  const insets = useSafeAreaInsets();
+  const s = React.useMemo(() => dynamicStyles(theme, insets), [theme, insets]);
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { user: currentUser } = useAuth();
@@ -99,7 +100,7 @@ export const StatusPrivacyScreen = () => {
           data={contacts}
           keyExtractor={item => item.id.toString()}
           style={s.list}
-          contentContainerStyle={s.listContent}
+          contentContainerStyle={[s.listContent, { paddingBottom: Math.max(insets.bottom + 20, 32) }]}
           ListEmptyComponent={
             <View style={s.emptyContainer}>
               <Icon name="people-outline" size={48} color="#ddd" />

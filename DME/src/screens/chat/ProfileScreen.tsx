@@ -2,7 +2,7 @@
  * ProfileScreen.tsx
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTheme } from '../../context/ThemeContext';
 
 import {
@@ -10,6 +10,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   ScrollView,
   Alert,
@@ -23,7 +24,10 @@ import {
   InteractionManager,
   Share,
   DeviceEventEmitter,
+  NativeModules,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { launchImageLibrary } from 'react-native-image-picker';
@@ -36,8 +40,11 @@ import { getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
 import { StatusService, UserStatusGroup, Status } from '../../services/StatusService';
 import { chatAPI } from '../../services/api';
+import localDatabase from '../../services/LocalDatabase';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
+import { pinNavBarColor } from '../../utils/navBarPin';
+import { useFocusEffect } from '@react-navigation/native';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -81,12 +88,27 @@ const FEMALE_STICKERS = [
 
 import AvatarWithFallback from '../../components/AvatarWithFallback';
 
-export const ProfileScreen: React.FC<ProfileScreenProps> = ({
+const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   navigation,
   route,
 }) => {
+  const insets = useSafeAreaInsets();
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if ((global as any).activeMusicRoomCode) return;
+      pinNavBarColor(theme.surface, isDark);
+      StatusBar.setTranslucent(true);
+      StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
+      StatusBar.setBackgroundColor('transparent');
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', isDark);
+      }
+    }, [theme.surface, isDark])
+  );
   const { user, logout, deleteAccount, refreshUser } = useAuth();
   const viewingOtherProfile = route?.params?.user;
   const isReadOnly = !!viewingOtherProfile;
@@ -177,49 +199,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   }, [isReadOnly, conversationId, activeAlbumTab]);
 
-  useEffect(() => {
-    navigation.setOptions({
-      title: isReadOnly ? (profile?.display_name || 'Profile') : (isEditingMode ? 'Edit Profile' : 'My Profile'),
-      headerTintColor: theme.textPrimary,
-      headerTitleStyle: {
-        color: theme.textPrimary,
-        fontWeight: 'bold',
-        fontSize: 20,
-      },
-      headerRight: (isReadOnly || !isEditingMode) ? () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16 }}>
-          {isReadOnly && conversationId ? (
-            <TouchableOpacity 
-              onPress={() => navigation.navigate('ChatRoom', { conversationId, searchMode: true })}
-              style={{ marginRight: 16 }}
-            >
-              <Icon name="search" size={24} color={theme.icon} />
-            </TouchableOpacity>
-          ) : null}
-          <TouchableOpacity onPress={() => setShowMenu(true)}>
-            <Icon name="ellipsis-vertical" size={24} color={theme.icon} />
-          </TouchableOpacity>
-        </View>
-      ) : undefined
-    });
-  }, [navigation, isReadOnly, isEditingMode, conversationId, profile?.display_name]);
-
-  useEffect(() => {
-    if (!isReadOnly && isEditingMode) {
-      navigation.setOptions({
-        headerLeft: () => (
-          <TouchableOpacity onPress={() => setIsEditingMode(false)} style={{ marginLeft: 16 }}>
-            <Icon name="arrow-back" size={24} color={theme.icon} />
-          </TouchableOpacity>
-        )
-      });
-    } else {
-      navigation.setOptions({
-        headerLeft: undefined
-      });
-    }
-  }, [navigation, isReadOnly, isEditingMode]);
-
   const fetchFriendStatus = async () => {
     if (!viewingOtherProfile?.id) return;
     try {
@@ -305,9 +284,23 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     try {
       let convId = route.params?.conversationId;
       if (!convId) {
+        // Fast instant local SQLite lookup (0ms)
+        try {
+          const localConvs = localDatabase.getConversations();
+          const existing = localConvs.find((c: any) => 
+            !c.is_group && (c.other_user?.id === profile.id || Number(c.other_user_id) === Number(profile.id))
+          );
+          if (existing) {
+            convId = existing.id;
+          }
+        } catch {}
+      }
+
+      if (!convId) {
         const conversation = await chatAPI.getOrCreateDirectChat(profile.id);
         convId = conversation.id;
       }
+
       if (convId) {
         navigation.navigate('ChatRoom', {
           conversationId: convId,
@@ -614,7 +607,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   };
 
   useEffect(() => {
-    const initializeProfile = async () => {
+    const task = InteractionManager.runAfterInteractions(async () => {
       loadStatus();
       if (viewingOtherProfile) {
         loadBlockStatus();
@@ -658,6 +651,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               [{ text: 'OK', onPress: () => navigation.goBack() }]
             );
           } else {
+            console.warn('Failed to fetch full user profile:', response.status);
             setProfile(viewingOtherProfile);
             setFormData({
               display_name: viewingOtherProfile.display_name || '',
@@ -673,16 +667,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       } else {
         loadProfile();
       }
-    };
-    const task = InteractionManager.runAfterInteractions(() => {
-      initializeProfile();
     });
+
     return () => task.cancel();
   }, []);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      loadStatus();
+      InteractionManager.runAfterInteractions(() => {
+        loadStatus();
+      });
     });
     return unsubscribe;
   }, [navigation]);
@@ -960,7 +954,40 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     const bio = profile.bio || 'No bio available'; 
 
     return (
-      <ScrollView style={s.container} contentContainerStyle={{ flexGrow: 1 }}>
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        {/* Clean In-Screen Header */}
+        <View style={[s.customHeader, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}>
+          <Pressable
+            onPress={() => navigation.goBack()}
+            style={s.headerBackButton}
+            hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+            android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
+          >
+            <Icon name="arrow-back" size={24} color={theme.textPrimary} />
+          </Pressable>
+          <Text style={s.headerTitleText} numberOfLines={1}>
+            {displayName}
+          </Text>
+          <View style={s.headerRightIcons}>
+            {isReadOnly && conversationId ? (
+              <Pressable
+                onPress={() => navigation.navigate('ChatRoom', { conversationId, searchMode: true })}
+                style={{ marginRight: 16 }}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Icon name="search" size={24} color={theme.icon} />
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={() => setShowMenu(true)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Icon name="ellipsis-vertical" size={24} color={theme.icon} />
+            </Pressable>
+          </View>
+        </View>
+
+        <ScrollView style={s.container} contentContainerStyle={{ flexGrow: 1 }}>
         <View style={s.friendProfileHeader}>
           <TouchableOpacity 
             style={s.avatarWrapper90}
@@ -991,11 +1018,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </TouchableOpacity>
 
           <View style={s.friendHeaderInfo}>
-            <Text style={s.friendName}>{displayName}</Text>
             {profile.username ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Text style={s.friendUsername}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 14, fontWeight: 'normal' }}>@</Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 16, fontWeight: 'normal' }}>@</Text>
                   {profile.username}
                 </Text>
                 <TouchableOpacity onPress={handleCopyUsername} style={{ padding: 4 }}>
@@ -1045,6 +1071,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <TouchableOpacity
                 style={[s.profileActionBtn, s.secondaryBtn]}
                 onPress={handleOpenChat}
+                activeOpacity={0.7}
+                delayPressIn={0}
               >
                 <Text style={[s.profileActionBtnText, s.secondaryBtnText]}>
                   Message
@@ -1225,64 +1253,102 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
             <View style={s.modalBackdrop}>
               <View style={s.popoverMenu}>
-                {conversationId ? (
+                {!isReadOnly ? (
                   <TouchableOpacity
                     style={s.popoverItem}
                     onPress={() => {
                       setShowMenu(false);
-                      handleClearChat();
+                      navigation.navigate('Settings');
                     }}
                   >
-                    <Icon name="trash-outline" size={20} color="#F44336" />
-                    <Text style={[s.popoverText, { color: theme.textPrimary }]}>Clear Chat</Text>
+                    <Icon name="settings-outline" size={20} color={theme.textPrimary} />
+                    <Text style={[s.popoverText, { color: theme.textPrimary }]}>Settings</Text>
                   </TouchableOpacity>
-                ) : null}
-                {conversationId ? <View style={s.popoverSeparator} /> : null}
-                <TouchableOpacity
-                  style={s.popoverItem}
-                  onPress={() => {
-                    setShowMenu(false);
-                    handleBlockUser();
-                  }}
-                >
-                  <Icon name={isBlocked ? 'shield-checkmark-outline' : 'ban-outline'} size={20} color={isBlocked ? colors.primary : '#F44336'} />
-                  <Text style={[s.popoverText, isBlocked && { color: theme.primary }]}>
-                    {isBlocked ? 'Unblock User' : 'Block User'}
-                  </Text>
-                </TouchableOpacity>
+                ) : (
+                  <>
+                    {conversationId ? (
+                      <TouchableOpacity
+                        style={s.popoverItem}
+                        onPress={() => {
+                          setShowMenu(false);
+                          handleClearChat();
+                        }}
+                      >
+                        <Icon name="trash-outline" size={20} color="#F44336" />
+                        <Text style={[s.popoverText, { color: theme.textPrimary }]}>Clear Chat</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {conversationId ? <View style={s.popoverSeparator} /> : null}
+                    <TouchableOpacity
+                      style={s.popoverItem}
+                      onPress={() => {
+                        setShowMenu(false);
+                        handleBlockUser();
+                      }}
+                    >
+                      <Icon name={isBlocked ? 'shield-checkmark-outline' : 'ban-outline'} size={20} color={isBlocked ? colors.primary : '#F44336'} />
+                      <Text style={[s.popoverText, isBlocked && { color: theme.primary }]}>
+                        {isBlocked ? 'Unblock User' : 'Block User'}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
             </View>
           </TouchableWithoutFeedback>
         </Modal>
 
-        <MediaPickerModal 
-          visible={mediaPickerVisible} 
-          onClose={() => setMediaPickerVisible(false)}
-          onMediaSelected={handleMediaSelected}
-        />
+        {mediaPickerVisible && (
+          <MediaPickerModal 
+            visible={mediaPickerVisible} 
+            onClose={() => setMediaPickerVisible(false)}
+            onMediaSelected={handleMediaSelected}
+          />
+        )}
 
-        <CustomGalleryPicker
-          visible={statusGalleryVisible}
-          onClose={() => setStatusGalleryVisible(false)}
-          onSelect={handleStatusGallerySelect}
-          maxSelect={1}
-          assetType="All"
-          maxDuration={61}
-        />
+        {statusGalleryVisible && (
+          <CustomGalleryPicker
+            visible={statusGalleryVisible}
+            onClose={() => setStatusGalleryVisible(false)}
+            onSelect={handleStatusGallerySelect}
+            maxSelect={1}
+            assetType="All"
+            maxDuration={61}
+          />
+        )}
 
-        <CustomGalleryPicker
-          visible={profileGalleryVisible}
-          onClose={() => setProfileGalleryVisible(false)}
-          onSelect={handleProfileGallerySelect}
-          maxSelect={1}
-          assetType="Photos"
-        />
+        {profileGalleryVisible && (
+          <CustomGalleryPicker
+            visible={profileGalleryVisible}
+            onClose={() => setProfileGalleryVisible(false)}
+            onSelect={handleProfileGallerySelect}
+            maxSelect={1}
+            assetType="Photos"
+          />
+        )}
       </ScrollView>
+    </View>
     );
   }
 
   return (
-    <ScrollView style={s.container}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      {/* Clean In-Screen Header */}
+      <View style={[s.customHeader, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}>
+        <Pressable
+          onPress={() => setIsEditingMode(false)}
+          style={s.headerBackButton}
+          hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+          android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
+        >
+          <Icon name="arrow-back" size={24} color={theme.textPrimary} />
+        </Pressable>
+        <Text style={s.headerTitleText} numberOfLines={1}>
+          Edit Profile
+        </Text>
+      </View>
+
+      <ScrollView style={s.container}>
       <View style={s.profilePictureSection}>
         {isUploadingImage && (
           <View style={[s.profilePicture, s.profilePicturePlaceholder, s.uploadingContainer]}>
@@ -1534,19 +1600,43 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </Modal>
       )}
 
-      <CustomGalleryPicker
-        visible={profileGalleryVisible}
-        onClose={() => setProfileGalleryVisible(false)}
-        onSelect={handleProfileGallerySelect}
-        maxSelect={1}
-        assetType="Photos"
-      />
+      {profileGalleryVisible && (
+        <CustomGalleryPicker
+          visible={profileGalleryVisible}
+          onClose={() => setProfileGalleryVisible(false)}
+          onSelect={handleProfileGallerySelect}
+          maxSelect={1}
+          assetType="Photos"
+        />
+      )}
 
     </ScrollView>
+  </View>
   );
 };
 
 const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+  customHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  headerBackButton: {
+    padding: 6,
+    marginRight: 12,
+    borderRadius: 20,
+  },
+  headerTitleText: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: theme.textPrimary,
+  },
+  headerRightIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   container: { flex: 1, backgroundColor: theme.background },
   profilePictureSection: { alignItems: 'center', paddingVertical: spacing.lg, backgroundColor: theme.surface },
   profilePictureContainer: { position: 'relative' },
@@ -1665,7 +1755,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   friendAvatarText: { fontSize: 32, color: theme.primary, fontWeight: 'bold' },
   friendHeaderInfo: { flex: 1, marginLeft: 16 },
   friendName: { fontSize: 20, color: theme.textPrimary, fontWeight: '600' },
-  friendUsername: { fontSize: 16, fontWeight: '500', color: theme.textSecondary },
+  friendUsername: { fontSize: 18, fontWeight: '700', color: theme.textPrimary },
   friendBioText: { fontSize: 14, color: theme.textPrimary, marginTop: 4 },
   friendsCountText: { fontSize: 14, color: theme.primary, fontWeight: 'bold', marginTop: 4 },
   friendDetailsContainer: {
@@ -1812,8 +1902,8 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     color: '#FFFFFF',
     fontWeight: 'bold',
   },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'flex-start', alignItems: 'flex-end' },
-  popoverMenu: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: theme.background, borderRadius: 8, padding: 8, elevation: 5, shadowColor: theme.textPrimary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
+  modalBackdrop: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-start', alignItems: 'flex-end' },
+  popoverMenu: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: theme.surface, borderRadius: 8, padding: 8, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, zIndex: 1000 },
   popoverSeparator: { height: 1, backgroundColor: theme.border, marginVertical: 4 },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
   popoverText: { fontSize: 14, color: theme.textPrimary },
@@ -1914,3 +2004,5 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     color: theme.primary,
   },
 });
+
+export const ProfileScreen = React.memo(ProfileScreenComponent);

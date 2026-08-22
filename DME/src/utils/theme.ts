@@ -82,7 +82,7 @@ export const lightTheme: ThemeColors = {
   accent:       '#071524',
 
   // Backgrounds
-  background:   '#FAFAFC',
+  background:   '#FFFFFF',
   surface:      '#FFFFFF',
   card:         '#FFFFFF',
   tabBar:       '#FFFFFF',
@@ -94,8 +94,8 @@ export const lightTheme: ThemeColors = {
 
   // Text
   textPrimary:   '#111827',
-  textSecondary: '#6B7280',
-  textMuted:     '#9CA3AF',
+  textSecondary: '#374151',
+  textMuted:     '#4B5563',
   textOnPrimary: '#FFFFFF',
 
   // Borders
@@ -104,16 +104,16 @@ export const lightTheme: ThemeColors = {
   separator:   '#F3F4F6',
 
   // Icons
-  icon:      '#6B7280',
-  iconMuted: '#9CA3AF',
+  icon:      '#1F2937',
+  iconMuted: '#4B5563',
 
   // Inputs
   inputBackground: '#F3F4F6',
   inputText:       '#111827',
-  placeholder:     '#9CA3AF',
+  placeholder:     '#6B7280',
 
   // Bars
-  statusBar:      '#FAFAFC',
+  statusBar:      '#FFFFFF',
   navBar:         '#00000000',
   statusBarStyle: 'dark-content',
 
@@ -149,13 +149,13 @@ export const darkTheme: ThemeColors = {
   accent:       '#050F1E',
 
   // Backgrounds — Obsidian Navy Palette
-  background:   '#020912',
+  background:   '#050F1E',
   surface:      '#050F1E',
   card:         '#050F1E',
   tabBar:       '#050F1E',
 
   // Chat
-  chatBackground: '#020912',
+  chatBackground: '#050F1E',
   myMessage:      '#0B3C68',   // deep navy sent bubble
   theirMessage:   '#0B1B2D',   // neutral dark received bubble
 

@@ -3,15 +3,11 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Full offline scoreboard for the Trivia Challenge.
  *
- * Layout:
- *  ┌─ Header (Overall Average + back button) ──────────────────┐
- *  │  Category tabs (horizontal scroll)                        │
- *  │  ┌─ Table ──────────────────────────────────────────┐    │
- *  │  │ Set │ Attempts │ Best % │ Latest % │ Avg %       │    │
- *  │  │ ... │ ...      │ ...    │ ...      │ ...         │    │
- *  │  └──────────────────────────────────────────────────┘    │
- *  │  Category average                                         │
- *  └───────────────────────────────────────────────────────────┘
+ * Features:
+ * - 0ms Instant mount with zero flicker & zero transition freeze
+ * - Synchronous memory cache & stable layout skeleton from Frame 0
+ * - Non-blocking native interactions
+ * - Glassmorphic header, summary bar, and performance grade badges
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -21,22 +17,23 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  FlatList,
-  ActivityIndicator,
   StatusBar,
   Alert,
+  InteractionManager,
+  Platform,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/Ionicons';
 import {
-  getCategorySummary,
-  getOverallAverage,
+  getFullScoreboardData,
+  getCachedScoreboardDataSync,
   clearAllScores,
   CategorySummary,
   SetSummary,
 } from '../services/TriviaScoreDB';
 import { TRIVIA_SETS_PER_CATEGORY } from '../utils/triviaSetConfig';
+import { pinNavBarColor } from '../utils/navBarPin';
 
 // ─── Category display config ──────────────────────────────────────────────────
 const CAT_CONFIG: Record<string, { name: string; emoji: string; color: string }> = {
@@ -185,27 +182,41 @@ const rowStyles = StyleSheet.create({
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
+  const safeTopPadding = (insets.top || (Platform.OS === 'android' ? StatusBar.currentHeight || 24 : 44)) + 8;
+  const safeBottomPadding = Math.max(insets.bottom || 0, Platform.OS === 'android' ? 24 : 16);
   const [activeCategory, setActiveCategory] = useState<string>('polity');
-  const [categorySummary, setCategorySummary] = useState<CategorySummary | null>(null);
-  const [overallAvg, setOverallAvg] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
+
+  // Synchronously initialize from memory cache if available
+  const initialCached = getCachedScoreboardDataSync(TRIVIA_SETS_PER_CATEGORY);
+  const [allSummaries, setAllSummaries] = useState<Record<string, CategorySummary>>(
+    initialCached?.summaries || {}
+  );
+  const [overallAvg, setOverallAvg] = useState<number>(initialCached?.overallAverage || 0);
 
   const loadData = useCallback(async () => {
-    setLoading(true);
     try {
-      const [summary, avg] = await Promise.all([
-        getCategorySummary(activeCategory, TRIVIA_SETS_PER_CATEGORY[activeCategory] ?? []),
-        getOverallAverage(TRIVIA_SETS_PER_CATEGORY),
-      ]);
-      setCategorySummary(summary);
-      setOverallAvg(avg);
-    } finally {
-      setLoading(false);
+      const { summaries, overallAverage } = await getFullScoreboardData(TRIVIA_SETS_PER_CATEGORY);
+      setAllSummaries(summaries);
+      setOverallAvg(overallAverage);
+    } catch (e) {
+      console.error('Failed to load scoreboard data:', e);
     }
-  }, [activeCategory]);
+  }, []);
 
   useEffect(() => {
-    loadData();
+    // Defer any native system bar operations until transition finishes
+    const interactionPromise = InteractionManager.runAfterInteractions(() => {
+      pinNavBarColor('#F8F9FA', false);
+      loadData();
+    });
+    const timer = setTimeout(() => {
+      loadData();
+    }, 100);
+
+    return () => {
+      interactionPromise.cancel();
+      clearTimeout(timer);
+    };
   }, [loadData]);
 
   const handleClearScores = () => {
@@ -219,11 +230,29 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
           style: 'destructive',
           onPress: async () => {
             await clearAllScores();
-            loadData();
+            await loadData();
           },
         },
       ],
     );
+  };
+
+  // Safe fallback if category has not loaded yet so layout never jumps/flickers
+  const setsForActiveCat = TRIVIA_SETS_PER_CATEGORY[activeCategory] || [];
+  const categorySummary: CategorySummary = allSummaries[activeCategory] || {
+    category: activeCategory,
+    sets: setsForActiveCat.map(setId => ({
+      category: activeCategory,
+      setId,
+      attempts: [],
+      bestPercentage: 0,
+      latestPercentage: 0,
+      avgPercentage: 0,
+      totalAttempts: 0,
+    })),
+    overallAverage: 0,
+    setsCompleted: 0,
+    totalSets: setsForActiveCat.length,
   };
 
   const catConf = CAT_CONFIG[activeCategory] ?? { name: activeCategory, emoji: '📝', color: '#4597f5' };
@@ -236,15 +265,22 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
       {/* ── Header gradient ── */}
       <LinearGradient
         colors={['#1E3A5F', '#0A1628']}
-        style={[sb.header, { paddingTop: (insets.top || 24) + 8 }]}
+        style={[
+          sb.header,
+          {
+            paddingTop: safeTopPadding,
+            paddingLeft: Math.max(insets.left, 16),
+            paddingRight: Math.max(insets.right, 16),
+          },
+        ]}
       >
-        <TouchableOpacity style={sb.backBtn} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={sb.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
           <Icon name="arrow-back" size={22} color="#fff" />
         </TouchableOpacity>
 
         <View style={sb.headerCenter}>
-          <Text style={sb.headerTitle}>📊 Scoreboard</Text>
-          <Text style={sb.headerSub}>Track your progress across all sets</Text>
+          <Text style={sb.headerTitle}>📊 Progress</Text>
+          <Text style={sb.headerSub}>Track your mastery across all sets</Text>
         </View>
 
         {/* Overall average badge */}
@@ -284,12 +320,8 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
         </ScrollView>
       </View>
 
-      {/* ── Table area ── */}
-      {loading ? (
-        <View style={sb.loadingBox}>
-          <ActivityIndicator size="large" color={catConf.color} />
-        </View>
-      ) : (
+      {/* ── Table area (Always stable, no layout jumps or flickers) ── */}
+      <View style={sb.tableWrapper}>
         <ScrollView style={sb.tableScroll} showsVerticalScrollIndicator={false}>
 
           {/* Category summary bar */}
@@ -299,12 +331,12 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
             </Text>
             <View style={sb.catSummaryStats}>
               <View style={sb.statChip}>
-                <Text style={sb.statChipValue}>{categorySummary?.setsCompleted ?? 0}/{categorySummary?.totalSets ?? 0}</Text>
+                <Text style={sb.statChipValue}>{categorySummary.setsCompleted}/{categorySummary.totalSets}</Text>
                 <Text style={sb.statChipLabel}>Sets Played</Text>
               </View>
               <View style={[sb.statChip, { backgroundColor: `${catConf.color}15` }]}>
                 <Text style={[sb.statChipValue, { color: catConf.color }]}>
-                  {categorySummary?.overallAverage ?? 0}%
+                  {categorySummary.overallAverage}%
                 </Text>
                 <Text style={sb.statChipLabel}>Category Avg</Text>
               </View>
@@ -335,7 +367,7 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
           </View>
 
           {/* Set rows */}
-          {(categorySummary?.sets ?? []).map((setSum, idx) => (
+          {(categorySummary.sets ?? []).map((setSum, idx) => (
             <SetRow
               key={setSum.setId}
               summary={setSum}
@@ -345,7 +377,7 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
           ))}
 
           {/* No data note */}
-          {(categorySummary?.setsCompleted ?? 0) === 0 && (
+          {categorySummary.setsCompleted === 0 && (
             <View style={sb.emptyBox}>
               <Text style={sb.emptyEmoji}>🎯</Text>
               <Text style={sb.emptyText}>No scores yet for {catConf.name}.</Text>
@@ -354,14 +386,14 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
           )}
 
           {/* Clear scores button */}
-          <TouchableOpacity style={sb.clearBtn} onPress={handleClearScores}>
+          <TouchableOpacity style={sb.clearBtn} onPress={handleClearScores} activeOpacity={0.8}>
             <Icon name="trash-outline" size={15} color="#FF3366" />
             <Text style={sb.clearBtnText}>Clear All Scores</Text>
           </TouchableOpacity>
 
-          <View style={{ height: insets.bottom + 24 }} />
+          <View style={{ height: safeBottomPadding + 28 }} />
         </ScrollView>
-      )}
+      </View>
     </View>
   );
 };
@@ -417,10 +449,8 @@ const sb = StyleSheet.create({
   tabEmoji: { fontSize: 14 },
   tabText: { fontSize: 12, color: '#555', fontWeight: '500' },
 
-  // Loading
-  loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
-  // Table scroll
+  // Table
+  tableWrapper: { flex: 1 },
   tableScroll: { flex: 1 },
 
   // Category summary bar

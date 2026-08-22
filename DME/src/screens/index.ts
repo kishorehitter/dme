@@ -27,6 +27,12 @@ export { default as IncomingCallScreen } from './IncomingCallScreen';
 export { SettingsScreen } from './chat/SettingsScreen';
 
 // Trivia Screen
+export { TriviaHubScreen } from './TriviaHubScreen';
 export { TriviaSoloScreen } from './TriviaSoloScreen';
 export { TriviaScoreboardScreen } from './TriviaScoreboardScreen';
+export { CustomTriviaSetsScreen } from './CustomTriviaSetsScreen';
+export { QuizPdfUploadScreen } from './QuizPdfUploadScreen';
+export { TriviaChallengesScreen } from './TriviaChallengesScreen';
+
+
 

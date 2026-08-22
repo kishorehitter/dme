@@ -33,6 +33,9 @@ const ChatInputArea = memo(({
     isDisabled,
     onRegisterClear,
     onOpenStickerPicker,
+    isStickerPickerVisible,
+    onCloseStickerPicker,
+    onFocus,
 }: any) => {
 
     const { theme, isDark } = useTheme();
@@ -72,6 +75,7 @@ const ChatInputArea = memo(({
         setInputHeight(MIN_HEIGHT);
         setLocalInputText('');
         inputRef.current?.clear();
+        inputRef.current?.focus();
       });
     }, [onRegisterClear]);
 
@@ -101,6 +105,7 @@ const ChatInputArea = memo(({
 
     const handleContentSizeChange = useCallback((event: any) => {
       const h = event.nativeEvent?.contentSize?.height;
+      console.log('[INPUT_GROWTH_DEBUG] ChatRoom onContentSizeChange height:', h);
       if (h) {
         setInputHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, h)));
       }
@@ -133,28 +138,38 @@ const ChatInputArea = memo(({
           {!isRecording && (() => {
             const showStickerButton = !editingMessageId;
             return (
-              <View style={[styles.inputWrapper, { backgroundColor: theme.inputBackground }, isDisabled && { backgroundColor: theme.border }]}>
+              <View
+                style={[styles.inputWrapper, { backgroundColor: theme.inputBackground }, isDisabled && { backgroundColor: theme.border }]}
+              >
                 {showStickerButton && (
                   <TouchableOpacity
                     style={styles.innerStickerButton}
+                    activeOpacity={0.7}
+                    delayPressIn={0}
                     onPress={() => {
-                      if (Keyboard.isVisible()) {
-                        Keyboard.dismiss();
-                        return;
-                      }
+                      inputRef.current?.blur();
                       Keyboard.dismiss();
-                      onOpenStickerPicker?.();
+                      if (isStickerPickerVisible) {
+                        onCloseStickerPicker?.();
+                      } else {
+                        onOpenStickerPicker?.();
+                      }
                     }}
                     disabled={isDisabled}
-                    accessibilityLabel="Open sticker picker"
+                    accessibilityLabel={isStickerPickerVisible ? "Close sticker picker" : "Open sticker picker"}
                   >
-                    <Icon name="happy-outline" size={24} color={theme.icon} />
+                    <Icon
+                      name={isStickerPickerVisible ? "close-circle" : "sparkles-outline"}
+                      size={isStickerPickerVisible ? 22 : 24}
+                      color={isStickerPickerVisible ? (isDark ? "#8AB4F8" : "#1A73E8") : theme.icon}
+                    />
                   </TouchableOpacity>
                 )}
 
                 <RichTextInput
                   key={inputClearKey} 
                   ref={inputRef}
+                  onFocus={onFocus}
                   style={[
                     styles.input,
                     { height: inputHeight, color: theme.textPrimary },

@@ -118,18 +118,17 @@ class ConversationViewSet(viewsets.ModelViewSet):
             participants__user=self.request.user
         )
 
-        # Exclude conversations where a MessageRequest exists and is either:
-        # 1. 'pending' and the current user is the receiver (i.e. user has not accepted it yet)
-        # 2. 'rejected' (i.e. request has been declined)
+        # Exclude conversations where a MessageRequest exists and the current user
+        # is the RECEIVER and the request is still pending or was rejected.
+        # The SENDER can still see their own conversation (with a 'pending'/'rejected' badge).
         from django.db.models import Exists, OuterRef
-        pending_or_rejected_requests = MessageRequest.objects.filter(
-            conversation=OuterRef('pk')
-        ).filter(
-            Q(status='rejected') |
-            Q(status='pending', receiver=self.request.user)
+        hidden_requests = MessageRequest.objects.filter(
+            conversation=OuterRef('pk'),
+            receiver=self.request.user,
+            status__in=['pending', 'rejected'],
         )
 
-        qs = qs.exclude(Exists(pending_or_rejected_requests))
+        qs = qs.exclude(Exists(hidden_requests))
 
         return qs.prefetch_related('participants__user', 'messages').distinct().order_by('-updated_at')
 
@@ -537,6 +536,46 @@ class MessageViewSet(viewsets.ModelViewSet):
                 except Exception as ws_err:
                     print(f"Warning: WebSocket broadcast for message request creation failed: {ws_err}")
 
+
+        # Auto-accept pending/rejected MessageRequest if the sender is the receiver of the request
+        try:
+            msg_req = conversation.message_request
+            if msg_req.receiver == request.user and msg_req.status in ['pending', 'rejected']:
+                msg_req.status = 'accepted'
+                msg_req.save()
+                # Broadcast the update via WebSocket
+                try:
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    channel_layer = get_channel_layer()
+                    if channel_layer:
+                        event_data = {
+                            'conversation_id': conversation.id,
+                            'status': 'accepted',
+                            'sender_id': msg_req.sender_id,
+                            'receiver_id': msg_req.receiver_id
+                        }
+                        # Broadcast to chat room
+                        async_to_sync(channel_layer.group_send)(
+                            f'chat_{conversation.id}',
+                            {
+                                'type': 'message_request_status',
+                                'data': event_data
+                            }
+                        )
+                        # Broadcast to both users' update groups
+                        for u_id in [msg_req.sender_id, msg_req.receiver_id]:
+                            async_to_sync(channel_layer.group_send)(
+                                f'user_updates_{u_id}',
+                                {
+                                    'type': 'message_request_status',
+                                    'data': event_data
+                                }
+                            )
+                except Exception as ws_err:
+                    print(f"Warning: WebSocket broadcast for auto-approve failed: {ws_err}")
+        except MessageRequest.DoesNotExist:
+            pass
 
         # WhatsApp-style: Broadcast message via WebSocket and trigger FCM
         self.broadcast_and_notify(message)
@@ -1643,7 +1682,7 @@ def _auto_accept_message_request(user_a, user_b):
     try:
         msg_req = MessageRequest.objects.filter(
             Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a),
-            status='pending'
+            status__in=['pending', 'rejected']
         ).select_related('sender', 'receiver', 'conversation').first()
 
         if not msg_req:

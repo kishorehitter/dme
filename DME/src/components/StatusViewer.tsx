@@ -116,7 +116,7 @@ const ViewerSheet: React.FC<{
         <View style={vs.handle} />
         <Text style={vs.title}>{type === 'views' ? 'Viewers' : 'Likers'}</Text>
         {loading ? <ActivityIndicator color="#4597f5f6" style={{ marginTop: 24 }} /> : 
-         <FlatList data={data} keyExtractor={i => String(i.user_id || i.viewer_id)} renderItem={renderItem} />}
+         <FlatList data={data} keyExtractor={i => String(i.user_id || i.viewer_id)} renderItem={renderItem} contentContainerStyle={{ paddingBottom: Math.max(safeBottom + 16, 24) }} />}
       </View>
     </Modal>
   );
@@ -204,12 +204,45 @@ const StatusViewerScreen: React.FC = () => {
 
   const { theme, isDark } = useTheme();
 
-  useFocusEffect(
-    useCallback(() => {
-      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+  useLayoutEffect(() => {
+    if (Platform.OS === 'android') {
+      pinNavBarColor('#00000000');
+      try { changeNavigationBarColor('#00000000', true, false); } catch (_) {}
+      if (NativeModules.SystemBar) {
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
         NativeModules.SystemBar.setStatusBarColor('#00000000', true);
       }
-    }, [])
+    }
+    StatusBar.setTranslucent(true);
+    StatusBar.setBarStyle('light-content');
+    StatusBar.setBackgroundColor('transparent');
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS === 'android') {
+        pinNavBarColor('#00000000');
+        try { changeNavigationBarColor('#00000000', true, false); } catch (_) {}
+        if (NativeModules.SystemBar) {
+          NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+          NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+        }
+      }
+      StatusBar.setTranslucent(true);
+      StatusBar.setBarStyle('light-content');
+      StatusBar.setBackgroundColor('transparent');
+
+      return () => {
+        if (Platform.OS === 'android') {
+          const targetColor = theme.background || '#FFFFFF';
+          pinNavBarColor(targetColor);
+          try { changeNavigationBarColor(targetColor, !isDark, false); } catch (_) {}
+          if (NativeModules.SystemBar) {
+            NativeModules.SystemBar.setNavigationBarColor(targetColor, isDark);
+          }
+        }
+      };
+    }, [theme, isDark])
   );
 
 
@@ -256,6 +289,27 @@ const StatusViewerScreen: React.FC = () => {
 
   const [kbdHeight, setKbdHeight] = useState(0);
   const keyboardHeightValue = useSharedValue(0);
+
+  // ── Center Fading Toast Modal State ──
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showCenterToast = (message: string, onComplete?: () => void) => {
+    setToastMessage(message);
+    toastOpacity.setValue(0);
+    setToastVisible(true);
+    requestAnimationFrame(() => {
+      Animated.sequence([
+        Animated.timing(toastOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+        Animated.delay(600),
+        Animated.timing(toastOpacity, { toValue: 0, duration: 250, useNativeDriver: true }),
+      ]).start(() => {
+        setToastVisible(false);
+        if (onComplete) onComplete();
+      });
+    });
+  };
 
   useEffect(() => {
     const handleShow = (e: any) => {
@@ -619,10 +673,12 @@ const StatusViewerScreen: React.FC = () => {
     if (!replyText.trim() || replySending) return;
     setReplySending(true);
     try {
-      await StatusService.replyToStatus(current.id, replyText.trim());
+      const res = await StatusService.replyToStatus(current.id, replyText.trim());
       setReplyText('');
       replyRef.current?.blur();
-      Alert.alert('Sent', `Reply sent to ${current.username}`);
+      const conversationId = res?.conversation_id;
+      // Show center fading modal toast and continue playing status
+      showCenterToast('Reply Sent');
     } catch (err: any) {
       Alert.alert('Error', err?.message ?? 'Could not send reply.');
     } finally {
@@ -670,6 +726,21 @@ const StatusViewerScreen: React.FC = () => {
       {...panResponder.panHandlers}
     >
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} animated={true} />
+
+      {/* ── Center Fading Toast Overlay ── */}
+      {toastVisible && (
+        <View style={s.toastOverlay} pointerEvents="none">
+          <Animated.View style={[s.toastBox, { opacity: toastOpacity }]}>
+            <Icon
+              name="checkmark-circle"
+              size={24}
+              color="#4CAF50"
+              style={{ marginRight: 10 }}
+            />
+            <Text style={s.toastText}>{toastMessage}</Text>
+          </Animated.View>
+        </View>
+      )}
 
 
       {/* ── Media FlatList (Allows horizontal swiping between statuses) ── */}
@@ -832,7 +903,14 @@ const StatusViewerScreen: React.FC = () => {
             animatedReplyContainerStyle
           ]}
         >
-          <View style={[s.bottomBar, { paddingBottom: kbdHeight > 0 ? 8 : safeBottom }]}>
+          {kbdHeight > 0 && (
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.6)']}
+              style={{ position: 'absolute', top: -50, left: 0, right: 0, bottom: 0, zIndex: -1 }}
+              pointerEvents="none"
+            />
+          )}
+          <View style={[s.bottomBar, { paddingBottom: kbdHeight > 0 ? 8 : safeBottom + 14 }]}>
             {isOwner ? (
               <>
                 <TouchableOpacity
@@ -1033,6 +1111,33 @@ const s = StyleSheet.create({
   replyInput: { flex: 1, color: '#fff', fontSize: 14, paddingVertical: 8, maxHeight: 80 },
   sendBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center', marginLeft: 6 },
   saveBtn: { alignItems: 'center', minWidth: 36 },
+  toastOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    zIndex: 99999,
+    elevation: 99999,
+  },
+  toastBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(25, 25, 25, 0.94)',
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    borderRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  toastText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
 });
 
 export default StatusViewerScreen;

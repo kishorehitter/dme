@@ -2,17 +2,22 @@ package com.DME;
 
 import android.app.Activity;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.os.Build;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
+import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.UiThreadUtil;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
-import com.facebook.react.bridge.UiThreadUtil;
 
 public class SystemBarModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
 
@@ -31,9 +36,11 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
 
     private volatile String lastStatusColor = null;
     private volatile boolean lastStatusLightIcons = false;
+    private volatile String lastWindowBackground = null;
 
     @ReactMethod
     public void setNavigationBarColor(final String colorHex, final boolean lightIcons) {
+        android.util.Log.d("SystemBarNav", "setNavigationBarColor called: color=" + colorHex + ", lightIcons=" + lightIcons);
         lastNavColor = colorHex;
         lastNavLightIcons = lightIcons;
         applyNavigationBarColor(colorHex, lightIcons);
@@ -59,16 +66,59 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         });
     }
 
+    /**
+     * Sets the native window background color — this is what shows through the
+     * transparent navigation bar when no React Native view paints that area.
+     * Call with '#0D0D0D' when entering Music Room, restore to '#020912' on exit.
+     */
+    @ReactMethod
+    public void setWindowBackground(final String colorHex) {
+        lastWindowBackground = colorHex;
+        final Activity activity = getCurrentActivity();
+        if (activity == null) return;
+        android.util.Log.d("SystemBarNav", "setWindowBackground called: color=" + colorHex);
+        UiThreadUtil.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    int color;
+                    if ("#00000000".equals(colorHex) || "transparent".equalsIgnoreCase(colorHex)) {
+                        color = Color.TRANSPARENT;
+                    } else {
+                        color = Color.parseColor(colorHex);
+                    }
+                    activity.getWindow().getDecorView().setBackgroundColor(color);
+                } catch (Exception e) {
+                    // ignore invalid color
+                }
+            }
+        });
+    }
+
+    private String currentNavColor = null;
+    private Boolean currentNavLightIcons = null;
+
+    private String currentStatusColor = null;
+    private Boolean currentStatusLightIcons = null;
+
+    private String currentWindowBg = null;
+
     private void applyNavigationBarColor(final String colorHex, final boolean lightIcons) {
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
         }
+        if (colorHex != null && colorHex.equals(currentNavColor) && currentNavLightIcons != null && currentNavLightIcons == lightIcons) {
+            return;
+        }
+        currentNavColor = colorHex;
+        currentNavLightIcons = lightIcons;
 
         UiThreadUtil.runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 Window window = activity.getWindow();
+                WindowCompat.setDecorFitsSystemWindows(window, false);
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
                     if ("#00000000".equals(colorHex) || "#01000000".equals(colorHex) || "transparent".equalsIgnoreCase(colorHex)) {
@@ -78,6 +128,7 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         window.setNavigationBarContrastEnforced(false);
+                        window.setStatusBarContrastEnforced(false);
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                         window.setNavigationBarDividerColor(Color.TRANSPARENT);
@@ -99,6 +150,11 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
         }
+        if (colorHex != null && colorHex.equals(currentStatusColor) && currentStatusLightIcons != null && currentStatusLightIcons == lightIcons) {
+            return;
+        }
+        currentStatusColor = colorHex;
+        currentStatusLightIcons = lightIcons;
 
         UiThreadUtil.runOnUiThread(new Runnable() {
             @Override
@@ -126,10 +182,64 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         });
     }
 
+    private ViewTreeObserver.OnGlobalLayoutListener layoutListener = null;
+
+    @ReactMethod
+    public void startKeyboardHeightObserver() {
+        final Activity activity = getCurrentActivity();
+        if (activity == null) return;
+        UiThreadUtil.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    final View contentView = activity.findViewById(android.R.id.content);
+                    if (contentView == null) return;
+                    if (layoutListener != null) {
+                        contentView.getViewTreeObserver().removeOnGlobalLayoutListener(layoutListener);
+                    }
+                    layoutListener = new ViewTreeObserver.OnGlobalLayoutListener() {
+                        private int lastReportedHeight = -1;
+
+                        @Override
+                        public void onGlobalLayout() {
+                            Rect r = new Rect();
+                            contentView.getWindowVisibleDisplayFrame(r);
+                            int screenHeight = contentView.getRootView().getHeight();
+                            int keypadHeight = screenHeight - r.bottom;
+                            float density = activity.getResources().getDisplayMetrics().density;
+                            int keypadHeightDp = (int) (keypadHeight / density);
+
+                            if (Math.abs(keypadHeightDp - lastReportedHeight) >= 4) {
+                                lastReportedHeight = keypadHeightDp;
+                                WritableMap params = Arguments.createMap();
+                                params.putDouble("height", keypadHeightDp > 60 ? keypadHeightDp : 0);
+                                params.putBoolean("isVisible", keypadHeightDp > 60);
+
+                                try {
+                                    if (getReactApplicationContext().hasActiveReactInstance()) {
+                                        getReactApplicationContext()
+                                            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                                            .emit("onDynamicKeyboardHeight", params);
+                                    }
+                                } catch (Exception e) {
+                                    // ignore
+                                }
+                            }
+                        }
+                    };
+                    contentView.getViewTreeObserver().addOnGlobalLayoutListener(layoutListener);
+                } catch (Exception e) {
+                    android.util.Log.e("SystemBarNav", "Error in startKeyboardHeightObserver", e);
+                }
+            }
+        });
+    }
+
     // --- LifecycleEventListener ---
 
     @Override
     public void onHostResume() {
+        android.util.Log.d("SystemBarNav", "onHostResume: lastNavColor=" + lastNavColor + ", lastStatusColor=" + lastStatusColor);
         final Activity activity = getCurrentActivity();
         if (activity != null) {
             UiThreadUtil.runOnUiThread(new Runnable() {
@@ -152,6 +262,9 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         if (lastStatusColor != null) {
             applyStatusBarColor(lastStatusColor, lastStatusLightIcons);
         }
+        if (lastWindowBackground != null) {
+            setWindowBackground(lastWindowBackground);
+        }
     }
 
     @Override
@@ -161,6 +274,16 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
 
     @Override
     public void onHostDestroy() {
-        // no-op
+        try {
+            final Activity activity = getCurrentActivity();
+            if (activity != null && layoutListener != null) {
+                final View contentView = activity.findViewById(android.R.id.content);
+                if (contentView != null) {
+                    contentView.getViewTreeObserver().removeOnGlobalLayoutListener(layoutListener);
+                }
+            }
+        } catch (Exception e) {
+            // ignore
+        }
     }
 }

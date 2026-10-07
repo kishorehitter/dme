@@ -78,6 +78,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 types.pptx,
                 types.plainText,
                 types.zip,
+                types.audio,
                 'com.rarlab.rar-archive', // RAR
                 'application/x-zip-compressed' // ZIP
             ], 

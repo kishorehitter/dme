@@ -318,6 +318,7 @@ class Message(models.Model):
     created_at   = models.DateTimeField(auto_now_add=True)
     edited_at    = models.DateTimeField(null=True, blank=True)
     audio_duration = models.IntegerField(null=True, blank=True)
+    media_group_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
 
     cleared_by = models.ManyToManyField(
         settings.AUTH_USER_MODEL,

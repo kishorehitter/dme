@@ -6,6 +6,7 @@ import { websocketService } from '../services/websocket';
 import fcmService from '../services/fcm';
 import { User, AuthTokens, LoginCredentials, RegisterData, OTPVerify } from '../types';
 import localDatabase from '../services/LocalDatabase';
+import { KeyManager } from '../services/e2ee';
 
 interface AuthContextType {
   user: User | null;
@@ -51,6 +52,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       if (userJson[1] && accessToken[1]) {
         setUser(JSON.parse(userJson[1]));
+        KeyManager.ensureKeysSetup().catch(err => console.warn('[AuthContext] Key setup error:', err));
       }
     } catch (error) {
       console.error('Error loading user:', error);
@@ -62,14 +64,25 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const login = async (credentials: LoginCredentials) => {
     try {
       const response = await authAPI.login(credentials);
+      // If a different user is logging in, wipe the previous user's cached data
+      const prevUserStr = await AsyncStorage.getItem('user');
+      if (prevUserStr) {
+        try {
+          const prevUser = JSON.parse(prevUserStr);
+          if (prevUser?.id && response.user?.id && String(prevUser.id) !== String(response.user.id)) {
+            localDatabase.clearAll();
+          }
+        } catch {}
+      }
       await AsyncStorage.multiSet([
         ['access_token', response.access_token],
         ['refresh_token', response.refresh_token],
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
-      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
+      // Ensure E2EE keys are published on server
+      KeyManager.ensureKeysSetup().catch(err => console.warn('[AuthContext] Key setup error:', err));
       // Re-register FCM device after successful login
       await fcmService.registerDevice();
     } catch (error: any) {
@@ -86,8 +99,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
-      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
+      // Ensure E2EE keys are published on server
+      KeyManager.ensureKeysSetup().catch(err => console.warn('[AuthContext] Key setup error:', err));
       // Re-register FCM device after successful login
       await fcmService.registerDevice();
       return response.user;
@@ -117,8 +131,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ['user', JSON.stringify(response.user)],
       ]);
       websocketService.reset(); // Reset WebSocket state for new login
-      localDatabase.clearAll(); // Clear old cached data for new session
       setUser(response.user);
+      // Ensure E2EE keys are published on server
+      KeyManager.ensureKeysSetup().catch(err => console.warn('[AuthContext] Key setup error:', err));
     } catch (error: any) {
       throw new Error(error.response?.data?.message || 'OTP verification failed');
     }
@@ -137,8 +152,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       // Unregister FCM device before logging out
       await fcmService.unregisterDevice();
       websocketService.disconnectPermanently(); // Stop WebSocket reconnection
+      // NOTE: Do NOT call localDatabase.clearAll() here.
+      // The SQLite cache (messages, media_e2ee keys, media_file_local paths) must
+      // survive logout so that after re-login the same user can still see their
+      // decrypted messages and media without re-downloading / re-decrypting.
+      // The DB is only wiped when a DIFFERENT user logs into this device (see login).
       await AsyncStorage.multiRemove(['access_token', 'refresh_token', 'user']);
-      localDatabase.clearAll(); // Clear old cached data
       setUser(null);
     }
   };

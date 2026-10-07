@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import timedelta
 import environ
 import urllib.parse
+from corsheaders.defaults import default_headers
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'e2ee',
 
     # Cloudinary BEFORE staticfiles (required by django-cloudinary-storage)
     'cloudinary_storage',
@@ -245,6 +247,16 @@ if not IS_DEVELOPMENT:
 
     # Required on Render — SSL is terminated at the load balancer
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'range',    # required for dash.js / video byte-range seeking
+]
+
+CORS_EXPOSE_HEADERS = [
+    'Content-Range',
+    'Content-Length',
+    'Accept-Ranges',
+]
 
 # ─── Django Channels ──────────────────────────────────────────────────────────
 

@@ -11,8 +11,10 @@ import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContext
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.uimanager.ThemedReactContext
-import com.facebook.react.uimanager.events.RCTEventEmitter
+import com.facebook.react.uimanager.UIManagerHelper
+import com.facebook.react.uimanager.events.Event
 import com.facebook.react.views.textinput.ReactEditText
 
 class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
@@ -43,6 +45,26 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
 
     private var lastEmittedContentHeight = 0.0
 
+    private class CustomEvent(
+        surfaceId: Int,
+        viewTag: Int,
+        private val name: String,
+        private val data: WritableMap
+    ) : Event<CustomEvent>(surfaceId, viewTag) {
+        override fun getEventName(): String = name
+        override fun getEventData(): WritableMap = data
+        override fun canCoalesce(): Boolean = false
+    }
+
+    private fun dispatchCustomEvent(eventName: String, eventData: WritableMap) {
+        val reactContext = context as? ReactContext ?: return
+        val eventDispatcher = UIManagerHelper.getEventDispatcherForReactTag(reactContext, id)
+        if (eventDispatcher != null) {
+            val surfaceId = UIManagerHelper.getSurfaceId(reactContext)
+            eventDispatcher.dispatchEvent(CustomEvent(surfaceId, id, eventName, eventData))
+        }
+    }
+
     fun emitContentSizeChange() {
         val density = context.resources.displayMetrics.density
         if (density <= 0f) return
@@ -54,7 +76,7 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
         }
         val contentWidth = width.toDouble() / density
         
-        if (Math.abs(contentHeight - lastEmittedContentHeight) >= 0.5) {
+        if (Math.abs(contentHeight - lastEmittedContentHeight) >= 3.0) {
             lastEmittedContentHeight = contentHeight
             val event = Arguments.createMap()
             val contentSize = Arguments.createMap()
@@ -63,8 +85,7 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
             event.putMap("contentSize", contentSize)
             
             try {
-                (context as? ReactContext)?.getJSModule(RCTEventEmitter::class.java)
-                    ?.receiveEvent(id, "topContentSizeChange", event)
+                dispatchCustomEvent("topContentSizeChange", event)
             } catch (_: Exception) {}
         }
     }
@@ -86,28 +107,23 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
                 if (isSettingText) return
 
                 val event = Arguments.createMap()
-                event.putString("text", s.toString())
+                event.putString("text", s?.toString() ?: "")
                 try {
-                    (context as? ReactContext)?.getJSModule(RCTEventEmitter::class.java)
-                        ?.receiveEvent(id, "topTextChange", event)
+                    dispatchCustomEvent("topTextChange", event)
                 } catch (_: Exception) {}
                 
-                post { emitContentSizeChange() }
+                emitContentSizeChange()
             }
-            override fun afterTextChanged(s: Editable?) {
-                post { emitContentSizeChange() }
-            }
+            override fun afterTextChanged(s: Editable?) {}
         })
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        post { emitContentSizeChange() }
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        emitContentSizeChange()
     }
 
     fun setRichText(text: String?) {
@@ -124,16 +140,51 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val ic = super.onCreateInputConnection(outAttrs) ?: return null
 
-        EditorInfoCompat.setContentMimeTypes(outAttrs, arrayOf("image/gif", "image/png", "image/jpeg"))
+        EditorInfoCompat.setContentMimeTypes(outAttrs, arrayOf("image/gif", "image/png", "image/jpeg", "image/webp"))
         
         return InputConnectionCompat.createWrapper(ic, outAttrs, object : InputConnectionCompat.OnCommitContentListener {
             override fun onCommitContent(inputContentInfo: androidx.core.view.inputmethod.InputContentInfoCompat, flags: Int, opts: android.os.Bundle?): Boolean {
                 val isPermissionGranted = (flags and InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0
                 if (isPermissionGranted) {
-                    inputContentInfo.requestPermission()
+                    try {
+                        inputContentInfo.requestPermission()
+                    } catch (_: Exception) {}
                 }
 
-                // ✅ ROBUST DISMISSAL STRATEGY
+                val mime = try {
+                    inputContentInfo.description.getMimeType(0) ?: "image/png"
+                } catch (_: Exception) {
+                    "image/png"
+                }
+
+                val ext = when {
+                    mime.contains("gif", ignoreCase = true) -> "gif"
+                    mime.contains("png", ignoreCase = true) -> "png"
+                    mime.contains("webp", ignoreCase = true) -> "webp"
+                    else -> "jpg"
+                }
+
+                var resolvedUri = inputContentInfo.contentUri.toString()
+                try {
+                    val cacheFile = java.io.File(context.cacheDir, "gboard_sticker_${System.currentTimeMillis()}.$ext")
+                    context.contentResolver.openInputStream(inputContentInfo.contentUri)?.use { input ->
+                        cacheFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (cacheFile.exists() && cacheFile.length() > 0) {
+                        resolvedUri = "file://${cacheFile.absolutePath}"
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("RichTextInput", "Failed to cache committed content", e)
+                } finally {
+                    if (isPermissionGranted) {
+                        try {
+                            inputContentInfo.releasePermission()
+                        } catch (_: Exception) {}
+                    }
+                }
+
                 // 1. Finish any pending text composition
                 ic.finishComposingText()
 
@@ -145,11 +196,12 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
                 clearFocus()
 
                 val event = Arguments.createMap()
-                event.putString("uri", inputContentInfo.contentUri.toString())
-                event.putString("mimeType", inputContentInfo.description.getMimeType(0))
+                event.putString("uri", resolvedUri)
+                event.putString("mimeType", mime)
 
-                (context as ReactContext).getJSModule(RCTEventEmitter::class.java)
-                    .receiveEvent(id, "topContentCommitted", event)
+                try {
+                    dispatchCustomEvent("topContentCommitted", event)
+                } catch (_: Exception) {}
 
                 return true
             }

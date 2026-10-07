@@ -43,22 +43,46 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
   const nativeRef = useRef<any>(null);
   useImperativeHandle(ref, () => ({
     clear: () => {
+      try {
+        nativeRef.current?.setNativeProps?.({ text: '' });
+      } catch (_) {}
+
       const handle = findNodeHandle(nativeRef.current);
       if (handle != null) {
         try {
-          UIManager.dispatchViewManagerCommand(handle, 'clear', []);
-        } catch (e) {
-          UIManager.updateView(handle, 'RichTextInput', { text: '' });
+          const config = UIManager.getViewManagerConfig?.('RichTextInput');
+          const command = config?.Commands?.clear ?? 1;
+          UIManager.dispatchViewManagerCommand(handle, command as any, []);
+        } catch (_) {
+          try {
+            UIManager.dispatchViewManagerCommand(handle, 1, []);
+          } catch (_) {
+            try {
+              UIManager.dispatchViewManagerCommand(handle, 'clear', []);
+            } catch (_) {}
+          }
         }
       }
     },
     setText: (newText: string) => {
+      try {
+        nativeRef.current?.setNativeProps?.({ text: newText });
+      } catch (_) {}
+
       const handle = findNodeHandle(nativeRef.current);
       if (handle != null) {
         try {
-          UIManager.dispatchViewManagerCommand(handle, 'setText', [newText]);
-        } catch (e) {
-          UIManager.updateView(handle, 'RichTextInput', { text: newText });
+          const config = UIManager.getViewManagerConfig?.('RichTextInput');
+          const command = config?.Commands?.setText ?? 2;
+          UIManager.dispatchViewManagerCommand(handle, command as any, [newText]);
+        } catch (_) {
+          try {
+            UIManager.dispatchViewManagerCommand(handle, 2, [newText]);
+          } catch (_) {
+            try {
+              UIManager.dispatchViewManagerCommand(handle, 'setText', [newText]);
+            } catch (_) {}
+          }
         }
       }
     },

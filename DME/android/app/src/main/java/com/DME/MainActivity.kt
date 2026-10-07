@@ -29,7 +29,12 @@ class MainActivity : ReactActivity() {
       window.isNavigationBarContrastEnforced = false
       window.isStatusBarContrastEnforced = false
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      window.navigationBarDividerColor = Color.TRANSPARENT
+      val layoutParams = window.attributes
+      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+      window.attributes = layoutParams
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
       window.navigationBarDividerColor = Color.TRANSPARENT
       val layoutParams = window.attributes
       layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -44,7 +49,11 @@ class MainActivity : ReactActivity() {
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
     WindowCompat.setDecorFitsSystemWindows(window, false)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      val layoutParams = window.attributes
+      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+      window.attributes = layoutParams
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
       val layoutParams = window.attributes
       layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
       window.attributes = layoutParams
@@ -55,5 +64,12 @@ class MainActivity : ReactActivity() {
         WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
       )
     }
+  }
+
+  override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+    super.onConfigurationChanged(newConfig)
+    val intent = android.content.Intent("onConfigurationChanged")
+    intent.putExtra("newConfig", newConfig)
+    this.sendBroadcast(intent)
   }
 }

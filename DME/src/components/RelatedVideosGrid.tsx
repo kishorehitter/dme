@@ -21,6 +21,8 @@ interface Props {
 
   onPinVideo: (song: Song) => void;
   onUnpinVideo: (videoId: string) => void;
+  // Pass the currently playing song to reserve PiP slot 1.
+  // Pass null when video has ended so slot 1 shows a real suggested video instead.
   currentSong?: Song | null;
   scrollX?: any;
 }
@@ -34,7 +36,10 @@ const RelatedVideosGrid: React.FC<Props> = ({
   currentSong,
   scrollX,
 }) => {
-  // One flat list of "cards": current song first (if playing), queued items next, then fresh suggestions.
+  // One flat list of "cards": current song first (reserves PiP space while
+  // playing — transparent slot overlaid by the live Animated.View player),
+  // queued items next, then fresh suggestions.
+  // When currentSong is null (video ended), no slot is reserved.
   type Card =
     | { kind: 'current'; song: Song }
     | { kind: 'queued'; item: QueueItem }
@@ -56,8 +61,19 @@ const RelatedVideosGrid: React.FC<Props> = ({
 
   const renderCard = (card: Card, key: string) => {
     if (card.kind === 'current') {
+      // Shows the song thumbnail. While playing, the live PiP player (Animated.View)
+      // sits on top of this slot covering it with live video. When the song ends the
+      // PiP collapses and this static thumbnail is visible in slot 1.
       return (
-        <View key={key} style={[styles.videoItem, { backgroundColor: 'transparent' }]} />
+        <View key={key} style={styles.videoItem}>
+          <Image source={{ uri: card.song.thumbnail }} style={styles.thumbnail} />
+          <View style={styles.titleOverlay}>
+            <Text style={styles.videoTitle} numberOfLines={1}>{card.song.title}</Text>
+            {card.song.channelTitle ? (
+              <Text style={styles.channelTitleText} numberOfLines={1}>{card.song.channelTitle}</Text>
+            ) : null}
+          </View>
+        </View>
       );
     }
 

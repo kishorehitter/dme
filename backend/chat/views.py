@@ -1232,7 +1232,9 @@ class MessageDeleteView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            if is_sender:
+            for_everyone = request.query_params.get('for_everyone', 'true').lower() == 'true'
+
+            if is_sender and for_everyone:
                 # Enforce 24-hour unsend window for senders
                 from datetime import timedelta
                 age = timezone.now() - message.created_at

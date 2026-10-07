@@ -16,6 +16,9 @@
   "dependencies": {
     "@livekit/react-native": "^2.10.1",
     "@livekit/react-native-webrtc": "^144.0.0",
+    "@noble/ciphers": "^2.3.0",
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
     "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^1.24.0",
     "@react-native-camera-roll/camera-roll": "^7.10.2",
@@ -53,6 +56,8 @@
     "react-native-image-picker": "^8.2.1",
     "react-native-image-zoom-viewer": "^3.0.1",
     "react-native-incall-manager": "^4.2.1",
+    "react-native-keyboard-controller": "^1.22.4",
+    "react-native-keychain": "^10.0.0",
     "react-native-linear-gradient": "^2.8.3",
     "react-native-navigation-bar-color": "^2.0.2",
     "react-native-nitro-google-signin": "^0.8.2",

@@ -133,11 +133,22 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
 
   const [conversationId, setConversationId] = useState(initialConversationId);
   const initialTabParam = route?.params?.initialTab || route?.params?.tab;
-  const [activeTab, setActiveTab] = useState<HubTab>(
-    initialTabParam === 'approve' || initialTabParam === 'requests' || initialTabParam === 'friends'
-      ? (initialTabParam as HubTab)
-      : 'friends'
-  );
+  const [activeTab, setActiveTab] = useState<HubTab>(() => {
+    if (initialTabParam === 'approve' || initialTabParam === 'requests') return 'approve';
+    if (initialTabParam === 'sent') return 'requests';
+    return 'friends';
+  });
+
+  useEffect(() => {
+    const tabParam = route?.params?.initialTab || route?.params?.tab;
+    if (tabParam === 'approve' || tabParam === 'requests') {
+      setActiveTab('approve');
+    } else if (tabParam === 'sent') {
+      setActiveTab('requests');
+    } else if (tabParam === 'friends') {
+      setActiveTab('friends');
+    }
+  }, [route?.params?.initialTab, route?.params?.tab]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isNewFriendSearchActive, setIsNewFriendSearchActive] = useState(false);
 

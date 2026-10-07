@@ -16,6 +16,7 @@ urlpatterns = [
     path('api/youtube/', include('youtube_search.urls')),
     path('api/music/', include('music.urls')),
     path('api/trivia/', include('trivia.urls')),
+    path('api/e2ee/', include('e2ee.urls')),
     
     # Share / Download routes
     path('invite', views.download_app, name='download_app'),

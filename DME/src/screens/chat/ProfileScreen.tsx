@@ -45,6 +45,7 @@ import { MediaPickerModal } from '../../components/MediaPickerModal';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import { pinNavBarColor } from '../../utils/navBarPin';
 import { useFocusEffect } from '@react-navigation/native';
+import BiometricService from '../../services/BiometricService';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -163,6 +164,37 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     }
   };
   const [showMenu, setShowMenu] = useState(false);
+  const [isChatLocked, setIsChatLocked] = useState<boolean>(() => {
+    if (!conversationId) return false;
+    try {
+      const lockedIds = localDatabase.getLockedConversationIds();
+      return lockedIds.includes(Number(conversationId));
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleLockChat = async () => {
+    if (!conversationId) return;
+    setShowMenu(false);
+
+    const newLockState = !isChatLocked;
+    const success = await BiometricService.authenticate(
+      newLockState ? 'Lock Chat' : 'Unlock Chat',
+      `Verify your identity to ${newLockState ? 'lock' : 'unlock'} this conversation`
+    );
+
+    if (success) {
+      localDatabase.setChatLocked(Number(conversationId), newLockState);
+      setIsChatLocked(newLockState);
+      Toast.show({
+        type: 'success',
+        text1: newLockState ? 'Chat Locked 🔒' : 'Chat Unlocked 🔓',
+        text2: newLockState ? 'This chat has been moved to Locked chats' : 'This chat is now visible in all chats',
+        position: 'bottom',
+      });
+    }
+  };
   const [sharedMedia, setSharedMedia] = useState<any[]>([]);
   const [activeAlbumTab, setActiveAlbumTab] = useState('image');
 
@@ -966,7 +998,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
             <Icon name="arrow-back" size={24} color={theme.textPrimary} />
           </Pressable>
           <Text style={s.headerTitleText} numberOfLines={1}>
-            {displayName}
+            {isReadOnly ? 'Profile' : 'My Profile'}
           </Text>
           <View style={s.headerRightIcons}>
             {isReadOnly && conversationId ? (
@@ -1018,14 +1050,17 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           </TouchableOpacity>
 
           <View style={s.friendHeaderInfo}>
+            <Text style={s.friendDisplayName} numberOfLines={1}>
+              {displayName}
+            </Text>
             {profile.username ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 3 }}>
                 <Text style={s.friendUsername}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 16, fontWeight: 'normal' }}>@</Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 15, fontWeight: 'normal' }}>@</Text>
                   {profile.username}
                 </Text>
                 <TouchableOpacity onPress={handleCopyUsername} style={{ padding: 4 }}>
-                  <Icon name="copy-outline" size={20} color={theme.icon} />
+                  <Icon name="copy-outline" size={18} color={theme.icon} />
                 </TouchableOpacity>
               </View>
             ) : null}
@@ -1267,16 +1302,28 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                 ) : (
                   <>
                     {conversationId ? (
-                      <TouchableOpacity
-                        style={s.popoverItem}
-                        onPress={() => {
-                          setShowMenu(false);
-                          handleClearChat();
-                        }}
-                      >
-                        <Icon name="trash-outline" size={20} color="#F44336" />
-                        <Text style={[s.popoverText, { color: theme.textPrimary }]}>Clear Chat</Text>
-                      </TouchableOpacity>
+                      <>
+                        <TouchableOpacity
+                          style={s.popoverItem}
+                          onPress={handleToggleLockChat}
+                        >
+                          <Icon name={isChatLocked ? 'lock-open-outline' : 'lock-closed-outline'} size={20} color={theme.textPrimary} />
+                          <Text style={[s.popoverText, { color: theme.textPrimary }]}>
+                            {isChatLocked ? 'Unlock Chat' : 'Lock Chat'}
+                          </Text>
+                        </TouchableOpacity>
+                        <View style={s.popoverSeparator} />
+                        <TouchableOpacity
+                          style={s.popoverItem}
+                          onPress={() => {
+                            setShowMenu(false);
+                            handleClearChat();
+                          }}
+                        >
+                          <Icon name="trash-outline" size={20} color="#F44336" />
+                          <Text style={[s.popoverText, { color: theme.textPrimary }]}>Clear Chat</Text>
+                        </TouchableOpacity>
+                      </>
                     ) : null}
                     {conversationId ? <View style={s.popoverSeparator} /> : null}
                     <TouchableOpacity
@@ -1753,9 +1800,10 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   friendAvatar: { width: 90, height: 90, borderRadius: 45 },
   friendAvatarPlaceholder: { backgroundColor: theme.background, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: theme.primary, borderRadius: 45, overflow: 'hidden' },
   friendAvatarText: { fontSize: 32, color: theme.primary, fontWeight: 'bold' },
-  friendHeaderInfo: { flex: 1, marginLeft: 16 },
+  friendHeaderInfo: { flex: 1, marginLeft: 16, justifyContent: 'center' },
+  friendDisplayName: { fontSize: 20, fontWeight: 'bold', color: theme.textPrimary },
   friendName: { fontSize: 20, color: theme.textPrimary, fontWeight: '600' },
-  friendUsername: { fontSize: 18, fontWeight: '700', color: theme.textPrimary },
+  friendUsername: { fontSize: 15, fontWeight: '600', color: theme.textPrimary },
   friendBioText: { fontSize: 14, color: theme.textPrimary, marginTop: 4 },
   friendsCountText: { fontSize: 14, color: theme.primary, fontWeight: 'bold', marginTop: 4 },
   friendDetailsContainer: {

@@ -55,11 +55,21 @@ class CreateTriviaChallengeView(APIView):
             'body': f'{sender_name} challenged you to {category_label} {set_label}. Tap to play!'
         }
 
+        # Stable deduplication ID scoped per challenger
+        import time as _time
+        notif_id = f'trivia_challenge_{request.user.id}_{int(_time.time())}'
+
         data = {
             'type': 'trivia_challenge_token',
-            'challengeToken': str(challenge.token),
+            # Human-readable display fields
+            'category_label': category_label,
+            'set_label': set_label,
             'challenger_name': str(sender_name),
             'challenger_id': str(request.user.id),
+            # Internal routing key — UUID token used only by the app to claim the challenge
+            '_challenge_token': str(challenge.token),
+            # Stable deduplication ID to prevent duplicate notifications
+            'notif_id': notif_id,
         }
 
         # Send FCM directly to all active devices of the friend

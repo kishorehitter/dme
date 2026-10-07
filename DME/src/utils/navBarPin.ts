@@ -29,4 +29,17 @@ export const setWindowBackground = (color: string) => {
       SystemBar.setWindowBackground(color);
     }
   } catch (_) {}
+};
+
+/**
+ * Toggles Android Immersive Sticky Mode (hides navigation bar and status bar).
+ * When active, swiping from top/bottom edge temporarily reveals navigation controls
+ * as transient floating bars that auto-hide without resizing the layout.
+ */
+export const setImmersiveMode = (enabled: boolean) => {
+  try {
+    if (Platform.OS === 'android' && SystemBar?.setImmersiveMode) {
+      SystemBar.setImmersiveMode(enabled);
+    }
+  } catch (_) {}
 };

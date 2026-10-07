@@ -2,17 +2,19 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  TextInput, Dimensions, Keyboard, ScrollView, ActivityIndicator, Platform, Image
+  TextInput, Dimensions, Keyboard, ScrollView, ActivityIndicator, Platform, Image,
+  BackHandler
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { SketchCanvas } from '@terrylinla/react-native-sketch-canvas';
 import ViewShot from 'react-native-view-shot';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Reanimated, { useAnimatedStyle, useSharedValue, runOnJS } from 'react-native-reanimated';
+import Reanimated, { useAnimatedStyle, useSharedValue, runOnJS, withTiming, Easing } from 'react-native-reanimated';
 import { FFmpegKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import RNFS from 'react-native-fs';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 
@@ -68,8 +70,8 @@ interface DraggableOverlayProps {
 const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
   overlay, imgW, imgH, onRemove, onEdit, onPositionChange,
 }) => {
-  const { theme } = useTheme();
-  const ms = dynamicStyles(theme);
+  const { theme, isDark } = useTheme();
+  const ms = dynamicStyles(theme, isDark);
   const translateX    = useSharedValue(overlay.x);
   const translateY    = useSharedValue(overlay.y);
   const savedX        = useSharedValue(overlay.x);
@@ -141,7 +143,8 @@ const DraggableOverlay: React.FC<DraggableOverlayProps> = ({
 // ─────────────────────────────────────────────────────────────────────────────
 const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onClose, onSend, restoreNavBarColor = '#FFFFFF', theme: propTheme = 'light' }) => {
   const { theme, isDark } = useTheme();
-  const ms = dynamicStyles(theme);
+  const insets = useSafeAreaInsets();
+  const ms = dynamicStyles(theme, isDark);
   const iconColor = theme.icon;
 
   // 'view' | 'draw' | 'text'
@@ -160,10 +163,45 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
   const [naturalSize,      setNaturalSize]      = useState<Size | null>(null);
   const [sizeReady,        setSizeReady]        = useState(false);
 
+  const keyboardHeightValue = useSharedValue(0);
+
   const viewShotRef     = useRef<ViewShot>(null);
   const overlaysShotRef = useRef<ViewShot>(null);
   const sketchRef       = useRef<SketchCanvas>(null);
   const inputRef        = useRef<TextInput>(null);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const onShow = (e: any) => {
+      const h = e?.endCoordinates?.height || 0;
+      const duration = Platform.OS === 'ios' ? (e?.duration || 250) : 200;
+      keyboardHeightValue.value = withTiming(h, {
+        duration,
+        easing: Easing.bezier(0.2, 0, 0.2, 1),
+      });
+    };
+    const onHide = (e: any) => {
+      const duration = Platform.OS === 'ios' ? (e?.duration || 250) : 200;
+      keyboardHeightValue.value = withTiming(0, {
+        duration,
+        easing: Easing.bezier(0.2, 0, 0.2, 1),
+      });
+    };
+
+    const subShow = Keyboard.addListener(showEvent, onShow);
+    const subHide = Keyboard.addListener(hideEvent, onHide);
+
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
+  const animatedSheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: -keyboardHeightValue.value }],
+  }));
 
   useEffect(() => {
     if (visible && Platform.OS === 'android') {
@@ -182,6 +220,34 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
       resetState();
     }
   }, [visible, isDark, restoreNavBarColor]);
+
+  // Focus input when entering text mode
+  useEffect(() => {
+    if (mode === 'text') {
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [mode]);
+
+  // Android Back button handling
+  useEffect(() => {
+    if (!visible) return;
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (mode === 'text') {
+        handleDone();
+        return true;
+      }
+      if (mode === 'draw') {
+        setMode('view');
+        return true;
+      }
+      handleClose();
+      return true;
+    });
+    return () => backSub.remove();
+  }, [visible, mode, draftText, editingId, textColor, fontSize]);
 
   // Resolve natural image dimensions as soon as mediaUri is known
   useEffect(() => {
@@ -215,24 +281,74 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
     setHasDrawing(false);
     setNaturalSize(null);
     setSizeReady(false);
+    keyboardHeightValue.value = 0;
   }, []);
 
-  const handleClose = () => { resetState(); onClose(); };
+  const handleClose = () => {
+    Keyboard.dismiss();
+    resetState();
+    onClose();
+  };
+
+  const handleBackdropPress = () => {
+    if (mode === 'text') {
+      handleDone();
+    } else if (mode === 'draw') {
+      setMode('view');
+    } else {
+      handleClose();
+    }
+  };
 
   // ── SEND ──────────────────────────────────────────────────────────────────
   const handleSend = async () => {
     Keyboard.dismiss();
+    let currentOverlays = overlays;
+    const trimmed = draftText.trim();
+    if (trimmed) {
+      if (editingId) {
+        currentOverlays = overlays.map(o =>
+          o.id === editingId ? { ...o, text: trimmed, color: textColor, fontSize } : o,
+        );
+      } else {
+        currentOverlays = [
+          ...overlays,
+          {
+            id: Date.now().toString(),
+            text: trimmed,
+            color: textColor,
+            fontSize,
+            x: 0,
+            y: 0,
+          },
+        ];
+      }
+      setOverlays(currentOverlays);
+    }
     setMode('view');
     setDraftText('');
     setEditingId(null);
     setIsSending(true);
     try {
-      const gif = isGif(mimeType, mediaUri);
+      let resolvedUri = mediaUri;
+      if (resolvedUri.startsWith('content://')) {
+        try {
+          const ts = Date.now();
+          const ext = isGif(mimeType, mediaUri) ? 'gif' : 'png';
+          const cachedPath = `${RNFS.CachesDirectoryPath}/sticker_${ts}.${ext}`;
+          await RNFS.copyFile(mediaUri, cachedPath);
+          resolvedUri = `file://${cachedPath}`;
+        } catch (copyErr) {
+          console.warn('[StickerPreviewModal] Fallback copy failed:', copyErr);
+        }
+      }
+
+      const gif = isGif(mimeType, resolvedUri);
       // It's a sticker if it has no overlays and no drawing
-      const isSticker = overlays.length === 0 && !hasDrawing;
+      const isSticker = currentOverlays.length === 0 && !hasDrawing;
 
       if (isSticker) {
-        onSend(mediaUri, mimeType, '', true);
+        onSend(resolvedUri, mimeType, '', true);
         resetState();
         return;
       }
@@ -243,7 +359,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
         resetState();
         return;
       }
-      await processGifWithFFmpeg();
+      await processGifWithFFmpeg(resolvedUri);
     } catch (e) {
       console.error('Send failed', e);
     } finally {
@@ -252,17 +368,21 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
   };
 
   // ── FFmpeg ────────────────────────────────────────────────────────────────
-  const processGifWithFFmpeg = async () => {
+  const processGifWithFFmpeg = async (sourceUri: string = mediaUri) => {
     const ts = Date.now();
     const outPath = `${RNFS.CachesDirectoryPath}/edited_${ts}.gif`;
     let inputUri: string;
     let tempInputPath: string | null = null;
-    if (mediaUri.startsWith('content://')) {
-      tempInputPath = `${RNFS.CachesDirectoryPath}/input_${ts}.gif`;
-      await RNFS.copyFile(mediaUri, tempInputPath);
-      inputUri = tempInputPath;
+    if (sourceUri.startsWith('content://')) {
+      try {
+        tempInputPath = `${RNFS.CachesDirectoryPath}/input_${ts}.gif`;
+        await RNFS.copyFile(sourceUri, tempInputPath);
+        inputUri = tempInputPath;
+      } catch (err) {
+        inputUri = sourceUri;
+      }
     } else {
-      inputUri = mediaUri.replace('file://', '');
+      inputUri = sourceUri.replace('file://', '');
     }
     let overlayPngPath: string | null = null;
     if (overlays.length > 0 || hasDrawing) {
@@ -300,18 +420,24 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
 
   const handleDone = () => {
     Keyboard.dismiss();
-    if (draftText.trim()) {
+    const trimmed = draftText.trim();
+    if (trimmed) {
       if (editingId) {
         setOverlays(prev => prev.map(o =>
-          o.id === editingId ? { ...o, text: draftText, color: textColor, fontSize } : o,
+          o.id === editingId ? { ...o, text: trimmed, color: textColor, fontSize } : o,
         ));
       } else {
         setOverlays(prev => [...prev, {
           id: Date.now().toString(),
-          text: draftText, color: textColor, fontSize,
-          x: 0, y: 0,
+          text: trimmed,
+          color: textColor,
+          fontSize,
+          x: 0,
+          y: 0,
         }]);
       }
+    } else if (editingId) {
+      setOverlays(prev => prev.filter(o => o.id !== editingId));
     }
     setDraftText('');
     setEditingId(null);
@@ -335,7 +461,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
   };
   const toggleText = () => {
     if (mode === 'text') {
-      setDraftText(''); setEditingId(null); setMode('view');
+      handleDone();
     } else {
       setDraftText(''); setEditingId(null); setMode('text');
     }
@@ -347,63 +473,200 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
   const headerMiddle = () => {
     if (mode === 'draw') {
       return (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={ms.colorRow}
-          style={{ flex: 1 }}
-        >
-          {TEXT_COLORS.map(c => (
-            <TouchableOpacity
-              key={c}
-              onPress={() => setTextColor(c)}
-              style={[ms.colorDot, { backgroundColor: c }, textColor === c && ms.colorDotActive]}
-            />
-          ))}
-        </ScrollView>
+        <View style={ms.pickerContainer}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={ms.colorRow}
+            style={{ flex: 1 }}
+            keyboardShouldPersistTaps="always"
+          >
+            {TEXT_COLORS.map(c => {
+              const isSelected = textColor === c;
+              const isLightColor = c === '#ffffff' || c === '#ffcc00' || c === '#ffff00' || c === '#00ffff';
+              const indicatorColor = isLightColor ? '#000000' : '#FFFFFF';
+
+              return (
+                <TouchableOpacity
+                  key={c}
+                  onPress={() => setTextColor(c)}
+                  style={[
+                    ms.colorDot,
+                    {
+                      backgroundColor: c,
+                      borderColor: isSelected
+                        ? (isLightColor ? '#000000' : '#FFFFFF')
+                        : (isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.2)'),
+                      borderWidth: isSelected ? 2.5 : 1,
+                    },
+                    isSelected && ms.colorDotActive,
+                  ]}
+                  activeOpacity={0.8}
+                >
+                  {isSelected && (
+                    <Icon name="checkmark" size={15} color={indicatorColor} style={{ fontWeight: '900' }} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
       );
     }
     if (mode === 'text') {
       return (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={ms.fontSizeRow}
-          style={{ flex: 1 }}
-        >
-          {FONT_SIZES.map(s => (
-            <TouchableOpacity
-              key={s}
-              onPress={() => setFontSize(s)}
-              style={[ms.sizeBtn, fontSize === s && ms.sizeBtnActive]}
-            >
-              <Text style={[ms.sizeBtnText, { fontSize: 9 + (s - 16) / 4 }, fontSize === s && { color: '#fff' }]}>A</Text>
-            </TouchableOpacity>
-          ))}
-          {/* Color row below font sizes — stacked inside middle slot */}
-          {TEXT_COLORS.map(c => (
-            <TouchableOpacity
-              key={`col-${c}`}
-              onPress={() => setTextColor(c)}
-              style={[ms.colorDot, { backgroundColor: c, marginLeft: 4 }, textColor === c && ms.colorDotActive]}
-            />
-          ))}
-        </ScrollView>
+        <View style={ms.pickerContainer}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={ms.textToolsRow}
+            style={{ flex: 1 }}
+            keyboardShouldPersistTaps="always"
+          >
+            {FONT_SIZES.map(s => (
+              <TouchableOpacity
+                key={`size-${s}`}
+                onPress={() => {
+                  setFontSize(s);
+                  inputRef.current?.focus();
+                }}
+                style={[ms.sizeBtn, fontSize === s && ms.sizeBtnActive]}
+                activeOpacity={0.8}
+              >
+                <Text style={[ms.sizeBtnText, { fontSize: 10 + (s - 16) / 5 }, fontSize === s && { color: '#fff' }]}>
+                  A
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <View style={ms.toolDivider} />
+            {TEXT_COLORS.map(c => {
+              const isSelected = textColor === c;
+              const isLightColor = c === '#ffffff' || c === '#ffcc00' || c === '#ffff00' || c === '#00ffff';
+              const indicatorColor = isLightColor ? '#000000' : '#FFFFFF';
+
+              return (
+                <TouchableOpacity
+                  key={`col-${c}`}
+                  onPress={() => {
+                    setTextColor(c);
+                    inputRef.current?.focus();
+                  }}
+                  style={[
+                    ms.colorDot,
+                    {
+                      backgroundColor: c,
+                      borderColor: isSelected
+                        ? (isLightColor ? '#000000' : '#FFFFFF')
+                        : (isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.2)'),
+                      borderWidth: isSelected ? 2.5 : 1,
+                    },
+                    isSelected && ms.colorDotActive,
+                  ]}
+                  activeOpacity={0.8}
+                >
+                  {isSelected && (
+                    <Icon name="checkmark" size={15} color={indicatorColor} style={{ fontWeight: '900' }} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
       );
     }
-    // view mode — empty middle
+    // view mode — empty spacer
     return <View style={{ flex: 1 }} />;
   };
+
+  const renderRightCluster = () => {
+    if (mode === 'text') {
+      return (
+        <TouchableOpacity onPress={handleDone} style={ms.headerDoneBtn}>
+          <Text style={ms.headerDoneBtnText}>Done</Text>
+          <Icon name="checkmark" size={15} color="#fff" style={{ marginLeft: 4 }} />
+        </TouchableOpacity>
+      );
+    }
+    if (mode === 'draw') {
+      return (
+        <View style={ms.rightCluster}>
+          <TouchableOpacity
+            style={[ms.iconBtn, !hasDrawing && { opacity: 0.4 }]}
+            onPress={handleUndo}
+            disabled={!hasDrawing}
+          >
+            <Icon name="arrow-undo" size={18} color={iconColor} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setMode('view')} style={ms.headerDoneBtn}>
+            <Text style={ms.headerDoneBtnText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    // mode === 'view'
+    return (
+      <View style={ms.rightCluster}>
+        <TouchableOpacity
+          style={[ms.iconBtn, mode === 'draw' && ms.activeIconBtn]}
+          onPress={toggleDraw}
+        >
+          <Icon name="brush-outline" size={18} color={mode === 'draw' ? '#fff' : iconColor} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[ms.iconBtn, mode === 'text' && ms.activeIconBtn]}
+          onPress={toggleText}
+        >
+          <Icon name="text" size={17} color={mode === 'text' ? '#fff' : iconColor} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[ms.iconBtn, overlays.length === 0 && !hasDrawing && { opacity: 0.4 }]}
+          onPress={handleUndo}
+          disabled={overlays.length === 0 && !hasDrawing}
+        >
+          <Icon name="arrow-undo" size={18} color={iconColor} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={ms.headerSendBtn}
+          onPress={handleSend}
+          disabled={isSending}
+          activeOpacity={0.85}
+        >
+          {isSending ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <>
+              <Text style={ms.headerSendBtnText}>Send</Text>
+              <Icon name="send" size={13} color="#fff" style={{ marginLeft: 5 }} />
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const modalHeight = Math.min(height * 0.48, 420);
 
   return (
     <View style={[StyleSheet.absoluteFill, { zIndex: 1000 }]}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <View style={ms.backdrop}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={handleClose} />
-          <View style={ms.bottomSheet}>
-
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={handleBackdropPress}
+          />
+          <Reanimated.View
+            style={[
+              ms.bottomSheet,
+              {
+                height: modalHeight,
+                paddingBottom: Math.max(insets.bottom, 10),
+              },
+              animatedSheetStyle,
+            ]}
+          >
             {/* ══════════════════════════════════════════
-                HEADER — close | [middle slot] | sketch text undo
+                HEADER — close | [middle slot] | right cluster with Send
             ══════════════════════════════════════════ */}
             <View style={ms.topBar}>
               {/* Close */}
@@ -411,27 +674,11 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
                 <Icon name="close" size={22} color={iconColor} />
               </TouchableOpacity>
 
-              {/* Middle slot — fills all available space */}
+              {/* Middle slot */}
               {headerMiddle()}
 
-              {/* Right cluster: sketch · text · undo */}
-              <View style={ms.rightCluster}>
-                <TouchableOpacity
-                  style={[ms.iconBtn, mode === 'draw' && ms.activeIconBtn]}
-                  onPress={toggleDraw}
-                >
-                  <Icon name="brush-outline" size={18} color={mode === 'draw' ? '#fff' : iconColor} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[ms.iconBtn, mode === 'text' && ms.activeIconBtn]}
-                  onPress={toggleText}
-                >
-                  <Icon name="text" size={17} color={mode === 'text' ? '#fff' : iconColor} />
-                </TouchableOpacity>
-                <TouchableOpacity style={ms.iconBtn} onPress={handleUndo}>
-                  <Icon name="arrow-undo" size={18} color={iconColor} />
-                </TouchableOpacity>
-              </View>
+              {/* Right cluster */}
+              {renderRightCluster()}
             </View>
 
             {/* ══════════════════════════════════════════
@@ -476,20 +723,68 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
                       onStrokeEnd={() => setHasDrawing(true)}
                     />
 
-                    {/* Text overlays */}
-                    {overlays.map(o => (
-                      <DraggableOverlay
-                        key={o.id}
-                        overlay={o}
-                        imgW={imgW}
-                        imgH={imgH}
-                        onRemove={handleRemoveOverlay}
-                        onEdit={handleEditOverlay}
-                        onPositionChange={handlePositionChange}
-                      />
-                    ))}
+                    {/* Text overlays (hide the one currently being edited) */}
+                    {overlays.map(o => {
+                      if (mode === 'text' && editingId === o.id) return null;
+                      return (
+                        <DraggableOverlay
+                          key={o.id}
+                          overlay={o}
+                          imgW={imgW}
+                          imgH={imgH}
+                          onRemove={handleRemoveOverlay}
+                          onEdit={handleEditOverlay}
+                          onPositionChange={handlePositionChange}
+                        />
+                      );
+                    })}
                   </ViewShot>
                 </ViewShot>
+              )}
+
+              {/* Live TextInput rendered directly over the sticker or GIF */}
+              {mode === 'text' && (
+                <View style={[StyleSheet.absoluteFill, ms.textEditorOverlay]} pointerEvents="box-none">
+                  <TouchableOpacity
+                    style={StyleSheet.absoluteFill}
+                    activeOpacity={1}
+                    onPress={handleDone}
+                  />
+                  <View
+                    style={[
+                      ms.activeInputWrapper,
+                      {
+                        width: imgW > 0 ? imgW : '90%',
+                        height: imgH > 0 ? imgH : '90%',
+                      },
+                    ]}
+                    pointerEvents="box-none"
+                  >
+                    <TextInput
+                      ref={inputRef}
+                      style={[
+                        ms.overlayText,
+                        ms.activeTextInput,
+                        {
+                          color: textColor,
+                          fontSize: fontSize,
+                        },
+                      ]}
+                      value={draftText}
+                      onChangeText={setDraftText}
+                      autoFocus
+                      multiline
+                      placeholder="Type text…"
+                      placeholderTextColor="rgba(255,255,255,0.6)"
+                      textAlign="center"
+                      underlineColorAndroid="transparent"
+                      returnKeyType="done"
+                      blurOnSubmit={true}
+                      onSubmitEditing={handleDone}
+                      selectionColor={textColor}
+                    />
+                  </View>
+                </View>
               )}
 
               {overlays.length > 0 && mode === 'view' && (
@@ -497,54 +792,7 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
               )}
             </View>
 
-            {/* ══════════════════════════════════════════
-                BOTTOM BAR
-                — text mode:  [  Type here...  ] [Done]
-                — otherwise:  [        Send        ]
-            ══════════════════════════════════════════ */}
-            <View style={ms.bottomBar}>
-              {mode === 'text' ? (
-                <View style={ms.textInputRow}>
-                  <TextInput
-                    ref={inputRef}
-                    style={ms.textInput}
-                    value={draftText}
-                    onChangeText={setDraftText}
-                    autoFocus
-                    multiline={false}
-                    placeholder="Type here..."
-                    placeholderTextColor={theme.textMuted}
-                    textAlign="left"
-                    underlineColorAndroid="transparent"
-                    returnKeyType="done"
-                    onSubmitEditing={handleDone}
-                    // text color preview matches chosen color
-                    selectionColor={textColor}
-                  />
-                  <TouchableOpacity onPress={handleDone} style={ms.doneBtn}>
-                    <Text style={ms.doneBtnText}>Done</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <TouchableOpacity style={ms.sendBtn} onPress={handleSend} disabled={isSending}>
-                  {isSending ? (
-                    <>
-                      <ActivityIndicator color="#fff" size="small" />
-                      <Text style={[ms.sendBtnText, { marginLeft: 10 }]}>
-                        {isGif(mimeType, mediaUri) ? 'Processing GIF…' : 'Sending…'}
-                      </Text>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={ms.sendBtnText}>Send</Text>
-                      <Icon name="send" size={18} color="#fff" style={{ marginLeft: 8 }} />
-                    </>
-                  )}
-                </TouchableOpacity>
-              )}
-            </View>
-
-          </View>
+          </Reanimated.View>
         </View>
       </GestureHandlerRootView>
     </View>
@@ -552,40 +800,164 @@ const StickerPreviewModal: React.FC<Props> = ({ visible, mediaUri, mimeType, onC
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleSheet.create({
-  backdrop:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
-  bottomSheet:  {
-    height: height * 0.62,
+const dynamicStyles = (theme: import('../utils/theme').ThemeColors, isDark: boolean = false) => StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    justifyContent: 'flex-end',
+  },
+  bottomSheet: {
     backgroundColor: theme.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: 'hidden',
-    // fixed height → media area never resizes when toolbar changes
+    elevation: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
   },
 
   // ── Header ──
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingTop: 14,
+    paddingHorizontal: 12,
+    paddingTop: 12,
     paddingBottom: 10,
     gap: 6,
-    // no fixed height — grows if font-size row needs two lines (we keep it single-row via ScrollView)
   },
-  rightCluster: { flexDirection: 'row', gap: 6 },
+  rightCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
 
-  iconBtn:       { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.inputBackground, justifyContent: 'center', alignItems: 'center' },
-  activeIconBtn: { backgroundColor: '#4597f5f6' },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: theme.inputBackground,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  activeIconBtn: {
+    backgroundColor: isDark ? '#1E293B' : '#0F172A',
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(59, 130, 246, 0.35)' : 'transparent',
+  },
 
-  colorRow:    { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 8 },
-  colorDot:    { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: 'transparent' },
-  colorDotActive: { borderColor: theme.textPrimary, transform: [{ scale: 1.15 }] },
+  headerSendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 13,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0F62FE',
+    marginLeft: 2,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+  },
+  headerSendBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
 
-  fontSizeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, gap: 6 },
-  sizeBtn:     { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.inputBackground, justifyContent: 'center', alignItems: 'center' },
-  sizeBtnActive: { backgroundColor: '#4597f5f6' },
-  sizeBtnText: { color: theme.textPrimary, fontWeight: 'bold' },
+  headerDoneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0F62FE',
+    marginLeft: 2,
+  },
+  headerDoneBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+
+  pickerContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+    borderRadius: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
+    marginHorizontal: 4,
+    height: 38,
+  },
+
+  colorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+    gap: 8,
+  },
+  colorDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1.5 },
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+  },
+  colorDotActive: {
+    transform: [{ scale: 1.12 }],
+    elevation: 5,
+    shadowOpacity: 0.4,
+  },
+
+  textToolsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+    gap: 6,
+  },
+  fontSizeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+    gap: 6,
+  },
+  sizeBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.1)',
+  },
+  sizeBtnActive: {
+    backgroundColor: '#0F62FE',
+    borderColor: '#0F62FE',
+  },
+  sizeBtnText: {
+    color: theme.textPrimary,
+    fontWeight: 'bold',
+  },
+  toolDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.15)',
+    marginHorizontal: 4,
+  },
 
   // ── Media ──
   mediaContainer: {
@@ -598,7 +970,6 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
 
   overlayWrap: {
     position: 'absolute',
-    // top/left set dynamically to imgH/2 and imgW/2 so translate(0,0) = center
     transform: [{ translateX: -50 }, { translateY: -20 }],
     padding: 16,
   },
@@ -611,29 +982,37 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     minWidth: 40,
   },
 
-  hint: { position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', color: theme.textMuted, fontSize: 10 },
-
-  // ── Bottom bar ──
-  bottomBar: { paddingHorizontal: 14, paddingVertical: 12, backgroundColor: theme.surface },
-
-  // Send button
-  sendBtn:     { flexDirection: 'row', height: 48, borderRadius: 24, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
-  sendBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-
-  // Text-mode row: [input .....] [Done]
-  textInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  textInput: {
-    flex: 1,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: theme.inputBackground,
-    paddingHorizontal: 18,
-    color: theme.textPrimary,
-    fontSize: 16,
-    fontWeight: '600',
+  textEditorOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 50,
   },
-  doneBtn:     { height: 48, paddingHorizontal: 20, borderRadius: 24, backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
-  doneBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  activeInputWrapper: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  activeTextInput: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    minWidth: 60,
+    maxWidth: '92%',
+    alignSelf: 'center',
+  },
+
+  hint: {
+    position: 'absolute',
+    bottom: 6,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    color: theme.textMuted,
+    fontSize: 10,
+  },
 });
 
 export default StickerPreviewModal;

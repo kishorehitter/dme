@@ -23,12 +23,15 @@ import {
   Dimensions, Keyboard, Platform, ScrollView,
   KeyboardAvoidingView, Modal, BackHandler,
   Animated, PanResponder, DeviceEventEmitter, AppState, Vibration,
-  LayoutChangeEvent, NativeModules, LayoutAnimation,
+  LayoutChangeEvent, NativeModules, LayoutAnimation, Easing as RNEasing,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import AmbientDiscoBackground, { RoomTheme } from '../components/AmbientDiscoBackground';
+import BackgroundAmbientPlayer from '../components/BackgroundAmbientPlayer';
 import DrivePlayer from '../components/DrivePlayer';
+import DirectVideoPlayer from '../components/DirectVideoPlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
-import TrackPlayerService from '../services/TrackPlayerService';
+import TrackPlayerService, { extractStreamUrlClientSide, extractVideoStreamUrlClientSide, heightToQualityKey, getEffectiveResolutionHeight } from '../services/TrackPlayerService';
 import TrackPlayer, { Event, PlaybackState } from '@rntp/player';
 import { startMusicService, updateMusicService, stopMusicService } from '../services/MusicServiceBridge';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -45,7 +48,7 @@ import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Orientation from 'react-native-orientation-locker';
-import { pinNavBarColor, clearNavBarPin } from '../utils/navBarPin';
+import { pinNavBarColor, clearNavBarPin, setWindowBackground, setImmersiveMode } from '../utils/navBarPin';
 import { resolveImageUrl } from '../utils/image';
 import { colors } from '../utils/theme';
 import { API_BASE_URL } from '../config/network';
@@ -62,6 +65,9 @@ import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../components/D
 import LottieStickerMessage from '../components/LottieStickerMessage';
 import { BUILT_IN_STICKER_PACKS, Sticker } from '../stickers/stickerPacks';
 import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
+import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import { useMusicVoiceChat } from '../hooks/useMusicVoiceChat';
+
 
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
@@ -151,36 +157,64 @@ const fetchVideoAspectRatio = async (videoId: string): Promise<number | null> =>
 };
 
 const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Promise<Song> => {
+  const cleanFallback = (fallbackName && fallbackName !== 'Watch Party' && fallbackName !== 'YouTube Video') ? fallbackName : '';
   const base: Song = {
     videoId,
-    title:        fallbackName ?? 'YouTube Video',
-    thumbnail:    `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+    title:        cleanFallback || 'Loading...',
+    thumbnail:    `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
     channelTitle: 'YouTube',
     addedBy:      fallbackName ?? 'Someone',
   };
+
+  let resolvedTitle = base.title;
+  let resolvedChannel = base.channelTitle;
+  let resolvedThumb = base.thumbnail;
+  let resolvedLogo: string | undefined = undefined;
+
+  // 1. YouTube official oEmbed API — ultra-fast (50ms), guaranteed accurate title & channel name
   try {
-    const channelLogo = await fetchChannelLogo(videoId);
-    const resp = await api.post('/music/youtube/search/', {
-      query:      `https://www.youtube.com/watch?v=${videoId}`,
-      maxResults: 1,
-    });
-    if (resp.data?.items?.length > 0) {
-      const item = resp.data.items[0];
-      return {
-        ...base,
-        title:        item.snippet.title,
-        thumbnail:    item.snippet.thumbnails.medium.url,
-        channelTitle: item.snippet.channelTitle,
-        channelLogo:  channelLogo || undefined,
-      };
-    }
-    if (channelLogo) {
-      return { ...base, channelLogo };
+    const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+    if (oembedRes.ok) {
+      const data = await oembedRes.json();
+      if (data.title) resolvedTitle = data.title;
+      if (data.author_name) resolvedChannel = data.author_name;
+      if (data.thumbnail_url) resolvedThumb = data.thumbnail_url;
     }
   } catch (e) {
-    console.warn('🎵 Metadata fetch failed:', e);
+    console.warn('🎵 oEmbed metadata fetch failed:', e);
   }
-  return base;
+
+  // 2. Fetch Channel Logo from watch page HTML
+  try {
+    const channelLogo = await fetchChannelLogo(videoId);
+    if (channelLogo) resolvedLogo = channelLogo;
+  } catch (e) {
+    console.warn('🎵 Channel logo fetch error:', e);
+  }
+
+  // 3. Optional backend search API fallback if title is still missing
+  if (resolvedTitle === 'Loading...' || resolvedTitle === 'YouTube Video') {
+    try {
+      const resp = await api.post('/music/youtube/search/', {
+        query:      `https://www.youtube.com/watch?v=${videoId}`,
+        maxResults: 1,
+      });
+      if (resp.data?.items?.length > 0) {
+        const item = resp.data.items[0];
+        if (item.snippet?.title) resolvedTitle = item.snippet.title;
+        if (item.snippet?.channelTitle) resolvedChannel = item.snippet.channelTitle;
+        if (item.snippet?.thumbnails?.medium?.url) resolvedThumb = item.snippet.thumbnails.medium.url;
+      }
+    } catch (_) {}
+  }
+
+  return {
+    ...base,
+    title:        resolvedTitle,
+    channelTitle: resolvedChannel,
+    thumbnail:    resolvedThumb,
+    channelLogo:  resolvedLogo,
+  };
 };
 
 const EMOJI_MATCH_REGEX = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?\p{Emoji_Modifier}?)*/gu;
@@ -218,23 +252,150 @@ interface ControlsProps {
   onToggleFullscreen: () => void;
   onShowRelated: () => void;
   onSettings?: () => void;
+  onSingleTap?: () => void;
+  onKeepControlsAlive?: () => void;
   isFullscreen: boolean;
   isDrivePlayer?: boolean;
+  title?: string;
 }
 
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
   position, duration,
   onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, onSettings,
+  onSingleTap, onKeepControlsAlive,
   isFullscreen,
   isDrivePlayer,
+  title,
 }) => {
   const insets = useSafeAreaInsets();
   const canControlRef = useRef(canControl);
   const durationRef = useRef(duration);
+  const positionRef = useRef(position);
 
   useEffect(() => { canControlRef.current = canControl; }, [canControl]);
   useEffect(() => { durationRef.current = duration; }, [duration]);
+  useEffect(() => { positionRef.current = position; }, [position]);
+
+  // ── Double Tap Seek (-10s / +10s) ──
+  const lastLeftTapRef = useRef<number>(0);
+  const leftTapTimeoutRef = useRef<any>(null);
+  const lastRightTapRef = useRef<number>(0);
+  const rightTapTimeoutRef = useRef<any>(null);
+
+  const leftBadgeOpacity = useRef(new Animated.Value(0)).current;
+  const leftBadgeScale   = useRef(new Animated.Value(0.7)).current;
+  const rightBadgeOpacity = useRef(new Animated.Value(0)).current;
+  const rightBadgeScale   = useRef(new Animated.Value(0.7)).current;
+  const [showLeftBadge, setShowLeftBadge] = useState(false);
+  const [showRightBadge, setShowRightBadge] = useState(false);
+  const leftAnimTimer = useRef<any>(null);
+  const rightAnimTimer = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (leftTapTimeoutRef.current) clearTimeout(leftTapTimeoutRef.current);
+      if (rightTapTimeoutRef.current) clearTimeout(rightTapTimeoutRef.current);
+      if (leftAnimTimer.current) clearTimeout(leftAnimTimer.current);
+      if (rightAnimTimer.current) clearTimeout(rightAnimTimer.current);
+    };
+  }, []);
+
+  const triggerBadgeAnim = (side: 'left' | 'right') => {
+    const opacity = side === 'left' ? leftBadgeOpacity : rightBadgeOpacity;
+    const scale   = side === 'left' ? leftBadgeScale : rightBadgeScale;
+    const setShow = side === 'left' ? setShowLeftBadge : setShowRightBadge;
+    const timerRef= side === 'left' ? leftAnimTimer : rightAnimTimer;
+
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setShow(true);
+    opacity.setValue(1);
+    scale.setValue(0.7);
+
+    Animated.spring(scale, {
+      toValue: 1,
+      friction: 4,
+      tension: 60,
+      useNativeDriver: true,
+    }).start();
+
+    timerRef.current = setTimeout(() => {
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => {
+        setShow(false);
+      });
+    }, 500);
+  };
+
+  const triggerSeekBackward = () => {
+    if (isEnded) return;
+    if (!canControlRef.current) {
+      console.warn('📊 [SEEK DENIED] User is not DJ, cannot seek');
+      return;
+    }
+    const cur = positionRef.current || 0;
+    const target = Math.max(0, cur - 10);
+    positionRef.current = target;
+    onSeek(target);
+    triggerBadgeAnim('left');
+    onKeepControlsAlive?.();
+  };
+
+  const triggerSeekForward = () => {
+    if (isEnded) return;
+    if (!canControlRef.current) {
+      console.warn('📊 [SEEK DENIED] User is not DJ, cannot seek');
+      return;
+    }
+    const cur = positionRef.current || 0;
+    const dur = durationRef.current || 0;
+    const target = dur > 0 ? Math.min(dur, cur + 10) : cur + 10;
+    positionRef.current = target;
+    onSeek(target);
+    triggerBadgeAnim('right');
+    onKeepControlsAlive?.();
+  };
+
+  const handleLeftPress = () => {
+    const now = Date.now();
+    if (now - lastLeftTapRef.current < 350) {
+      if (leftTapTimeoutRef.current) {
+        clearTimeout(leftTapTimeoutRef.current);
+        leftTapTimeoutRef.current = null;
+      }
+      lastLeftTapRef.current = now;
+      triggerSeekBackward();
+    } else {
+      lastLeftTapRef.current = now;
+      leftTapTimeoutRef.current = setTimeout(() => {
+        lastLeftTapRef.current = 0;
+        leftTapTimeoutRef.current = null;
+        onSingleTap?.();
+      }, 300);
+    }
+  };
+
+  const handleRightPress = () => {
+    const now = Date.now();
+    if (now - lastRightTapRef.current < 350) {
+      if (rightTapTimeoutRef.current) {
+        clearTimeout(rightTapTimeoutRef.current);
+        rightTapTimeoutRef.current = null;
+      }
+      lastRightTapRef.current = now;
+      triggerSeekForward();
+    } else {
+      lastRightTapRef.current = now;
+      rightTapTimeoutRef.current = setTimeout(() => {
+        lastRightTapRef.current = 0;
+        rightTapTimeoutRef.current = null;
+        onSingleTap?.();
+      }, 300);
+    }
+  };
 
   const opacity    = useRef(new Animated.Value(1)).current;
   const knobX      = useRef(new Animated.Value(0)).current;
@@ -305,82 +466,166 @@ const VideoControls: React.FC<ControlsProps> = ({
 
   return (
     <Animated.View style={[cv.wrap, { opacity: isFullscreen ? opacity : 1 }]} pointerEvents={(visible || !isFullscreen) ? 'box-none' : 'none'}>
-      <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
-      <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
-      {!isDrivePlayer && onSettings && (
-        <Animated.View style={[{ position: 'absolute', top: isFullscreen ? (insets.top > 0 ? insets.top : 8) : 2, left: isFullscreen ? (insets.left > 0 ? insets.left + 8 : 16) : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-          <TouchableOpacity style={cv.relatedBtn} onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Icon name="settings-sharp" size={18} color="#fff" />
-          </TouchableOpacity>
-        </Animated.View>
+      {isFullscreen ? (
+        <>
+          <Animated.View style={[cv.scrimTop, { opacity }]} pointerEvents="none">
+            <LinearGradient
+              colors={['rgba(0,0,0,0.75)', 'rgba(0,0,0,0.25)', 'transparent']}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+          <Animated.View style={[cv.scrimBottom, { opacity }]} pointerEvents="none">
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.85)']}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+
+          <Animated.View
+            style={[
+              cv.fullscreenTopBar,
+              {
+                paddingTop: insets.top > 0 ? insets.top + 6 : 14,
+                paddingLeft: insets.left > 0 ? insets.left + 12 : 16,
+                paddingRight: insets.right > 0 ? insets.right + 12 : 16,
+                opacity,
+              },
+            ]}
+            pointerEvents={visible ? 'auto' : 'none'}
+          >
+            <View style={cv.fullscreenTopLeft}>
+              <TouchableOpacity
+                style={cv.fullscreenIconBtn}
+                onPress={onToggleFullscreen}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="arrow-back" size={22} color="#fff" />
+              </TouchableOpacity>
+              {!!title && (
+                <Text style={cv.fullscreenTitle} numberOfLines={1} ellipsizeMode="tail">
+                  {title}
+                </Text>
+              )}
+            </View>
+
+            <View style={cv.fullscreenTopRight}>
+              {!isDrivePlayer && onSettings && (
+                <TouchableOpacity
+                  style={cv.fullscreenIconBtn}
+                  onPress={onSettings}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Icon name="settings-sharp" size={18} color="#fff" />
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={cv.fullscreenIconBtn}
+                onPress={onToggleFullscreen}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="contract" size={18} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        </>
+      ) : (
+        <>
+          <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
+          <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
+          {!isDrivePlayer && onSettings && (
+            <Animated.View style={[{ position: 'absolute', top: 2, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+              <TouchableOpacity style={cv.relatedBtn} onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Icon name="settings-sharp" size={18} color="#fff" />
+              </TouchableOpacity>
+            </Animated.View>
+          )}
+          <Animated.View style={[{ position: 'absolute', top: 2, right: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+            <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Icon name="expand" size={18} color="#fff" />
+            </TouchableOpacity>
+          </Animated.View>
+        </>
       )}
-      <Animated.View style={[{ position: 'absolute', top: isFullscreen ? (insets.top > 0 ? insets.top : 8) : 2, right: isFullscreen ? (insets.right > 0 ? insets.right + 8 : 16) : 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-        <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen}>
-          <Icon name="expand" size={18} color="#fff" />
+
+      {/* ── Center Controls Row: Double Tap Left (-10s), Play/Pause, Double Tap Right (+10s) ── */}
+      <Animated.View
+        style={[cv.centerRow, { opacity }]}
+        pointerEvents={visible ? 'box-none' : 'none'}
+      >
+        {/* Left Side: Double tap to seek -10s */}
+        <TouchableOpacity
+          style={cv.sideSeekZone}
+          activeOpacity={1}
+          onPress={handleLeftPress}
+          pointerEvents={visible ? 'auto' : 'none'}
+        >
+          {showLeftBadge && (
+            <Animated.View style={[cv.seekBadge, { opacity: leftBadgeOpacity, transform: [{ scale: leftBadgeScale }] }]}>
+              <View style={cv.seekBadgeInner}>
+                <Icon name="play-back" size={18} color="#fff" />
+                <Text style={cv.seekBadgeText}>-10s</Text>
+              </View>
+            </Animated.View>
+          )}
+        </TouchableOpacity>
+
+        {/* Center: Play / Pause */}
+        {!isBuffering && !isEnded ? (
+          <View style={cv.centreBtn} pointerEvents={visible ? 'auto' : 'none'}>
+            <TouchableOpacity
+              style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+              onPress={() => onPlayPause()}
+              activeOpacity={0.7}
+              disabled={!canControl}
+            >
+              <View style={[cv.centreBtnInner, !canControl && cv.centreBtnDisabled]}>
+                <Icon
+                  name={isPlaying ? 'pause' : 'play'}
+                  size={22}
+                  color={canControl ? '#fff' : 'rgba(255,255,255,0.35)'}
+                  style={{ marginLeft: isPlaying ? 0 : 2.5 }}
+                />
+              </View>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={cv.centreBtn} />
+        )}
+
+        {/* Right Side: Double tap to seek +10s */}
+        <TouchableOpacity
+          style={cv.sideSeekZone}
+          activeOpacity={1}
+          onPress={handleRightPress}
+          pointerEvents={visible ? 'auto' : 'none'}
+        >
+          {showRightBadge && (
+            <Animated.View style={[cv.seekBadge, { opacity: rightBadgeOpacity, transform: [{ scale: rightBadgeScale }] }]}>
+              <View style={cv.seekBadgeInner}>
+                <Icon name="play-forward" size={18} color="#fff" />
+                <Text style={cv.seekBadgeText}>+10s</Text>
+              </View>
+            </Animated.View>
+          )}
         </TouchableOpacity>
       </Animated.View>
 
-      {isDrivePlayer && !isBuffering && !isEnded && (
-        <Animated.View
-          style={[cv.centreBtn, { opacity }]}
-          pointerEvents={visible ? 'auto' : 'none'}
-        >
-          <TouchableOpacity
-            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
-            onPress={() => onPlayPause()}
-            activeOpacity={0.7}
-            disabled={!canControl}
-          >
-            <View style={[cv.centreBtnInner, !canControl && cv.centreBtnDisabled]}>
-              <Icon
-                name={isPlaying ? 'pause' : 'play'}
-                size={32}
-                color={canControl ? '#fff' : 'rgba(255,255,255,0.35)'}
-                style={{ marginLeft: isPlaying ? 0 : 5 }}
-              />
-            </View>
-          </TouchableOpacity>
-        </Animated.View>
-      )}
-
-      {!isDrivePlayer && !isBuffering && !isEnded && (
-        <TouchableOpacity
-          style={[cv.centreBtn, { opacity: 0 }]}
-          onPress={() => onPlayPause()}
-          activeOpacity={0}
-          disabled={!canControl}
-        >
-          <View style={[cv.centreBtnInner, !canControl && cv.centreBtnDisabled]}>
-            <Icon
-              name={isPlaying ? 'pause' : 'play'}
-              size={32}
-              color={canControl ? '#fff' : 'rgba(255,255,255,0.35)'}
-              style={{ marginLeft: isPlaying ? 0 : 5 }}
-            />
-          </View>
-        </TouchableOpacity>
-      )}
-
       {isFullscreen ? (
-        // ── FULLSCREEN: unchanged from the original behavior — entire
-        // bar (track + time row) only appears on tap, governed by the
-        // same `opacity` as play/pause/skip/expand, positioned exactly
-        // where it has always sat (above the bottom, with its existing
-        // padding) — not pinned to bottom:0.
-        <View style={[
+        <Animated.View style={[
           cv.bottomBar, 
           { 
-            paddingLeft: isFullscreen ? (insets.left > 0 ? insets.left + 16 : 16) : 16, 
-            paddingRight: isFullscreen ? (insets.right > 0 ? insets.right + 16 : 16) : 16,
-            paddingBottom: isFullscreen ? (insets.bottom > 0 ? insets.bottom + 8 : 12) : 12 
+            paddingLeft: insets.left > 0 ? insets.left + 16 : 20, 
+            paddingRight: insets.right > 0 ? insets.right + 16 : 20,
+            paddingBottom: insets.bottom > 0 ? insets.bottom + 8 : 16,
+            opacity,
           }
-        ]}>
-          <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 20 }]}>
+        ]} pointerEvents={visible ? 'auto' : 'none'}>
+          <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 12 }]}>
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
           </View>
           <View
             {...pan.panHandlers}
-            style={{ height: 24, justifyContent: 'flex-end', paddingHorizontal: 0 }}
+            style={{ height: 28, justifyContent: 'center', paddingHorizontal: 0 }}
             onLayout={(event) => {
               const { x, width: w } = event.nativeEvent.layout;
               barLayoutX.current = x;
@@ -392,7 +637,7 @@ const VideoControls: React.FC<ControlsProps> = ({
               <Animated.View style={[cv.knob, { opacity: knobOpacity, transform: [{ translateX: knobX }] }]} />
             </View>
           </View>
-        </View>
+        </Animated.View>
       ) : (
         // ── NON-FULLSCREEN: Static height track, knob appears on tap ──
         <>
@@ -400,9 +645,10 @@ const VideoControls: React.FC<ControlsProps> = ({
             <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
           </Animated.View>
 
-          <View
+          <Animated.View
             {...pan.panHandlers}
-            style={cv.bottomEdgeTrackHit}
+            style={[cv.bottomEdgeTrackHit, { opacity }]}
+            pointerEvents={visible ? 'auto' : 'none'}
             onLayout={(event) => {
               const { x, width: w } = event.nativeEvent.layout;
               barLayoutX.current = x;
@@ -421,7 +667,7 @@ const VideoControls: React.FC<ControlsProps> = ({
                 ]}
               />
             </View>
-          </View>
+          </Animated.View>
         </>
       )}
     </Animated.View>
@@ -429,16 +675,90 @@ const VideoControls: React.FC<ControlsProps> = ({
 };
 
 const cv = StyleSheet.create({
-  wrap:             { ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center' },
-  scrimTop:         { position: 'absolute', top: 0, left: 0, right: 0, height: 80, backgroundColor: 'transparent' },
-  scrimBottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, height: 100, backgroundColor: 'transparent' },
-  expandBtn:        { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  relatedBtn:       { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  wrap:             { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  scrimTop:         { position: 'absolute', top: 0, left: 0, right: 0, height: 90 },
+  scrimBottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, height: 100 },
+  fullscreenTopBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 10,
+  },
+  fullscreenTopLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  fullscreenTopRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  fullscreenTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 10,
+    flex: 1,
+    textShadowColor: 'rgba(0,0,0,0.7)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  fullscreenIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  expandBtn:        { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  relatedBtn:       { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   bufferWrap:       { ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center', gap: 10, backgroundColor: 'rgba(0,0,0,0.3)' },
   bufferText:       { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '600' },
-  centreBtn:        { width: 70, height: 70, justifyContent: 'center', alignItems: 'center' },
-  centreBtnInner:   { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', justifyContent: 'center', alignItems: 'center' },
-  centreBtnDisabled:{ borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,0,0,0.2)' },
+  centreBtn:        { width: 54, height: 54, justifyContent: 'center', alignItems: 'center' },
+  centreBtnInner:   { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  centreBtnDisabled:{ backgroundColor: 'rgba(0,0,0,0.2)' },
+  centerRow: {
+    position: 'absolute',
+    top: 45,
+    bottom: 45,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 5,
+  },
+  sideSeekZone: {
+    flex: 1,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  seekBadge: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  seekBadgeInner: {
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  seekBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
   // ── Non-fullscreen, always-visible bottom-edge progress line ──
   bottomEdgeTrackHit: {
@@ -472,23 +792,26 @@ const cv = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ScaledImage
+// ScaledImage & Dimension Cache
 // ─────────────────────────────────────────────────────────────────────────────
+const musicImageDimsCache = new Map<string, { width: number; height: number }>();
+
 const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
   uri: string | undefined,
   style?: any,
   resizeMode?: any,
   isAnimated?: boolean
 }) => {
-  const [dims, setDims] = useState({ width: 160, height: 120 });
+  const cached = uri ? musicImageDimsCache.get(uri) : null;
+  const [dims, setDims] = useState(cached || { width: 160, height: 120 });
   if (!uri) return null;
-  const isGif = isAnimated ||
-    uri.toLowerCase().includes('.gif') ||
-    uri.toLowerCase().includes('.webp') ||
-    uri.startsWith('content://');
 
   useEffect(() => {
     if (uri) {
+      if (musicImageDimsCache.has(uri)) {
+        setDims(musicImageDimsCache.get(uri)!);
+        return;
+      }
       Image.getSize(uri, (w, h) => {
         const MAX_W = 160;
         let finalW = w;
@@ -497,39 +820,59 @@ const ScaledImage = ({ uri, style, resizeMode, isAnimated }: {
           finalW = MAX_W;
           finalH = (h * MAX_W) / w;
         }
-        setDims({ width: finalW, height: finalH });
+        const resolved = { width: finalW, height: finalH };
+        musicImageDimsCache.set(uri, resolved);
+        setDims(resolved);
       }, () => {});
     }
   }, [uri]);
 
-  if (isGif) {
-    return (
-      <FastImage
-        source={{ uri, priority: FastImage.priority.normal }}
-        style={[style, { width: dims.width, height: dims.height }]}
-        resizeMode={resizeMode === 'contain'
-          ? FastImage.resizeMode.contain
-          : FastImage.resizeMode.cover}
-      />
-    );
-  }
-
   return (
-    <Image
-      key={uri}
-      source={{ uri }}
+    <FastImage
+      source={{ uri, priority: FastImage.priority.high }}
       style={[style, { width: dims.width, height: dims.height }]}
-      resizeMode={resizeMode}
-      progressiveRenderingEnabled={false}
-      fadeDuration={0}
+      resizeMode={resizeMode === 'contain'
+        ? FastImage.resizeMode.contain
+        : FastImage.resizeMode.cover}
     />
   );
 };
 
-const STREAM_QUALITY_MODES = [
-  { key: 'auto', label: 'Auto (Best Quality)', subtitle: 'Full HD / High quality stream' },
-  { key: 'medium', label: 'Data Saver (Low)', subtitle: '360p low-bandwidth stream' },
-];
+const QUALITY_METADATA: Record<string, { label: string; badge?: string; icon: string }> = {
+  'auto':    { label: 'Auto', badge: 'Adaptive', icon: 'sparkles' },
+  'hd4320':  { label: '8K 4320p', badge: '8K UHD', icon: 'videocam' },
+  'highres': { label: '4K 2160p', badge: 'UHD', icon: 'videocam' },
+  'hd2160':  { label: '4K 2160p', badge: 'UHD', icon: 'videocam' },
+  'hd1440':  { label: '2K 1440p', badge: 'QHD', icon: 'videocam' },
+  'hd1080':  { label: '1080p FHD', badge: 'HD', icon: 'film' },
+  'hd720':   { label: '720p HD', badge: 'HD', icon: 'film' },
+  'large':   { label: '480p SD', badge: 'SD', icon: 'play-circle' },
+  'medium':  { label: '360p', badge: 'Standard', icon: 'film' },
+  'small':   { label: '240p Low', badge: 'Low', icon: 'leaf-outline' },
+  'tiny':    { label: '144p Min', badge: 'Lowest', icon: 'speedometer-outline' },
+};
+
+const QUALITY_PRIORITY = ['auto', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
+
+const getMinimalQualityLabel = (key: string): string => {
+  switch (key) {
+    case 'auto': return 'Auto';
+    case 'hd4320': return '4320p';
+    case 'highres':
+    case 'hd2160': return '2160p';
+    case 'hd1440': return '1440p';
+    case 'hd1080': return '1080p';
+    case 'hd720': return '720p';
+    case 'large': return '480p';
+    case 'medium': return '360p';
+    case 'small': return '240p';
+    case 'tiny': return '144p';
+    default:
+      if (/^\d+$/.test(key)) return `${key}p`;
+      if (/^\d+p$/i.test(key)) return key.toLowerCase();
+      return key;
+  }
+};
 
 const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingView;
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 0 };
@@ -546,12 +889,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, roomName: initialRoomName } = route.params || {};
   const { user } = useAuth();
+  const [fullscreen, setFullscreen] = useState(false);
   const insets = useSafeAreaInsets();
   const lastNonZeroBottomInsetRef = useRef(insets.bottom || 24);
   if (insets.bottom > 0) {
     lastNonZeroBottomInsetRef.current = insets.bottom;
   }
+  const lastNonZeroTopInsetRef = useRef(insets.top || 0);
+  if (insets.top > 0) {
+    lastNonZeroTopInsetRef.current = insets.top;
+  }
+  // Symmetric instant insets:
+  // - In fullscreen: 0 (edge-to-edge video).
+  // - In portrait: ALWAYS full portrait insets (cached fallback ensures 1ms instant layout with zero delayed resize).
   const stableBottomInset = fullscreen ? 0 : (insets.bottom > 0 ? insets.bottom : (lastNonZeroBottomInsetRef.current || 0));
+  const stableTopInset    = fullscreen ? 0 : (insets.top    > 0 ? insets.top    : (lastNonZeroTopInsetRef.current    || 0));
   
   // Calculate initial position from background cache on mount
   const cachedRoomState = musicWebSocketService.getLastRoomState();
@@ -647,15 +999,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isSendingMedia, setIsSendingMedia] = useState(false);
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
-  const [isStickerSheetReady, setIsStickerSheetReady] = useState(false);
-
-  useEffect(() => {
-    // Pre-mount sticker sheet offscreen in background 350ms after screen transition
-    const timer = setTimeout(() => {
-      setIsStickerSheetReady(true);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, []);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
@@ -663,14 +1006,275 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
   const [videoQuality, setVideoQuality] = useState('auto');
   const [availableQualities, setAvailableQualities] = useState<string[]>(['auto']);
+  const [liveExactResolution, setLiveExactResolution] = useState<string | null>(null);
   const videoFormatsRef = useRef<Record<string, string>>({});
   const [showQualityOptions, setShowQualityOptions] = useState(false);
+
+  // ─── Direct ExoPlayer (Rave-style Native Video) State ───────────────────────
+  const [directStreamUrl, setDirectStreamUrl] = useState<string | null>(null);
+  const [directAudioUrl, setDirectAudioUrl] = useState<string | null>(null);
+  const [directStreamType, setDirectStreamType] = useState<'mpd' | 'mp4' | 'm3u8'>('mp4');
+  const [isDirectLoading, setIsDirectLoading] = useState(false);
+  const [directStreamsList, setDirectStreamsList] = useState<any[]>([]);
+  const directStreamsListRef = useRef<any[]>([]);
+  const failedStreamUrlsRef = useRef<Set<string>>(new Set());
+  const [useDirectFallback, setUseDirectFallback] = useState(false);
+  const currentDirectFetchId = useRef<string | null>(null);
+  const dashUrlRef = useRef<string | null>(null);
+  const fallbackProgressiveUrlRef = useRef<string | null>(null); // c=ANDROID itag 18 — no CDN throttle
+  const [directFallbackUrl, setDirectFallbackUrl] = useState<string | null>(null); // drives fallbackUri prop re-render
+  const lastLoadedStreamVideoId = useRef<string | null>(null);
+  const initialSongLoadedRef = useRef(false);
+  const songPlaybackStartedRef = useRef(false);
+  const lastAuxPassTimeRef = useRef(0);
+  const loadedAudioSessionRef = useRef<string | null>((global as any).loadedAudioSessionId || null);
+  const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isPlayerReadyRef = useRef(false);
+  const playerReadyTime = useRef(0);
+  const isAdPlayingRef = useRef(false);
+  const isDJBackgroundedRef = useRef(false);
+
+  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateMicPermission, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
+  const { isDJ, currentSong, isPlaying, position, queue, participants, roomName, allowedSpeakers } = roomState;
+
+  useEffect(() => {
+    if (currentSong?.videoId) {
+      initialSongLoadedRef.current = true;
+    }
+  }, [currentSong?.videoId]);
+
+  const resolveStreamUrlForQuality = useCallback((dashUrl: string | null, streams: any[], qualityKey: string) => {
+    if (dashUrl) {
+      return { url: dashUrl, audioUrl: null, type: 'mpd' as const };
+    }
+
+    const heightMap: Record<string, number> = {
+      'hd1440': 1440,
+      'hd1080': 1080, 'hd720': 720, 'large': 480,
+      'medium': 360, 'small': 240, 'tiny': 144,
+    };
+
+    if (!streams || streams.length === 0) {
+      return { url: '', audioUrl: null, type: 'mp4' as const };
+    }
+
+    const parsedHeight = parseInt(qualityKey.replace(/\D/g, ''), 10);
+    const rawTarget = heightMap[qualityKey] || (parsedHeight > 0 ? parsedHeight : 0);
+    const targetHeight = Math.min(1440, rawTarget);
+
+    // If targetHeight > 1080, include VP9 streams because 1440p exists in VP9/AV1
+    const mp4Streams = streams.filter(s => s.mimeType ? (s.mimeType.startsWith('video/mp4') || !s.mimeType.includes('webm')) : true);
+    const validStreams = (targetHeight > 1080 || mp4Streams.length === 0) ? streams : mp4Streams;
+
+    // Audio proxy URL from any video stream that has audio_url
+    const defaultAudioUrl = validStreams.find(s => s.audio_url)?.audio_url || streams.find(s => s.audio_url)?.audio_url || null;
+
+    const formatReturn = (stream: any) => {
+      if (!stream) return { url: '', audioUrl: null, type: 'mp4' as const };
+      return {
+        url: stream.url,
+        audioUrl: stream.has_audio ? null : (stream.audio_url || defaultAudioUrl),
+        type: 'mp4' as const,
+      };
+    };
+
+    // Auto: Prefer crisp 1080p MP4, else 720p MP4, else highest available MP4
+    if (!qualityKey || qualityKey === 'auto') {
+      const s1080 = validStreams.find(s => s.height === 1080);
+      if (s1080?.url) return formatReturn(s1080);
+      const s720 = validStreams.find(s => s.height === 720);
+      if (s720?.url) return formatReturn(s720);
+      const sorted = [...validStreams].sort((a, b) => (b.height || 0) - (a.height || 0));
+      return formatReturn(sorted[0]);
+    }
+
+    // Explicit 360p / Medium:
+    if (qualityKey === 'medium' || targetHeight === 360) {
+      const s360 = validStreams.find(s => s.height === 360 && s.has_audio) || validStreams.find(s => s.height === 360);
+      if (s360?.url) return formatReturn(s360);
+    }
+
+    // 1. Explicit target height match
+    if (targetHeight > 0) {
+      const exact = validStreams.find(s => s.height === targetHeight);
+      if (exact?.url) return formatReturn(exact);
+
+      // Find closest height within valid streams
+      const sorted = [...validStreams].sort((a, b) => Math.abs((a.height || 0) - targetHeight) - Math.abs((b.height || 0) - targetHeight));
+      if (sorted[0]?.url) return formatReturn(sorted[0]);
+    }
+
+    // 2. Match by quality key
+    const byKey = validStreams.find(s => s.qualityKey === qualityKey || s.quality === qualityKey);
+    if (byKey?.url) return formatReturn(byKey);
+
+    // 3. Fallback: highest available MP4
+    const sorted = [...validStreams].sort((a, b) => (b.height || 0) - (a.height || 0));
+    return formatReturn(sorted[0] || validStreams[0]);
+  }, []);
+
+  const videoThumbnailUrl = useMemo(() => {
+    // 1. Current song thumbnail / videoId
+    if (currentSong?.thumbnail && typeof currentSong.thumbnail === 'string' && currentSong.thumbnail.startsWith('http')) {
+      return currentSong.thumbnail;
+    }
+    if (currentSong?.videoId) {
+      if (currentSong?.source === 'drive') {
+        return `https://drive.google.com/thumbnail?id=${currentSong.videoId}&sz=w800`;
+      }
+      return `https://img.youtube.com/vi/${currentSong.videoId}/hqdefault.jpg`;
+    }
+
+    // 2. If current song not yet loaded, check upcoming queued song
+    if (queue && queue.length > 0) {
+      const nextItem = queue[0];
+      const nextSong = nextItem?.song || nextItem;
+      if (nextSong?.thumbnail && typeof nextSong.thumbnail === 'string' && nextSong.thumbnail.startsWith('http')) {
+        return nextSong.thumbnail;
+      }
+      if (nextSong?.videoId) {
+        if (nextSong?.source === 'drive') {
+          return `https://drive.google.com/thumbnail?id=${nextSong.videoId}&sz=w800`;
+        }
+        return `https://img.youtube.com/vi/${nextSong.videoId}/hqdefault.jpg`;
+      }
+    }
+
+    // 3. Only fall back to initial navigation params on cold start before the room loads
+    if (!initialSongLoadedRef.current) {
+      if (initialThumbnail) return initialThumbnail;
+      const vid = initialVideoId;
+      const src = initialSource;
+      if (vid) {
+        if (src === 'drive') {
+          return `https://drive.google.com/thumbnail?id=${vid}&sz=w800`;
+        }
+        return `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+      }
+    }
+    return null;
+  }, [currentSong?.thumbnail, currentSong?.videoId, currentSong?.source, queue]);
+
+
+
+  const handleExoPlayerFallback = useCallback(async (videoId: string) => {
+    console.warn('⚠️ [ExoPlayer] Playback error encountered, falling back to YouTube player for video:', videoId);
+    setDirectStreamUrl(null);
+    setDirectAudioUrl(null);
+    setDirectStreamsList([]);
+  }, []);
+
+  const dynamicQualityOptions = useMemo(() => {
+    // Prioritize direct extracted streams if available
+    const directKeys = directStreamsList.map(s => s.qualityKey).filter(Boolean);
+    const validLevels = (directKeys.length > 0 ? directKeys : availableQualities).filter(q => q && q !== 'auto');
+    const sourceList = validLevels.length > 0
+      ? ['auto', ...validLevels]
+      : ['auto', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
+
+    // Filter out anything strictly above 1440p (8K, 4K, 2160p, 4320p)
+    const EXCLUDED_OVER_1440 = new Set(['hd4320', 'highres', 'hd2160', '4320p', '2160p', '8k', '4k']);
+    const filtered = sourceList.filter(q => {
+      if (EXCLUDED_OVER_1440.has(String(q).toLowerCase())) return false;
+      const num = parseInt(String(q).replace(/\D/g, ''), 10);
+      if (num > 1440) return false;
+      return true;
+    });
+    const unique = Array.from(new Set(filtered));
+
+    return unique.sort((a, b) => {
+      const idxA = QUALITY_PRIORITY.indexOf(a);
+      const idxB = QUALITY_PRIORITY.indexOf(b);
+      return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
+    }).map(key => {
+      const meta = QUALITY_METADATA[key] || { label: key, icon: 'film' };
+      return {
+        key,
+        label: getMinimalQualityLabel(key),
+        icon: meta.icon,
+        badge: meta.badge,
+      };
+    });
+  }, [availableQualities, directStreamsList]);
+
+  const handleSelectQuality = useCallback((qualityKey: string) => {
+    setVideoQuality(qualityKey);
+    const minimalLabel = getMinimalQualityLabel(qualityKey);
+    setLiveExactResolution(minimalLabel);
+    setShowQualityOptions(false);
+
+    // Block room drift-sync seeks for 6 seconds so ExoPlayer can switch tracks cleanly without interruption
+    lastSeekTimeRef.current = Date.now();
+    isUserAction.current = true;
+    setTimeout(() => { isUserAction.current = false; }, 4000);
+
+    console.log(`📺 [Quality Switch] Requesting switch to ${qualityKey} (${minimalLabel})`);
+
+    if (directStreamUrl) {
+      if (directStreamType === 'mpd') {
+        console.log(`📺 [Quality Switch] In-player track switch (mpd) to ${qualityKey} (${minimalLabel})`);
+        playerRef.current?.setPlaybackQuality?.(qualityKey);
+        return;
+      }
+
+      // Progressive MP4 stream: ExoPlayer has only 1 track in progressive mode.
+      // In progressive mode, only switch if there is another valid muxed stream (has_audio: true).
+      // NEVER set an adaptive video-only stream as progressive MP4 (causes fatal 403 / freeze).
+      const muxedMatch = directStreamsListRef.current.find(
+        s => s.has_audio && s.qualityKey === qualityKey && s.url && s.url.startsWith('http')
+      );
+      if (muxedMatch && muxedMatch.url && muxedMatch.url !== directStreamUrl) {
+        console.log(`📺 [Quality Switch] Switching progressive stream URL to: ${muxedMatch.url.substring(0, 60)}...`);
+        setDirectStreamUrl(muxedMatch.url);
+        setDirectAudioUrl(null);
+        setDirectStreamType('mp4');
+        return;
+      }
+      return;
+    }
+
+    // YouTube embedded player fallback
+    playerRef.current?.setPlaybackQuality?.(qualityKey);
+  }, [playerRef, directStreamUrl, directStreamType]);
   const [previewData, setPreviewData] = useState<{
     visible: boolean;
     uri?: string;
     sticker?: string;
     displayName?: string;
   }>({ visible: false });
+
+  // ─── Room Theme State & Persistence ─────────────────────────────────────────
+  const [roomTheme, setRoomTheme] = useState<RoomTheme>('cinema');
+
+  useEffect(() => {
+    AsyncStorage.getItem('@music_room_theme').then(saved => {
+      if (saved === 'cinema' || saved === 'rave' || saved === 'dark' || saved === 'light') {
+        setRoomTheme(saved as RoomTheme);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleThemeChange = (newTheme: RoomTheme) => {
+    setRoomTheme(newTheme);
+    AsyncStorage.setItem('@music_room_theme', newTheme).catch(() => {});
+  };
+
+  const handleCycleTheme = () => {
+    const nextTheme: Record<RoomTheme, RoomTheme> = {
+      cinema: 'rave',
+      rave: 'dark',
+      dark: 'light',
+      light: 'cinema',
+    };
+    handleThemeChange(nextTheme[roomTheme]);
+  };
+
+  const isLight = roomTheme === 'light';
+  const themeTextColor = isLight ? '#0F172A' : '#FFFFFF';
+  const themeSubTextColor = isLight ? '#475569' : 'rgba(255,255,255,0.6)';
+  const themeIconColor = isLight ? '#0F172A' : '#FFFFFF';
+  const themePlaceholderColor = isLight ? 'rgba(15, 23, 42, 0.45)' : 'rgba(255,255,255,0.40)';
 
   const handleAvatarPress = (uri?: string, sticker?: string, displayName?: string) => {
     setPreviewData({
@@ -771,22 +1375,49 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setPendingMedia(null);
   };
 
-  const handleMediaSelection = async (asset: any) => {
-    setIsSendingMedia(true);
+  const handleMediaSelection = async (asset: any, caption: string = '') => {
     setIsMediaModalVisible(false);
+    setStickerPreview(null);
+    setGalleryPickerVisible(false);
+
+    const isGif =
+      asset.uri.toLowerCase().endsWith('.gif') ||
+      asset.uri.toLowerCase().endsWith('.webp') ||
+      asset.type === 'image/gif' ||
+      asset.type === 'image/webp' ||
+      asset.fileName?.toLowerCase().endsWith('.gif') ||
+      asset.fileName?.toLowerCase().endsWith('.webp');
+
+    const messageType = isGif ? 'gif' : 'image';
+    const localId = `local_media_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const currentReplyTo = replyingTo;
+    setReplyingTo(null);
+
+    const myParticipant = participantsRef.current.find(p => Number(p.user_id) === Number(user?.id));
+    const myName = user?.display_name || myParticipant?.name || user?.email || 'You';
+
+    // 1. Instantly show optimistic media message in the chat
+    const optimisticMsg: any = {
+      id: localId,
+      local_id: localId,
+      user: myName,
+      user_id: user?.id,
+      text: caption || '',
+      media_url: asset.uri,
+      local_uri: asset.uri,
+      message_type: messageType,
+      reply_to: currentReplyTo,
+      created_at: new Date().toISOString(),
+      status: 'sending',
+    };
+
+    setMessages(prev => [...prev, optimisticMsg]);
+    scrollToBottom(true);
+
+    // 2. Upload file in the background
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
-
-      const isGif =
-        asset.uri.toLowerCase().endsWith('.gif') ||
-        asset.uri.toLowerCase().endsWith('.webp') ||
-        asset.type === 'image/gif' ||
-        asset.type === 'image/webp' ||
-        asset.fileName?.toLowerCase().endsWith('.gif') ||
-        asset.fileName?.toLowerCase().endsWith('.webp');
-
-      const messageType = isGif ? 'gif' : 'image';
 
       fd.append('media_file', {
         uri: asset.uri,
@@ -803,16 +1434,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       if (res.ok) {
         const data = await res.json();
-        musicWebSocketService.sendChatMessage('', replyingTo, data.url, messageType);
-        setReplyingTo(null);
+        musicWebSocketService.sendChatMessage(caption || '', currentReplyTo, data.url, messageType);
       } else {
         throw new Error('Upload failed');
       }
     } catch (e) {
       console.error('Media upload error:', e);
       Toast.show({ type: 'error', text1: 'Failed to send media' });
-    } finally {
-      setIsSendingMedia(false);
+      setMessages(prev => prev.filter(m => m.id !== localId && m.local_id !== localId));
     }
   };
 
@@ -824,6 +1453,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const doubleTapTimeoutRef = useRef<any>(null);
   const doubleTapHeartRef = useRef<DoubleTapHeartOverlayRef>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
+  const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('PREVIEW_VIDEO', (data: { videoId?: string | null }) => {
+      console.log('🎬 [RAVE DUAL-LAYER] Background preview set:', data?.videoId);
+      setPreviewVideoId(data?.videoId || null);
+    });
+    return () => sub.remove();
+  }, []);
   const [relatedVideos, setRelatedVideos] = useState<Song[]>([]);
   const [isLoadingRelated, setIsLoadingRelated] = useState(false);
   // ✅ Single related-videos panel state. Opened either via the top-left
@@ -835,138 +1473,83 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     showRelatedRef.current = showRelated;
   }, [showRelated]);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
-  const [roomScreenReady, setRoomScreenReady] = useState(false);
-  const roomRevealedOnceRef = useRef(false);
-  const overlayFadeAnim = useRef(new Animated.Value(1)).current;
+  const isKeyboardVisibleRef = useRef(false);
+
   const stickerPickerVisibleRef = useRef(false);
   stickerPickerVisibleRef.current = stickerPickerVisible;
-  const safeBottomPadding = insets.bottom + 12;
-  const spacerHeight = useSharedValue(0);
-
-  const animatedSpacerStyle = useAnimatedStyle(() => {
+  const safeBottomPadding = stableBottomInset + 12;
+  const { height: keyboardHeight, progress } = useReanimatedKeyboardAnimation();
+  const stickerSpacerHeight = useSharedValue(0);
+  // Lifts the entire conversation area (messages + chat bar) smoothly when keyboard or sticker drawer opens.
+  // Using pure GPU translateY transform ensures 60fps/120fps with zero layout recalculation and zero jerking.
+  const conversationLiftStyle = useAnimatedStyle(() => {
+    const kbHeight = Math.abs(keyboardHeight.value);
+    const lift = kbHeight > 0 ? Math.max(0, kbHeight - stableBottomInset) : 0;
+    const finalLift = Math.max(lift, stickerSpacerHeight.value);
     return {
-      height: spacerHeight.value,
+      transform: [{ translateY: -finalLift }],
     };
   });
-
-  const lastKeyboardHeightRef = useRef(290);
-  const insetsBottomRef = useRef(insets.bottom);
-  insetsBottomRef.current = insets.bottom;
 
   useEffect(() => {
     if (isMinimized) {
       setStickerPickerVisible(false);
-      spacerHeight.value = 0;
+      stickerSpacerHeight.value = 0;
     }
-  }, [isMinimized, spacerHeight]);
+  }, [isMinimized, stickerSpacerHeight]);
 
   useEffect(() => {
     if (stickerPickerVisible) {
       Keyboard.dismiss();
-      spacerHeight.value = withTiming(286, { duration: 120 });
-    } else if (!isKeyboardVisible) {
-      spacerHeight.value = withTiming(0, { duration: 100 });
+      stickerSpacerHeight.value = withTiming(286, {
+        duration: 250,
+        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
+      });
+    } else {
+      stickerSpacerHeight.value = withTiming(0, {
+        duration: 220,
+        easing: Easing.bezier(0.4, 0.0, 1, 1),
+      });
     }
-  }, [stickerPickerVisible, isKeyboardVisible, spacerHeight]);
+  }, [stickerPickerVisible, stickerSpacerHeight]);
 
   useFocusEffect(
     useCallback(() => {
       return () => {
         setStickerPickerVisible(false);
-        spacerHeight.value = 0;
+        stickerSpacerHeight.value = 0;
       };
-    }, [spacerHeight])
+    }, [])
   );
 
   const isFocused = useIsFocused();
   const isFocusedRef = useRef(isFocused);
   isFocusedRef.current = isFocused;
+
   useEffect(() => {
-    try {
-      if (Platform.OS === 'android' && NativeModules.SystemBar?.startKeyboardHeightObserver) {
-        NativeModules.SystemBar.startKeyboardHeightObserver();
-      }
-    } catch (_) {}
-
-    const handleShow = (e: any) => {
+    const handleShow = () => {
       if (isMinimized || !isFocusedRef.current) return;
-      const rawHeight = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 285;
-      if (rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setKeyboardVisible(true);
-        setStickerPickerVisible(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-        scrollToBottom(true);
-      }
-    };
-
-    const handleWillShow = (e: any) => {
-      if (isMinimized || !isFocusedRef.current) return;
-      setKeyboardVisible(true);
+      isKeyboardVisibleRef.current = true;
       setStickerPickerVisible(false);
-      const h = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 290;
-      const targetHeight = Math.max(0, h - insetsBottomRef.current);
-      spacerHeight.value = targetHeight;
     };
 
-    const handleFrameChange = (e: any) => {
+    const handleHide = () => {
       if (isMinimized || !isFocusedRef.current) return;
-      const rawHeight = e?.endCoordinates?.height;
-      if (rawHeight && rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setKeyboardVisible(true);
-        setStickerPickerVisible(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-        scrollToBottom(true);
-      }
-    };
-
-    const handleHide = (e: any) => {
-      if (isMinimized || !isFocusedRef.current) return;
-      setKeyboardVisible(false);
+      isKeyboardVisibleRef.current = false;
       if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
       lastTypingState.current = false;
       musicWebSocketService.sendTyping(false);
-      scrollToBottom(true);
-
-      if (!stickerPickerVisibleRef.current) {
-        spacerHeight.value = Platform.OS === 'ios'
-          ? withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) })
-          : 0;
-      }
     };
-
-    const dynamicSub = DeviceEventEmitter.addListener('onDynamicKeyboardHeight', (data: { height: number; isVisible: boolean }) => {
-      if (isMinimized || !isFocusedRef.current) return;
-      const rawHeight = data?.height || 0;
-      if (rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setKeyboardVisible(true);
-        setStickerPickerVisible(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-        scrollToBottom(true);
-      } else if (rawHeight === 0 && !stickerPickerVisibleRef.current) {
-        setKeyboardVisible(false);
-        spacerHeight.value = 0;
-      }
-    });
 
     const listeners = [
       Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleShow),
       Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleHide),
-      Keyboard.addListener('keyboardDidChangeFrame', handleFrameChange),
     ];
 
     return () => {
-      dynamicSub.remove();
       listeners.forEach(l => l.remove());
     };
-  }, [safeBottomPadding, scrollToBottom]);
+  }, [safeBottomPadding]);
 
 
   const handleRateVideo = (videoId: string, rating: number) => {
@@ -982,12 +1565,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
 
   const renderNpBar = () => {
-    if (!currentSong) return null;
+    const displayTitle = (currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...' && currentSong.title !== 'YouTube Video' && currentSong.title !== 'Watch Party' && currentSong.title !== 'Drive Video')
+      ? currentSong.title
+      : (!initialSongLoadedRef.current && initialTitle && initialTitle !== 'YouTube Video' && initialTitle !== 'Watch Party' && initialTitle !== 'Drive Video' ? initialTitle : (!initialSongLoadedRef.current && initialRoomName && initialRoomName !== 'YouTube Video' && initialRoomName !== 'Watch Party' ? initialRoomName : 'Loading...'));
 
-    const pinnerName = currentSong.addedBy || 'Someone';
-    const pinner = participants.find(p => p.name === currentSong.addedBy) || user;
+    const pinnerName = currentSong?.addedBy || 'Someone';
+    const pinner = participants.find(p => p.name === currentSong?.addedBy) || user;
     const likers = isLiked ? [user] : [];
-    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || currentSong?.thumbnail;
+    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || (!initialSongLoadedRef.current ? initialThumbnail : null) || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null);
 
     return (
       <View style={s.npBar}>
@@ -995,11 +1580,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           {logoUri ? (
             <Image 
               source={{ uri: logoUri }} 
-              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.1)' }} 
+              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.1)' }} 
               resizeMode="cover"
             />
           ) : (
-            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#282828', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
+            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isLight ? '#E2E8F0' : '#282828', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)' }}>
               <Icon name="musical-notes" size={18} color="#FF453A" />
             </View>
           )}
@@ -1015,15 +1600,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                 height: 14, 
                 borderRadius: 7, 
                 borderWidth: 1, 
-                borderColor: '#1E1E1E' 
+                borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
               }} 
             />
           </TouchableOpacity>
         </View>
         <View style={{ flex: 1, marginLeft: 12 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Text style={[s.npTitle, { flex: 1 }]} numberOfLines={1}>{currentSong.title}</Text>
+            <Text style={[s.npTitle, { flex: 1 }, isLight && { color: '#0F172A' }]} numberOfLines={1}>{displayTitle}</Text>
           </View>
+
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
             {/* Likers Container - Left aligned, normal order (heart on left, avatars next to it on right) */}
             <TouchableOpacity 
@@ -1031,7 +1617,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
               style={{ 
                 flexDirection: 'row', 
                 alignItems: 'center', 
-                backgroundColor: 'rgba(255,255,255,0.08)', 
+                backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
                 paddingHorizontal: 8, 
                 paddingVertical: 4, 
                 borderRadius: 14,
@@ -1042,7 +1628,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
               <Icon 
                 name={isLiked ? "heart" : "heart-outline"} 
                 size={16} 
-                color={isLiked ? "#fff" : "rgba(255,255,255,0.6)"} 
+                color={isLiked ? (isLight ? "#E11D48" : "#fff") : (isLight ? "#64748B" : "rgba(255,255,255,0.6)")} 
                 style={{ marginRight: likers.length > 0 ? 6 : 0 }} 
               />
               {likers.length > 0 && (
@@ -1059,7 +1645,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                           borderRadius: 8, 
                           marginLeft: i > 0 ? -6 : 0, 
                           borderWidth: 1, 
-                          borderColor: '#1E1E1E' 
+                          borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
                         }} 
                       />
                     ))}
@@ -1082,7 +1668,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                           borderRadius: 8, 
                           marginLeft: i > 0 ? -6 : 0, 
                           borderWidth: 1, 
-                          borderColor: '#1E1E1E' 
+                          borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
                         }} 
                       />
                     ))}
@@ -1098,7 +1684,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
               style={{ 
                 flexDirection: 'row', 
                 alignItems: 'center', 
-                backgroundColor: 'rgba(255,255,255,0.08)', 
+                backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
                 paddingHorizontal: 12, 
                 paddingVertical: 4, 
                 borderRadius: 14,
@@ -1106,7 +1692,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
               }}
               activeOpacity={0.7}
             >
-              <Icon name="play-skip-forward" size={16} color="#fff" />
+              <Icon name="play-skip-forward" size={16} color={isLight ? '#0F172A' : '#fff'} />
             </TouchableOpacity>
           </View>
         </View>
@@ -1120,11 +1706,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (fullscreen) {
       wasFullscreen.current = true;
       Orientation.lockToLandscape();
-      StatusBar.setHidden(true);
+      setImmersiveMode(true);
+      const t1 = setTimeout(() => setImmersiveMode(true), 250);
+      const t2 = setTimeout(() => setImmersiveMode(true), 600);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
     } else {
       Orientation.lockToPortrait();
-      StatusBar.setHidden(false);
-      
+      setImmersiveMode(false);
       if (wasFullscreen.current) {
         pinNavBarColor('#00000000', true);
       }
@@ -1134,8 +1725,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     return () => {
       clearNavBarPin();
+      setImmersiveMode(false);
       Orientation.lockToPortrait();
-      StatusBar.setHidden(false);
       
       if (!(global as any).keepMusicRoomAlive) {
         try { TrackPlayerService.endSession(); } catch (_) {}
@@ -1143,6 +1734,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         loadedAudioSessionRef.current = null;
         (global as any).loadedAudioSessionId = null;
         (global as any).activeMusicRoomCode = null;
+        (global as any).isMusicPlaying = false;
+        DeviceEventEmitter.emit('music_playback_state_changed', false);
       }
 
       if (scrollTimeoutRef.current) {
@@ -1159,28 +1752,43 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    (global as any).activeMusicRoomCode = roomCode;
     (global as any).keepMusicRoomAlive = false;
     
-    // Set navigation bar to 100% transparent so artwork bleeds edge-to-edge
+    StatusBar.setTranslucent(true);
+    StatusBar.setBarStyle('light-content');
+    StatusBar.setBackgroundColor('transparent');
+    setWindowBackground('#000000');
     pinNavBarColor('#00000000', true);
-    const t1 = setTimeout(() => {
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setWindowBackground('#000000');
+      NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+      NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+      NativeModules.SystemBar.setFitsSystemWindows(false);
+    }
+  }, [roomCode]);
+
+  useFocusEffect(
+    useCallback(() => {
+      (global as any).activeMusicRoomCode = roomCode;
+      StatusBar.setTranslucent(true);
+      StatusBar.setBarStyle('light-content');
+      StatusBar.setBackgroundColor('transparent');
+      setWindowBackground('#000000');
       pinNavBarColor('#00000000', true);
-    }, 100);
-    const t2 = setTimeout(() => {
-      pinNavBarColor('#00000000', true);
-    }, 400);
-    
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, []);
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setWindowBackground('#000000');
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+        NativeModules.SystemBar.setFitsSystemWindows(false);
+      }
+    }, [roomCode])
+  );
 
   // Refs
   const [isAdPlaying, setIsAdPlaying] = useState(false);
   const controlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasInitialized = useRef(false);
   const metadataLock = useRef<string | null>(null);
   const currentSongRef = useRef<Song | null>(null);
   const relatedScrollX = useRef(new Animated.Value(0)).current;
@@ -1191,17 +1799,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const livePositionRef = useRef(initialRoomPosition);
   const roomPositionRef = useRef(0);
   const isInBackgroundRef = useRef(false);
-  const isDJBackgroundedRef = useRef(false);
   const djForegroundReturnTime = useRef<number>(0);
   const seekingRef = useRef(false);
   const isUserAction = useRef(false);
   const preloadedRef = useRef(false);
-  const playerReadyTime = useRef(0);
-  const isPlayerReadyRef = useRef(false);
   const lastSeekTimeRef = useRef(0); // ✅ Tracks last seek time to prevent seek storms
   const joinSnapshotConsumed = useRef(false); // ✅ NEW
   const lastSnapVideoId = useRef<string | null>(null);
-  const isAdPlayingRef = useRef(false);
   const masterDuration = useRef(0);
   const playingStartTime = useRef(0);
 
@@ -1219,7 +1823,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // the entire track from the network on every watch_sync tick. This ref
   // is only ever set by this screen's own successful load, and cleared on
   // unmount/destroy, so it can't be fooled by a transient native blip.
-  const loadedAudioSessionRef = useRef<string | null>((global as any).loadedAudioSessionId || null);
+
 
   // Kept current by an effect right after showControlsFor's own
   // declaration further down — lets the plain tap handler above call the
@@ -1260,55 +1864,163 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const { callState } = useCall();
 
-  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
-  const { isDJ, currentSong, isPlaying, position, queue, participants, roomName } = roomState;
+  // ── Voice Chat ─────────────────────────────────────────────────────────────
+  const { isMicOn, toggleMic, voiceParticipants } = useMusicVoiceChat(user?.id ?? 0, participants);
 
-  // ─── Dynamic Video Container Aspect Ratio ────────────────────────────────────
+  const handleToggleMic = () => {
+    // Leader (isDJ) always has mic access. Participants need leader permission.
+    const isAllowed = isDJ || (allowedSpeakers && allowedSpeakers.includes(user?.id ?? 0));
+    if (!isAllowed && !isMicOn) {
+      Toast.show({
+        type: 'info',
+        text1: 'Mic Locked 🔒',
+        text2: 'Ask the Room Leader to unlock your mic in Room & Invites.',
+      });
+      return;
+    }
+    toggleMic();
+  };
+
+  // ─── Dynamic Video Container Aspect Ratio & Song Setup ─────────────────────
   const [detectedAspectRatio, setDetectedAspectRatio] = useState<number | null>(null);
 
   useEffect(() => {
+    const targetVideoId = currentSong?.videoId || initialVideoId;
+    const targetSource = currentSong?.source || initialSource;
+
+    if (!targetVideoId || targetSource === 'drive') {
+      if (targetSource === 'drive') {
+        setDirectStreamUrl(null);
+        setDirectAudioUrl(null);
+        setDirectStreamsList([]);
+        setIsDirectLoading(false);
+      }
+      return;
+    }
+
+    // Deduplication guard: do not re-run extraction if already fetching or active for targetVideoId
+    if (currentDirectFetchId.current === targetVideoId) {
+      console.log(`ℹ️ [MusicRoom] Video ${targetVideoId} already active/extracting, skipping duplicate run`);
+      return;
+    }
+
+    currentDirectFetchId.current = targetVideoId;
+    videoFormatsRef.current = {};
+    failedStreamUrlsRef.current.clear();
+    setDirectStreamsList([]);
+    directStreamsListRef.current = [];
+    fallbackProgressiveUrlRef.current = null; // reset ANDROID fallback URL for new song
+    setDirectFallbackUrl(null);
+    setDirectStreamUrl(null); // Clear previous video stream immediately so no frozen screenshot displays
+    setDirectAudioUrl(null);
+    livePositionRef.current = 0; // Reset position so new song starts fresh at 0s
+    setLivePosition(0);
     setAvailableQualities(['auto']);
-    const videoId = currentSong?.videoId || initialVideoId;
-    if (!videoId) {
-      setDetectedAspectRatio(null);
-      return;
-    }
+    // Fix 1: Reset quality to Auto on every new song so stale quality isn't
+    // applied to a new video before ExoPlayer has parsed its track list.
+    setVideoQuality('auto');
+    setLiveExactResolution(null);
+    setShowQualityOptions(false);
 
-    if (currentSong?.source === 'drive') {
-      // Drive videos report their exact dimensions dynamically via DrivePlayer onAspectRatio callback
-      return;
-    }
-
-    let isMounted = true;
-    fetchVideoAspectRatio(videoId).then((ar) => {
-      if (isMounted && ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
-        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || videoId}" detected AR: ${ar.toFixed(3)} -> Target Height: ${Math.round(width / ar)}px`);
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    fetchVideoAspectRatio(targetVideoId).then((ar) => {
+      if (currentDirectFetchId.current === targetVideoId && ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
+        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" detected AR: ${ar.toFixed(3)} -> Target Height: ${Math.round(width / ar)}px`);
         setDetectedAspectRatio(ar);
       }
     });
 
-    api.post('/youtube/formats/', { videoId })
-      .then((res: any) => {
-        if (isMounted) {
-          if (res.data?.formats) {
-            videoFormatsRef.current = res.data.formats;
+    // Preemptively fetch oEmbed metadata & channel logo for dynamic title + avatar
+    if (targetSource !== 'drive') {
+      fetchYouTubeMetadata(targetVideoId, currentSong?.addedBy || user?.display_name).then((meta) => {
+        if (currentDirectFetchId.current !== targetVideoId) return;
+        if (meta && meta.title && meta.title !== 'Loading...' && meta.title !== 'Watch Party' && meta.title !== 'YouTube Video') {
+          if (meta.channelLogo) {
+            setFetchedChannelLogo(meta.channelLogo);
           }
-          if (res.data?.availableQualities && Array.isArray(res.data.availableQualities) && res.data.availableQualities.length > 1) {
-            setAvailableQualities(res.data.availableQualities);
+          if (!currentSong?.title || currentSong.title === 'Watch Party' || currentSong.title === 'YouTube Video' || currentSong.title === 'Loading...') {
+            updateCurrentSongMetadata({
+              videoId: targetVideoId,
+              title: meta.title,
+              thumbnail: meta.thumbnail || `https://img.youtube.com/vi/${targetVideoId}/hqdefault.jpg`,
+              channelTitle: meta.channelTitle || 'YouTube',
+              channelLogo: meta.channelLogo,
+              addedBy: currentSong?.addedBy || user?.display_name || 'Someone',
+              source: 'youtube',
+              duration: meta.duration || currentSong?.duration,
+            });
           }
         }
-      })
-      .catch(() => {});
+      }).catch(() => {});
+    }
 
-    return () => {
-      isMounted = false;
-    };
-  }, [currentSong?.videoId, currentSong?.source, initialVideoId]);
+    // Client-side extraction directly on user's device (Rave watch-party architecture)
+    setIsDirectLoading(true);
+    extractVideoStreamUrlClientSide(targetVideoId).then((res) => {
+      if (currentDirectFetchId.current !== targetVideoId) return;
+      if (res && res.streams && res.streams.length > 0) {
+        console.log(`🎬 [MusicRoom] Client-side extraction success: ${res.streams.length} qualities available (highest: ${res.streams[0].height}p)`);
+        if (res.title && (!currentSong?.title || currentSong.title === 'Watch Party' || currentSong.title === 'YouTube Video' || currentSong.title === 'Loading...')) {
+          updateCurrentSongMetadata({
+            videoId: targetVideoId,
+            title: res.title,
+            thumbnail: currentSong?.thumbnail || `https://img.youtube.com/vi/${targetVideoId}/hqdefault.jpg`,
+            channelTitle: res.channelTitle || currentSong?.channelTitle || 'YouTube',
+            channelLogo: currentSong?.channelLogo || fetchedChannelLogo || undefined,
+            addedBy: currentSong?.addedBy || user?.display_name || 'Someone',
+            source: 'youtube',
+            duration: res.duration || currentSong?.duration,
+          });
+        }
+        setDirectStreamsList(res.streams);
+        directStreamsListRef.current = res.streams;
+        const formatMap: Record<string, string> = {};
+        res.streams.forEach((s) => {
+          if (s.qualityKey && s.url) formatMap[s.qualityKey] = s.url;
+        });
+        videoFormatsRef.current = formatMap;
+
+        // Populate available qualities in UI
+        const qKeys = res.streams.map(s => s.qualityKey).filter(Boolean);
+        setAvailableQualities(Array.from(new Set(['auto', ...qKeys])));
+
+        dashUrlRef.current = res.dashUrl || null;
+
+        // Store the non-throttled ANDROID progressive URL for seamless fallback
+        // when the DASH MWEB CDN starts returning 403 at ~60s.
+        if (res.fallbackProgressiveUrl) {
+          fallbackProgressiveUrlRef.current = res.fallbackProgressiveUrl;
+          setDirectFallbackUrl(res.fallbackProgressiveUrl);
+          console.log('🤖 [MusicRoom] ANDROID fallback progressive URL stored for seamless CDN-403 recovery');
+        }
+
+        // Activate DirectVideoPlayer via DASH MPD manifest (ExoPlayer architecture)
+        if (res.dashUrl) {
+          console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with DASH manifest (${res.streams.length} representations)`);
+          setDirectStreamUrl(res.dashUrl);
+          setDirectAudioUrl(null);
+          setDirectStreamType('mpd');
+        } else if (res.url) {
+          console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with single stream: ${res.url.substring(0, 60)}...`);
+          setDirectStreamUrl(res.url);
+          setDirectAudioUrl(res.audioUrl || null);
+          setDirectStreamType(res.streamType || 'mp4');
+        } else {
+          console.log(`ℹ️ [MusicRoom] No direct video streams resolved, using YouTubePlayer fallback`);
+        }
+      } else {
+        console.log('ℹ️ [MusicRoom] No direct video streams extracted, using YouTubePlayer fallback');
+      }
+      setIsDirectLoading(false);
+    }).catch((err) => {
+      if (currentDirectFetchId.current !== targetVideoId) return;
+      console.warn('⚠️ [MusicRoom] Client-side extraction error, falling back to YouTubePlayer:', err);
+      setIsDirectLoading(false);
+    });
+  }, [currentSong?.videoId, currentSong?.source, initialVideoId, initialSource]);
+
 
   const handleAspectRatio = useCallback((ar: number) => {
     if (ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setDetectedAspectRatio(ar);
     }
   }, []);
@@ -1323,8 +2035,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       }
       // Standard / Landscape / 4:3 videos
       const targetHeight = width / detectedAspectRatio;
-      const minH = width * (9 / 24); // ~150px min bound (cinema / ultrawide)
-      const maxH = width * 0.85;     // ~340px max bound (tall 4:3 videos like Pavazha Malli)
+      const minH = VIDEO_HEIGHT; // Minimum height is the thumbnail height (standard 16:9) — never shrinks below this
+      const maxH = width * 0.85; // ~340px max bound (tall 4:3 videos like Pavazha Malli)
       return Math.max(minH, Math.min(maxH, targetHeight));
     }
     return VIDEO_HEIGHT; // Default standard 16:9
@@ -1335,7 +2047,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     participantsRef.current = participants;
   }, [participants]);
 
-  const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearIdleCloseTimer = useCallback(() => {
     if (idleCloseTimerRef.current) {
@@ -1360,10 +2071,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [clearIdleCloseTimer]);
 
   useEffect(() => {
-    const isEndedWithEmptyQueue = playerState === 'ended' && queue.length === 0;
-    const isPausedIdle = !isPlaying && currentSong?.videoId;
+    // Only schedule idle close if playback has completely ended and there is no active song or queue
+    const isEndedWithEmptyQueue = playerState === 'ended' && !currentSong?.videoId && queue.length === 0;
 
-    if (isEndedWithEmptyQueue || isPausedIdle) {
+    if (isEndedWithEmptyQueue) {
       scheduleIdleClose();
     } else {
       clearIdleCloseTimer();
@@ -1387,6 +2098,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [roomCode]);
 
   useEffect(() => {
+    const currentlyPlaying = Boolean(isPlaying && currentSong?.videoId);
+    (global as any).isMusicPlaying = currentlyPlaying;
+    DeviceEventEmitter.emit('music_playback_state_changed', currentlyPlaying);
+  }, [isPlaying, currentSong?.videoId]);
+
+  useEffect(() => {
     if (callState.isActive) {
       console.log('📞 [CALL ACTIVE] Pausing music room playback');
       if (isPlaying && (isDJ || isDJMode)) {
@@ -1395,7 +2112,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, [callState.isActive, isPlaying, isDJ, isDJMode, syncPause]);
 
-  const seekPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // ✅ NEW: monotonic token so a stale seek's delayed resume (playVideo
   // after the settle timeout) can detect it's been superseded by a newer
   // seek and skip firing, instead of yanking the player out of the newer
@@ -1436,13 +2152,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setLivePosition(t);
       livePositionRef.current = t;
 
-      // Both Drive and YouTube IFrames own the audio. seekTo above already moved it.
-      // Give the IFrame 600ms to buffer the new position, then unblock.
-      console.log('🎯 [SEEK SYNC] Waiting for IFrame to buffer seek to', t);
+      // ExoPlayer (DirectVideoPlayer) seeks are near-instant in progressive MP4.
+      // Give it 200ms to settle the seek, then unblock progress/sync callbacks.
+      console.log('🎯 [SEEK SYNC] Waiting for ExoPlayer to settle seek to', t);
       setTimeout(() => {
         setIsReseeking(false);
-        setTimeout(() => { seekingRef.current = false; }, 800);
-      }, 600);
+        setTimeout(() => { seekingRef.current = false; }, 300);
+      }, 200);
 
     } catch (error) {
       console.error('🎯 [LOCAL SEEK ERROR]', error);
@@ -1493,16 +2209,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // Starting/stopping playback in response to isPlaying is now handled by
   // the separate lightweight effect below.
   useEffect(() => {
-    console.log('🎵 [AUDIO LOAD EFFECT] fired:', {
-      videoId: currentSong?.videoId,
-      source: currentSong?.source,
-    });
-
     if (!currentSong?.videoId) {
       setIsTrackPlayerReady(false);
       setMediaFullySynced(false);
       return;
     }
+
+    console.log('🎵 [AUDIO LOAD EFFECT] fired:', {
+      videoId: currentSong.videoId,
+      source: currentSong.source,
+    });
 
 
 
@@ -1520,6 +2236,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     let cancelled = false;
     setIsPlayerReady(false);
     setIsTrackPlayerReady(false);
+    setLiveExactResolution(null);
     // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
     // until the rendezvous effect below confirms both engines are ready
     // and explicitly starts them together.
@@ -1600,7 +2317,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     // Drive now uses the same rendezvous as YouTube — no special case needed.
 
-    if (isPlayerReady && isTrackPlayerReady) {
+    const isReadyToSync = currentSong?.source === 'drive'
+      ? (isPlayerReady && isTrackPlayerReady)
+      : isPlayerReady;
+
+    if (isReadyToSync) {
       // If room isn't playing yet (DJ startup — syncPlay comes later),
       // both engines are ready and paused. That IS synced — just not
       // playing. Let the play/pause reflection handle the actual start
@@ -1650,31 +2371,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, [isPlayerReady, isTrackPlayerReady, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isPlaying]);
 
-  // ✅ NEW: gates the ENTIRE room UI behind a plain black overlay until
-  // the very first song is fully loaded, metadata-resolved, and
-  // audio+video are synced.
-  useEffect(() => {
-    if (roomRevealedOnceRef.current) return;
-    const isSongInfoReady =
-      !!currentSong?.videoId &&
-      currentSong.title !== 'Loading...' &&
-      currentSong.title !== 'Initializing...';
-    if (mediaFullySynced && isSongInfoReady) {
-      const t = setTimeout(() => {
-        roomRevealedOnceRef.current = true;
-        // Fade out the loading overlay smoothly before setting ready
-        Animated.timing(overlayFadeAnim, {
-          toValue: 0,
-          duration: 350,
-          useNativeDriver: true,
-        }).start(() => {
-          setRoomScreenReady(true);
-        });
-      }, 120);
-      return () => clearTimeout(t);
-    }
-  }, [mediaFullySynced, currentSong?.videoId, currentSong?.title, overlayFadeAnim]);
-
   // ✅ NEW: lightweight play/pause reflection — reacts to room isPlaying
   // WITHOUT ever calling setMediaItem/reloading. This is the only place
   // isPlaying should affect TrackPlayer once a track is loaded.
@@ -1715,7 +2411,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // ✅ NEW: Keep participant TrackPlayer and video in sync with room position
   // Fires when DJ broadcasts a sync update (position changes from WebSocket)
   useEffect(() => {
-    if (isDJ) return; // DJ manages their own position
+    if (isDJ || isDJMode) return; // DJ manages their own position
     if (!isPlaying || !currentSong?.videoId) return;
     if (isDJBackgroundedRef.current) return; // ← KEY FIX: ignore syncs while DJ is backgrounded
 
@@ -1817,8 +2513,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       } else if (nextState === 'active' && prevState === 'background') {
         isInBackgroundRef.current = false; // ✅ Back in foreground
 
-        // Re-apply transparent nav bar after unlock
+        // Re-apply transparent nav bar and dark window background after unlock
+        setWindowBackground('#000000');
         pinNavBarColor('#00000000', true);
+        if (Platform.OS === 'android' && NativeModules.SystemBar) {
+          NativeModules.SystemBar.setWindowBackground('#000000');
+          NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+          NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+          NativeModules.SystemBar.setFitsSystemWindows(false);
+        }
 
         // ✅ KEY FIX: Re-enforce whatever play/pause state the room has now.
         // If the DJ paused from the lock screen, isPlayingRef.current is false
@@ -1849,7 +2552,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [isPlaying, isDJ, isDJMode, syncPlay]);
 
   useEffect(() => {
-    if (!currentSong?.videoId || currentSong?.source === 'drive') {
+    const targetVid = currentSong?.videoId || initialVideoId;
+    const targetSrc = currentSong?.source || initialSource;
+    if (!targetVid || targetSrc === 'drive') {
       setFetchedChannelLogo(null);
       return;
     }
@@ -1858,13 +2563,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       return;
     }
     let isMounted = true;
-    fetchChannelLogo(currentSong.videoId).then(logo => {
+    fetchChannelLogo(targetVid).then(logo => {
       if (isMounted && logo) {
         setFetchedChannelLogo(logo);
       }
     });
     return () => { isMounted = false; };
-  }, [currentSong?.videoId, currentSong?.channelLogo, currentSong?.source]);
+  }, [currentSong?.videoId, currentSong?.channelLogo, currentSong?.source, initialVideoId, initialSource]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Remaining effects (unchanged from original)
@@ -1913,7 +2618,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     let consecutiveDropCount = 0;
 
     const interval = setInterval(async () => {
-      if (!isPlayerReadyRef.current || playerState === 'unstarted') return;
+      if (!isPlayerReadyRef.current || playerState === 'unstarted' || seekingRef.current || isReseeking) return;
 
       try {
         const pos = await playerRef.current?.getCurrentTime();
@@ -1939,32 +2644,37 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           }
         }
 
-        if (pos !== undefined && ((pos < 1 && lastCurrentTime > 10) || (lastCurrentTime > 0 && pos < lastCurrentTime - 5))) {
-          consecutiveDropCount++;
+        if (currentSong?.source === 'drive') {
+          if (pos !== undefined && ((pos < 1 && lastCurrentTime > 10) || (lastCurrentTime > 0 && pos < lastCurrentTime - 5))) {
+            consecutiveDropCount++;
+          } else {
+            consecutiveDropCount = 0;
+          }
+
+          const isAdByTimeReset = consecutiveDropCount >= 3;
+          const isAdByDuration = (stableDuration && dur && Math.abs(dur - stableDuration) > 10);
+          const isAd = isAdByTimeReset || isAdByDuration;
+
+          if (isAd && !isAdPlayingRef.current) {
+            isAdPlayingRef.current = true;
+            setIsAdPlaying(true);
+            playerRef.current?.fastForwardAd?.();
+          } else if (!isAd && isAdPlayingRef.current) {
+            isAdPlayingRef.current = false;
+            setIsAdPlaying(false);
+          }
         } else {
-          consecutiveDropCount = 0;
-        }
-
-        const isAdByTimeReset = consecutiveDropCount >= 3;
-        const isAdByDuration = (stableDuration && dur && Math.abs(dur - stableDuration) > 10);
-        const isAd = isAdByTimeReset || isAdByDuration;
-
-        if (isAd && !isAdPlayingRef.current) {
-          isAdPlayingRef.current = true;
-          setIsAdPlaying(true);
-          playerRef.current?.fastForwardAd?.();
-        } else if (!isAd && isAdPlayingRef.current) {
-          isAdPlayingRef.current = false;
-          setIsAdPlaying(false);
+          if (isAdPlayingRef.current) {
+            isAdPlayingRef.current = false;
+            setIsAdPlaying(false);
+          }
         }
 
         if (pos !== undefined && pos > 0) {
           lastCurrentTime = pos;
         }
 
-
-
-        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isUserAction.current && Math.floor(pos ?? 0) % 5 === 0) {
+        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && Math.floor(pos ?? 0) % 5 === 0) {
           syncPlay(pos ?? 0);
         }
       } catch (_) {}
@@ -1983,7 +2693,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setIsPlayerReady(false);
       setIsBuffering(true);
       let richSong = song;
-      if (!song.channelTitle || song.title === 'Loading...' || song.title === 'Initializing...') {
+      if (!song.channelTitle || song.title === 'Loading...' || song.title === 'Initializing...' || song.title === 'Watch Party' || song.title === 'YouTube Video') {
         richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name);
         richSong.addedBy = song.addedBy ?? user?.display_name;
       }
@@ -2181,8 +2891,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
 
   useEffect(() => {
-    if (isDJMode && initialVideoId && isConnected && !hasInitialized.current) {
-      hasInitialized.current = true;
+    if (isDJMode && initialVideoId && isConnected && !initialSongLoadedRef.current) {
+      initialSongLoadedRef.current = true;
       const isDrive = initialSource === 'drive';
 
       const buildAndLoad = (resolvedTitle: string, resolvedThumbnail: string, resolvedChannel: string) => {
@@ -2243,6 +2953,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       isPlayerReadyRef.current = false;
       playerReadyTime.current = 0;
       isAdPlayingRef.current = false;
+      setIsAdPlaying(false);
       masterDuration.current = 0;
       playingStartTime.current = 0;
       if (adMuteTimer.current) clearTimeout(adMuteTimer.current);
@@ -2250,9 +2961,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       realDurationLockedRef.current = false;
       setIsBuffering(true);
       setLivePosition(0);
+      livePositionRef.current = 0;
       setDuration(0);
       setShowRelated(false);
-      hasInitialized.current = false;
+      songPlaybackStartedRef.current = false;
     }
   }, [currentSong?.videoId]);
 
@@ -2264,15 +2976,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, []);
 
   useEffect(() => {
-    if (isPlayerReady && isSyncing && isConnected) {
-      hasInitialized.current = true;
+    if (isPlayerReady && isConnected && !songPlaybackStartedRef.current && (isDJMode || isDJ)) {
+      songPlaybackStartedRef.current = true;
       setIsSyncing(false);
-      if (isDJMode || isDJ) {
-        // ✅ DJ: Start playback upon ready
-        setTimeout(() => syncPlay(0), 800);
-      }
+      setTimeout(() => syncPlay(livePositionRef.current || 0), 400);
     }
-  }, [isPlayerReady, isSyncing, isConnected, isDJMode, isDJ, syncPlay]);
+  }, [isPlayerReady, isConnected, isDJMode, isDJ, syncPlay]);
 
   useEffect(() => {
     if (isPlayerReady && (isDJ || isDJMode) && currentSong && isPlaying && !isSyncing) {
@@ -2292,29 +3001,30 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (isMinimized) return;
 
     const backAction = () => {
-      if (isKeyboardVisible) {
+      if (isKeyboardVisibleRef.current) {
         richInputRef.current?.blur();
         Keyboard.dismiss();
-        setKeyboardVisible(false);
-        spacerHeight.value = 0;
+        isKeyboardVisibleRef.current = false;
+        stickerSpacerHeight.value = 0;
         return true;
       }
       if (stickerPickerVisible) {
         richInputRef.current?.blur();
         Keyboard.dismiss();
         setStickerPickerVisible(false);
-        spacerHeight.value = 0;
+        stickerSpacerHeight.value = 0;
         return true;
       }
       if (previewData.visible) { setPreviewData(p => ({ ...p, visible: false })); return true; }
       if (showDiscovery) { setShowDiscovery(false); return true; }
       if (fullscreen) { setFullscreen(false); return true; }
-      handleMinimize();
+      if (showLeaveConfirm) { setShowLeaveConfirm(false); return true; }
+      setShowLeaveConfirm(true);
       return true;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, isKeyboardVisible, stickerPickerVisible, handleMinimize]);
+  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -2347,7 +3057,28 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         if (hasMention) {
           Vibration.vibrate([0, 500, 200, 500]);
         }
-        setMessages(prev => [...prev, msg.data]);
+        setMessages(prev => {
+          // If this incoming message is from current user and matches an optimistic media message, replace it
+          const isFromMe = Number(msg.data.user_id) === Number(user?.id) || msg.data.user === (user?.display_name || user?.email);
+          if (isFromMe && (msg.data.message_type === 'image' || msg.data.message_type === 'gif' || msg.data.message_type === 'sticker')) {
+            const optIdx = prev.findIndex(m =>
+              m.status === 'sending' &&
+              (m.local_id || String(m.id).startsWith('local_')) &&
+              m.message_type === msg.data.message_type
+            );
+            if (optIdx !== -1) {
+              const optItem = prev[optIdx];
+              const next = [...prev];
+              next[optIdx] = {
+                ...msg.data,
+                local_id: optItem.local_id,
+                local_uri: optItem.local_uri || optItem.media_url,
+              };
+              return next;
+            }
+          }
+          return [...prev, msg.data];
+        });
         scrollToBottom(true);
       } else if (msg.type === 'typing') {
         const { user_id, user_name, is_typing } = msg.data;
@@ -2423,7 +3154,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // panel — callers decide when (see call sites below).
   const fetchRelated = useCallback(async () => {
     setIsLoadingRelated(true);
-    setRelatedVideos([]);
+    // Don't clear the list immediately — keep previous results visible while
+    // re-fetching so the user never sees an empty black grid with a spinner.
     try {
       const queuedIds = new Set(roomStateQueueRef.current.map(q => q.song.videoId));
 
@@ -2482,7 +3214,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
             thumbnail: item.snippet.thumbnails.medium.url,
             channelTitle: item.snippet.channelTitle,
           }))
-          .filter((song: Song) => !queuedIds.has(song.videoId));
+          .filter((song: Song) => !queuedIds.has(song.videoId) && song.videoId !== currentSongRef.current?.videoId);
         setRelatedVideos(fresh);
       }
     } catch (e) {
@@ -2521,12 +3253,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       if (state === 'buffering' || state === 'unstarted' || state === 'cued') setIsBuffering(true);
       else setIsBuffering(false);
     }
-    if (['playing', 'paused', 'cued', 'buffering'].includes(state)) setIsPlayerReady(true);
+    if (['playing', 'paused'].includes(state)) setIsPlayerReady(true);
 
     if (state === 'ended') {
       if (duration > 0) {
-        if ((isDJ || isDJMode) && queue.length > 0) {
+        if (isDJ || isDJMode) {
+          if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
+          lastAuxPassTimeRef.current = Date.now();
+          setIsPlayerReady(false);
+          isPlayerReadyRef.current = false;
+          setIsBuffering(true);
           setIsSyncing(true);
+          setDirectStreamUrl(null);
+          setDirectAudioUrl(null);
+          livePositionRef.current = 0;
+          setLivePosition(0);
           passAux();
         } else {
           fetchRelated();
@@ -2555,6 +3296,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const handleNext = () => {
     if (!isDJ && !isDJMode) return;
     setActionWindow();
+    if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
+    lastAuxPassTimeRef.current = Date.now();
     if (queue.length === 0) {
       // Nothing queued to skip to — show the related panel immediately so
       // there's visible feedback and a way to pick something, instead of
@@ -2565,8 +3308,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         playerRef.current?.pauseVideo?.();
       } catch (_) {}
       setIsPlayerReady(false);
+      isPlayerReadyRef.current = false;
       setIsBuffering(true);
       setIsSyncing(true);
+      setDirectStreamUrl(null);
+      setDirectAudioUrl(null);
+      livePositionRef.current = 0;
+      setLivePosition(0);
       passAux();
     }
   };
@@ -2635,7 +3383,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const handleMessagePress = (item: any) => {
     if (item.message_type === 'image' && item.message_type !== 'gif' && item.message_type !== 'sticker') {
-      setFullScreenMedia({ url: item.media_url, type: 'image' });
+      setFullScreenMedia({ url: item.local_uri || item.media_url, type: 'image' });
     }
   };
 
@@ -2684,24 +3432,74 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     return (
       <View style={[StyleSheet.absoluteFill, { zIndex: 1000 }]}>
         <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowLeaveConfirm(false)}>
-          <View style={s.confirmContent}>
-            <Text style={s.confirmTitle}>Leave watch party?</Text>
-            <View style={s.confirmButtons}>
-              <TouchableOpacity style={[s.pillButton, s.cancelButton]} onPress={() => setShowLeaveConfirm(false)}>
-                <Text style={s.buttonText}>Stay</Text>
+          <View style={[s.confirmContent, { padding: 20, width: '85%', maxWidth: 300, borderRadius: 20, backgroundColor: '#1A1A1A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }]}>
+            <TouchableOpacity
+              onPress={() => setShowLeaveConfirm(false)}
+              style={{ position: 'absolute', top: 12, right: 12, width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', justifyContent: 'center', alignItems: 'center', zIndex: 10 }}
+            >
+              <Icon name="close" size={16} color="rgba(255,255,255,0.7)" />
+            </TouchableOpacity>
+
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 18, marginTop: 4, textAlign: 'center' }}>
+              Watch Party
+            </Text>
+
+            <View style={{ flexDirection: 'row', width: '100%', gap: 10 }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: 'rgba(226, 232, 240, 0.12)',
+                  borderColor: 'rgba(203, 213, 225, 0.35)',
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  paddingVertical: 12,
+                  paddingHorizontal: 6,
+                }}
+                onPress={() => {
+                  setShowLeaveConfirm(false);
+                  handleMinimize();
+                }}
+                activeOpacity={0.7}
+              >
+                <Icon name="contract-outline" size={17} color="#CBD5E1" />
+                <Text style={{ color: '#E2E8F0', fontSize: 13, fontWeight: '700' }}>Minimize</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.pillButton, s.leaveButton]} onPress={() => {
-                setShowLeaveConfirm(false);
-                (global as any).keepMusicRoomAlive = false;
-                (global as any).activeMusicRoomCode = null;
-                (global as any).loadedAudioSessionId = null;
-                try { TrackPlayerService.endSession(); } catch (_) {}
-                stopMusicService();
-                loadedAudioSessionRef.current = null;
-                musicWebSocketService.disconnect();
-                DeviceEventEmitter.emit('close_music_room');
-              }}>
-                <Text style={s.buttonText}>Leave</Text>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: 'rgba(226, 232, 240, 0.12)',
+                  borderColor: 'rgba(203, 213, 225, 0.35)',
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  paddingVertical: 12,
+                  paddingHorizontal: 6,
+                }}
+                onPress={() => {
+                  setShowLeaveConfirm(false);
+                  (global as any).keepMusicRoomAlive = false;
+                  (global as any).activeMusicRoomCode = null;
+                  (global as any).isMusicPlaying = false;
+                  (global as any).loadedAudioSessionId = null;
+                  try { TrackPlayerService.endSession(); } catch (_) {}
+                  stopMusicService();
+                  loadedAudioSessionRef.current = null;
+                  musicWebSocketService.disconnect();
+                  DeviceEventEmitter.emit('music_playback_state_changed', false);
+                  DeviceEventEmitter.emit('close_music_room');
+                }}
+                activeOpacity={0.7}
+              >
+                <Icon name="exit-outline" size={17} color="#CBD5E1" />
+                <Text style={{ color: '#E2E8F0', fontSize: 13, fontWeight: '700' }}>Close</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2714,75 +3512,208 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     return null;
   }
 
-
-
   const reversedMessages = [...messages].reverse();
 
   return (
-    <View style={s.root}>
-      <StatusBar barStyle={isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
+    <View style={[s.root, isLight && { backgroundColor: '#F8FAFC' }]}>
+      <StatusBar barStyle={isLight || isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
 
-      {/* IMMERSIVE BACKGROUND — seamless artwork background extends edge-to-edge */}
-      <View style={{ position: 'absolute', top: -50, left: -50, right: -50, bottom: -100, overflow: 'visible', backgroundColor: '#0A0A0C' }}>
-        {(currentSong?.thumbnail || initialThumbnail) ? (
-          <Image source={{ uri: currentSong?.thumbnail || initialThumbnail }} style={StyleSheet.absoluteFill} blurRadius={40} />
-        ) : null}
-        {/* Glassy dark overlay */}
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.45)' }]} />
-      </View>
+      {/* ── 1. RAVE DUAL-LAYER: BACKGROUND LIVE BLURRED VIDEO LAYER ── */}
+      <BackgroundAmbientPlayer
+        videoId={previewVideoId || currentSong?.videoId || (initialSongLoadedRef.current ? null : initialVideoId)}
+        thumbnailUrl={videoThumbnailUrl}
+        isPlayerReady={isPlayerReady || !!previewVideoId}
+        isPlaying={isPlaying || !!previewVideoId}
+        currentTime={livePosition}
+        isMinimized={isMinimized}
+        fullscreen={fullscreen}
+        theme={roomTheme}
+      />
+
+      {/* ── 2. AMBIENT DISCO FLUID AURORA OVERLAY (cinema | dark | light) ── */}
+      <AmbientDiscoBackground
+        isPlaying={isPlaying}
+        isMinimized={isMinimized}
+        fullscreen={fullscreen}
+        videoId={currentSong?.videoId}
+        theme={roomTheme}
+      />
 
       <KeyboardWrapperView
         {...keyboardWrapperProps}
-        style={[s.inner, { paddingTop: fullscreen ? 0 : insets.top, paddingBottom: insets.bottom }]}
+        style={[s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset }]}
       >
         <View style={{ flex: 1 }}>
           {renderLeaveModal()}
 
-          {!fullscreen && !(isKeyboardVisible || stickerPickerVisible) && (
+          {!fullscreen && (
             <View style={s.header}>
-              <TouchableOpacity onPress={() => setShowLeaveConfirm(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Icon name="close" size={28} color="#fff" />
-              </TouchableOpacity>
+              {/* Left Side: Leader Profile + Expandable Speaker Slots */}
+              {(() => {
+                const leader = participants.find(p => p.is_dj) || participants[0];
+                const isLeaderVoiceActive = leader ? (
+                  leader.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(leader.user_id)
+                ) : false;
 
-              {/* Scrollable stacked participant avatars container */}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ flex: 1, marginHorizontal: 10 }}
-                contentContainerStyle={{ alignItems: 'center', flexDirection: 'row', paddingVertical: 2 }}
-              >
-                {participants.map((p, idx) => (
-                  <TouchableOpacity
-                    key={p.user_id || idx}
-                    onPress={() => handleAvatarPress(p.avatar, p.avatar_sticker, p.name)}
-                    style={{ marginRight: 6, position: 'relative' }}
-                  >
-                    <AvatarWithFallback
-                      uri={p.avatar}
-                      displayName={p.name}
-                      sticker={p.avatar_sticker}
-                      style={{ width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.2)' }}
-                    />
-                    {p.is_dj && (
-                      <View style={{ position: 'absolute', top: -4, right: -4, zIndex: 10 }}>
-                        <Icon name="star" size={12} color="#FFD700" />
+                const allowedOtherSpeakers = participants.filter(p => {
+                  if (p.user_id === leader?.user_id) return false;
+                  const isAllowed = allowedSpeakers && allowedSpeakers.includes(p.user_id);
+                  const isVoiceActive = p.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(p.user_id);
+                  return isAllowed || isVoiceActive;
+                });
+
+                return (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', zIndex: 10 }}>
+                    {/* Theme Switch Button in Header Left Corner */}
+                    <TouchableOpacity
+                      onPress={handleCycleTheme}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 15,
+                        backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
+                        borderWidth: 1,
+                        borderColor: isLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.2)',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        marginRight: 6,
+                      }}
+                      accessibilityLabel="Switch room theme"
+                    >
+                      <Icon
+                        name={roomTheme === 'cinema' ? 'color-palette' : (roomTheme === 'rave' ? 'videocam' : (roomTheme === 'dark' ? 'moon' : 'sunny'))}
+                        size={16}
+                        color={isLight ? '#0F172A' : '#FFFFFF'}
+                      />
+                    </TouchableOpacity>
+
+                    {/* Slot 1: Leader (DJ) */}
+                    {leader && (
+                      <TouchableOpacity
+                        onPress={() => handleAvatarPress(leader.avatar, leader.avatar_sticker, leader.name)}
+                        style={{ marginRight: 4, position: 'relative' }}
+                      >
+                        <AvatarWithFallback
+                          uri={leader.avatar}
+                          displayName={leader.name}
+                          sticker={leader.avatar_sticker}
+                          style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: 13,
+                            borderWidth: isLeaderVoiceActive ? 2 : 1.5,
+                            borderColor: isLeaderVoiceActive
+                              ? '#10B981'
+                              : (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
+                          }}
+                        />
+                        <View style={{ position: 'absolute', top: -4, right: -4, zIndex: 10 }}>
+                          <Icon name="star" size={11} color="#FFD700" />
+                        </View>
+                        {isLeaderVoiceActive && (
+                          <View style={{ position: 'absolute', bottom: -2, right: -2, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#10B981', borderWidth: 1.5, borderColor: '#050811', zIndex: 11 }} />
+                        )}
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Allowed/Active Speaker Profiles (up to 3) */}
+                    {allowedOtherSpeakers.slice(0, 3).map((speaker) => {
+                      const isVoiceOn = speaker.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(speaker.user_id);
+                      return (
+                        <TouchableOpacity
+                          key={`speaker-slot-${speaker.user_id}`}
+                          onPress={() => handleAvatarPress(speaker.avatar, speaker.avatar_sticker, speaker.name)}
+                          style={{ marginRight: 4, position: 'relative' }}
+                        >
+                          <AvatarWithFallback
+                            uri={speaker.avatar}
+                            displayName={speaker.name}
+                            sticker={speaker.avatar_sticker}
+                            style={{
+                              width: 26,
+                              height: 26,
+                              borderRadius: 13,
+                              borderWidth: isVoiceOn ? 2 : 1.5,
+                              borderColor: isVoiceOn
+                                ? '#10B981'
+                                : (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
+                            }}
+                          />
+                          {isVoiceOn && (
+                            <View style={{ position: 'absolute', bottom: -2, right: -2, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#10B981', borderWidth: 1.5, borderColor: '#050811', zIndex: 11 }} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+
+                    {/* Single Next Open Dummy Slot (only shown if less than 3 extra speakers) */}
+                    {allowedOtherSpeakers.length < 3 && (
+                      <View
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 13,
+                          borderWidth: 1,
+                          borderStyle: 'dashed',
+                          borderColor: isLight ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.18)',
+                          backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          marginRight: 4,
+                        }}
+                      >
+                        <Icon
+                          name="volume-medium-outline"
+                          size={12}
+                          color={isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)'}
+                        />
                       </View>
                     )}
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+                  </View>
+                );
+              })()}
 
+              {/* Center: App Logo (Exact Center) */}
+              <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', pointerEvents: 'box-none' }}>
+                <TouchableOpacity
+                  onPress={() => setShowLeaveConfirm(true)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={{
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    padding: 2,
+                    borderRadius: 8,
+                    backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'transparent',
+                  }}
+                >
+                  <Image
+                    source={require('../assets/logo.png')}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 6,
+                      tintColor: isLight ? '#0F172A' : undefined,
+                    }}
+                    resizeMode="contain"
+                  />
+                </TouchableOpacity>
+              </View>
+
+              {/* Right Side: Actions */}
               <View style={s.headerRight}>
                 <TouchableOpacity onPress={() => setInviteModalVisible(true)} style={s.headerIconBtn}>
-                  <Icon name="person-add-outline" size={22} color="#fff" />
+                  <Icon name="person-add-outline" size={22} color={themeIconColor} />
                 </TouchableOpacity>
 
                 <TouchableOpacity onPress={() => setShowDiscovery(true)} style={s.headerIconBtn}>
-                  <Icon name="search" size={22} color="#fff" />
+                  <Icon name="search" size={22} color={themeIconColor} />
                 </TouchableOpacity>
                 
                 <TouchableOpacity onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} style={s.headerIconBtn}>
-                  <Icon name="list" size={22} color={activeTab === 'queue' ? '#4597f5f6' : '#fff'} />
+                  <Icon name="list" size={22} color={activeTab === 'queue' ? '#0284C7' : themeIconColor} />
                   {queue.length > 0 && (
                     <View style={s.badge}>
                       <Text style={s.badgeText}>{queue.length}</Text>
@@ -2805,26 +3736,25 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             }} />
           )}
 
-          {/* VIDEO — stays in its normal flow position always now. The
-              related-videos panel (opened via the top-left icon button,
-              not a swipe/PIP) renders as a separate overlay on top while
-              this keeps playing underneath, unaffected. */}
+          {/* VIDEO CONTAINER */}
           <View style={fullscreen ? {
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            top: 0,
-            bottom: 0,
-            backgroundColor: '#000',
-            zIndex: 99,
-            overflow: 'hidden'
-          } : [s.videoWrap, { height: dynamicVideoHeight }]}>
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backgroundColor: '#000',
+              zIndex: 99,
+              overflow: 'hidden'
+            } : [s.videoWrap, { height: dynamicVideoHeight }]}>
             <Animated.View style={fullscreen ? StyleSheet.absoluteFill : (showRelated ? {
               position: 'absolute',
               top: 0,
               left: 0,
-              width: width / 2,
-              height: (width / 2) * 0.5625,
+              // Collapse to 0×0 when video ended/errored — the grid's slot 1 then
+              // shows the static thumbnail card instead of a black PiP box
+              width: (playerState === 'ended' || !!playerError) ? 0 : width / 2,
+              height: (playerState === 'ended' || !!playerError) ? 0 : (width / 2) * 0.5625,
               zIndex: 16,
               backgroundColor: '#000',
               overflow: 'hidden',
@@ -2834,15 +3764,19 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 extrapolate: 'clamp',
               }),
             } : [StyleSheet.absoluteFill, { overflow: 'hidden' }])} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
-              {currentSong && currentSong.videoId ? (
-                
+
+              {/* ── Player Section ────────────────────────────────────────── */}
+              {/* Keep player mounted while playing (shows as PiP in slot 1 of the related grid).
+                  Only unmount when video has ended or errored — then slot 1 becomes a real video. */}
+              {!(showRelated && (playerState === 'ended' || !!playerError)) && (currentSong?.videoId || (initialSongLoadedRef.current ? null : initialVideoId)) ? (
+
                 // ─── Drive Video ───────────────────────────────────────────────
-                currentSong.source === 'drive' ? (
+                (currentSong?.source || initialSource) === 'drive' ? (
                   <DrivePlayer
-                    key={currentSong.videoId}
+                    key={currentSong?.videoId || (initialSongLoadedRef.current ? 'drive_active' : initialVideoId)}
                     ref={playerRef}
-                    fileId={currentSong.videoId}
-                    play={isPlaying && !playerError && isPlayerReady}
+                    fileId={currentSong?.videoId || (initialSongLoadedRef.current ? '' : initialVideoId)}
+                    play={isPlaying && !playerError}
                     muted={false}
                     isFullscreen={fullscreen}
                     onAspectRatio={handleAspectRatio}
@@ -2878,151 +3812,275 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       setPlayerError('unknown');
                     }}
                   />
-                ) : (
-                  // ─── YouTube Video ─────────────────────────────────────────
-                  <YoutubePlayer
-                    key={currentSong.videoId}
+                ) : directStreamUrl ? (
+                  <DirectVideoPlayer
+                    key={`direct_${currentSong?.videoId || (initialSongLoadedRef.current ? 'direct_active' : initialVideoId) || 'direct_player'}`}
                     ref={playerRef}
-                    videoId={currentSong.videoId}
-                    play={isPlaying && !playerError && isPlayerReady && isTrackPlayerReady}
-                    muted={false}  // IFrame owns audio — TrackPlayer is NOT used for YouTube
+                    videoUri={directStreamUrl}
+                    fallbackUri={directFallbackUrl || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
+                    audioUri={directAudioUrl}
+                    streamType={directStreamType}
+                    play={isPlaying && !playerError}
                     quality={videoQuality}
-                    onQualityChange={(q) => console.log('📺 [QUALITY] Live stream confirmed quality:', q)}
+                    muted={false}
+                    initialPosition={livePositionRef.current || initialRoomPosition || 0}
+                    isFullscreen={fullscreen}
                     aspectRatio={detectedAspectRatio || 1.7777}
                     onAspectRatio={handleAspectRatio}
-                    isFullscreen={fullscreen}
-                    onQualitiesAvailable={(levels) => {
-                      let list = levels.filter(q => q);
-                      if (!list.includes('auto')) {
-                        list.push('auto');
-                      }
-                      setAvailableQualities(list);
+                    onExactResolution={setLiveExactResolution}
+                    onQualityFallback={(fallbackQuality) => {
+                      setVideoQuality(fallbackQuality);
+                      setLiveExactResolution('Auto');
                     }}
-                    onVideoData={(extractedTitle, author) => {
-                      if (currentSong && (currentSong.title === 'Loading...' || currentSong.title === 'Initializing...' || !currentSong.channelTitle)) {
-                        console.log('🎵 [METADATA] Extracted video data from IFrame:', extractedTitle, 'by', author);
-                        updateCurrentSongMetadata({
-                          ...currentSong,
-                          title: extractedTitle || currentSong.title,
-                          channelTitle: author || currentSong.channelTitle || 'YouTube',
+                    onQualitiesAvailable={(qualities) => {
+                      // Fix 3: ExoPlayer's track list can be incomplete (e.g. only 1-2 resolutions
+                      // reported even when the DASH MPD has 6+). Only fall back to ExoPlayer's list
+                      // if we have no extraction-derived streams yet.
+                      if (directStreamsListRef.current.length > 0) return;
+                      if (qualities && qualities.length > 0) {
+                        const qKeys = qualities.map((q: string) => {
+                          const h = parseInt(q.replace(/\D/g, ''), 10);
+                          return heightToQualityKey(h);
                         });
+                        setAvailableQualities(prev => Array.from(new Set([...prev, ...qKeys])));
                       }
                     }}
                     onReady={() => {
-                      // NOTE: do NOT call setVolume(0) here — we want real audio from the IFrame
                       setIsPlayerReady(true);
                       isPlayerReadyRef.current = true;
                       playerReadyTime.current = Date.now();
                       setIsBuffering(false);
-
-                      if (livePositionRef.current > 1) {
-                        const currentPos = livePositionRef.current;
-                        console.log('🔄 [RESTORE POSITION] Restoring playback position to:', currentPos);
-                        setTimeout(() => {
-                          try {
-                            playerRef.current?.seekTo?.(currentPos, true);
-                          } catch (_) {}
-                        }, 100);
-                      }
+                      setMediaFullySynced(true);
+                      const state = isPlaying ? 'playing' : 'paused';
+                      setPlayerState(state);
+                      playerStateRef.current = state;
 
                       if (!isDJ && !isDJMode && joinSnapshot && !joinSnapshotConsumed.current) {
                         joinSnapshotConsumed.current = true;
                         const snapshotTime = joinSnapshot.receivedAt;
                         const snapshotPosition = joinSnapshot.position;
-                        // Use the most recent watch_sync position which is more accurate than snapshot
-                        // snapshot was saved on room_state, but by now we may have received fresher syncs
-                        // We use the latest `position` from roomState for accuracy
                         setTimeout(() => {
                           const elapsed = (Date.now() - snapshotTime) / 1000;
                           const targetPosition = snapshotPosition + elapsed;
                           const safePosition = duration > 0
                             ? Math.min(targetPosition, duration - 2)
                             : targetPosition;
-                          console.log('👋 [JOIN] Seeking to live position:', safePosition, '(snapshot:', snapshotPosition, '+ elapsed:', elapsed.toFixed(1), 's)');
-                          playerRef.current?.seekTo(safePosition, true);
+                          playerRef.current?.seekTo?.(safePosition, true);
                           livePositionRef.current = safePosition;
                           lastSeekTimeRef.current = Date.now();
-                        }, 500); // Reduced from 2000ms — player is already ready at this point
+                        }, 500);
                       }
-
-                      setIsAdPlaying(true);
-                      isAdPlayingRef.current = true;
-                      realDurationLockedRef.current = false;
-
-                      // ✅ FIX (Bug 1 — duration jumping / desync):
-                      // Previously this block ran its OWN setInterval that
-                      // independently measured duration and decided
-                      // ad-vs-real-video, calling setDuration/setRealDuration
-                      // on its own schedule. The "Stable Position ticker"
-                      // effect elsewhere in this component does the exact
-                      // same job with a different (stricter, sample-averaged)
-                      // heuristic. Having two independent detectors meant
-                      // duration could be overwritten by whichever one fired
-                      // last, visibly jumping between values. We now let the
-                      // ticker be the single source of truth — onReady only
-                      // seeds "assume this is an ad until the ticker proves
-                      // otherwise", matching what the ticker already expects
-                      // (isAdPlayingRef starts true, masterDuration starts 0).
-                      if (adSkipIntervalRef.current) clearInterval(adSkipIntervalRef.current);
-                      if (adMuteTimer.current) clearTimeout(adMuteTimer.current);
-
-                      // Safety net only: if the ticker hasn't cleared the
-                      // "assume ad" flag within 20s (e.g. ticker hasn't
-                      // started yet, very slow buffering), stop blocking the
-                      // UI on the ad overlay. This does NOT touch duration.
-                      adMuteTimer.current = setTimeout(() => {
-                        setIsAdPlaying(false);
-                        isAdPlayingRef.current = false;
-                      }, 20000);
-
-                      setTimeout(async () => {
-                        try {
-                          const d = await playerRef.current?.getDuration();
-                          if (d && d > 0) {
-                            setDuration(d);
-                            playerRef.current?.setRealDuration(d);
-                          }
-                        } catch (e) {}
-                      }, 300);
                     }}
-                    onAdStarted={() => { isAdPlayingRef.current = true; }}
-                    onAdEnded={() => { isAdPlayingRef.current = false; }}
-                    onQualityChange={(q) => console.log('YouTube confirmed quality:', q, 'requested:', videoQuality)}
                     onStateChange={onPlayerStateChange}
                     onProgress={(currentTime, dur) => {
                       if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current && currentTime > 0) {
+                      if (!seekingRef.current && !isReseeking && currentTime > 0) {
                         livePositionRef.current = currentTime;
                         setLivePosition(currentTime);
                       }
                     }}
-                    onError={(error) => {
+                    onEnd={() => {
+                      if (isDJ || isDJMode) {
+                        if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
+                        lastAuxPassTimeRef.current = Date.now();
+                        setIsPlayerReady(false);
+                        isPlayerReadyRef.current = false;
+                        setIsBuffering(true);
+                        setIsSyncing(true);
+                        setDirectStreamUrl(null);
+                        setDirectAudioUrl(null);
+                        livePositionRef.current = 0;
+                        setLivePosition(0);
+                        passAux();
+                      } else {
+                        fetchRelated();
+                        setShowRelated(true);
+                      }
+                    }}
+                    onError={(err) => {
+                      const errStr = JSON.stringify(err);
+                      console.warn('[MusicRoomScreen] DirectVideoPlayer error (after internal recovery failed):', errStr);
+
+                      const reextractVideoId = currentDirectFetchId.current;
+                      if (reextractVideoId) {
+                        console.log('🔄 [MusicRoomScreen] Re-extracting fresh streams after failure...');
+                        dashUrlRef.current = null;
+                        currentDirectFetchId.current = null;
+                        setIsDirectLoading(true);
+
+                        extractVideoStreamUrlClientSide(reextractVideoId).then((res) => {
+                          if (!res) return;
+                          currentDirectFetchId.current = reextractVideoId;
+                          const progFallback = res.fallbackProgressiveUrl || fallbackProgressiveUrlRef.current;
+                          if (res.dashUrl) {
+                            console.log('✅ [MusicRoomScreen] Re-extraction success — restoring DASH quality switching');
+                            setDirectStreamsList(res.streams || []);
+                            directStreamsListRef.current = res.streams || [];
+                            dashUrlRef.current = res.dashUrl;
+                            setVideoQuality('auto');
+                            setLiveExactResolution('Auto');
+                            setDirectStreamUrl(res.dashUrl);
+                            setDirectAudioUrl(null);
+                            setDirectStreamType('mpd');
+                          } else if (progFallback) {
+                            console.log('🎬 [MusicRoomScreen] Escalated recovery: falling back to progressive stream');
+                            setDirectStreamUrl(progFallback);
+                            setDirectAudioUrl(null);
+                            setDirectStreamType('mp4');
+                          } else if (res.url) {
+                            setDirectStreamUrl(res.url);
+                            setDirectAudioUrl(null);
+                            setDirectStreamType('mp4');
+                          } else {
+                            console.warn('[MusicRoomScreen] Re-extraction produced no streams, retrying direct player');
+                          }
+                          setIsDirectLoading(false);
+                        }).catch(() => {
+                          if (fallbackProgressiveUrlRef.current) {
+                            setDirectStreamUrl(fallbackProgressiveUrlRef.current);
+                            setDirectStreamType('mp4');
+                          }
+                          setIsDirectLoading(false);
+                        });
+                        return;
+                      }
+
+                      if (fallbackProgressiveUrlRef.current) {
+                        setDirectStreamUrl(fallbackProgressiveUrlRef.current);
+                        setDirectStreamType('mp4');
+                      }
+                    }}
+                  />
+                ) : isDirectLoading ? (
+                  <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
+                    <ActivityIndicator size="large" color="#4F46E5" />
+                  </View>
+                ) : (
+                  <YoutubePlayer
+                    key={currentSong?.videoId || (initialSongLoadedRef.current ? 'yt_active' : initialVideoId) || 'yt_player'}
+                    ref={playerRef}
+                    videoId={currentSong?.videoId || (initialSongLoadedRef.current ? '' : initialVideoId) || ''}
+                    play={isPlaying && !playerError}
+                    muted={false}
+                    initialPosition={livePositionRef.current || 0}
+                    quality={videoQuality}
+                    isFullscreen={fullscreen}
+                    aspectRatio={detectedAspectRatio || 1.7777}
+                    onAspectRatio={handleAspectRatio}
+                    onQualitiesAvailable={(qualities) => {
+                      if (directStreamUrl || directStreamsListRef.current.length > 0) return;
+                      if (qualities && qualities.length > 0) {
+                        const qList = ['auto', ...qualities.filter(q => q && q !== 'auto')];
+                        setAvailableQualities(Array.from(new Set(qList)));
+                      }
+                    }}
+                    onExactResolution={(resolution) => {
+                      if (resolution) setLiveExactResolution(resolution);
+                    }}
+                    onQualityChange={(newQuality) => {
+                      const minimal = getMinimalQualityLabel(newQuality);
+                      setLiveExactResolution(minimal);
+                    }}
+                    onAdStarted={() => {
+                      setIsAdPlaying(true);
+                      isAdPlayingRef.current = true;
+                    }}
+                    onAdEnded={() => {
+                      setIsAdPlaying(false);
+                      isAdPlayingRef.current = false;
+                    }}
+                    onReady={() => {
+                      setIsPlayerReady(true);
+                      isPlayerReadyRef.current = true;
+                      playerReadyTime.current = Date.now();
                       setIsBuffering(false);
-                      if (error === 'embed_not_allowed' || error === 150 || error === 101) {
+                      setMediaFullySynced(true);
+                      const state = isPlaying ? 'playing' : 'paused';
+                      setPlayerState(state);
+                      playerStateRef.current = state;
+
+                      if (!isDJ && !isDJMode && joinSnapshot && !joinSnapshotConsumed.current) {
+                        joinSnapshotConsumed.current = true;
+                        const snapshotTime = joinSnapshot.receivedAt;
+                        const snapshotPosition = joinSnapshot.position;
+                        setTimeout(() => {
+                          const elapsed = (Date.now() - snapshotTime) / 1000;
+                          const targetPosition = snapshotPosition + elapsed;
+                          const safePosition = duration > 0
+                            ? Math.min(targetPosition, duration - 2)
+                            : targetPosition;
+                          playerRef.current?.seekTo?.(safePosition, true);
+                          livePositionRef.current = safePosition;
+                          lastSeekTimeRef.current = Date.now();
+                        }, 500);
+                      }
+                    }}
+                    onStateChange={onPlayerStateChange}
+                    onProgress={(currentTime, dur) => {
+                      if (dur > 0 && !isNaN(dur)) setDuration(dur);
+                      if (!seekingRef.current && !isReseeking && currentTime > 0) {
+                        livePositionRef.current = currentTime;
+                        setLivePosition(currentTime);
+                      }
+                    }}
+                    onEnd={() => {
+                      if ((isDJ || isDJMode) && queue.length > 0) {
+                        if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
+                        lastAuxPassTimeRef.current = Date.now();
+                        setIsPlayerReady(false);
+                        isPlayerReadyRef.current = false;
+                        setIsBuffering(true);
+                        setIsSyncing(true);
+                        passAux();
+                      } else {
+                        fetchRelated();
+                        setShowRelated(true);
+                      }
+                    }}
+                    onError={(err) => {
+                      console.warn('[MusicRoomScreen] YoutubePlayer error:', err);
+                      setIsBuffering(false);
+                      if (err === 150 || err === 101 || err === 152) {
                         setPlayerError('embed_not_allowed');
-                        if (autoSkipTimer.current) clearTimeout(autoSkipTimer.current);
-                        autoSkipTimer.current = setTimeout(() => {
-                          setPlayerError(curr => {
-                            if (curr === 'embed_not_allowed') { handleNext(); return null; }
-                            return curr;
-                          });
-                        }, 3000);
+                        fetchRelated();
+                        setShowRelated(true);
+                      } else if (err === 100) {
+                        setPlayerError('video_not_found');
+                        fetchRelated();
+                        setShowRelated(true);
+                      } else if (err === 2 || err === 5) {
+                        console.log('ℹ️ [MusicRoomScreen] Non-fatal YouTube player warning code:', err);
                       } else {
                         setPlayerError('unknown');
+                        fetchRelated();
+                        setShowRelated(true);
                       }
                     }}
                   />
                 )
+              ) : null}
 
-              ) : (
-                <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                  <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
+              {/* ─── Clean Thumbnail + White Spinner Overlay (Zero Black Screen, Zero Text) ─── */}
+              {!(showRelated && (playerState === 'ended' || !!playerError)) && !isPlayerReady && !playerError && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]} pointerEvents="none">
+                  {videoThumbnailUrl ? (
+                    <FastImage
+                      key={videoThumbnailUrl}
+                      source={{ uri: videoThumbnailUrl, priority: FastImage.priority.high }}
+                      style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+                      resizeMode={FastImage.resizeMode.cover}
+                    />
+                  ) : null}
+                  {videoThumbnailUrl ? (
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
+                  ) : null}
+                  <ActivityIndicator size="large" color="#FFFFFF" />
                 </View>
               )}
             </Animated.View>
 
-            {/* Error overlay */}
-            {playerError && (
+            {/* Error overlay — hidden when related grid is showing */}
+            {playerError && !showRelated && (
               <View style={[StyleSheet.absoluteFill, {
                 backgroundColor: 'rgba(0,0,0,0.92)',
                 justifyContent: 'center', alignItems: 'center',
@@ -3073,6 +4131,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 top) fires that button's onPress instead, never reaching
                 here. Swiping left/right opens the related videos grid, 
                 and tapping the mini-player inside the related grid expands it back. */}
+
+
             {!playerError && playerState !== 'ended' && (
               <View 
                 style={showRelated ? {
@@ -3092,7 +4152,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               isPlaying={isPlaying}
               isEnded={playerState === 'ended'}
               canControl={(isDJ || isDJMode) && isPlayerReady}
-              isBuffering={!isReseeking && (isBuffering || (currentSong?.source !== 'drive' && !isTrackPlayerReady)) && !!currentSong}
+              isBuffering={!isReseeking && (isBuffering || (currentSong?.source === 'drive' && !isTrackPlayerReady)) && !!currentSong}
               position={livePosition}
               duration={duration}
               onPlayPause={handlePlayPause}
@@ -3100,70 +4160,23 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               onNext={handleNext}
               onToggleFullscreen={() => setFullscreen(!fullscreen)}
               onShowRelated={() => setShowRelated(true)}
-              onSettings={() => setShowQualityOptions(true)}
+              onSettings={() => {
+                setShowQualityOptions(prev => !prev);
+              }}
               isFullscreen={fullscreen}
               isDrivePlayer={currentSong?.source === 'drive'}
+              title={currentSong?.title}
+              onSingleTap={() => {
+                if (showControls) {
+                  setShowControls(false);
+                  if (controlTimer.current) clearTimeout(controlTimer.current);
+                } else {
+                  showControlsFor(3500);
+                }
+              }}
+              onKeepControlsAlive={() => showControlsFor(3500)}
             />
 
-
-
-            {showQualityOptions && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.88)', justifyContent: 'center', alignItems: 'center', zIndex: 1000, paddingHorizontal: 24 }]}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 16, letterSpacing: 0.3 }}>Video Quality</Text>
-                
-                <View style={{ width: '100%', maxWidth: 300, gap: 10 }}>
-                  {STREAM_QUALITY_MODES.map((mode) => {
-                    const isSelected = (videoQuality === mode.key) || (videoQuality === 'highres' && mode.key === 'auto');
-                    return (
-                      <TouchableOpacity
-                        key={mode.key}
-                        onPress={() => {
-                          setVideoQuality(mode.key);
-                          playerRef.current?.setPlaybackQuality(mode.key);
-                          setShowQualityOptions(false);
-                        }}
-                        activeOpacity={0.7}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'rgba(255,255,255,0.06)',
-                          borderColor: isSelected ? '#38BDF8' : 'rgba(255,255,255,0.1)',
-                          borderWidth: 1.5,
-                          borderRadius: 14,
-                          paddingHorizontal: 16,
-                          paddingVertical: 12,
-                          gap: 12,
-                        }}
-                      >
-                        <Icon
-                          name={mode.key === 'auto' ? 'sparkles' : 'leaf'}
-                          size={20}
-                          color={isSelected ? '#38BDF8' : 'rgba(255,255,255,0.6)'}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: isSelected ? '#38BDF8' : '#fff', fontSize: 14, fontWeight: '700' }}>
-                            {mode.label}
-                          </Text>
-                          <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 2 }}>
-                            {mode.subtitle}
-                          </Text>
-                        </View>
-                        {isSelected && (
-                          <Icon name="checkmark-circle" size={20} color="#38BDF8" />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => setShowQualityOptions(false)}
-                  style={{ marginTop: 16, paddingVertical: 8, paddingHorizontal: 20 }}
-                >
-                  <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, fontWeight: '600' }}>Close</Text>
-                </TouchableOpacity>
-              </View>
-            )}
 
             {/* Ad overlay — only for YouTube, Drive has no ads. Pure black,
                 no thumbnail — a translucent thumbnail here was sitting on
@@ -3177,11 +4190,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 rendezvous (before audio+video are both confirmed running).
                 NOT shown during seeks — the video stays visible with its
                 natural seek behavior, only audio is briefly silent. */}
-            {!playerError && currentSong?.videoId && currentSong.title !== 'Initializing...' &&
+            {!playerError && currentSong?.source === 'drive' && currentSong?.videoId && currentSong.title !== 'Initializing...' &&
               !mediaFullySynced && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 30, justifyContent: 'center', alignItems: 'center' }]}>
-                <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" />
-              </View>
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 30 }]} />
             )}
 
             {/* Small corner indicator during seek — audio catching up */}
@@ -3209,45 +4220,129 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" animating={true} />
                   </View>
                 )}
-                <RelatedVideosGrid
-                  queueItems={queue}
-                  suggestedVideos={relatedVideos}
-                  myUserId={user?.id ?? -1}
-                  currentSong={currentSong}
-                  scrollX={relatedScrollX}
-                  onPinVideo={(song) => {
-                    if (playerState === 'ended') {
-                      // Nothing left for the room to auto-advance to —
-                      // play this immediately instead of just pinning it.
-                      setShowRelated(false);
-                      handleSelectSong(song, true);
-                    } else {
-                      pinVideo(song);
-                    }
-                  }}
-                  onUnpinVideo={(videoId) => unpinVideo(videoId)}
-                />
+                {/* Only render the grid once we have videos — avoids the brief
+                    flash of an empty grid with a spinner box in slot 1 */}
+                {relatedVideos.length > 0 && (
+                  <RelatedVideosGrid
+                    queueItems={queue}
+                    suggestedVideos={relatedVideos}
+                    myUserId={user?.id ?? -1}
+                    currentSong={currentSong}
+                    scrollX={relatedScrollX}
+                    onPinVideo={(song) => {
+                      // Auto-play immediately if video ended OR an error opened the grid
+                      if (playerState === 'ended' || !!playerError) {
+                        setShowRelated(false);
+                        setPlayerError(null);
+                        handleSelectSong(song, true);
+                      } else {
+                        pinVideo(song);
+                      }
+                    }}
+                    onUnpinVideo={(videoId) => unpinVideo(videoId)}
+                  />
+                )}
+              </View>
+            )}
+
+            {/* ─── Compact Translucent Quality Grid Overlay (4x3) ─── */}
+            {/* Fix 2: Guard against Drive source — Drive has no quality ladder */}
+            {showQualityOptions && !playerError && currentSong?.source !== 'drive' && (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.38)', justifyContent: 'center', alignItems: 'center', zIndex: 60 }]}>
+                <TouchableWithoutFeedback onPress={() => setShowQualityOptions(false)}>
+                  <View style={StyleSheet.absoluteFill} />
+                </TouchableWithoutFeedback>
+                <View style={{
+                  width: '88%',
+                  maxWidth: 255,
+                  maxHeight: '90%',
+                  backgroundColor: 'rgba(12, 15, 22, 0.72)',
+                  borderRadius: 10,
+                  padding: 6,
+                  borderWidth: 1,
+                  borderColor: 'rgba(255, 255, 255, 0.14)',
+                  zIndex: 61,
+                }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4, paddingBottom: 4 }}>
+                    <Text style={{ fontSize: 9.5, fontWeight: '700', color: 'rgba(255, 255, 255, 0.6)', letterSpacing: 0.8 }}>
+                      QUALITY {liveExactResolution ? `• ${liveExactResolution}` : ''}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setShowQualityOptions(false)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={{ padding: 2 }}
+                    >
+                      <Icon name="close" size={13} color="rgba(255, 255, 255, 0.7)" />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    bounces={false}
+                    contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}
+                  >
+                    {dynamicQualityOptions.map((opt) => {
+                      const isSelected = (videoQuality === opt.key) ||
+                        (videoQuality === 'highres' && opt.key === 'hd2160') ||
+                        (videoQuality === 'hd2160' && opt.key === 'highres') ||
+                        (videoQuality === opt.label);
+
+                      return (
+                        <TouchableOpacity
+                          key={opt.key}
+                          onPress={() => handleSelectQuality(opt.key)}
+                          activeOpacity={0.7}
+                          style={{
+                            width: '22.5%',
+                            marginHorizontal: '1.25%',
+                            marginVertical: 3,
+                            height: 26,
+                            borderRadius: 5,
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            backgroundColor: isSelected ? 'rgba(2, 132, 199, 0.9)' : 'rgba(255, 255, 255, 0.10)',
+                            borderWidth: 1,
+                            borderColor: isSelected ? '#38BDF8' : 'rgba(255, 255, 255, 0.06)',
+                          }}
+                        >
+                          <Text style={{
+                            fontSize: 10.5,
+                            fontWeight: isSelected ? '700' : '500',
+                            color: isSelected ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
+                          }}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
               </View>
             )}
           </View>
 
-          {!fullscreen && !(isKeyboardVisible || stickerPickerVisible) && (
+          {!fullscreen && (
             renderNpBar()
           )}
 
           {!fullscreen && (
-            <>
+            <View style={{ flex: 1, overflow: 'hidden' }}>
+              <Reanimated.View style={[{ flex: 1 }, conversationLiftStyle]}>
               {activeTab === 'chat' ? (
                 <>
                   <FlatList
                     ref={chatListRef}
                     data={reversedMessages}
                     inverted
-                    keyExtractor={(item, i) => item.id?.toString() || i.toString()}
+                    initialNumToRender={30}
+                    maxToRenderPerBatch={20}
+                    windowSize={21}
+                    updateCellsBatchingPeriod={100}
+                    removeClippedSubviews={false}
+                    keyExtractor={(item, i) => (item.local_id || item.id)?.toString() || i.toString()}
                     style={{ flex: 1 }}
                     contentContainerStyle={{ paddingHorizontal: 8, paddingTop: 0, paddingBottom: 10 }}
                     keyboardShouldPersistTaps="handled"
-                    ListEmptyComponent={<Text style={s.emptyText}>No messages yet. Say hi! 👋</Text>}
+                    ListEmptyComponent={<Text style={[s.emptyText, isLight && { color: '#64748B' }]}>No messages yet. Say hi! 👋</Text>}
                     onScrollToIndexFailed={(info) => {
                       try {
                         chatListRef.current?.scrollToOffset({
@@ -3302,8 +4397,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
                         mentionsList.sort((a, b) => b.searchStr.length - a.searchStr.length);
 
+                        const bubbleTextColor = isMeMsg ? '#FFFFFF' : (isLight ? '#0F172A' : '#FFFFFF');
+
                         if (mentionsList.length === 0) {
-                          return <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left' }]}>{text}</Text>;
+                          return (
+                            <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left', color: bubbleTextColor }]}>
+                              {text}
+                            </Text>
+                          );
                         }
 
                         const elements: React.ReactNode[] = [];
@@ -3338,13 +4439,13 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                 style={{ 
                                   flexDirection: 'row',
                                   alignItems: 'center',
-                                  backgroundColor: 'rgba(129, 0, 209, 0.15)',
+                                  backgroundColor: isLight ? 'rgba(129, 0, 209, 0.10)' : 'rgba(129, 0, 209, 0.15)',
                                   borderRadius: 12,
                                   paddingHorizontal: 6,
                                   paddingVertical: 1.5,
                                   marginHorizontal: 2,
                                   borderWidth: 0.5,
-                                  borderColor: 'rgba(129, 0, 209, 0.3)',
+                                  borderColor: isLight ? 'rgba(129, 0, 209, 0.25)' : 'rgba(129, 0, 209, 0.3)',
                                   alignSelf: 'center'
                                 }}
                               >
@@ -3355,7 +4456,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                     style={{ width: 14, height: 14, borderRadius: 7 }}
                                   />
                                 </View>
-                                <Text style={{ color: '#D6A4FF', fontWeight: '600', fontSize: 12 }}>
+                                <Text style={{ color: isLight ? '#7C3AED' : '#D6A4FF', fontWeight: '600', fontSize: 12 }}>
                                   {selectedMention.searchStr}
                                 </Text>
                               </View>
@@ -3369,10 +4470,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                         }
 
                         return (
-                          <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left' }]}>
+                          <Text style={[s.bubbleMsg, { textAlign: isMeMsg ? 'right' : 'left', color: bubbleTextColor }]}>
                             {elements.map((el, i) => {
                               if (typeof el === 'string') {
-                                return <Text key={`text-${i}`}>{el}</Text>;
+                                return (
+                                  <Text key={`text-${i}`} style={{ color: bubbleTextColor }}>
+                                    {el}
+                                  </Text>
+                                );
                               }
                               return el;
                             })}
@@ -3482,6 +4587,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                     marginBottom: 4,
                                     gap: 6,
                                   },
+                                  isLight && !isMe && { backgroundColor: '#CBD5E1' },
+                                  isMe && { backgroundColor: 'rgba(255, 255, 255, 0.22)' },
                                   !isMe && !showAvatar && { marginLeft: 36 },
                                   isMe && !showAvatar && { marginRight: 36 },
                                 ]}
@@ -3491,7 +4598,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                   displayName={item.reply_to.user}
                                   style={{ width: 18, height: 18, borderRadius: 9 }}
                                 />
-                                <Text style={[s.replyText, { textAlign: isMe ? 'right' : 'left', flexShrink: 1 }]} numberOfLines={1} ellipsizeMode="tail">
+                                <Text style={[s.replyText, { textAlign: isMe ? 'right' : 'left', flexShrink: 1 }, isMe ? { color: '#FFFFFF' } : (isLight ? { color: '#0F172A' } : { color: 'rgba(255,255,255,0.7)' })]} numberOfLines={1} ellipsizeMode="tail">
                                   {item.reply_to.text && item.reply_to.text.trim() ? item.reply_to.text : 
                                    (item.reply_to.message_type === 'image' ? '📷 Image' :
                                     item.reply_to.message_type === 'gif' ? '👾 GIF' :
@@ -3510,7 +4617,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                             <TouchableOpacity onPress={(e) => handlePress(item, e)} onLongPress={() => handleMessageLongPress(item)} activeOpacity={1}>
                               <View style={[
                                 s.msgContainer,
-                                isMe ? s.msgContainerMe : s.msgContainerThem,
+                                isMe ? s.msgContainerMe : (isLight ? [s.msgContainerThem, { backgroundColor: '#E2E8F0', borderWidth: 1, borderColor: '#CBD5E1' }] : s.msgContainerThem),
                                 (isMedia || isLottieSticker) && s.mediaMsgContainer,
                                 (isSticker || isLottieSticker || isEmojiOnly) && { backgroundColor: 'transparent', paddingHorizontal: 4, paddingVertical: 2 },
                                 !isMe && !showAvatar && { marginLeft: 36 },
@@ -3529,7 +4636,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                 ) : isMedia ? (
                                   <View style={{ position: 'relative', alignSelf: isMe ? 'flex-end' : 'flex-start' }}>
                                     <ScaledImage
-                                      uri={resolveImageUrl(item.media_url)}
+                                      uri={resolveImageUrl(item.local_uri || item.media_url)}
                                       isAnimated={item.message_type === 'gif' || item.message_type === 'sticker'}
                                       style={[
                                         isSticker ? s.stickerImage : s.messageImage,
@@ -3538,9 +4645,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                       resizeMode="contain"
                                     />
                                     {item.message_type === 'image' &&
-                                      !item.media_url.toLowerCase().includes('sticker') &&
-                                      !item.media_url.toLowerCase().includes('gif') &&
-                                      !item.media_url.toLowerCase().includes('webp') && (
+                                      !(item.local_uri || item.media_url || '').toLowerCase().includes('sticker') &&
+                                      !(item.local_uri || item.media_url || '').toLowerCase().includes('gif') &&
+                                      !(item.local_uri || item.media_url || '').toLowerCase().includes('webp') && (
                                       <View />
                                     )}
                                   </View>
@@ -3588,23 +4695,21 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
                   {typingUsers.length > 0 && (
                     <View style={s.typingContainer}>
-                      <Text style={s.typingText}>
+                      <Text style={[s.typingText, isLight && { color: '#475569' }]}>
                         {`${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`}
                       </Text>
                     </View>
                   )}
 
-                  {roomScreenReady && (
-                    <>
-                      {replyingTo && (
+                  {replyingTo && (
                     <>
                       {/* Quick Reactions Row */}
-                      <View style={s.quickReactionsRow}>
+                      <View style={[s.quickReactionsRow, isLight && { borderTopColor: 'rgba(0,0,0,0.06)' }]}>
                         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.quickReactionsContent}>
                           {['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏', '🎉', '💯', '💩', '👀', '✨', '🤔'].map(emoji => (
                             <TouchableOpacity
                               key={emoji}
-                              style={s.quickReactionBtn}
+                              style={[s.quickReactionBtn, isLight && { backgroundColor: 'rgba(0,0,0,0.05)' }]}
                               onPress={() => {
                                 const myName = user?.display_name || user?.email;
                                 const currentReactions = replyingTo.reactions || {};
@@ -3625,10 +4730,10 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       {/* Reply Bar */}
                       <View style={s.replyBar}>
                         <View style={s.replyBarContent}>
-                          <Icon name="arrow-undo-outline" size={16} color="#ffffff" />
+                          <Icon name="arrow-undo-outline" size={16} color={themeIconColor} />
                           <View style={{ flex: 1, marginLeft: 8 }}>
-                            <Text style={s.replyBarUser}>Replying to {replyingTo.user === (user?.display_name || user?.email) ? 'You' : replyingTo.user}</Text>
-                            <Text style={s.replyBarText} numberOfLines={1}>
+                            <Text style={[s.replyBarUser, isLight && { color: '#0F172A' }]}>Replying to {replyingTo.user === (user?.display_name || user?.email) ? 'You' : replyingTo.user}</Text>
+                            <Text style={[s.replyBarText, isLight && { color: '#475569' }]} numberOfLines={1}>
                               {replyingTo.text && replyingTo.text.trim() ? replyingTo.text : 
                                (replyingTo.message_type === 'image' ? '📷 Image' :
                                 replyingTo.message_type === 'gif' ? '👾 GIF' :
@@ -3638,12 +4743,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                           {replyingTo.media_url && (
                             <Image
                               source={{ uri: resolveImageUrl(replyingTo.media_url) }}
-                              style={{ width: 36, height: 36, borderRadius: 4, marginRight: 8, backgroundColor: 'rgba(255,255,255,0.1)' }}
+                              style={{ width: 36, height: 36, borderRadius: 4, marginRight: 8, backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.1)' }}
                               resizeMode="cover"
                             />
                           )}
                           <TouchableOpacity onPress={() => setReplyingTo(null)}>
-                            <Icon name="close-circle" size={20} color="rgba(255,255,255,0.4)" />
+                            <Icon name="close-circle" size={20} color={isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)'} />
                           </TouchableOpacity>
                         </View>
                       </View>
@@ -3651,15 +4756,15 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   )}
 
                   {mentionListVisible && (
-                    <View style={s.mentionListContainer}>
+                    <View style={[s.mentionListContainer, isLight && { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' }]}>
                       <FlatList
                         data={participants.filter(p => p.name !== user?.display_name && p.name.toLowerCase().includes(mentionFilter))}
                         keyExtractor={(p, idx) => p.user_id?.toString() || idx.toString()}
                         keyboardShouldPersistTaps="always"
                         renderItem={({ item }) => (
-                          <TouchableOpacity style={s.mentionItem} onPress={() => handleMentionSelect(item.name)}>
+                          <TouchableOpacity style={[s.mentionItem, isLight && { borderBottomColor: 'rgba(0,0,0,0.06)' }]} onPress={() => handleMentionSelect(item.name)}>
                             <AvatarWithFallback uri={item.avatar} displayName={item.name} style={{ width: 24, height: 24, borderRadius: 12 }} />
-                            <Text style={s.mentionName}>{item.name}</Text>
+                            <Text style={[s.mentionName, isLight && { color: '#0F172A' }]}>{item.name}</Text>
                           </TouchableOpacity>
                         )}
                         style={{ maxHeight: 150 }}
@@ -3668,10 +4773,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   )}
                   <View style={s.chatBar}>
                     <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
-                      <Icon name="add" size={24} color="#fffffff6" />
+                      <Icon name="add" size={24} color={isLight ? '#0284C7' : '#fffffff6'} />
                     </TouchableOpacity>
                     <View
-                      style={[s.inputWrapper, { minHeight: 40 }]}
+                      style={[
+                        s.inputWrapper,
+                        { minHeight: 40 },
+                        isLight && { backgroundColor: 'rgba(0,0,0,0.06)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' }
+                      ]}
                     >
                       <TouchableOpacity
                         style={s.innerStickerButton}
@@ -3685,7 +4794,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                           } else {
                             richInputRef.current?.blur();
                             Keyboard.dismiss();
-                            setKeyboardVisible(false);
                             setStickerPickerVisible(true);
                           }
                         }}
@@ -3693,27 +4801,28 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       >
                         <Icon
                           name={stickerPickerVisible ? "close-circle" : "sparkles-outline"}
-                          size={stickerPickerVisible ? 22 : 22}
-                          color={stickerPickerVisible ? "#8AB4F8" : "rgba(255,255,255,0.6)"}
+                          size={22}
+                          color={stickerPickerVisible ? "#8AB4F8" : (isLight ? '#64748B' : "rgba(255,255,255,0.6)")}
                         />
                       </TouchableOpacity>
                       <RichTextInput
                         ref={richInputRef}
                         onFocus={() => {
-                          setKeyboardVisible(true);
                           setStickerPickerVisible(false);
                         }}
-                        style={[s.chatInput, { height: inputHeight, paddingLeft: 42 }]}
+                        style={[s.chatInput, { height: inputHeight, paddingLeft: 42 }, isLight && { color: '#0F172A' }]}
                         underlineColorAndroid="transparent"
                         onChangeText={handleTextChange}
                         onContentSizeChange={(e) => {
                           const h = e.nativeEvent?.contentSize?.height;
-                          console.log('[INPUT_GROWTH_DEBUG] MusicRoom onContentSizeChange height:', h);
-                          if (h) setInputHeight(Math.max(40, Math.min(150, h)));
+                          if (h) {
+                            const next = Math.max(40, Math.min(150, Math.round(h)));
+                            setInputHeight(prev => (Math.abs(prev - next) >= 4 ? next : prev));
+                          }
                         }}
                         multiline
                         placeholder="Type a message..."
-                        placeholderTextColor="rgba(255,255,255,0.4)"
+                        placeholderTextColor={themePlaceholderColor}
                         onContentCommitted={(event) => {
                           const { uri, mimeType } = event.nativeEvent;
                           Keyboard.dismiss();
@@ -3723,26 +4832,29 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     </View>
                     <TouchableOpacity style={s.sendBtn} onPress={sendChatMessage} disabled={isSendingMedia}>
                       {isSendingMedia ? (
-                        <ActivityIndicator size="small" color="#f5f5f5f6" />
+                        <ActivityIndicator size="small" color={isLight ? '#0284C7' : '#f5f5f5f6'} />
                       ) : (
-                        <Icon name="send" size={18} color="#fffffff6" />
+                        <Icon name="send" size={18} color={isLight ? '#0284C7' : '#fffffff6'} />
                       )}
                     </TouchableOpacity>
+                    {/* ── Mic Button ─────────────────────────────────── */}
+                    <TouchableOpacity
+                      style={[s.micBtn, isMicOn && s.micBtnActive]}
+                      onPress={handleToggleMic}
+                      activeOpacity={0.7}
+                      accessibilityLabel={isMicOn ? 'Turn off microphone' : 'Turn on microphone'}
+                    >
+                      <Icon
+                        name={isMicOn ? 'mic' : 'mic-off-outline'}
+                        size={18}
+                        color={isMicOn ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.55)')}
+                      />
+                    </TouchableOpacity>
                   </View>
-                    </>
-                  )}
                 </>
               ) : (
                 <View style={{ flex: 1 }}>
                   {(() => {
-                    // ✅ Queue tab shows ONLY the viewing user's own pinned
-                    // items — per spec, each person's queue is private to
-                    // them in this view (the Related grid is where everyone
-                    // sees everyone's pins). We still show each item's
-                    // GLOBAL position (its index in the full, all-users
-                    // queue) so a user can tell when their pick is actually
-                    // coming up, not just its position within their own
-                    // filtered list.
                     const myQueue = queue
                       .map((item, globalIndex) => ({ item, globalIndex }))
                       .filter(({ item }) => item.addedById === (user?.id ?? -1));
@@ -3750,28 +4862,152 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     return (
                       <>
                         <View style={s.queueHeader}>
-                          <Text style={s.queueTitle}>My Queue ({myQueue.length})</Text>
-                          <TouchableOpacity onPress={() => setActiveTab('chat')} style={s.queueCloseBtn}>
-                            <Icon name="close-circle" size={20} color="#fff" />
-                            <Text style={s.queueCloseText}>Close</Text>
+                          <Text style={[s.queueTitle, isLight && { color: '#0F172A' }]}>My Queue ({myQueue.length})</Text>
+                          <TouchableOpacity 
+                            onPress={() => setActiveTab('chat')} 
+                            style={s.queueCloseBtn}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            accessibilityLabel="Close queue"
+                          >
+                            <Icon name="close" size={24} color={themeIconColor} />
                           </TouchableOpacity>
                         </View>
+
+                        {/* ─── ROOM THEME SELECTOR ─── */}
+                        <View style={[s.themeSelectorCard, isLight && { backgroundColor: 'rgba(0,0,0,0.04)', borderColor: 'rgba(0,0,0,0.08)' }]}>
+                          <Text style={[s.themeSectionLabel, isLight && { color: '#64748B' }]}>ROOM THEME</Text>
+                          <View style={s.themePillsContainer}>
+                            <TouchableOpacity
+                              onPress={() => handleThemeChange('cinema')}
+                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'cinema' && s.themePillActiveCinema]}
+                              activeOpacity={0.75}
+                            >
+                              <Icon name="color-palette" size={13} color={roomTheme === 'cinema' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
+                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'cinema' && s.themePillTextActive]}>Cinema</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              onPress={() => handleThemeChange('rave')}
+                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'rave' && s.themePillActiveRave]}
+                              activeOpacity={0.75}
+                            >
+                              <Icon name="videocam" size={13} color={roomTheme === 'rave' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
+                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'rave' && s.themePillTextActive]}>Rave</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              onPress={() => handleThemeChange('dark')}
+                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'dark' && s.themePillActiveDark]}
+                              activeOpacity={0.75}
+                            >
+                              <Icon name="moon" size={13} color={roomTheme === 'dark' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
+                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'dark' && s.themePillTextActive]}>Dark</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              onPress={() => handleThemeChange('light')}
+                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'light' && s.themePillActiveLight]}
+                              activeOpacity={0.75}
+                            >
+                              <Icon name="sunny" size={13} color={roomTheme === 'light' ? '#0F172A' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
+                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'light' && s.themePillTextLightActive]}>Light</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+
+                        {/* ─── STREAM QUALITY SELECTOR ─── */}
+                        {currentSong?.source !== 'drive' && (
+                          <View style={[s.themeSelectorCard, isLight && { backgroundColor: 'rgba(0,0,0,0.04)', borderColor: 'rgba(0,0,0,0.08)' }]}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                              <Text style={[s.themeSectionLabel, { marginBottom: 0, marginLeft: 4 }, isLight && { color: '#64748B' }]}>
+                                STREAM QUALITY
+                              </Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingRight: 4 }}>
+                                <Icon name="pulse-outline" size={12} color="#10B981" />
+                                <Text style={{ fontSize: 11, fontWeight: '700', color: '#10B981' }}>
+                                  {liveExactResolution || (videoQuality === 'auto' ? 'Auto' : getMinimalQualityLabel(videoQuality))}
+                                </Text>
+                              </View>
+                            </View>
+
+                            <ScrollView
+                              horizontal
+                              showsHorizontalScrollIndicator={false}
+                              contentContainerStyle={{ gap: 8, paddingHorizontal: 2, paddingVertical: 2 }}
+                            >
+                              {dynamicQualityOptions.map((opt) => {
+                                const isSelected = (videoQuality === opt.key) ||
+                                  (videoQuality === 'highres' && opt.key === 'hd2160') ||
+                                  (videoQuality === 'hd2160' && opt.key === 'highres');
+
+                                return (
+                                  <TouchableOpacity
+                                    key={opt.key}
+                                    onPress={() => handleSelectQuality(opt.key)}
+                                    activeOpacity={0.75}
+                                    style={[
+                                      s.qualityPill,
+                                      isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' },
+                                      isSelected && s.qualityPillActive,
+                                    ]}
+                                  >
+                                    <Icon
+                                      name={opt.icon || 'film'}
+                                      size={13}
+                                      color={isSelected ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')}
+                                    />
+                                    <Text
+                                      style={[
+                                        s.themePillText,
+                                        isLight && { color: '#475569' },
+                                        isSelected && s.qualityPillTextActive,
+                                      ]}
+                                    >
+                                      {opt.label}
+                                    </Text>
+                                    {opt.badge && (
+                                      <View
+                                        style={[
+                                          s.qualityBadge,
+                                          isSelected
+                                            ? { backgroundColor: 'rgba(255,255,255,0.22)' }
+                                            : (isLight ? { backgroundColor: 'rgba(0,0,0,0.08)' } : { backgroundColor: 'rgba(255,255,255,0.1)' }),
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            s.qualityBadgeText,
+                                            isSelected
+                                              ? { color: '#ffffff' }
+                                              : (isLight ? { color: '#64748B' } : { color: 'rgba(255,255,255,0.6)' }),
+                                          ]}
+                                        >
+                                          {opt.badge}
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </ScrollView>
+                          </View>
+                        )}
                         <FlatList
                           data={myQueue}
                           keyExtractor={({ item }) => `${item.song.videoId}_${item.addedById}`}
                           style={{ flex: 1 }}
                           contentContainerStyle={{ padding: 12 }}
-                          ListEmptyComponent={<Text style={s.emptyText}>Your queue is empty — swipe the video to browse and pin songs</Text>}
+                          ListEmptyComponent={<Text style={[s.emptyText, isLight && { color: '#64748B' }]}>Your queue is empty — swipe the video to browse and pin songs</Text>}
                           renderItem={({ item: { item, globalIndex } }) => (
-                            <View style={s.qRow}>
-                              <Text style={s.qNum}>{globalIndex + 1}</Text>
+                            <View style={[s.qRow, isLight && { borderBottomColor: 'rgba(0,0,0,0.06)' }]}>
+                              <Text style={[s.qNum, isLight && { color: 'rgba(0,0,0,0.35)' }]}>{globalIndex + 1}</Text>
                               <Image source={{ uri: item.song.thumbnail }} style={s.qThumb} />
                               <View style={{ flex: 1, marginLeft: 10 }}>
-                                <Text style={s.qTitle} numberOfLines={1}>{item.song.title}</Text>
-                                <Text style={s.qBy}>Up next in #{globalIndex + 1} position</Text>
+                                <Text style={[s.qTitle, isLight && { color: '#0F172A' }]} numberOfLines={1}>{item.song.title}</Text>
+                                <Text style={[s.qBy, isLight && { color: '#64748B' }]}>Up next in #{globalIndex + 1} position</Text>
                               </View>
                               <TouchableOpacity onPress={() => unpinVideo(item.song.videoId)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                                <Icon name="close-circle" size={24} color="rgba(255,255,255,0.5)" />
+                                <Icon name="close-circle" size={24} color={isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.5)'} />
                               </TouchableOpacity>
                             </View>
                           )}
@@ -3779,10 +5015,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       </>
                     );
                   })()}
-                </View>
-              )}
-            </>
+                  </View>
+                )}
+              </Reanimated.View>
+            </View>
           )}
+
         </View>
 
         {/* AVATAR PREVIEW OVERLAY */}
@@ -3807,7 +5045,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         )}
 
         {/* DISCOVERY OVERLAY */}
-        <Modal visible={showDiscovery} animationType="slide" onRequestClose={() => setShowDiscovery(false)}>
+        <Modal visible={showDiscovery} animationType="none" onRequestClose={() => setShowDiscovery(false)}>
           <YouTubeDiscoveryScreen
             navigation={{
               goBack: () => setShowDiscovery(false),
@@ -3818,15 +5056,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           />
         </Modal>
 
-        {(isStickerSheetReady || stickerPickerVisible) && (
-          <StickerPickerSheet
-            visible={stickerPickerVisible}
-            stickerPacks={BUILT_IN_STICKER_PACKS}
-            onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-            onClose={() => setStickerPickerVisible(false)}
-            sheetHeight={286}
-          />
-        )}
+        {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide) ── */}
+        <StickerPickerSheet
+          visible={stickerPickerVisible}
+          stickerPacks={BUILT_IN_STICKER_PACKS}
+          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+          onClose={() => setStickerPickerVisible(false)}
+          sheetHeight={286}
+        />
 
         {/* STICKER PREVIEW MODAL */}
         <StickerPreviewModal
@@ -3836,17 +5073,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           onClose={() => setStickerPreview(null)}
           theme="dark"
           restoreNavBarColor="#00000000"
-          onSend={async (uri, mimeType, caption) => {
+          onSend={(uri, mimeType, caption) => {
             setStickerPreview(null);
             const ext = mimeType.split('/')[1] || 'png';
-            await handleMediaSelection({
+            handleMediaSelection({
               uri,
               type: mimeType,
               fileName: `sticker_${Date.now()}.${ext}`,
-            });
-            if (caption.trim()) {
-              musicWebSocketService.sendChatMessage(caption, replyingTo);
-            }
+            }, caption);
           }}
         />
 
@@ -3873,6 +5107,10 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           onClose={() => setInviteModalVisible(false)}
           roomCode={roomCode}
           videoId={currentSong?.videoId}
+          participants={participants}
+          isDJ={isDJ}
+          allowedSpeakers={allowedSpeakers}
+          onToggleMicPermission={(targetUserId, allow) => updateMicPermission(targetUserId, allow)}
         />
 
         <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={user?.quick_reaction || '❤️'} />
@@ -3884,117 +5122,20 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             onClose={() => setFullScreenMedia(null)}
           />
         )}
-
-
-        <Reanimated.View style={animatedSpacerStyle} />
       </KeyboardWrapperView>
-      {!roomScreenReady && (
-        <Animated.View
-          style={[s.fullRoomLoadingOverlay, { opacity: overlayFadeAnim }]}
-          pointerEvents="auto"
-        >
-          {/* Blurred thumbnail backdrop — seamless gradient into nav bar */}
-          {(currentSong?.thumbnail || initialThumbnail) ? (
-            <>
-              <View style={{ position: 'absolute', top: -50, left: -50, right: -50, bottom: -100, overflow: 'visible', backgroundColor: '#0A0A0C' }}>
-                <Image
-                  source={{ uri: currentSong?.thumbnail || initialThumbnail }}
-                  style={StyleSheet.absoluteFill}
-                  resizeMode="cover"
-                  blurRadius={20}
-                />
-              </View>
-              {/* Dark tint over blurred thumbnail */}
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.45)' }]} />
-            </>
-          ) : (
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: '#0A0A0C' }]} />
-          )}
-
-          {/* Fixed-structure content container — prevents layout shifts & spinner jumping */}
-          <View style={s.overlayCenterContent}>
-            {(currentSong?.thumbnail || initialThumbnail) ? (
-              <Image
-                source={{ uri: currentSong?.thumbnail || initialThumbnail }}
-                style={s.overlayThumb}
-                resizeMode="contain"
-              />
-            ) : (
-              <View style={s.overlayThumbPlaceholder} />
-            )}
-
-            <View style={s.overlaySpinnerWrap}>
-              <ActivityIndicator size="large" color="#38BDF8" />
-            </View>
-
-            {(currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...') ? (
-              <Text style={s.overlayTitle} numberOfLines={2}>{currentSong.title}</Text>
-            ) : (initialTitle ? (
-              <Text style={s.overlayTitle} numberOfLines={2}>{initialTitle}</Text>
-            ) : (
-              <View style={s.overlayTitlePlaceholder} />
-            ))}
-          </View>
-        </Animated.View>
-      )}
-
     </View>
   );
 };
 
 // Styles
 const s = StyleSheet.create({
-  fullRoomLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0D0D0D',
-    zIndex: 500,
-    elevation: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'visible',
-  },
-  overlayCenterContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-  overlayThumb: {
-    width: width * 0.72,
-    height: width * 0.72 * (9 / 16),
-    borderRadius: 12,
-    marginBottom: 0,
-  },
-  overlayThumbPlaceholder: {
-    width: width * 0.72,
-    height: width * 0.72 * (9 / 16),
-    borderRadius: 12,
-  },
-  overlaySpinnerWrap: {
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 14,
-  },
-  overlayTitle: {
-    color: 'rgba(255,255,255,0.90)',
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 14,
-    marginHorizontal: 32,
-    letterSpacing: 0.2,
-  },
-  overlayTitlePlaceholder: {
-    height: 20,
-    marginTop: 14,
-  },
   relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000', zIndex: 15 },
   relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
-  root:              { flex: 1, backgroundColor: 'transparent', overflow: 'visible' },
+  root:              { flex: 1, backgroundColor: '#000000', overflow: 'visible' },
   inner:             { flex: 1, backgroundColor: 'transparent' },
   loadingContainer:  { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   loadingText:       { color: '#fff', marginTop: 12 },
-  header:            { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, justifyContent: 'space-between' },
+  header:            { height: 48, maxHeight: 48, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, justifyContent: 'space-between' },
   headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerIconBtn:     { padding: 6, position: 'relative' },
   badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
@@ -4004,7 +5145,7 @@ const s = StyleSheet.create({
   headerTitleInput:  { flex: 1, color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0 },
   headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5, padding: 0 },
   dot:               { width: 6, height: 6, borderRadius: 3 },
-  videoWrap:         { width, height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative', overflow: 'visible', zIndex: 20 },
+  videoWrap:         { width: '100%', height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative', overflow: 'visible', zIndex: 20 },
   videoWrapFullscreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 99 },
   npBar:             { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 6, backgroundColor: 'transparent' },
   npThumb:           { width: 50, height: 28, borderRadius: 3 },
@@ -4020,22 +5161,20 @@ const s = StyleSheet.create({
   pAvatar:           { width: 32, height: 32, borderRadius: 16, borderWidth: 0.5, borderColor: '#ffffff', overflow: 'hidden' },
   messageAvatar:     { width: 30, height: 30, borderRadius: 15, borderWidth: 0.5, borderColor: '#ffffff' },
   djDot:             { position: 'absolute', bottom: 0, right: 0, width: 12, height: 12, borderRadius: 6, backgroundColor: '#4597f5f6', borderWidth: 1, borderColor: '#cc00ff' },
-  addAvatar:         { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
-  queueHeader:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,0,0,0.3)' },
+  queueHeader:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: 'transparent' },
   queueTitle:        { color: '#fff', fontSize: 14, fontWeight: '700' },
-  queueCloseBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
-  queueCloseText:    { color: '#fff', fontSize: 12, fontWeight: '600' },
+  queueCloseBtn:     { width: 32, height: 32, borderRadius: 16, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' },
   emptyText:         { color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: 30, fontSize: 13 },
   bubble:            { marginBottom: 12, maxWidth: '85%', alignSelf: 'flex-start', position: 'relative', flexDirection: 'row', alignItems: 'flex-start' },
   bubbleMe:          { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
   bubbleUser:        { color: '#4597f5f6', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
-  msgContainer:      { paddingHorizontal: 12, paddingVertical: 4, paddingBottom: 0, borderRadius: 18, position: 'relative' },
-  msgContainerThem:  { borderTopLeftRadius: 4 },
-  msgContainerMe:    { borderTopRightRadius: 4 },
-  bubbleMsg:         { color: '#fff', fontSize: 15 },
-  replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.06)' },
+  msgContainer:      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, position: 'relative' },
+  msgContainerThem:  { backgroundColor: 'rgba(255, 255, 255, 0.12)', borderTopLeftRadius: 4 },
+  msgContainerMe:    { backgroundColor: '#0284C7', borderTopRightRadius: 4 },
+  bubbleMsg:         { fontSize: 15 },
+  replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.10)' },
   replyUser:         { color: '#4597f5f6', fontSize: 13, fontWeight: '700' },
-  replyText:         { color: 'rgba(255,255,255,0.6)', fontSize: 16 },
+  replyText:         { color: 'rgba(255,255,255,0.7)', fontSize: 16 },
   reactionContainer: { 
     marginTop: 0,
     alignSelf: 'flex-start',
@@ -4084,11 +5223,13 @@ const s = StyleSheet.create({
   mentionListContainer: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 12, borderTopRightRadius: 12, maxHeight: 150, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderBottomWidth: 0 },
   mentionItem:       { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   mentionName:       { color: '#fff', fontSize: 14, marginLeft: 10, fontWeight: '500' },
-  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 8, borderTopWidth: 0.5, borderTopColor: 'rgba(255,255,255,0.07)', gap: 4, backgroundColor: 'transparent', zIndex: 1000 },
+  chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 6, paddingTop: 0, paddingBottom: 8, gap: 4, backgroundColor: 'transparent', zIndex: 1000 },
   inputWrapper:      { flex: 1, position: 'relative', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 22, flexDirection: 'row', alignItems: 'flex-end' },
   chatInput:         { flex: 1, backgroundColor: 'transparent', paddingRight: 14, paddingTop: Platform.OS === 'ios' ? 8 : 6, paddingBottom: Platform.OS === 'ios' ? 8 : 6, minHeight: 40, maxHeight: 150, color: '#fff', fontSize: 16, textAlignVertical: 'top' },
-  sendBtn:           { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
-  plusBtn:           { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  sendBtn:           { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  plusBtn:           { width: 34, height: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  micBtn:            { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 3, backgroundColor: 'rgba(255,255,255,0.08)' },
+  micBtnActive:      { backgroundColor: '#0284C7' },
   innerStickerButton: { position: 'absolute', left: 8, bottom: 4, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
   mediaMsgContainer: { padding: 0, paddingHorizontal: 0, paddingVertical: 0, paddingBottom: 0, borderRadius: 12, overflow: 'hidden' },
   messageImage:      { width: width * 0.4, height: width * 0.3, borderRadius: 12 },
@@ -4125,6 +5266,99 @@ const s = StyleSheet.create({
   avatarPreviewContainer: { width: 220, backgroundColor: '#1C1C1E', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   avatarPreviewImage: { width: 180, height: 180, borderRadius: 90, marginBottom: 12 },
   avatarPreviewName: { fontSize: 16, fontWeight: 'bold', color: '#fff', textAlign: 'center' },
+  // ─── Theme Selector in Queue Styles ───
+  themeSelectorCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 14,
+    padding: 10,
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  themeSectionLabel: {
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  themePillsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  themePill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  themePillActiveCinema: {
+    backgroundColor: '#0284C7',
+    borderColor: '#38BDF8',
+  },
+  themePillActiveRave: {
+    backgroundColor: '#7C3AED',
+    borderColor: '#A78BFA',
+  },
+  themePillActiveDark: {
+    backgroundColor: '#1E293B',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  themePillActiveLight: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#CBD5E1',
+  },
+  themePillText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  themePillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  themePillTextLightActive: {
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  // ─── Stream Quality in Queue Styles ───
+  qualityPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  qualityPillActive: {
+    backgroundColor: '#FF5E3A',
+    borderColor: '#FF7A59',
+  },
+  qualityPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  qualityBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 5,
+  },
+  qualityBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+  },
 });
 
 export default MusicRoomScreen;

@@ -1,11 +1,22 @@
 # music/views.py — Production ready, fully merged
 
+import os
+import http.cookiejar
 import json
 import hashlib
 import logging
 import urllib.parse
+import threading
+import time
+import asyncio
+import certifi
+import httpx
 import yt_dlp
 import requests
+from concurrent.futures import ThreadPoolExecutor
+from django.http import HttpResponse, StreamingHttpResponse
+from asgiref.sync import sync_to_async
+from django.views import View
 from youtube_search.views import get_youtube_cookie_file
 from django.conf import settings
 from rest_framework.views import APIView
@@ -13,7 +24,6 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
-from django.conf import settings
 from django.core.cache import cache
 from notifications.fcm_service import FCMService
 from django.utils.decorators import method_decorator
@@ -63,7 +73,7 @@ PIPED_INSTANCES = [
 YTDLP_PLAYER_CLIENTS = [
     ['android_testsuite'],
     ['tv_embedded'],
-    ['android_vr'],
+    ['android'],
     ['mweb'],
 ]
 
@@ -856,3 +866,821 @@ class MusicLikesListView(APIView):
             
         MusicLike.objects.filter(user=request.user, video_id=video_id, source=source).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YoutubeStreamView — Extract stream URLs and return proxy endpoints
+# YoutubeStreamProxyView — Proxy video bytes through the server (fixes IP lock)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Standard quality buckets — snap raw heights to nearest standard bucket
+STANDARD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
+
+QUALITY_LABELS = {
+    4320: '8K 4320p', 2160: '4K 2160p', 1440: '2K 1440p', 1080: '1080p FHD',
+    720: '720p HD', 480: '480p SD', 360: '360p',
+    240: '240p', 144: '144p',
+}
+
+def snap_to_standard_height(raw_height, format_id=''):
+    """
+    Snap a raw pixel height to standard quality bucket using cinema-aspect-ratio aware ranges.
+    Widescreen/anamorphic videos (2.39:1, 16:9 letterboxed) have lower pixel heights:
+      - 360p cinema ratio: 640x270 or 640x272
+      - 480p cinema ratio: 854x360 or 854x362
+      - 720p cinema ratio: 1280x540 or 1280x544
+      - 1080p cinema ratio: 1920x800 or 1920x816
+      - 1440p cinema ratio: 2560x1080 or 2560x1088
+      - 2160p cinema ratio: 3840x1600 or 3840x1632
+    """
+    if not raw_height or raw_height < 100:
+        return None
+    if str(format_id) == '18':
+        return 360
+    if raw_height >= 1500:
+        return 2160
+    elif raw_height >= 1000:
+        return 1440
+    elif raw_height >= 700:
+        return 1080
+    elif raw_height >= 480:
+        return 720
+    elif raw_height >= 320:
+        return 480
+    elif raw_height >= 230:
+        return 360
+    elif raw_height >= 160:
+        return 240
+    else:
+        return 144
+
+
+# Thread-safe extraction lock and cooldown tracker to prevent thundering-herd extractions
+# and stop Django/Daphne from freezing when multiple chunk requests arrive simultaneously.
+_video_extraction_locks = {}
+_video_locks_guard = threading.Lock()
+_last_video_extraction = {}
+
+def get_video_lock(video_id):
+    with _video_locks_guard:
+        if video_id not in _video_extraction_locks:
+            _video_extraction_locks[video_id] = threading.Lock()
+        return _video_extraction_locks[video_id]
+
+
+class YoutubeStreamView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    CACHE_TTL = 60 * 15       # 15 min metadata cache
+    URL_CACHE_TTL = 60 * 12   # 12 min URL cache (YouTube URLs expire ~6h but we refresh often)
+    CACHE_PREFIX = 'yt_stream_v17_'      # ✅ bumped to v17: multi-client full quality ladder
+    URL_CACHE_PREFIX = 'yt_url_v17_'
+
+    def get(self, request, video_id):
+        if not video_id or len(video_id) > 20:
+            return Response({'error': 'Invalid video_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cache_key = f"{self.CACHE_PREFIX}{video_id}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+
+        try:
+            result = self._extract_and_store(video_id, request)
+            return Response(result)
+        except Exception as e:
+            logger.error(f"[Stream] Failed for {video_id}: {e}")
+            return Response(
+                {'error': 'Could not extract stream URLs. Video may be restricted.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+    def _extract_and_store(self, video_id, request, force=False):
+        import os
+        import time
+
+        cache_key = f"{self.CACHE_PREFIX}{video_id}"
+        lock = get_video_lock(video_id)
+
+        with lock:
+            now = time.time()
+            last = _last_video_extraction.get(video_id, 0)
+            cached = cache.get(cache_key)
+
+            # If cached and extracted recently (< 60s), reuse cache immediately
+            if cached and not force and (now - last < 60):
+                return cached
+
+            # Cooldown even on 403 retry: do not re-run yt-dlp more than once every 20s for the same video
+            if force and (now - last < 20):
+                if cached:
+                    return cached
+
+            # Cooldown: never run yt-dlp on the same video concurrently or within 30s
+            if not force and (now - last < 30):
+                if cached:
+                    return cached
+                # Wait briefly for in-flight extraction to populate cache
+                for _ in range(20):
+                    time.sleep(0.5)
+                    cached = cache.get(cache_key)
+                    if cached:
+                        return cached
+
+            _last_video_extraction[video_id] = now
+
+        cookie_file = None
+        try:
+            cookie_file = get_youtube_cookie_file()
+        except Exception:
+            pass
+        if not cookie_file:
+            local_cookies = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
+            if os.path.exists(local_cookies):
+                cookie_file = local_cookies
+
+        def _extract_for_client(client_name):
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'nocheckcertificate': True,
+                'format': None,
+                'ignore_no_formats_error': True,
+                'socket_timeout': 12,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': [client_name],
+                    },
+                },
+            }
+            if os.name != 'nt':
+                opts['source_address'] = '0.0.0.0'
+            if cookie_file:
+                opts['cookiefile'] = cookie_file
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            except Exception as ex:
+                logger.warning(f"[Stream] Extraction with client {client_name} failed for {video_id}: {ex}")
+                return None
+
+        info_tv = None
+        info_android = None
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fut_tv = executor.submit(_extract_for_client, 'tv_embedded')
+                fut_android = executor.submit(_extract_for_client, 'android')
+                info_tv = fut_tv.result()
+                info_android = fut_android.result()
+        except Exception as te:
+            logger.warning(f"[Stream] Parallel extraction failed: {te}")
+
+        info = info_tv or info_android
+        formats_tv = [f for f in (info_tv.get('formats') if info_tv else []) if str(f.get('format_id')) != '18']
+        formats_android = [f for f in (info_android.get('formats') if info_android else []) if str(f.get('format_id')) == '18']
+        formats = formats_tv + formats_android
+
+        # Fallback if tv_embedded or android was empty
+        if not formats:
+            logger.info(f"[Stream] tv_embedded/android empty, trying android_creator fallback for {video_id}")
+            fallback = _extract_for_client('android_creator') or _extract_for_client('web')
+            if fallback:
+                info = fallback
+                formats = fallback.get('formats', [])
+
+        if not info or not formats:
+            raise RuntimeError(f"Could not extract formats for {video_id}")
+
+        # ── Debug: log what clients and heights were actually extracted ──────────
+        _seen_clients = set()
+        _seen_heights = set()
+        for _f in formats:
+            _url = _f.get('url', '')
+            for _c in ['WEB', 'MWEB', 'ANDROID_VR', 'ANDROID', 'IOS', 'TVHTML5']:
+                if f'c={_c}' in _url:
+                    _seen_clients.add(_c)
+            if _f.get('height'):
+                _seen_heights.add(_f['height'])
+        logger.info(f"[Stream] {video_id}: extracted {len(formats)} formats | clients={_seen_clients} | heights={sorted(_seen_heights)}")
+
+        # ── Audio-only stream capture ──────────────────────────────────────────
+        best_audio = None
+        for f in formats:
+            url = f.get('url', '')
+            if not url:
+                continue
+            vcodec = f.get('vcodec') or 'none'
+            acodec = f.get('acodec') or 'none'
+            if vcodec != 'none':
+                continue  # skip video streams
+            if acodec == 'none':
+                continue  # skip streams with no audio
+            abr = f.get('abr') or f.get('tbr') or 0
+            ext = f.get('ext') or ''
+
+            # Skip TVHTML5 which fails CDN requests
+            if 'c=TVHTML5' in url:
+                continue
+
+            # Prioritize m4a/mp4a audio (itag 140)
+            is_m4a = ext in ('m4a', 'mp4') or 'mp4a' in acodec
+            curr_is_m4a = best_audio and (best_audio.get('ext') in ('m4a', 'mp4') or 'mp4a' in best_audio.get('acodec', ''))
+
+            should_replace = False
+            if best_audio is None:
+                should_replace = True
+            elif is_m4a and not curr_is_m4a:
+                should_replace = True
+            elif is_m4a == curr_is_m4a and abr > (best_audio.get('abr') or best_audio.get('tbr') or 0):
+                should_replace = True
+
+            if should_replace:
+                best_audio = {
+                    'url': url,
+                    'ext': ext if ext else 'm4a',
+                    'acodec': acodec,
+                    'abr': abr,
+                    'filesize': f.get('filesize') or f.get('filesize_approx') or 0,
+                    'http_headers': f.get('http_headers', {}),
+                }
+
+        # Group raw streams by snapped standard height
+        # key: (standard_height, has_audio)  value: best format dict
+        buckets = {}
+        for f in formats:
+            url = f.get('url', '')
+            if not url:
+                continue
+
+            vcodec = f.get('vcodec') or 'none'
+            acodec = f.get('acodec') or 'none'
+            raw_height = f.get('height') or 0
+
+            # Skip audio-only and unknown video
+            if vcodec == 'none' or raw_height < 100:
+                continue
+
+            has_audio = acodec != 'none'
+
+            # Skip TVHTML5 and Oculus VR format 18 (which returns 403)
+            if 'c=TVHTML5' in url or (str(f.get('format_id')) == '18' and 'c=ANDROID_VR' in url):
+                continue
+
+            std_height = snap_to_standard_height(raw_height, format_id=f.get('format_id', ''))
+            if not std_height:
+                continue
+
+            key = (std_height, has_audio)
+
+            # Prefer higher bitrate within same bucket
+            tbr = f.get('tbr') or f.get('vbr') or 0
+            existing = buckets.get(key)
+            if existing is None or tbr > existing.get('tbr', 0):
+                buckets[key] = {
+                    'url': url,
+                    'height': std_height,
+                    'raw_height': raw_height,
+                    'width': f.get('width') or 0,
+                    'vcodec': vcodec,
+                    'acodec': acodec if has_audio else None,
+                    'has_audio': has_audio,
+                    'ext': f.get('ext', 'mp4'),
+                    'tbr': tbr,
+                    'filesize': f.get('filesize') or f.get('filesize_approx') or 0,
+                    'http_headers': f.get('http_headers', {}),
+                }
+
+        # Store raw YouTube URLs in Redis (keyed by video_id + height + has_audio)
+        for (std_height, has_audio), fmt in buckets.items():
+            url_key = f"{self.URL_CACHE_PREFIX}{video_id}_{std_height}_{'av' if has_audio else 'v'}"
+            cache.set(url_key, {
+                'url': fmt['url'],
+                'ext': fmt['ext'],
+                'vcodec': fmt['vcodec'],
+                'acodec': fmt['acodec'],
+                'filesize': fmt.get('filesize', 0),
+                'http_headers': fmt.get('http_headers', {}),
+            }, self.URL_CACHE_TTL)
+
+        # ── Audio source & proxy URL ───────────────────────────────────────────
+        muxed_bucket = buckets.get((360, True)) or next((fmt for (h, a), fmt in buckets.items() if a), None)
+        audio_source = best_audio or muxed_bucket
+        audio_proxy_url = None
+        if audio_source:
+            audio_cache_key = f"{self.URL_CACHE_PREFIX}{video_id}_0_a"
+            cache.set(audio_cache_key, {
+                'url': audio_source['url'],
+                'ext': audio_source.get('ext', 'mp4'),
+                'vcodec': 'none',
+                'acodec': audio_source.get('acodec') or 'mp4a.40.2',
+                'filesize': audio_source.get('filesize', 0),
+                'http_headers': audio_source.get('http_headers', {}),
+            }, self.URL_CACHE_TTL)
+            try:
+                audio_proxy_url = request.build_absolute_uri(
+                    f"/api/music/youtube/proxy/{video_id}/0/a.mp4"
+                )
+            except Exception:
+                host = request.META.get('HTTP_HOST', '10.83.11.247:8000')
+                scheme = 'https' if request.is_secure() else 'http'
+                audio_proxy_url = f"{scheme}://{host}/api/music/youtube/proxy/{video_id}/0/a.mp4"
+
+        # Build stream list for the app
+        # Prefer muxed (has_audio=True) per height, fall back to video-only with linked audio_proxy_url
+        final_streams = []
+        seen_heights = set()
+
+        # Pass 1: muxed streams (have audio — these work standalone)
+        for std_height in sorted(buckets.keys(), key=lambda k: k[0], reverse=True):
+            h, has_audio = std_height
+            if has_audio and h not in seen_heights:
+                seen_heights.add(h)
+                fmt = buckets[std_height]
+                final_streams.append(self._build_stream_entry(video_id, h, fmt, 'av', request, audio_proxy_url))
+
+        # Pass 2: video-only streams for heights we don't have muxed (paired with audio_proxy_url)
+        for std_height in sorted(buckets.keys(), key=lambda k: k[0], reverse=True):
+            h, has_audio = std_height
+            if not has_audio and h not in seen_heights:
+                seen_heights.add(h)
+                fmt = buckets[std_height]
+                final_streams.append(self._build_stream_entry(video_id, h, fmt, 'v', request, audio_proxy_url))
+
+        # Sort highest quality first
+        final_streams.sort(key=lambda x: x['height'], reverse=True)
+        logger.info(f"[Buckets] {video_id}: buckets={list(buckets.keys())} | final_streams count={len(final_streams)} heights={[s['height'] for s in final_streams]}")
+
+        # ── Generate DASH MPD manifest ─────────────────────────────────────────
+        duration_secs = info.get('duration', 0) or 0
+        dash_mpd = self._build_dash_mpd(video_id, final_streams, audio_proxy_url, duration_secs, request)
+        dash_cache_key = f"yt_dash_v17_{video_id}"
+        cache.set(dash_cache_key, dash_mpd, self.URL_CACHE_TTL)
+
+        # Build the DASH manifest URL the app will call
+        try:
+            dash_url = request.build_absolute_uri(f"/api/music/youtube/dash/{video_id}/")
+        except Exception:
+            host = request.META.get('HTTP_HOST', '10.83.11.247:8000')
+            scheme = 'https' if request.is_secure() else 'http'
+            dash_url = f"{scheme}://{host}/api/music/youtube/dash/{video_id}/"
+
+        result = {
+            'video_id': video_id,
+            'title': info.get('title', ''),
+            'duration': duration_secs,
+            'streams': final_streams,
+            'dash_url': dash_url,
+        }
+        cache.set(cache_key, result, self.CACHE_TTL)
+        return result
+
+    def _build_dash_mpd(self, video_id, streams, audio_proxy_url, duration_secs, request, optional_heights=None):
+        """
+        Generate a MPEG-DASH MPD (Media Presentation Description) manifest.
+
+        All media URLs point to our proxy endpoints so that:
+        - The client (Android/ExoPlayer) only ever talks to our server.
+        - IP-locking is handled transparently by the proxy layer.
+        - ExoPlayer uses DashMediaSource which handles fMP4 fragmented containers.
+
+        optional_heights: if provided, only include video representations for those heights.
+        """
+        # Format PT duration (e.g. PT3M45.0S)
+        mins = int(duration_secs // 60)
+        secs = duration_secs % 60
+        pt_duration = f"PT{mins}M{secs:.3f}S" if mins else f"PT{secs:.3f}S"
+
+        mp4_reps = []
+        webm_reps = []
+        for s in streams:
+            h = s.get('height', 0)
+            w = s.get('width', 0) or int(h * 16 / 9)
+            # Bitrate estimate in bps
+            bw = max(200000, h * h * 80)
+            url = s.get('url', '')
+            if not url or not h:
+                continue
+            if optional_heights and h not in optional_heights:
+                continue
+
+            vcodec = s.get('vcodec') or 'avc1.64001f'
+            if vcodec.startswith('vp09') or vcodec.startswith('vp9'):
+                mime = 'video/webm' if s.get('ext') == 'webm' else 'video/mp4'
+                codec_str = vcodec if '.' in vcodec else 'vp09.00.50.08'
+            elif vcodec.startswith('av01') or vcodec.startswith('av1'):
+                mime = 'video/mp4'
+                codec_str = vcodec if '.' in vcodec else 'av01.0.08M.10'
+            elif vcodec.startswith('avc1') or vcodec.startswith('h264'):
+                mime = 'video/mp4'
+                codec_str = vcodec if '.' in vcodec else 'avc1.64001f'
+            else:
+                mime = 'video/mp4'
+                codec_str = 'avc1.64001f'
+
+            rep_xml = (
+                f'      <Representation id="video_{h}p" mimeType="{mime}" '
+                f'codecs="{codec_str}" bandwidth="{bw}" width="{w}" height="{h}">\n'
+                f'        <BaseURL>{url}</BaseURL>\n'
+                f'      </Representation>'
+            )
+            if mime == 'video/mp4':
+                mp4_reps.append(rep_xml)
+            else:
+                webm_reps.append(rep_xml)
+
+        video_adaptation = ''
+        adapt_id = 1
+        if mp4_reps:
+            video_adaptation += (
+                f'    <AdaptationSet id="{adapt_id}" contentType="video" mimeType="video/mp4" '
+                'segmentAlignment="true">\n'
+                + '\n'.join(mp4_reps) + '\n'
+                '    </AdaptationSet>\n'
+            )
+            adapt_id += 1
+        if webm_reps:
+            video_adaptation += (
+                f'    <AdaptationSet id="{adapt_id}" contentType="video" mimeType="video/webm" '
+                'segmentAlignment="true">\n'
+                + '\n'.join(webm_reps) + '\n'
+                '    </AdaptationSet>\n'
+            )
+            adapt_id += 1
+
+        audio_adaptation = ''
+        if audio_proxy_url:
+            audio_adaptation = (
+                f'    <AdaptationSet id="{adapt_id}" mimeType="audio/mp4" contentType="audio" '
+                'lang="und" segmentAlignment="true">\n'
+                f'      <Representation id="audio_0" mimeType="audio/mp4" '
+                f'codecs="mp4a.40.2" bandwidth="128000" audioSamplingRate="44100">\n'
+                f'        <BaseURL>{audio_proxy_url}</BaseURL>\n'
+                f'      </Representation>\n'
+                f'    </AdaptationSet>\n'
+            )
+
+        mpd = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+            'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" '
+            f'type="static" mediaPresentationDuration="{pt_duration}" '
+            'minBufferTime="PT1.5S">\n'
+            '  <Period>\n'
+            f'{video_adaptation}'
+            f'{audio_adaptation}'
+            '  </Period>\n'
+            '</MPD>'
+        )
+        return mpd
+
+
+    def _build_stream_entry(self, video_id, height, fmt, proxy_suffix, request, audio_proxy_url=None):
+        label = QUALITY_LABELS.get(height, f'{height}p')
+        proxy_path = f"/api/music/youtube/proxy/{video_id}/{height}/{proxy_suffix}.mp4"
+
+        try:
+            proxy_url = request.build_absolute_uri(proxy_path)
+        except Exception:
+            host = request.META.get('HTTP_HOST', '10.83.11.247:8000')
+            scheme = 'https' if request.is_secure() else 'http'
+            proxy_url = f"{scheme}://{host}{proxy_path}"
+
+        return {
+            'height': height,
+            'width': fmt.get('width', 0),
+            'quality': f'{height}p',
+            'label': label,
+            'url': proxy_url,           # ← proxy URL, not raw YouTube URL
+            'audio_url': audio_proxy_url if not fmt.get('has_audio') else None,
+            'has_audio': fmt['has_audio'],
+            'vcodec': fmt['vcodec'],
+            'acodec': fmt.get('acodec'),
+            'ext': fmt.get('ext', 'mp4'),
+        }
+
+
+def _get_proxy_user_agent(yt_url: str, fmt_headers: dict | None = None) -> str:
+    # Prioritize exact User-Agent assigned by yt-dlp for this specific format,
+    # except OculusBrowser which triggers 403 on Google CDN
+    if fmt_headers and fmt_headers.get('User-Agent'):
+        ua = fmt_headers['User-Agent']
+        if 'Oculus' not in ua:
+            return ua
+    if 'c=ANDROID' in yt_url and 'c=ANDROID_VR' not in yt_url:
+        return 'com.google.android.youtube/19.29.37 (Linux; U; Android 14) gzip'
+    elif 'c=IOS' in yt_url:
+        return 'com.google.ios.youtube/19.29.1 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X;)'
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class YoutubeStreamProxyView(View):
+    """
+    Proxies YouTube video stream bytes through our server asynchronously.
+    This is required because YouTube stream URLs are IP-locked:
+    the URL must be requested from the same IP that extracted it.
+
+    The phone sends:  GET /api/music/youtube/proxy/<video_id>/<height>/<suffix>/
+    We look up the cached YouTube URL and stream bytes to the phone asynchronously.
+    Supports Range requests so ExoPlayer can seek efficiently.
+    Uses httpx.AsyncClient + async StreamingHttpResponse so client disconnects
+    release the ASGI connection and abort the upstream YouTube request in < 1ms,
+    preventing Daphne thread exhaustion and task kill freezes.
+    """
+    URL_CACHE_PREFIX = 'yt_url_v17_'  # ✅ must match YoutubeStreamView.URL_CACHE_PREFIX
+
+    async def options(self, request, *args, **kwargs):
+        response = HttpResponse()
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Range, range, Content-Type, Accept, Authorization, X-Requested-With, Origin, *'
+        response['Access-Control-Expose-Headers'] = 'Content-Range, Content-Length, Accept-Ranges, Date, *'
+        return response
+
+    async def get(self, request, video_id, height, suffix):
+        clean_suffix = suffix.replace('.mp4', '').replace('.m4a', '')
+        url_key = f"{self.URL_CACHE_PREFIX}{video_id}_{height}_{clean_suffix}"
+        cached_url_data = await sync_to_async(cache.get)(url_key)
+        if not cached_url_data and clean_suffix != suffix:
+            cached_url_data = await sync_to_async(cache.get)(f"{self.URL_CACHE_PREFIX}{video_id}_{height}_{suffix}")
+
+        if not cached_url_data:
+            # Cache miss — URL expired, need fresh extraction
+            try:
+                view = YoutubeStreamView()
+                await sync_to_async(view._extract_and_store)(video_id, request)
+                cached_url_data = (await sync_to_async(cache.get)(url_key)) or (await sync_to_async(cache.get)(f"{self.URL_CACHE_PREFIX}{video_id}_{height}_{suffix}"))
+            except Exception as e:
+                logger.error(f"[Proxy] Re-extraction failed for {video_id}/{height}/{suffix}: {e}")
+
+        if not cached_url_data:
+            return HttpResponse(status=404)
+
+        yt_url = cached_url_data['url']
+        range_header = request.META.get('HTTP_RANGE', '')
+
+        fmt_headers = cached_url_data.get('http_headers') or {}
+        proxy_ua = _get_proxy_user_agent(yt_url, fmt_headers)
+
+        yt_headers = {
+            'User-Agent': proxy_ua,
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+        }
+        for k, v in fmt_headers.items():
+            if k.lower() not in ('host', 'content-length', 'transfer-encoding', 'range', 'accept-encoding', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-site', 'user-agent', 'accept'):
+                yt_headers[k] = v
+        yt_headers['Accept-Encoding'] = 'identity'
+        yt_headers['User-Agent'] = proxy_ua
+
+        # Ensure finite byte range chunking for adaptive streams (Google CDN returns 403 on open-ended or full-file requests)
+        filesize = cached_url_data.get('filesize', 0)
+        chunk_size = 512 * 1024 if height == 0 else 2 * 1024 * 1024  # 512KB for audio, 2MB for video
+
+        formatted_range = None
+        if range_header and 'null' not in range_header:
+            clean_range = range_header.strip()
+            if clean_range.startswith('bytes='):
+                val = clean_range[6:]
+                if '-' in val:
+                    parts = val.split('-', 1)
+                    s_str, e_str = parts[0].strip(), parts[1].strip()
+                    if s_str and not e_str:
+                        # Open-ended range like 'bytes=0-' or 'bytes=5000000-'
+                        start = int(s_str)
+                        calc_end = start + chunk_size - 1
+                        if filesize and filesize > start:
+                            calc_end = min(calc_end, filesize - 1)
+                        # Avoid requesting full file on initial chunk
+                        if start == 0 and filesize and filesize > chunk_size and calc_end >= filesize - 1:
+                            calc_end = chunk_size - 1
+                        formatted_range = f"bytes={start}-{calc_end}"
+                    else:
+                        formatted_range = clean_range
+
+        if not formatted_range:
+            end = min(chunk_size - 1, filesize - 1) if (filesize and filesize > chunk_size) else chunk_size - 1
+            formatted_range = f"bytes=0-{end}"
+
+        yt_headers['Range'] = formatted_range
+
+        # Load session cookies ONLY for WEB/MWEB formats (sending web cookies on Android/VR formats triggers 403)
+        cookies = None
+        if ('c=WEB' in yt_url or 'c=MWEB' in yt_url):
+            cookie_file = None
+            try:
+                cookie_file = get_youtube_cookie_file()
+            except Exception:
+                pass
+            if not cookie_file:
+                local_cookies = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
+                if os.path.exists(local_cookies):
+                    cookie_file = local_cookies
+
+            if cookie_file and os.path.exists(cookie_file):
+                try:
+                    cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                    cj.load(ignore_discard=True, ignore_expires=True)
+                    cookies = cj
+                except Exception as ce:
+                    logger.debug(f"[Proxy] Could not load cookies: {ce}")
+
+        # On Windows, local_address="0.0.0.0" causes Winsock connect() hangs when virtual adapters (WSL/Hyper-V) exist.
+        # Only bind local_address on POSIX/Linux if required.
+        transport_kwargs = {'verify': certifi.where()}
+        if os.name != 'nt':
+            transport_kwargs['local_address'] = '0.0.0.0'
+
+        transport = httpx.AsyncHTTPTransport(**transport_kwargs)
+        client = httpx.AsyncClient(
+            transport=transport,
+            cookies=cookies,
+            follow_redirects=True,
+            timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=15.0)
+        )
+
+        try:
+            req = client.build_request('GET', yt_url, headers=yt_headers)
+            yt_resp = await client.send(req, stream=True)
+
+            # If YouTube returned 403, retry once with refreshed URL (with debounced extraction)
+            if yt_resp.status_code == 403:
+                now = time.time()
+                cached_now = (await sync_to_async(cache.get)(url_key)) or (await sync_to_async(cache.get)(f"{self.URL_CACHE_PREFIX}{video_id}_{height}_{suffix}"))
+                if cached_now and cached_now.get('url') and cached_now['url'] != yt_url:
+                    logger.info(f"[Proxy] Using freshly cached URL for {video_id}/{height} after 403")
+                    await yt_resp.aclose()
+                    yt_url = cached_now['url']
+                    yt_headers['User-Agent'] = _get_proxy_user_agent(yt_url, cached_now.get('http_headers'))
+                    req = client.build_request('GET', yt_url, headers=yt_headers)
+                    yt_resp = await client.send(req, stream=True)
+                else:
+                    last_ext = _last_video_extraction.get(video_id, 0)
+                    if now - last_ext >= 20:
+                        logger.warning(f"[Proxy] Got 403 for {video_id}/{height}, refreshing stream URL and retrying once...")
+                        await yt_resp.aclose()
+                        view = YoutubeStreamView()
+                        await sync_to_async(view._extract_and_store)(video_id, request, force=True)
+                        cached_url_data = (await sync_to_async(cache.get)(url_key)) or (await sync_to_async(cache.get)(f"{self.URL_CACHE_PREFIX}{video_id}_{height}_{suffix}"))
+                        if cached_url_data and cached_url_data.get('url'):
+                            yt_url = cached_url_data['url']
+                            yt_headers['User-Agent'] = _get_proxy_user_agent(yt_url, cached_url_data.get('http_headers'))
+                            req = client.build_request('GET', yt_url, headers=yt_headers)
+                            yt_resp = await client.send(req, stream=True)
+
+            if yt_resp.status_code not in (200, 206):
+                logger.warning(f"[Proxy] YouTube returned {yt_resp.status_code} for {video_id}/{height} on range '{yt_headers.get('Range')}'")
+                await yt_resp.aclose()
+                await client.aclose()
+                resp = HttpResponse(status=yt_resp.status_code)
+                resp['Access-Control-Allow-Origin'] = '*'
+                resp['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+                resp['Access-Control-Allow-Headers'] = '*'
+                if yt_resp.status_code == 416:
+                    filesize = cached_url_data.get('filesize', 0)
+                    resp['Content-Range'] = f"bytes */{filesize}"
+                return resp
+
+            content_type = yt_resp.headers.get('Content-Type', 'video/mp4')
+
+            async def stream_generator():
+                try:
+                    async for chunk in yt_resp.aiter_bytes(chunk_size=65536):
+                        if chunk:
+                            yield chunk
+                except (asyncio.CancelledError, GeneratorExit):
+                    pass
+                except Exception as e:
+                    logger.debug(f"[Proxy] Stream generator interrupted: {e}")
+                finally:
+                    await yt_resp.aclose()
+                    await client.aclose()
+
+            response = StreamingHttpResponse(stream_generator(), status=yt_resp.status_code, content_type=content_type)
+            response['Accept-Ranges'] = 'bytes'
+            response['Access-Control-Allow-Origin'] = '*'
+            response['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+            response['Access-Control-Allow-Headers'] = 'Range, range, Content-Type, Accept, Authorization, X-Requested-With, Origin, *'
+            response['Access-Control-Expose-Headers'] = 'Content-Range, Content-Length, Accept-Ranges, Date, *'
+
+            if 'Content-Range' in yt_resp.headers:
+                response['Content-Range'] = yt_resp.headers['Content-Range']
+            if 'Content-Length' in yt_resp.headers:
+                response['Content-Length'] = yt_resp.headers['Content-Length']
+
+            return response
+
+        except httpx.TimeoutException:
+            await client.aclose()
+            resp = HttpResponse(status=504)
+            resp['Access-Control-Allow-Origin'] = '*'
+            return resp
+        except Exception as e:
+            await client.aclose()
+            logger.error(f"[Proxy] Exception for {video_id}/{height}: {e}")
+            resp = HttpResponse(status=500)
+            resp['Access-Control-Allow-Origin'] = '*'
+            return resp
+
+
+class YoutubeDashManifestView(APIView):
+    """
+    Serves the MPEG-DASH MPD manifest for a YouTube video.
+
+    ExoPlayer calls:  GET /api/music/youtube/dash/<video_id>/
+                 or:  GET /api/music/youtube/dash/<video_id>/?q=720
+
+    ?q=720 → only includes the 720p video representation (quality lock).
+    No ?q   → includes all available video representations (adaptive).
+
+    Permission is AllowAny because ExoPlayer cannot send JWT auth headers
+    when making media requests. The MPD contains only proxy URLs (no raw
+    YouTube URLs), so there is no sensitive data to protect.
+    """
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, video_id):
+        if not video_id or len(video_id) > 20:
+            return HttpResponse(status=400)
+
+        # Optional quality filter (e.g. ?q=720 → only 720p video representation)
+        quality_param = request.query_params.get('q', '').strip()
+        only_height = None
+        if quality_param.isdigit():
+            only_height = int(quality_param)
+
+        dash_cache_key = f"yt_dash_v16_{video_id}"  # ✅ bumped to v16
+        # Stream list cache (needed to rebuild filtered manifest on-the-fly)
+        stream_cache_key = f"yt_stream_v16_{video_id}"  # ✅ bumped to v16
+
+        cached_result = cache.get(stream_cache_key)
+        if not cached_result:
+            # Full cache miss — re-extract everything
+            try:
+                view = YoutubeStreamView()
+                cached_result = view._extract_and_store(video_id, request)
+            except Exception as e:
+                logger.error(f"[DASH] Re-extraction failed for {video_id}: {e}")
+                return HttpResponse(status=503)
+
+        if not cached_result:
+            return HttpResponse(status=404)
+
+        # If a specific quality is requested, build a fresh filtered manifest
+        # (don't use the cached all-qualities MPD)
+        if only_height:
+            streams = cached_result.get('streams', [])
+            duration_secs = cached_result.get('duration', 0) or 0
+            available_heights = {s.get('height') for s in streams if s.get('height')}
+            target_heights = {only_height}
+            if available_heights and only_height not in available_heights:
+                closest = min(available_heights, key=lambda x: abs(x - only_height))
+                target_heights = {closest}
+
+            # Reconstruct audio proxy url (pure audio 0/a.mp4)
+            audio_path = f"/api/music/youtube/proxy/{video_id}/0/a.mp4"
+            try:
+                audio_proxy_url = request.build_absolute_uri(audio_path)
+            except Exception:
+                host = request.META.get('HTTP_HOST', '10.83.11.247:8000')
+                scheme = 'https' if request.is_secure() else 'http'
+                audio_proxy_url = f"{scheme}://{host}{audio_path}"
+
+            view = YoutubeStreamView()
+            mpd = view._build_dash_mpd(
+                video_id, streams, audio_proxy_url, duration_secs, request,
+                optional_heights=target_heights
+            )
+        else:
+            # Use cached full-quality manifest
+            mpd = cache.get(dash_cache_key)
+            if not mpd:
+                # Rebuild from cached stream result
+                streams = cached_result.get('streams', [])
+                duration_secs = cached_result.get('duration', 0) or 0
+                audio_path = f"/api/music/youtube/proxy/{video_id}/0/a.mp4"
+                try:
+                    audio_proxy_url = request.build_absolute_uri(audio_path)
+                except Exception:
+                    host = request.META.get('HTTP_HOST', '10.83.11.247:8000')
+                    scheme = 'https' if request.is_secure() else 'http'
+                    audio_proxy_url = f"{scheme}://{host}{audio_path}"
+                view = YoutubeStreamView()
+                mpd = view._build_dash_mpd(video_id, streams, audio_proxy_url, duration_secs, request)
+                cache.set(dash_cache_key, mpd, YoutubeStreamView.URL_CACHE_TTL)
+
+        if not mpd:
+            return HttpResponse(status=404)
+
+        return HttpResponse(
+            mpd,
+            content_type='application/dash+xml',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+                'Access-Control-Allow-Headers': 'Range, range, Content-Type, Accept, Authorization, *',
+                'Cache-Control': 'no-cache, no-store',
+            },
+        )

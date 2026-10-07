@@ -37,37 +37,37 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
       burstProgress.setValue(0);
 
       Animated.parallel([
-        // 1. Snappy Heart Scale Pop & Settle
+        // 1. Snappy Heart Scale Pop & Settle (Industrial Standard)
         Animated.sequence([
           Animated.parallel([
             Animated.timing(scaleAnim, {
-              toValue: 1.35,
-              duration: 140,
-              easing: Easing.out(Easing.back(1.8)),
+              toValue: 1.18,
+              duration: 150,
+              easing: Easing.out(Easing.back(1.4)),
               useNativeDriver: true,
             }),
             Animated.timing(opacityAnim, {
               toValue: 1,
-              duration: 70,
+              duration: 80,
               useNativeDriver: true,
             }),
             Animated.timing(rotateAnim, {
               toValue: 1,
-              duration: 140,
+              duration: 150,
               easing: Easing.out(Easing.quad),
               useNativeDriver: true,
             }),
           ]),
-          // Float up, gently scale down and fade out
+          // Gentle float up and clean fade out
           Animated.parallel([
             Animated.timing(translateYAnim, {
-              toValue: -42,
+              toValue: -24,
               duration: 220,
               easing: Easing.out(Easing.quad),
               useNativeDriver: true,
             }),
             Animated.timing(scaleAnim, {
-              toValue: 0.82,
+              toValue: 0.88,
               duration: 220,
               easing: Easing.in(Easing.quad),
               useNativeDriver: true,
@@ -82,14 +82,12 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
         ]),
 
         // 2. Micro Sparkle Burst Particles (100% Native Driver)
-        Animated.sequence([
-          Animated.timing(burstProgress, {
-            toValue: 1,
-            duration: 280,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-        ]),
+        Animated.timing(burstProgress, {
+          toValue: 1,
+          duration: 260,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
       ]).start(() => {
         setVisible(false);
         scaleAnim.setValue(0);
@@ -105,7 +103,7 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
 
   const heartRotation = rotateAnim.interpolate({
     inputRange: [0, 0.5, 1],
-    outputRange: ['-12deg', '6deg', '0deg'],
+    outputRange: ['-8deg', '4deg', '0deg'],
   });
 
   return (
@@ -113,7 +111,7 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
       {/* Sparkle Particle Accents */}
       {PARTICLE_ANGLES.map((deg, i) => {
         const rad = (deg * Math.PI) / 180;
-        const dist = 38;
+        const dist = 24;
         const targetX = Math.cos(rad) * dist;
         const targetY = Math.sin(rad) * dist;
 
@@ -127,10 +125,10 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
         });
         const particleScale = burstProgress.interpolate({
           inputRange: [0, 0.4, 1],
-          outputRange: [0, 1.2, 0],
+          outputRange: [0, 1, 0],
         });
         const particleOpacity = burstProgress.interpolate({
-          inputRange: [0, 0.3, 0.8, 1],
+          inputRange: [0, 0.2, 0.8, 1],
           outputRange: [0, 1, 0.8, 0],
         });
 
@@ -185,27 +183,27 @@ const styles = StyleSheet.create({
   },
   reaction: {
     position: 'absolute',
-    width: 60,
-    height: 60,
-    marginLeft: -30,
-    marginTop: -30,
+    width: 44,
+    height: 44,
+    marginLeft: -22,
+    marginTop: -22,
     justifyContent: 'center',
     alignItems: 'center',
   },
   heartText: {
-    fontSize: 50,
+    fontSize: 34,
     textAlign: 'center',
-    textShadowColor: 'rgba(0, 0, 0, 0.25)',
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 6,
+    textShadowColor: 'rgba(0, 0, 0, 0.2)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
   },
   particle: {
     position: 'absolute',
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    marginLeft: -3.5,
-    marginTop: -3.5,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    marginLeft: -2.5,
+    marginTop: -2.5,
   },
 });
 

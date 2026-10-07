@@ -18,7 +18,7 @@ export const getEmojiFromUrl = (url: string): string => {
   try {
     const match = url?.match(/latest\/([^/]+)\/lottie\.json/);
     if (match && match[1]) {
-      const parts = match[1].split('_');
+      const parts = match[1].split(/[_-]/);
       return String.fromCodePoint(...parts.map(p => parseInt(p, 16)));
     }
   } catch (_) {}

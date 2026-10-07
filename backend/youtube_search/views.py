@@ -53,6 +53,7 @@ _FORMAT_CACHE_TTL = 3 * 60 * 60  # 3 hours in seconds
 
 # YouTube quality label → yt-dlp height selector
 _QUALITY_MAP = {
+    'hd4320':  4320,
     'highres': 2160,
     'hd2160':  2160,
     'hd1440':  1440,
@@ -91,10 +92,19 @@ def _get_cookie_file() -> str | None:
     if _COOKIE_FILE and os.path.exists(_COOKIE_FILE):
         return _COOKIE_FILE
 
+    # 1. Check for local cookies.txt file in backend directory
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_cookie = os.path.join(backend_dir, 'cookies.txt')
+    if os.path.exists(local_cookie):
+        _COOKIE_FILE = local_cookie
+        logger.info(f'✅ Using local YouTube cookies from {_COOKIE_FILE}')
+        return _COOKIE_FILE
+
+    # 2. Check base64 env var (used in Render / production)
     b64 = os.environ.get('YOUTUBE_COOKIES_B64', '').strip()
     if not b64:
         logger.warning(
-            '⚠️  YOUTUBE_COOKIES_B64 not set — yt-dlp will run WITHOUT cookies '
+            '⚠️  YOUTUBE_COOKIES_B64 not set and no cookies.txt found — yt-dlp will run WITHOUT cookies '
             '(stream extraction WILL fail on Render datacenter IPs). '
             'See the module docstring for setup instructions.'
         )
@@ -158,6 +168,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
         'no_warnings': True,
         'skip_download': True,
         'socket_timeout': 20,
+        'js_runtimes': {'node': {}},
         'http_headers': {
             'User-Agent': (
                 'Mozilla/5.0 (Linux; Android 13; Pixel 7) '
@@ -171,7 +182,18 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
 
     # ── Cookie + impersonation (most reliable on blocked IPs) ─────────────────
     if cookie_file:
-        # 1. Standard web client with cookies (does NOT require impersonation dependencies)
+        # 1. TV Embedded client with cookies (no PO-token required, high resolution)
+        strategies.append((
+            'cookies+tv_embedded',
+            {
+                **base,
+                'cookiefile': cookie_file,
+                'extractor_args': {
+                    'youtube': {'player_client': ['tv_embedded']},
+                },
+            }
+        ))
+        # 2. Standard web client with cookies (does NOT require impersonation dependencies)
         strategies.append((
             'cookies+web',
             {
@@ -182,30 +204,7 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                 },
             }
         ))
-        # 2. Mobile web client with cookies (does NOT require impersonation dependencies)
-        strategies.append((
-            'cookies+mweb',
-            {
-                **base,
-                'cookiefile': cookie_file,
-                'extractor_args': {
-                    'youtube': {'player_client': ['mweb']},
-                },
-            }
-        ))
-        # 3. Web client with cookies + chrome impersonation
-        strategies.append((
-            'cookies+impersonate_chrome',
-            {
-                **base,
-                'cookiefile': cookie_file,
-                'impersonate': 'chrome',  # yt-dlp >= 2024.09 supports this
-                'extractor_args': {
-                    'youtube': {'player_client': ['web']},
-                },
-            }
-        ))
-        # 4. Android testsuite client with cookies
+        # 3. Android testsuite client with cookies
         strategies.append((
             'cookies+android_testsuite',
             {
@@ -216,6 +215,17 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                         'player_client': ['android_testsuite'],
                         'skip': ['dash'],
                     },
+                },
+            }
+        ))
+        # 4. Mobile web client with cookies (does NOT require impersonation dependencies)
+        strategies.append((
+            'cookies+mweb',
+            {
+                **base,
+                'cookiefile': cookie_file,
+                'extractor_args': {
+                    'youtube': {'player_client': ['mweb']},
                 },
             }
         ))
@@ -232,28 +242,14 @@ def _build_ytdlp_strategies(cookie_file: str | None) -> list:
                 },
             }
         ))
-        # 6. TV Embedded client with cookies
-        strategies.append((
-            'cookies+tv_embedded',
-            {
-                **base,
-                'cookiefile': cookie_file,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['tv_embedded'],
-                    },
-                },
-            }
-        ))
 
     # ── Cookie-less attempts (rarely work on Render, but worth trying) ─────────
-    for client in ['android_testsuite', 'tv_embedded', 'ios', 'android_vr', 'mweb', 'web_creator']:
+    for client in ['tv_embedded', 'android', 'android_testsuite', 'mweb', 'ios']:
         opts = {
             **base,
             'extractor_args': {
                 'youtube': {
                     'player_client': [client],
-                    'skip': ['dash'],
                 },
             },
         }
@@ -483,8 +479,15 @@ class YouTubeFormatsView(APIView):
 
         for label, ydl_opts in strategies:
             try:
-                # Use generic format selection to extract all formats list
-                opts = {**ydl_opts, 'format': None}
+                # Remove any 'skip' extractor arg and ensure format selector extracts all formats
+                opts = dict(ydl_opts)
+                opts['format'] = 'best/bestvideo/bestaudio'
+                opts['ignore_no_formats_error'] = True
+                if 'extractor_args' in opts and 'youtube' in opts['extractor_args']:
+                    yt_args = dict(opts['extractor_args']['youtube'])
+                    yt_args.pop('skip', None)
+                    opts['extractor_args'] = {'youtube': yt_args}
+
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(target_url, download=False)
                 if info and info.get('formats'):
@@ -499,17 +502,29 @@ class YouTubeFormatsView(APIView):
         # Extract available video stream URLs mapped by quality label
         formats_list = info.get('formats', [])
         quality_urls = {}
-        
+
+        def _snap(raw_h):
+            if not raw_h or raw_h < 100:
+                return None
+            standard = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144]
+            return min(standard, key=lambda s: abs(s - raw_h))
+
         # Filter formats strictly for progressive streams (BOTH video and audio)
         # This guarantees we never return a video-only or audio-only DASH stream that causes black screens.
         muxed_fmts = [
             f for f in formats_list
-            if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('height') and f.get('url')
+            if f.get('vcodec') and f.get('vcodec') != 'none'
+            and f.get('acodec') and f.get('acodec') != 'none'
+            and f.get('height') and f.get('url')
+            and 'c=ANDROID_VR' not in f.get('url', '')
         ]
 
         for fmt in muxed_fmts:
-            h = fmt.get('height')
+            raw_h = fmt.get('height')
+            h = _snap(raw_h)
             u = fmt.get('url')
+            if not u or 'c=ANDROID_VR' in u:
+                continue
 
             for q_label, target_h in _QUALITY_MAP.items():
                 if h == target_h and q_label not in quality_urls:
@@ -524,7 +539,11 @@ class YouTubeFormatsView(APIView):
             'availableQualities': list(quality_urls.keys()) + ['auto'],
         }
 
-        # Cache for 3 hours
-        _cache_set(video_id, result_data)
-        logger.info(f'✅ Cached {len(quality_urls)} quality levels for {video_id}')
+        # Cache for 3 hours only if formats were found
+        if quality_urls:
+            _cache_set(video_id, result_data)
+            logger.info(f'✅ Cached {len(quality_urls)} quality levels for {video_id}')
+        else:
+            logger.info(f'ℹ️ 0 progressive muxed formats found for {video_id}')
+
         return Response(result_data)

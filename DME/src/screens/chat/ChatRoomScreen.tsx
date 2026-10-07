@@ -55,6 +55,7 @@ import { chatAPI } from '../../services/api';
 import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
 import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, withSpring, Easing } from 'react-native-reanimated';
+import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
 import { pinNavBarColor } from '../../utils/navBarPin';
@@ -67,6 +68,7 @@ import AudioPlayer from '../../components/AudioPlayer';
 import { pick, types, errorCodes } from '@react-native-documents/picker';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import fcmService from '../../services/fcm';
+import { MessageCipher, MediaCipher, MediaE2EEMetadata } from '../../services/e2ee';
 import notifee from '@notifee/react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { StatusService } from '../../services/StatusService';
@@ -74,6 +76,8 @@ import RichTextInput from '../../components/RichTextInput';
 import ChatInputArea from '../../components/ChatInputArea';
 
 import FullScreenMediaViewer from '../../components/FullScreenMediaViewer';
+import { ForwardMessageModal } from '../../components/ForwardMessageModal';
+import { DeleteConfirmationModal } from '../../components/DeleteConfirmationModal';
 import { API_BASE_URL, getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
@@ -93,29 +97,89 @@ import {
   isScoreSubmissionMessage,
   syncChallengeFromMessage,
 } from '../../services/TriviaChallengeService';
+import {
+  ChatTheme,
+  CHAT_THEME_PRESETS,
+  ChatThemeService,
+} from '../../services/theme/ChatThemeService';
+import { ChatThemeModal } from '../../components/chat/ChatThemeModal';
 
-const FRESH_CHAT_STICKERS = [
+const NEW_CHAT_STICKERS = [
   {
-    id: 'hi',
-    name: 'Say Hi 👋',
-    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f44b/lottie.json',
-  },
-  {
-    id: 'hello',
-    name: 'Hello! 🫶',
-    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1faf6/lottie.json',
-  },
-  {
-    id: 'smiley',
-    name: 'Smile 😊',
+    id: 'smile',
+    name: 'Smile ☺️',
+    emoji: '☺️',
     url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f60a/lottie.json',
   },
   {
-    id: 'exciting',
-    name: 'Exciting 🥳',
+    id: 'pray',
+    name: 'Pray 🙏',
+    emoji: '🙏',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f64f/lottie.json',
+  },
+  {
+    id: 'wave',
+    name: 'Hi 👋',
+    emoji: '👋',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f44b/lottie.json',
+  },
+  {
+    id: 'starstruck',
+    name: 'Star-Struck 🤩',
+    emoji: '🤩',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f929/lottie.json',
+  },
+  {
+    id: 'angel',
+    name: 'Halo 😇',
+    emoji: '😇',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f607/lottie.json',
+  },
+  {
+    id: 'partypop',
+    name: 'Party! 🎉',
+    emoji: '🎉',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f389/lottie.json',
+  },
+  {
+    id: 'redheart',
+    name: 'Heart ❤️',
+    emoji: '❤️',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/2764_fe0f/lottie.json',
+  },
+  {
+    id: 'lovehearts',
+    name: 'Hearts 🥰',
+    emoji: '🥰',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f970/lottie.json',
+  },
+  {
+    id: 'party',
+    name: 'Celebrate 🥳',
+    emoji: '🥳',
     url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f973/lottie.json',
   },
+  {
+    id: 'fire2',
+    name: 'Fire 🔥',
+    emoji: '🔥',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f525/lottie.json',
+  },
+  {
+    id: 'cool',
+    name: 'Cool 😎',
+    emoji: '😎',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f60e/lottie.json',
+  },
+  {
+    id: 'thumbsup',
+    name: 'Like 👍',
+    emoji: '👍',
+    url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f44d/lottie.json',
+  },
 ];
+
+const FRESH_CHAT_STICKERS = NEW_CHAT_STICKERS;
 
 
 
@@ -245,7 +309,7 @@ const getReplyMessageType = (reply: Message, messagesList?: Message[]) => {
   return type;
 };
 
-const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
+const renderReplyThumbnail = (reply: Message, messagesList?: Message[], themePrimary: string = '#0084FF') => {
   const replyType = getReplyMessageType(reply, messagesList);
   const mediaUrl = getReplyMediaUrl(reply, messagesList);
 
@@ -253,7 +317,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
     return (
       <Image
         source={{ uri: mediaUrl }}
-        style={s.replyMediaThumbnail}
+        style={{ width: '100%', height: '100%', borderRadius: 4 }}
         resizeMode="cover"
       />
     );
@@ -261,7 +325,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
 
   if (replyType === 'video') {
     return (
-      <View style={s.replyMediaPlaceholder}>
+      <View style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.1)', justifyContent: 'center', alignItems: 'center', borderRadius: 4 }}>
         <Icon name="play" size={16} color="#FFF" />
       </View>
     );
@@ -274,10 +338,11 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
     if (fileExt === 'pdf') iconName = 'document-outline';
     else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
     else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
+    else if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'opus'].includes(fileExt || '')) iconName = 'musical-notes-outline';
 
     return (
-      <View style={s.replyMediaPlaceholder}>
-        <Icon name={iconName} size={18} color={theme.primary} />
+      <View style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.1)', justifyContent: 'center', alignItems: 'center', borderRadius: 4 }}>
+        <Icon name={iconName} size={18} color={themePrimary} />
       </View>
     );
   }
@@ -285,7 +350,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[]) => {
   return null;
 };
 
-const getFileIconColor = (fileExt: string) => {
+const getFileIconColor = (fileExt: string, defaultColor: string = '#0084FF') => {
   switch (fileExt) {
     case 'pdf':
       return '#D32F2F'; // Red
@@ -305,8 +370,16 @@ const getFileIconColor = (fileExt: string) => {
       return '#F57C00'; // Orange
     case 'txt':
       return '#607D8B'; // Slate Grey
+    case 'mp3':
+    case 'wav':
+    case 'm4a':
+    case 'aac':
+    case 'ogg':
+    case 'flac':
+    case 'opus':
+      return '#9C27B0'; // Purple for Audio
     default:
-      return theme.primary;
+      return defaultColor;
   }
 };
 
@@ -385,135 +458,269 @@ const saveDimensionsToStorage = async () => {
   }
 };
 
-const calculateImageDimensions = (width: number, height: number, isSticker: boolean) => {
-  const MAX_W = isSticker ? 100 : 200;
-  const MAX_H = isSticker ? 150 : 300;
-
-  let dW = width;
-  let dH = height;
-
-  const aspectRatio = width / height;
-
-  if (dW > MAX_W) {
-    dW = MAX_W;
-    dH = MAX_W / aspectRatio;
-  }
-
-  if (dH > MAX_H) {
-    dH = MAX_H;
-    dW = MAX_H * aspectRatio;
-  }
-
-  return { width: dW, height: dH };
+const isLocalUriUsable = (uri?: string) => {
+  if (!uri) return false;
+  // content:// URIs are transient Android ContentProvider permissions from keyboards / external pickers.
+  // When the app is closed/reopened, content:// permissions from another package become invalid.
+  if (uri.startsWith('content://')) return false;
+  return uri.startsWith('file://') || uri.startsWith('/');
 };
 
-const ChatImage = ({ url, isMe, onLongPress, onPress, timeOverlay, isSticker, origWidth, origHeight, localUri }: any) => {
-  const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+const getMediaExtension = (mimeType?: string, fileName?: string): string => {
+  if (mimeType?.includes('gif') || fileName?.toLowerCase().endsWith('.gif')) return 'gif';
+  if (mimeType?.includes('webp') || fileName?.toLowerCase().endsWith('.webp')) return 'webp';
+  if (mimeType?.includes('png') || fileName?.toLowerCase().endsWith('.png')) return 'png';
+  if (mimeType?.includes('mp4') || fileName?.toLowerCase().endsWith('.mp4')) return 'mp4';
+  return 'jpg';
+};
+
+const calculateImageDimensions = (width: number, height: number, isSticker: boolean, isGif: boolean = false) => {
+  // Tier 2 (medium/clear): GIFs — noticeably larger than stickers so animations & details are clear
+  if (isGif) {
+    const MAX_GIF_W = 230;
+    const MAX_GIF_H = 300;
+    if (!width || !height || width <= 0 || height <= 0) {
+      return { width: 210, height: 210 };
+    }
+    const aspectRatio = width / height;
+    let dW = MAX_GIF_W;
+    let dH = dW / aspectRatio;
+    if (dH > MAX_GIF_H) {
+      dH = MAX_GIF_H;
+      dW = dH * aspectRatio;
+    }
+    return { width: Math.round(dW), height: Math.round(dH) };
+  }
+
+  // Tier 3 (small): Stickers — compact size for emotion/reaction stickers
+  if (isSticker) {
+    const MAX_STICKER = 100;
+    if (!width || !height || width <= 0 || height <= 0) {
+      return { width: MAX_STICKER, height: MAX_STICKER };
+    }
+    const aspectRatio = width / height;
+    let dW = MAX_STICKER;
+    let dH = MAX_STICKER;
+    if (aspectRatio > 1) {
+      dW = MAX_STICKER;
+      dH = Math.round(MAX_STICKER / aspectRatio);
+    } else {
+      dH = MAX_STICKER;
+      dW = Math.round(MAX_STICKER * aspectRatio);
+    }
+    return { width: Math.max(55, dW), height: Math.max(55, dH) };
+  }
+
+  // Tier 1 (largest): Raw photos and videos
+  const MAX_W = 260;
+  const MAX_H = 340;
+
+  if (!width || !height || width <= 0 || height <= 0) {
+    return { width: 240, height: 240 };
+  }
+
+  const aspectRatio = width / height;
+  let dW = MAX_W;
+  let dH = dW / aspectRatio;
+  if (dH > MAX_H) {
+    dH = MAX_H;
+    dW = dH * aspectRatio;
+  }
+
+  return { width: Math.round(dW), height: Math.round(dH) };
+};
+
+const ChatImage = React.memo(({ url, isMe, onLongPress, onPress, timeOverlay, isSticker, isGif, origWidth, origHeight, localUri, mediaE2ee, isDark }: any) => {
+  const effectiveIsGif = Boolean(isGif);
+  const effectiveIsSticker = Boolean(isSticker) && !effectiveIsGif;
+
+  const usableLocalUri = isLocalUriUsable(localUri) ? localUri : null;
+
+  // Detect upfront if the file is encrypted but we have no key (and no local copy)
+  const isEncUrl = !usableLocalUri && url && (url.includes('.enc') || url.includes('/raw/upload/'));
+  const hasNoKey = !mediaE2ee || !mediaE2ee.media_key;
+
+  const [decryptionFailed, setDecryptionFailed] = useState(() => !!(isEncUrl && hasNoKey));
+
+  const [resolvedUri, setResolvedUri] = useState<string>(() => {
+    if (usableLocalUri) return usableLocalUri;
+    if (mediaE2ee?.file_hash) {
+      const ext = getMediaExtension(mediaE2ee.mime_type, mediaE2ee.file_name);
+      const syncLocal = MediaCipher.getDecryptedLocalUriSync(mediaE2ee.file_hash, ext);
+      if (syncLocal) return syncLocal;
+    }
+    return url;
+  });
 
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>(() => {
-    if (url && imageDimensionsCache.has(url)) {
-      return imageDimensionsCache.get(url)!;
-    }
-    if (localUri && imageDimensionsCache.has(localUri)) {
-      const cached = imageDimensionsCache.get(localUri)!;
-      if (url) imageDimensionsCache.set(url, cached);
-      return cached;
-    }
-    if (origWidth && origHeight) {
-      const resolved = calculateImageDimensions(origWidth, origHeight, !!isSticker);
-      if (url) imageDimensionsCache.set(url, resolved);
+    const targetW = origWidth || mediaE2ee?.width;
+    const targetH = origHeight || mediaE2ee?.height;
+    if (targetW && targetH) {
+      const resolved = calculateImageDimensions(targetW, targetH, effectiveIsSticker, effectiveIsGif);
+      if (url) imageDimensionsCache.set(url, { width: targetW, height: targetH });
       return resolved;
     }
-    return isSticker ? { width: 100, height: 100 } : { width: 200, height: 150 };
+    const cachedEntry = (url && imageDimensionsCache.get(url)) || (usableLocalUri && imageDimensionsCache.get(usableLocalUri));
+    if (cachedEntry) {
+      return calculateImageDimensions(cachedEntry.width, cachedEntry.height, effectiveIsSticker, effectiveIsGif);
+    }
+    return effectiveIsGif ? { width: 210, height: 210 } : (effectiveIsSticker ? { width: 100, height: 100 } : { width: 240, height: 240 });
   });
-  const [loading, setLoading] = useState(!imageDimensionsCache.has(url));
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let isActive = true;
-    let task: any = null;
+
+    if (usableLocalUri) {
+      setResolvedUri(prev => prev === usableLocalUri ? prev : usableLocalUri);
+      setLoading(false);
+      return;
+    }
+
+    // If the URL is an encrypted .enc file but we have no decryption key,
+    // mark as failed immediately instead of trying to load binary data as an image
+    const isEncrypted = url && (url.includes('.enc') || url.includes('/raw/upload/'));
+    if (isEncrypted && (!mediaE2ee || !mediaE2ee.media_key)) {
+      setDecryptionFailed(true);
+      setLoading(false);
+      return;
+    }
+
+    // Handle Media E2EE Decryption if encrypted
+    if (mediaE2ee && mediaE2ee.media_key && url) {
+      const ext = getMediaExtension(mediaE2ee.mime_type, mediaE2ee.file_name);
+      MediaCipher.getDecryptedLocalUriIfExists(mediaE2ee.file_hash, ext).then(cachedUri => {
+        if (!isActive) return;
+        if (cachedUri) {
+          setResolvedUri(prev => prev === cachedUri ? prev : cachedUri);
+          setLoading(false);
+        } else {
+          MediaCipher.decryptMediaFile(url, mediaE2ee.media_key, mediaE2ee.nonce, mediaE2ee.file_hash, ext)
+            .then(decryptedPath => {
+              if (!isActive) return;
+              setResolvedUri(prev => prev === decryptedPath ? prev : decryptedPath);
+              setLoading(false);
+            })
+            .catch(err => {
+              console.warn('[ChatImage] Decryption or download failed:', err);
+              if (isActive) {
+                setLoading(false);
+                setDecryptionFailed(true);
+              }
+            });
+        }
+      });
+      return;
+    }
+
     if (url) {
-      if (imageDimensionsCache.has(url)) {
-        setDimensions(imageDimensionsCache.get(url)!);
-        return;
-      }
-      if (localUri && imageDimensionsCache.has(localUri)) {
-        const cached = imageDimensionsCache.get(localUri)!;
-        imageDimensionsCache.set(url, cached);
-        setDimensions(cached);
+      const targetUri = usableLocalUri || url;
+      setResolvedUri(prev => prev === targetUri ? prev : targetUri);
+      const cachedEntry = imageDimensionsCache.get(url) || (usableLocalUri && imageDimensionsCache.get(usableLocalUri));
+      if (cachedEntry) {
+        setDimensions(calculateImageDimensions(cachedEntry.width, cachedEntry.height, !!isSticker, !!isGif));
         return;
       }
       if (origWidth && origHeight) {
-        const resolved = calculateImageDimensions(origWidth, origHeight, !!isSticker);
-        imageDimensionsCache.set(url, resolved);
+        const resolved = calculateImageDimensions(origWidth, origHeight, !!isSticker, !!isGif);
+        imageDimensionsCache.set(url, { width: origWidth, height: origHeight });
         setDimensions(resolved);
         return;
       }
-      // Defer getSize to prevent mid-transition layout shifts
-      task = InteractionManager.runAfterInteractions(() => {
-        if (!isActive) return;
-        Image.getSize(url, (width, height) => {
-          if (!isActive) return;
-          if (width && height) {
-            const resolved = calculateImageDimensions(width, height, !!isSticker);
-            imageDimensionsCache.set(url, resolved);
-            if (localUri) imageDimensionsCache.set(localUri, resolved);
-            saveDimensionsToStorage();
-            setDimensions(resolved);
-          }
-        }, () => {
-          if (!isActive) return;
-          const fallback = isSticker ? { width: 100, height: 100 } : { width: 200, height: 150 };
-          imageDimensionsCache.set(url, fallback);
-          saveDimensionsToStorage();
-          setDimensions(fallback);
-        });
-      });
     }
     return () => {
       isActive = false;
-      if (task) task.cancel();
     };
-  }, [url, isSticker, origWidth, origHeight, localUri]);
+  }, [url, isSticker, isGif, origWidth, origHeight, usableLocalUri, mediaE2ee?.file_hash, mediaE2ee?.media_key]);
+
+  if (decryptionFailed) {
+    return (
+      <View
+        style={{
+          alignSelf: isMe ? 'flex-end' : 'flex-start',
+          width: dimensions.width,
+          height: dimensions.height,
+          backgroundColor: isDark ? '#2C2C2E' : '#EAEAEA',
+          borderRadius: 14,
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 12,
+        }}
+      >
+        <Icon name="image-outline" size={28} color={isDark ? '#8E8E93' : '#888'} />
+        <Text style={{ fontSize: 11, color: isDark ? '#8E8E93' : '#888', marginTop: 4, textAlign: 'center' }}>
+          Media unavailable
+        </Text>
+        {timeOverlay}
+      </View>
+    );
+  }
 
   return (
     <TouchableOpacity 
-      style={[
-        s.imageContainer, 
-        { 
-            alignSelf: isMe ? 'flex-end' : 'flex-start',
-            width: dimensions.width,
-            height: dimensions.height,
-            backgroundColor: isSticker ? 'transparent' : '#EAEAEA',
-            padding: 0,
-            marginTop: 4,
-            justifyContent: 'center',
-            alignItems: 'center',
-        }
-      ]}
+      style={{ 
+        alignSelf: isMe ? 'flex-end' : 'flex-start',
+        width: dimensions.width,
+        height: dimensions.height,
+        backgroundColor: 'transparent',
+        borderRadius: isSticker ? 0 : (isGif ? 8 : 14),
+        overflow: 'hidden',
+        padding: 0,
+        marginTop: 0,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
       onPress={onPress}
       onLongPress={onLongPress}
       activeOpacity={0.9}
     >
       <FastImage 
-        source={{ uri: url }} 
+        source={{ uri: resolvedUri }} 
         style={{ 
           height: dimensions.height, 
           width: dimensions.width,
-          borderRadius: isSticker ? 0 : 12,
+          borderRadius: isSticker ? 0 : (isGif ? 8 : 14),
         }} 
         resizeMode={FastImage.resizeMode.contain}
+        onError={() => {
+          if (resolvedUri !== url && url) {
+            setResolvedUri(url);
+          } else {
+            setLoading(false);
+          }
+        }}
+        onLoad={(e: any) => {
+          const { width: w, height: h } = e?.nativeEvent || {};
+          if (w && h) {
+            if (url) imageDimensionsCache.set(url, { width: w, height: h });
+            if (localUri) imageDimensionsCache.set(localUri, { width: w, height: h });
+            const resolved = calculateImageDimensions(w, h, effectiveIsSticker, effectiveIsGif);
+            setDimensions(prev => {
+              if (prev.width === resolved.width && prev.height === resolved.height) return prev;
+              return resolved;
+            });
+            saveDimensionsToStorage();
+          }
+          setLoading(false);
+        }}
         onLoadEnd={() => setLoading(false)}
       />
-      {loading && !isSticker && (
-        <View style={{ position: 'absolute', justifyContent: 'center', alignItems: 'center' }}>
-          <ActivityIndicator size="small" color={theme.primary} />
-        </View>
-      )}
       {!isSticker && timeOverlay}
     </TouchableOpacity>
   );
-};
+}, (prev, next) => {
+  return (
+    prev.url === next.url &&
+    prev.localUri === next.localUri &&
+    prev.isMe === next.isMe &&
+    prev.isSticker === next.isSticker &&
+    prev.isGif === next.isGif &&
+    prev.origWidth === next.origWidth &&
+    prev.origHeight === next.origHeight &&
+    prev.mediaE2ee?.file_hash === next.mediaE2ee?.file_hash &&
+    prev.mediaE2ee?.media_key === next.mediaE2ee?.media_key
+  );
+});
 
 let uniqueCounter = 0;
 
@@ -527,14 +734,33 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
   const { conversationId, name } = route.params;
 
+  const [chatTheme, setChatTheme] = useState<ChatTheme>(() => {
+    return route.params?.chatTheme || ChatThemeService.getCachedTheme(conversationId);
+  });
+  const [showThemeModal, setShowThemeModal] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    InteractionManager.runAfterInteractions(() => {
+      if (!active) return;
+      ChatThemeService.getChatTheme(conversationId).then(t => {
+        if (t && active) setChatTheme(t);
+      }).catch(() => {});
+    });
+    return () => { active = false; };
+  }, [conversationId]);
+
   useFocusEffect(
     useCallback(() => {
       if ((global as any).activeMusicRoomCode) return;
-      pinNavBarColor(theme.background, isDark);
+      const isCustomTheme = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+      pinNavBarColor('#00000000', isCustomTheme ? true : isDark);
       if (Platform.OS === 'android' && NativeModules.SystemBar) {
-        NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
+        NativeModules.SystemBar.setFitsSystemWindows(false);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', isCustomTheme ? false : !isDark);
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', isCustomTheme ? true : isDark);
       }
-    }, [isDark, theme.background])
+    }, [isDark, chatTheme?.id])
   );
   const { user: currentUser } = useAuth();
 
@@ -542,8 +768,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   useEffect(() => {
     fcmService.setActiveConversation(String(conversationId));
 
-    const t = setTimeout(async () => {
+    let isSubscribed = true;
+    const task = InteractionManager.runAfterInteractions(async () => {
       try {
+        if (!isSubscribed) return;
         const notifications = await notifee.getDisplayedNotifications();
         for (const notification of notifications) {
           if (
@@ -556,19 +784,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       } catch (err) {
         console.error('Error dismissing notifications:', err);
       }
-    }, 500);
+    });
 
     return () => {
-      clearTimeout(t);
+      isSubscribed = false;
+      task?.cancel?.();
       fcmService.setActiveConversation(null);
     };
   }, [conversationId]);
 
-  // Initial cached messages from SQLite (queried once with LIMIT 25 for instant 1ms load)
+  // Initial cached messages from SQLite (queried once with LIMIT 20 for instant 0ms mount)
   const initialCached = React.useMemo(() => {
     if (route.params?.cleared || route.params?.deleted) return [];
     try {
-      return localDatabase.getRecentMessages(Number(conversationId), 25) || [];
+      return localDatabase.getRecentMessages(Number(conversationId), 20) || [];
     } catch {
       return [];
     }
@@ -600,7 +829,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const [otherUser, setOtherUser] = useState<OtherUser | null>(route.params?.otherUser || null);
-  const [friendStatus, setFriendStatus] = useState<string>(route.params?.otherUser?.friend_status || 'none'); // 'none' | 'sent_pending' | 'received_pending' | 'friends'
+  const [friendStatus, setFriendStatus] = useState<string>(() => {
+    if (route.params?.isGroup) return 'friends';
+    if (route.params?.otherUser?.friend_status) return route.params.otherUser.friend_status;
+    if (route.params?.messageRequestStatus === 'pending') return 'none';
+    return 'friends'; // Default to normal chat unless explicitly pending
+  });
   const [headerHasStatus, setHeaderHasStatus] = useState(false);
   const [headerStatuses, setHeaderStatuses] = useState<any[]>([]);
 
@@ -626,15 +860,59 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       task?.cancel?.();
     };
   }, [isGroup, otherUser?.id]);
-  const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(null); // null | 'pending' | 'accepted' | 'rejected'
-  const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(null);
+
+  const fetchDynamicFriendStatus = useCallback(async (targetId: number) => {
+    if (!targetId || targetId === currentUser?.id) return;
+    try {
+      const friendsList = await chatAPI.getFriends();
+      const isFriend = Array.isArray(friendsList) && friendsList.some((f: any) => Number(f.id) === Number(targetId));
+      if (isFriend) {
+        setFriendStatus('friends');
+        return;
+      }
+      const reqs = await chatAPI.getFriendRequests();
+      const req = Array.isArray(reqs) && reqs.find((r: any) =>
+        Number(r.sender?.id || r.from_user?.id) === Number(targetId) ||
+        Number(r.receiver?.id || r.to_user?.id) === Number(targetId)
+      );
+      if (req) {
+        const isOutgoing = Number(req.sender?.id || req.from_user?.id) === Number(currentUser?.id) || req.direction === 'outgoing';
+        setFriendStatus(isOutgoing ? 'pending' : 'received_pending');
+      } else {
+        setFriendStatus('none');
+      }
+    } catch (err) {
+      console.warn('Error loading friend status dynamically in chat:', err);
+    }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (isGroup) return;
+    const targetId = otherUser?.id || route.params?.otherUser?.id;
+    if (targetId) {
+      const task = InteractionManager.runAfterInteractions(() => {
+        fetchDynamicFriendStatus(Number(targetId));
+      });
+      return () => {
+        task?.cancel?.();
+      };
+    }
+  }, [isGroup, otherUser?.id, route.params?.otherUser?.id, fetchDynamicFriendStatus]);
+
+  const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(
+    route.params?.messageRequestStatus || null
+  ); // null | 'pending' | 'accepted' | 'rejected'
+  const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(
+    route.params?.messageRequestSenderId || null
+  );
   const [isUserBlocked, setIsUserBlocked] = useState(false); // Whether current user blocked other
   const [amIBlocked, setAmIBlocked] = useState(false); // Whether other user blocked current user
   const [lastSeenPrivacy, setLastSeenPrivacy] = useState<'everyone' | 'nobody'>('everyone');
   const [chatTitle, setChatTitle] = useState(name || 'Chat');
   const [shouldSkipLoad, setShouldSkipLoad] = useState(false); // Skip loading messages
   const [showPermissionModal, setShowPermissionModal] = useState(false);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false); // Scroll to bottom button
+  const scrollToBottomAnim = useRef(new Animated.Value(0)).current; // Native animated scroll to bottom button
+  const isScrollButtonVisibleRef = useRef(false);
   const [showMessageActions, setShowMessageActions] = useState(false); 
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); 
   const [cameraMenuVisible, setCameraMenuVisible] = useState(false);
@@ -651,19 +929,21 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const [isConversationDeleted, setIsConversationDeleted] = useState(false); // Track if conversation was deleted
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
-  const [isStickerSheetReady, setIsStickerSheetReady] = useState(false);
-
-  useEffect(() => {
-    // Pre-mount sticker sheet offscreen in background 350ms after screen transition
-    const timer = setTimeout(() => {
-      setIsStickerSheetReady(true);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, []);
   const [multiPreviewVisible, setMultiPreviewVisible] = useState(false);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
   const [selectedMultiMedia, setSelectedMultiMedia] = useState<SelectedMedia[]>([]);
   const [groupListVisible, setGroupListVisible] = useState(false);
+
+  // ── Multi-select, Delete & Forward State ──────────────────────────────
+  const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
+  const selectedMessageIdsRef = useRef<number[]>([]);
+  selectedMessageIdsRef.current = selectedMessageIds;
+  const isSelectionMode = selectedMessageIds.length > 0;
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showForwardModal, setShowForwardModal] = useState(false);
+  const [messagesToDelete, setMessagesToDelete] = useState<Message[]>([]);
+  const [messagesToForward, setMessagesToForward] = useState<Message[]>([]);
   const [selectedGroupMessages, setSelectedGroupMessages] = useState<Message[]>([]);
   const [highlightMessageId, setHighlightMessageId] = useState<number | null>(null); // Message to highlight
   const [searchMode, setSearchMode] = useState(false);
@@ -677,131 +957,63 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const lastTapTimeRef = useRef<number>(0);
   const doubleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Voice recording
-  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
-
   const safeBottomPadding = insets.bottom + spacing.md;
-  const insetsBottomRef = useRef(insets.bottom);
-  insetsBottomRef.current = insets.bottom;
-  const spacerHeight = useSharedValue(0);
+  const { height: keyboardHeight, progress } = useReanimatedKeyboardAnimation();
+  const stickerSpacerHeight = useSharedValue(0);
 
-  const animatedSpacerStyle = useAnimatedStyle(() => {
+  // Lifts the entire content area (messages + input bar) up together with the keyboard or sticker drawer.
+  // Messages and input always move as one unit — no layout recalculation, just a GPU transform.
+  // kbHeight from KeyboardProvider includes the nav bar area, so subtract insets.bottom
+  // to avoid double-counting with the container's paddingBottom.
+  const contentLiftStyle = useAnimatedStyle(() => {
+    const kbHeight = Math.abs(keyboardHeight.value);
+    const lift = kbHeight > 0 ? Math.max(0, kbHeight - insets.bottom) : 0;
+    const finalLift = Math.max(lift, stickerSpacerHeight.value);
     return {
-      height: spacerHeight.value,
+      transform: [{ translateY: -finalLift }],
     };
   });
 
   const stickerPickerVisibleRef = useRef(false);
   stickerPickerVisibleRef.current = stickerPickerVisible;
 
-  const lastKeyboardHeightRef = useRef(290);
-
   useEffect(() => {
     if (stickerPickerVisible) {
       Keyboard.dismiss();
-      spacerHeight.value = withTiming(286, { duration: 120 });
-    } else if (!isKeyboardOpen) {
-      spacerHeight.value = withTiming(0, { duration: 100 });
+      stickerSpacerHeight.value = withTiming(286, {
+        duration: 250,
+        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
+      });
+    } else {
+      stickerSpacerHeight.value = withTiming(0, {
+        duration: 220,
+        easing: Easing.bezier(0.4, 0.0, 1, 1),
+      });
     }
-  }, [stickerPickerVisible, isKeyboardOpen]);
+  }, [stickerPickerVisible, stickerSpacerHeight]);
 
   const isFocusedRef = useRef(true);
-
-  useEffect(() => {
-    try {
-      if (Platform.OS === 'android' && NativeModules.SystemBar?.startKeyboardHeightObserver) {
-        NativeModules.SystemBar.startKeyboardHeightObserver();
-      }
-    } catch (_) {}
-
-    const handleShow = (e: any) => {
-      if (!isFocusedRef.current) return;
-      const rawHeight = e?.endCoordinates?.height || lastKeyboardHeightRef.current || 285;
-      if (rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setIsKeyboardOpen(true);
-        setStickerPickerVisible(false);
-        setShowFullEmojiPicker(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-      }
-    };
-
-    const handleFrameChange = (e: any) => {
-      if (!isFocusedRef.current) return;
-      const rawHeight = e?.endCoordinates?.height;
-      if (rawHeight && rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setIsKeyboardOpen(true);
-        setStickerPickerVisible(false);
-        setShowFullEmojiPicker(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-      }
-    };
-
-    const handleHide = (e: any) => {
-      if (!isFocusedRef.current) return;
-      setIsKeyboardOpen(false);
-      if (!stickerPickerVisibleRef.current) {
-        spacerHeight.value = Platform.OS === 'ios'
-          ? withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) })
-          : 0;
-      }
-    };
-
-    const dynamicSub = DeviceEventEmitter.addListener('onDynamicKeyboardHeight', (data: { height: number; isVisible: boolean }) => {
-      if (!isFocusedRef.current) return;
-      const rawHeight = data?.height || 0;
-      if (rawHeight > 50) {
-        const targetHeight = Math.max(0, rawHeight - insetsBottomRef.current);
-        lastKeyboardHeightRef.current = targetHeight;
-        setIsKeyboardOpen(true);
-        setStickerPickerVisible(false);
-        setShowFullEmojiPicker(false);
-        spacerHeight.value = withTiming(targetHeight, { duration: 100, easing: Easing.out(Easing.quad) });
-      } else if (rawHeight === 0 && !stickerPickerVisibleRef.current) {
-        setIsKeyboardOpen(false);
-        spacerHeight.value = 0;
-      }
-    });
-
-    const listeners = [
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleShow),
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleHide),
-      Keyboard.addListener('keyboardDidChangeFrame', handleFrameChange),
-    ];
-
-    return () => {
-      dynamicSub.remove();
-      listeners.forEach(l => l.remove());
-    };
-  }, [safeBottomPadding]);
-
   const isNavigatingBack = useRef(false);
 
   const handleGoBack = useCallback(() => {
     if (isNavigatingBack.current) return;
     isNavigatingBack.current = true;
-    setTimeout(() => {
-      isNavigatingBack.current = false;
-    }, 350);
 
-    // Navigate FIRST — do NOT dismiss keyboard before goBack.
-    // Keyboard.dismiss() fires keyboardDidHide → setIsKeyboardOpen(false)
-    // which triggers a full FlatList re-render BEFORE the slide starts, causing the 0.5s hang.
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
       navigation.navigate('MainTabs', { screen: 'Chats' });
     }
-    // Dismiss keyboard after navigation is dispatched (non-blocking)
     setTimeout(() => Keyboard.dismiss(), 50);
   }, [navigation]);
 
   useEffect(() => {
     const onBackPress = () => {
       if (!isFocusedRef.current) return false;
+      if (selectedMessageIdsRef.current.length > 0) {
+        setSelectedMessageIds([]);
+        return true;
+      }
       if (stickerPickerVisibleRef.current) {
         setStickerPickerVisible(false);
         return true;
@@ -866,15 +1078,16 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       console.log('Chat cleared - skipping message load');
     }
 
-    // Background fetch & websocket connection asynchronously without blocking frame 1 render
-    const syncTimer = setTimeout(() => {
-      loadConversationDetails();
+    // Defer all network calls and websocket connection until AFTER the slide-in animation completes.
+    // The SQLite cache (initialCached) already displayed instantly — network sync
+    // is a background refresh that should not compete with the screen transition.
+    InteractionManager.runAfterInteractions(() => {
       connectWebSocket();
-
+      loadConversationDetails();
       if (!isCleared) {
         loadMessages();
       }
-    }, 50);
+    });
 
     // Scroll to specific message if ID provided
     const scrollToId = route.params?.scrollToMessageId;
@@ -912,9 +1125,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         setTimeout(() => {
           if (!chatIsActiveRef.current) return;
           const unread = messagesRef.current.some(
-            m => m.sender.id !== currentUser?.id && !m.is_read,
+            m => !m?.is_read && m?.sender?.id !== currentUser?.id
           );
-          if (unread) markAsRead();
+          if (unread && conversationId) {
+            chatAPI.markAsRead(Number(conversationId)).then(() => {
+              DeviceEventEmitter.emit('conversation_read', { conversationId: Number(conversationId) });
+            }).catch(() => {});
+          }
         }, 300);
       });
     });
@@ -925,7 +1142,6 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     });
 
     return () => {
-      clearTimeout(syncTimer);
       websocketService.disconnectRoom();
       if (focusSub) focusSub();
       if (blurSub) blurSub();
@@ -1043,7 +1259,11 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           (p: any) => p.user && p.user.id !== currentUser?.id,
         );
         if (other?.user) {
-          setOtherUser(other.user);
+          setOtherUser(prev => ({
+            ...prev,
+            ...other.user,
+            last_seen: other.user.last_seen !== undefined ? other.user.last_seen : prev?.last_seen,
+          }));
           setChatTitle(
             other.user.display_name ||
               other.user.first_name ||
@@ -1163,17 +1383,49 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
     try {
       const data = await chatAPI.getMessages(conversationId);
-      const arr: Message[] = Array.isArray(data) ? data : data?.results ?? [];
+      const rawArr: Message[] = Array.isArray(data) ? data : data?.results ?? [];
+      const arr = await MessageCipher.processMessageList(currentUser?.id || 0, rawArr);
 
       if (arr.length > 0) {
         setOldestMessageId(arr[0].id);
         setHasMoreMessages(arr.length >= 50);
+        // Cache fresh decrypted messages in SQLite
+        localDatabase.saveMessages(arr, conversationId);
+
+        // Sync incoming trivia challenges or score submissions
+        arr.forEach(m => {
+          if (m?.content && (isTriviaChallengeMessage(m) || isScoreSubmissionMessage(m))) {
+            syncChallengeFromMessage(m.content, conversationId);
+          }
+        });
+      } else {
+        // If server returns empty list (chat cleared or DB wiped), wipe stale local cache immediately
+        setOldestMessageId(null);
+        setHasMoreMessages(false);
+        localDatabase.clearConversationMessages(conversationId);
+        setMessages([]);
+        return;
       }
 
-      // Cache fresh messages in SQLite
-      localDatabase.saveMessages(arr, conversationId);
+      const reversedNew = [...arr].reverse();
+      const current = messagesRef.current;
+      
+      // Compare the visible subset currently loaded
+      const sliceLength = Math.min(current.length, reversedNew.length);
+      const isSliceIdentical =
+        sliceLength > 0 &&
+        current.slice(0, sliceLength).every(
+          (m, idx) =>
+            m.id === reversedNew[idx]?.id &&
+            m.content === reversedNew[idx]?.content &&
+            m.status === reversedNew[idx]?.status &&
+            JSON.stringify(m.reactions || {}) === JSON.stringify(reversedNew[idx]?.reactions || {})
+        );
 
-      setMessages([...arr].reverse());
+      // Only update state if current list was empty or if the latest messages actually changed
+      if (!isSliceIdentical) {
+        setMessages(reversedNew);
+      }
 
       if (chatIsActiveRef.current) {
         const hasUnread = arr.some(
@@ -1193,9 +1445,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   // Load older messages when user scrolls to bottom of inverted list (= top visually)
   const loadOlderMessages = async () => {
-    if (isLoadingOlder || !hasMoreMessages || !oldestMessageId) return;
+    if (isLoadingOlder || !hasMoreMessages || !oldestMessageId || !hasLoadedInitialMessages || messages.length < 15) return;
     setIsLoadingOlder(true);
     try {
+      // 1. Instant SQLite cache check for older messages
+      const cachedOlder = localDatabase.getMessagesBefore(conversationId, oldestMessageId, 30);
+      if (cachedOlder && cachedOlder.length > 0) {
+        setOldestMessageId(cachedOlder[0].id);
+        setMessages(prev => [
+          ...(Array.isArray(prev) ? prev : []),
+          ...cachedOlder.reverse(),
+        ]);
+      }
+
+      // 2. Fetch older messages from server in background
       const token = await AsyncStorage.getItem('access_token');
       const url = `${BASE_URL}/api/chat/conversations/${conversationId}/messages/?limit=50&before_id=${oldestMessageId}`;
       const res = await fetch(url, {
@@ -1203,17 +1466,22 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       });
       if (res.ok) {
         const data = await res.json();
-        const older: Message[] = Array.isArray(data)
+        const rawOlder: Message[] = Array.isArray(data)
           ? data
           : data.results ?? [];
+        const older = await MessageCipher.processMessageList(currentUser?.id || 0, rawOlder);
         if (older.length > 0) {
           setOldestMessageId(older[0].id);
           setHasMoreMessages(older.length >= 50);
-          // FIX 1: Append to end of reversed array (= top visually in inverted list)
-          setMessages(prev => [
-            ...(Array.isArray(prev) ? prev : []),
-            ...older.reverse(),
-          ]);
+          // Cache older decrypted messages
+          localDatabase.saveMessages(older, conversationId);
+          // Append to end of reversed array (= top visually in inverted list) if not already added
+          setMessages(prev => {
+            const currentIds = new Set(prev.map(m => m.id));
+            const newToAdd = older.filter(m => !currentIds.has(m.id)).reverse();
+            if (newToAdd.length === 0) return prev;
+            return [...prev, ...newToAdd];
+          });
         } else {
           setHasMoreMessages(false);
         }
@@ -1242,7 +1510,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     } catch {}
   };
 
-  const handleWebSocketMessage = (wsMsg: WebSocketMessage) => {
+  const handleWebSocketMessage = async (wsMsg: WebSocketMessage) => {
     const _type = (wsMsg.type as unknown) as string;
     switch (_type) {
       case 'error': {
@@ -1258,50 +1526,60 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       }
       case 'message': {
         const isOwn = wsMsg.data.sender?.id === currentUser?.id;
-        const nm: Message = {
-          ...wsMsg.data,
-          reactions: wsMsg.data.reactions ?? {},
-          delivered_at: !isOwn
-            ? wsMsg.data.delivered_at || new Date().toISOString()
-            : wsMsg.data.delivered_at,
-        };
-
-        // Cache the incoming message locally in SQLite
+        
         if (isOwn) {
           const senderName = currentUser?.display_name || currentUser?.email || '';
-          const localId = localDatabase.findSendingMessage(nm.content, senderName);
+          const optMsg = messagesRef.current.find(
+            m => (m.id > 1000000000 || m.status === 'sending') && m.sender?.id === currentUser?.id
+          );
+          const localId = optMsg?.local_id || localDatabase.findSendingMessage(optMsg?.content || '', senderName) || localDatabase.findFirstSendingMessage(senderName);
           if (localId) {
-            localDatabase.updateMessageServerId(localId, nm.id, 'sent');
-          } else {
-            localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
+            localDatabase.updateMessageServerId(localId, wsMsg.data.id, 'sent');
           }
-          // Query backend conversation details to instantly update friendship/message-gating status
-          loadConversationDetails();
-        } else {
-          localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
-        }
 
-        setMessages(prev => {
-          const arr = Array.isArray(prev) ? prev : [];
-          if (isOwn) {
+          setMessages(prev => {
+            const arr = Array.isArray(prev) ? prev : [];
             const idx = arr.findIndex(
               m =>
-                m.id > 1000000000 &&
-                m.content === nm.content &&
+                (m.id > 1000000000 || m.status === 'sending') &&
                 m.sender.id === currentUser?.id,
             );
             if (idx >= 0) {
               const next = [...arr];
-              next[idx] = nm;
+              next[idx] = { ...arr[idx], id: wsMsg.data.id, delivered_at: wsMsg.data.delivered_at, status: 'sent' };
               return next;
             }
             return arr;
-          }
+          });
+          // Do NOT call loadConversationDetails() here — it triggers 3 network calls
+          // (getConversation, checkBlockStatus, checkIfAmIBlocked) and causes a 1-2s JS
+          // thread stall that freezes the input every time you send a message.
+          break;
+        }
+
+        // Recipient side: Decrypt through MessageCipher (Double Ratchet + Media E2EE parser)
+        const processedMsg = await MessageCipher.processIncomingMessage(currentUser?.id || 0, wsMsg.data);
+
+        // Sync incoming trivia challenges or score submissions
+        if (wsMsg.data?.content && (isTriviaChallengeMessage(wsMsg.data) || isScoreSubmissionMessage(wsMsg.data))) {
+          syncChallengeFromMessage(wsMsg.data.content, conversationId);
+        }
+
+        const nm: Message = {
+          ...processedMsg,
+          reactions: wsMsg.data.reactions ?? {},
+          delivered_at: wsMsg.data.delivered_at || new Date().toISOString(),
+        };
+
+        // Cache the incoming message locally in SQLite
+        localDatabase.saveMessage({ ...nm, conversation: conversationId }, nm.id.toString(), 'sent');
+
+        setMessages(prev => {
+          const arr = Array.isArray(prev) ? prev : [];
           if (arr.some(m => m.id === nm.id)) return arr;
-          // FIX 1: Prepend to reversed array (newest at index 0)
           return [nm, ...arr];
         });
-        if (chatIsActiveRef.current && !isOwn) {
+        if (chatIsActiveRef.current) {
           setTimeout(() => markAsRead(), 100);
         }
         break;
@@ -1340,16 +1618,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           return updated;
         });
         break;
-      case 'read_receipt':
+      case 'read_receipt': {
         const readerId = wsMsg.data.user_id;
         const msgIds = wsMsg.data.message_ids || [];
         if (readerId && msgIds.length > 0) {
-          // Record current time as live read time
           setLiveReadTimes(prev => ({
             ...prev,
             [readerId]: new Date().toISOString()
           }));
-          
           const maxMsgId = Math.max(...msgIds);
           setConversation(prev => {
             if (!prev || !prev.participants) return prev;
@@ -1366,7 +1642,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         }
         setMessages(prev => {
           const updated = (Array.isArray(prev) ? prev : []).map(m => {
-            if (wsMsg.data.message_ids?.includes(m.id)) {
+            if (wsMsg.data.message_ids?.includes(m.id) && m.sender.id === currentUser?.id) {
               const updatedMsg = { ...m, is_read: true };
               const localId = m.local_id || m.id.toString();
               localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId, 'read');
@@ -1377,66 +1653,74 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           return updated;
         });
         break;
+      }
       case 'reaction':
-        console.log('💬 WebSocket reaction received:', wsMsg.data);
         setMessages(prev => {
           const updated = (Array.isArray(prev) ? prev : []).map(m => {
-            if (m.id === wsMsg.data.message_id) {
-              const updatedMsg = { ...m, reactions: wsMsg.data.reactions || {} };
+            if (m.id === wsMsg.data?.message_id) {
+              const reactions = { ...(m.reactions || {}) };
+              const emoji = wsMsg.data.emoji;
+              const userId = String(wsMsg.data.user_id);
+              
+              if (!emoji || emoji.trim() === '') {
+                delete reactions[userId];
+              } else {
+                reactions[userId] = emoji;
+              }
+              const updatedMsg = { ...m, reactions };
               const localId = m.local_id || m.id.toString();
-              localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId);
+              localDatabase.saveMessage({ ...updatedMsg, conversation: conversationId }, localId, 'read');
               return updatedMsg;
             }
             return m;
           });
           return updated;
         });
-        console.log(
-          '💬 Reaction state updated for message:',
-          wsMsg.data.message_id,
-        );
         break;
       case 'message_edit': {
         const { message_id, content, edited_at } = wsMsg.data;
-        setMessages(prev =>
-          (Array.isArray(prev) ? prev : []).map(m =>
-            m.id === message_id ? { ...m, content, edited_at } : m
-          )
-        );
         const target = messagesRef.current.find(m => m.id === message_id);
         const localId = target?.local_id || message_id.toString();
-        localDatabase.updateMessageText(localId, content, edited_at || new Date().toISOString());
+        localDatabase.updateMessageText(localId, content, edited_at);
+        setMessages(prev =>
+          (Array.isArray(prev) ? prev : []).map(m =>
+            m.id === message_id ? { ...m, content, edited_at } : m,
+          ),
+        );
         break;
       }
       case 'message_delete': {
-        const { message_id, content } = wsMsg.data;
-        setMessages(prev =>
-          (Array.isArray(prev) ? prev : []).map(m =>
-            m.id === message_id ? { ...m, is_deleted: true, content } : m
-          )
-        );
+        const { message_id } = wsMsg.data;
         const target = messagesRef.current.find(m => m.id === message_id);
         const localId = target?.local_id || message_id.toString();
         localDatabase.softDeleteMessage(localId);
-        break;
-      }
-      case 'message_request_created': {
-        const { conversation_id, status, sender_id } = wsMsg.data;
-        if (conversation_id === parseInt(conversationId, 10)) {
-          setMessageRequestStatus(status);
-          setMessageRequestSenderId(sender_id);
-        }
+        setMessages(prev =>
+          (Array.isArray(prev) ? prev : []).map(m =>
+            m.id === message_id ? { ...m, is_deleted: true, content: 'The message was removed' } : m,
+          ),
+        );
         break;
       }
       case 'message_request_status': {
-        const { conversation_id, status, sender_id } = wsMsg.data;
-        if (conversation_id === parseInt(conversationId, 10)) {
-          setMessageRequestStatus(status);
-          setMessageRequestSenderId(sender_id);
-          if (status === 'rejected' && sender_id === currentUser?.id) {
-            Alert.alert('Request Declined', 'Your message request was declined by the user.');
-            navigation.goBack();
-          }
+        const { status: reqStatus, sender_id: reqSenderId } = wsMsg.data;
+        setMessageRequestStatus(reqStatus);
+        setMessageRequestSenderId(reqSenderId);
+        if (reqStatus === 'accepted') {
+          setFriendStatus('friends');
+        }
+        break;
+      }
+      case 'message_request_created': {
+        const { status: reqStatus, sender_id: reqSenderId } = wsMsg.data;
+        setMessageRequestStatus(reqStatus);
+        setMessageRequestSenderId(reqSenderId);
+        break;
+      }
+      case 'friend_request_update': {
+        const { status: fStatus } = wsMsg.data;
+        if (fStatus === 'accepted') {
+          setFriendStatus('friends');
+          setMessageRequestStatus('accepted');
         }
         break;
       }
@@ -1465,9 +1749,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
-  const sendMessage = async (content?: string) => {
-    const text = (content ?? inputText).trim();
-    if (!text || isSending) return;
+  const sendMessage = async (content?: string, sendStartTime?: number) => {
+    const t0 = sendStartTime || performance.now();
+    const text = (content ?? inputTextRef.current ?? inputText).trim();
+    if (!text) return;
 
     // If editing a message
     if (editingMessageId) {
@@ -1484,6 +1769,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             m.id === editingMessageId ? { ...m, content: text, edited_at: editedAt } : m,
           ),
         );
+        inputTextRef.current = '';
         setInputText(''); 
         clearInputRef.current?.();
         setEditingMessageId(null);
@@ -1497,103 +1783,136 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       return;
     }
 
-    setIsSending(true);
-    setInputText('');
-    clearInputRef.current?.();
+    inputTextRef.current = '';
+    // Only call clearInputRef when content came from inputTextRef (no prior clear happened).
+    // When content is passed as an argument, ChatInputArea's handleSend already cleared.
+    if (!content) {
+      clearInputRef.current?.();
+    }
     setHighlightMessageId(null); // Clear any active highlight when sending a new message
 
-    if (websocketService.getConnectionState()) {
-      const localId = Date.now().toString();
-      const optimistic: any = {
-        id: Date.now(), // temp ID for UI indexing compatibility
-        local_id: localId,
-        conversation: conversationId,
-        sender: {
-          id: currentUser!.id,
-          email: currentUser!.email || '',
-          display_name:
-            currentUser!.display_name || currentUser!.first_name || '',
-          profile_picture: null,
-          avatar_sticker: null,
-        },
-        content: text,
-        message_type: 'text',
-        is_read: false,
-        delivered_at: null,
-        created_at: new Date().toISOString(),
-        reactions: {},
-        reply_to: replyToMessage
-          ? {
-              id: replyToMessage.id,
-              content: replyToMessage.content,
-              message_type: replyToMessage.message_type,
-              media_file: replyToMessage.media_file,
-              sender: replyToMessage.sender,
-            }
-          : null,
-      };
+    // ── Optimistic Message (Sent immediately to UI at 0ms) ──
+    uniqueCounter++;
+    const localId = `txt_${Date.now()}_${uniqueCounter}`;
+    const tempId = Date.now() + uniqueCounter + 1000000000;
 
-      // Save to SQLite
-      localDatabase.saveMessage(optimistic, localId, 'sending');
-
-      // FIX 1: Prepend to reversed array
-      setMessages(prev => [optimistic, ...(Array.isArray(prev) ? prev : [])]);
-      websocketService.sendMessage(text, replyToMessage?.id);
+    const currentReply = replyToMessage;
+    if (replyToMessage) {
       setReplyToMessage(null);
-      setIsSending(false);
-      setInputText('');
-      clearInputRef.current?.();
-      // Optimistically show the pending banner immediately so the sender can't
-      // type a 2nd message before the WS message_request_created event arrives.
-      if (!isGroup && friendStatus !== 'friends' && messageRequestStatus === null) {
-        setMessageRequestStatus('pending');
-        setMessageRequestSenderId(currentUser!.id);
+    }
+
+    const optimisticMsg: Message = {
+      id: tempId,
+      local_id: localId,
+      conversation: conversationId,
+      sender: {
+        id: currentUser!.id,
+        email: currentUser!.email || '',
+        display_name: currentUser!.display_name || currentUser!.first_name || '',
+        profile_picture: null,
+        avatar_sticker: null,
+      },
+      content: text,
+      message_type: 'text',
+      media_file: null,
+      is_read: false,
+      delivered_at: null,
+      created_at: new Date().toISOString(),
+      reactions: {},
+      reply_to: currentReply,
+      status: 'sending',
+    };
+
+    // 1. Synchronously render in UI (0ms instant!)
+    setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    if (currentScrollOffset.current > 10) {
+      requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
+    }
+    const uiRenderTime = (performance.now() - t0).toFixed(2);
+    console.log(`🚀 [PERF: SEND] Optimistic message rendered on UI in: ${uiRenderTime}ms`);
+
+    // 2. Persist to offline SQLite & Background E2EE encryption (deferred via setTimeout so UI thread never hitches)
+    setTimeout(async () => {
+      try {
+        localDatabase.saveMessage(optimisticMsg, localId, 'sending');
+      } catch (dbErr) {
+        console.warn('Offline message save error:', dbErr);
       }
 
-      // Auto-scroll to bottom after sending reply
-      setTimeout(() => {
-        flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-      }, 100);
-    } else {
-      try {
-        const token = await AsyncStorage.getItem('access_token');
-        const body: any = { content: text, message_type: 'text' };
-        if (replyToMessage) body.reply_to = replyToMessage.id;
-        const res = await fetch(
-          `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify(body),
-          },
-        );
-        if (res.ok) {
-          const nm = await res.json();
-          setMessages(prev => [nm, ...(Array.isArray(prev) ? prev : [])]);
-          setReplyToMessage(null);
-          setInputText('');
-          clearInputRef.current?.();
-          // If this was the first message (created a MessageRequest), show the
-          // pending banner immediately without waiting for a WS event.
-          if (nm.is_message_request) {
-            setMessageRequestStatus('pending');
-            setMessageRequestSenderId(currentUser!.id);
-          }
-          // Query backend conversation details to instantly update friendship/message-gating status
-          loadConversationDetails();
-          setTimeout(() => {
-            flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-          }, 100);
+      let payloadToSend = text;
+      const recipientId = otherUser?.id || (conversation?.other_user as any)?.id;
+      if (!isGroup && recipientId) {
+        try {
+          const e2eeStart = performance.now();
+          payloadToSend = await MessageCipher.encrypt(recipientId, text);
+          const e2eeTime = (performance.now() - e2eeStart).toFixed(2);
+          console.log(`🔒 [PERF: E2EE] Double Ratchet encryption completed in: ${e2eeTime}ms`);
+        } catch (encryptErr) {
+          console.warn('⚠️ E2EE Direct message encryption failed, falling back to plaintext:', encryptErr);
+          payloadToSend = text;
         }
-      } catch {
-        clearInputRef.current?.(text);
-      } finally {
-        setIsSending(false);
       }
-    }
+
+      const payload: any = {
+        content: payloadToSend,
+        message_type: 'text',
+      };
+      if (currentReply) {
+        payload.reply_to_id = currentReply.id;
+      }
+
+      try {
+        if (websocketService.getConnectionState()) {
+          websocketService.sendMessage(payload);
+          const totalWsTime = (performance.now() - t0).toFixed(2);
+          console.log(`📡 [PERF: NETWORK] Dispatched over WebSocket in: ${totalWsTime}ms`);
+        } else {
+          try {
+            const token = await AsyncStorage.getItem('access_token');
+            const res = await fetch(
+              `${BASE_URL}/api/chat/conversations/${conversationId}/messages/`,
+              {
+                method: 'POST',
+                headers: {
+                  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+              },
+            );
+            if (res.ok) {
+              const nm = await res.json();
+              setMessages(prev =>
+                prev.map(m =>
+                  m.local_id === localId || m.id === tempId
+                    ? { ...nm, local_id: localId, content: text, status: 'sent' }
+                    : m,
+                ),
+              );
+              localDatabase.saveMessage({ ...nm, content: text }, localId, 'sent');
+              if (nm.is_message_request) {
+                setMessageRequestStatus('pending');
+                setMessageRequestSenderId(currentUser!.id);
+              }
+            } else {
+              setMessages(prev =>
+                prev.map(m =>
+                  m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+                ),
+              );
+            }
+          } catch {
+            setMessages(prev =>
+              prev.map(m =>
+                m.local_id === localId || m.id === tempId ? { ...m, status: 'failed' } : m,
+              ),
+            );
+          }
+        }
+      } catch (err) {
+        console.error('Error sending message:', err);
+      }
+    }, 0);
   };
 
   const sendReaction = async (messageId: number, emoji: string) => {
@@ -1629,61 +1948,45 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       const token = await AsyncStorage.getItem('access_token');
       const currentUserId = String(currentUser?.id);
 
-      // Check if user already has this reaction
-      let hasReaction = false;
-      setMessages(prev => {
-        const msg = prev.find(m => m.id === messageId);
-        if (msg && msg.reactions && msg.reactions[currentUserId] === emoji) {
-          hasReaction = true;
-        }
-        return prev;
-      });
+      const targetMsg = messagesRef.current.find(m => m.id === messageId);
+      const currentReactions = targetMsg?.reactions || {};
+      const hasReaction = currentReactions[currentUserId] === emoji;
 
-      // Wait a bit for state to settle
-      await new Promise(resolve => setTimeout(resolve, 10));
-
+      const newReactions = { ...currentReactions };
       if (hasReaction) {
-        // Remove reaction - update local state first
-        setMessages(prev =>
-          prev.map(m => {
-            if (
-              m.id === messageId &&
-              m.reactions &&
-              m.reactions[currentUserId] === emoji
-            ) {
-              const newReactions = { ...m.reactions };
-              delete newReactions[currentUserId];
-              return { ...m, reactions: newReactions };
-            }
-            return m;
-          }),
-        );
-
-        // Call API to remove reaction (send empty emoji or use DELETE if available)
-        // For now, we'll just update locally since backend may not support removal
-        console.log('Reaction removed locally');
+        delete newReactions[currentUserId];
       } else {
-        // Add reaction
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === messageId
-              ? { ...m, reactions: { ...m.reactions, [currentUserId]: emoji } }
-              : m,
-          ),
-        );
-
-        if (websocketService.getConnectionState())
-          websocketService.sendReaction(messageId, emoji);
-
-        await fetch(`${BASE_URL}/api/chat/messages/${messageId}/react/`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ emoji }),
-        });
+        newReactions[currentUserId] = emoji;
       }
+
+      setMessages(prev =>
+        (Array.isArray(prev) ? prev : []).map(m =>
+          m.id === messageId ? { ...m, reactions: newReactions } : m
+        )
+      );
+
+      const localId = targetMsg?.local_id || messageId.toString();
+      if (targetMsg) {
+        localDatabase.saveMessage(
+          { ...targetMsg, reactions: newReactions, conversation: conversationId },
+          localId,
+          'read'
+        );
+      }
+
+      const payloadEmoji = hasReaction ? '' : emoji;
+      if (websocketService.getConnectionState()) {
+        websocketService.sendReaction(messageId, payloadEmoji);
+      }
+
+      await fetch(`${BASE_URL}/api/chat/messages/${messageId}/react/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ emoji: payloadEmoji }),
+      });
     } catch (error) {
       console.error('Error toggling reaction:', error);
     }
@@ -1692,9 +1995,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const typingIndicatorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lastTypingState = useRef<boolean | null>(null);
+  const inputTextRef = useRef('');
 
   const handleTyping = useCallback((text: string) => {
-    setInputText(text); // ✅ back to normal, no setTimeout needed
+    inputTextRef.current = text;
 
     const isTyping = text.length > 0;
     if (lastTypingState.current === isTyping) return;
@@ -1728,9 +2032,25 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     setStickerPreview(val);
   }, []);
 
-  const sendMessageStable = useCallback(() => {
-    sendMessage();
-  }, [sendMessage]);
+  const sendMessageStable = useCallback((content?: string, sendStartTime?: number) => {
+    sendMessage(content, sendStartTime);
+  }, []);
+
+  const handleRegisterClearStable = useCallback((fn: any) => {
+    clearInputRef.current = fn;
+  }, []);
+
+  const handleOpenStickerPickerStable = useCallback(() => {
+    setStickerPickerVisible(true);
+  }, []);
+
+  const handleCloseStickerPickerStable = useCallback(() => {
+    setStickerPickerVisible(false);
+  }, []);
+
+  const handleInputFocusStable = useCallback(() => {
+    setStickerPickerVisible(false);
+  }, []);
 
   // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
   const sendLottieSticker = useCallback(async (sticker: Sticker) => {
@@ -1758,8 +2078,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       reply_to: null,
       status: 'sending',
     };
+    isNearBottomRef.current = true;
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
     try {
@@ -1909,11 +2231,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       content: caption,
       message_type: 'document',
       media_file: doc.uri, // Use local URI temporarily
+      media_file_local: doc.uri,
       is_read: false, delivered_at: null, created_at: new Date().toISOString(),
       reactions: {}, reply_to: null, status: 'sending',
     };
+    isNearBottomRef.current = true;
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
     const controller = new AbortController();
@@ -1923,9 +2248,68 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
-      fd.append('content', caption);
+
+      let uploadUri = doc.uri;
+      let uploadName = doc.name || `doc_${Date.now()}`;
+      let uploadType = doc.type || 'application/octet-stream';
+      let payloadContent = caption;
+
+      let persistentLocalUri = doc.uri;
+      if (doc.uri && typeof doc.uri === 'string' && doc.uri.startsWith('content://')) {
+        try {
+          const { dirs } = RNFetchBlob.fs;
+          const mediaDir = `${dirs.DocumentDir}/media`;
+          const exists = await RNFetchBlob.fs.isDir(mediaDir).catch(() => false);
+          if (!exists) {
+            await RNFetchBlob.fs.mkdir(mediaDir).catch(() => {});
+          }
+          const fileExt = doc.name?.split('.').pop() || 'bin';
+          const permDest = `${mediaDir}/doc_${Date.now()}.${fileExt}`;
+          await RNFetchBlob.fs.cp(doc.uri, permDest);
+          persistentLocalUri = `file://${permDest}`;
+          uploadUri = permDest;
+        } catch (copyErr) {
+          console.warn('[Chat] Failed to copy document content:// URI:', copyErr);
+        }
+      }
+
+      let mediaMeta: MediaE2EEMetadata | null = null;
+
+      // 1-on-1 End-to-End Encryption for documents
+      if (!isGroup && otherUser?.id) {
+        try {
+          const encResult = await MediaCipher.encryptMediaFile(
+            uploadUri,
+            uploadType,
+            uploadName
+          );
+          uploadUri = encResult.encryptedUri;
+          uploadName = encResult.fileName;
+          uploadType = 'application/octet-stream';
+
+          mediaMeta = {
+            is_media_encrypted: true,
+            media_key: encResult.mediaKey,
+            nonce: encResult.nonce,
+            file_hash: encResult.fileHash,
+            mime_type: doc.type || 'application/octet-stream',
+            file_name: doc.name || 'document',
+            file_size: encResult.originalSize,
+            caption: caption,
+          };
+
+          // Encrypt metadata with Double Ratchet to recipient
+          payloadContent = await MessageCipher.encrypt(otherUser.id, JSON.stringify(mediaMeta));
+        } catch (encErr) {
+          console.warn('[E2EE] Document encryption fallback:', encErr);
+          uploadUri = doc.uri;
+          payloadContent = caption;
+        }
+      }
+
+      fd.append('content', payloadContent);
       fd.append('message_type', 'document');
-      fd.append('media_file', { uri: doc.uri, type: doc.type || 'application/octet-stream', name: doc.name || 'document' } as any);
+      fd.append('media_file', { uri: uploadUri, type: uploadType, name: uploadName } as any);
       
       const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
         method: 'POST',
@@ -1936,8 +2320,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
       if (res.ok) {
         const nm = await res.json();
-        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? { ...nm, local_id: localId, status: 'sent' } : m));
-        localDatabase.saveMessage(nm, localId, 'sent');
+        if (mediaMeta && nm.id) {
+          AsyncStorage.setItem(`@e2ee_meta_${nm.id}`, JSON.stringify(mediaMeta)).catch(() => {});
+        }
+        const updatedMsg = {
+          ...nm,
+          content: caption,
+          local_id: localId,
+          status: 'sent',
+          message_type: 'document',
+          media_file_local: persistentLocalUri,
+          media_e2ee: mediaMeta,
+        };
+        setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? updatedMsg : m));
+        localDatabase.saveMessage(updatedMsg, localId, 'sent');
       } else {
         throw new Error('Upload failed');
       }
@@ -1954,9 +2350,31 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
-  const sendImageMessage = async (asset: any, caption: string = '') => {
-    const isVideo = asset.type?.startsWith('video') || asset.uri.endsWith('.mp4') || asset.uri.endsWith('.mov');
-    const messageType = isVideo ? 'video' : 'image';
+  const sendImageMessage = async (asset: any, caption: string = '', mediaGroupId?: string) => {
+    const isVideo = asset.type?.startsWith('video') || asset.uri?.endsWith('.mp4') || asset.uri?.endsWith('.mov');
+    const isGif = !!asset.isGif || asset.type === 'image/gif' || asset.type?.includes('gif') || asset.uri?.toLowerCase().endsWith('.gif') || asset.uri?.toLowerCase().includes('gif') || asset.fileName?.toLowerCase().endsWith('.gif');
+    // ONLY Gboard keyboard content or explicit stickers are stickers (regular photos from gallery/camera are NOT stickers)
+    const isKeyboardContent = !!asset.isSticker || (typeof asset.uri === 'string' && (asset.uri.includes('inputcontent') || asset.uri.includes('inputmethod') || asset.uri.includes('gboard_sticker')));
+    const isSticker = isKeyboardContent && !isGif && !isVideo;
+    const messageType = isSticker ? 'sticker' : (isGif ? 'gif' : (isVideo ? 'video' : 'image'));
+
+    let initialWidth = asset.width;
+    let initialHeight = asset.height;
+    if ((!initialWidth || !initialHeight) && asset.uri && !isVideo) {
+      try {
+        await new Promise<void>((resolve) => {
+          Image.getSize(
+            asset.uri,
+            (w, h) => {
+              initialWidth = w;
+              initialHeight = h;
+              resolve();
+            },
+            () => resolve()
+          );
+        });
+      } catch {}
+    }
     
     // 1. Optimistic UI
     uniqueCounter++;
@@ -1971,13 +2389,19 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       message_type: messageType,
       media_file: asset.uri, // Use local URI temporarily
       media_file_local: asset.uri,
-      width: asset.width,
-      height: asset.height,
+      media_group_id: mediaGroupId || null,
+      width: initialWidth,
+      height: initialHeight,
       is_read: false, delivered_at: null, created_at: new Date().toISOString(),
       reactions: {}, reply_to: null, status: 'sending',
     };
+    if (asset.uri && initialWidth && initialHeight) {
+      imageDimensionsCache.set(asset.uri, { width: initialWidth, height: initialHeight });
+    }
+    isNearBottomRef.current = true;
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
     const controller = new AbortController();
@@ -1986,9 +2410,76 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     try {
       const token = await AsyncStorage.getItem('access_token');
       const fd = new FormData();
-      fd.append('content', caption);
-      fd.append('message_type', messageType);
-      fd.append('media_file', { uri: asset.uri, type: asset.type || (isVideo ? 'video/mp4' : 'image/jpeg'), name: asset.fileName || `${messageType}_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}` } as any);
+
+      let uploadUri = asset.uri;
+      const uploadExt = isVideo ? 'mp4' : getMediaExtension(asset.type, asset.fileName);
+      let uploadName = asset.fileName || `${messageType}_${Date.now()}.${uploadExt}`;
+      let uploadType = asset.type || (isVideo ? 'video/mp4' : `image/${uploadExt}`);
+      let payloadContent = caption;
+
+      let persistentLocalUri = asset.uri;
+      if (asset.uri && typeof asset.uri === 'string' && asset.uri.startsWith('content://')) {
+        try {
+          const { dirs } = RNFetchBlob.fs;
+          const mediaDir = `${dirs.DocumentDir}/media`;
+          const exists = await RNFetchBlob.fs.isDir(mediaDir).catch(() => false);
+          if (!exists) {
+            await RNFetchBlob.fs.mkdir(mediaDir).catch(() => {});
+          }
+          const filePrefix = isSticker ? 'gboard_sticker' : (isGif ? 'gif' : (isVideo ? 'video' : 'img'));
+          const permDest = `${mediaDir}/${filePrefix}_${Date.now()}.${uploadExt}`;
+          await RNFetchBlob.fs.cp(asset.uri, permDest);
+          persistentLocalUri = `file://${permDest}`;
+          uploadUri = permDest;
+        } catch (copyErr) {
+          console.warn('[Chat] Failed to copy content:// URI to persistent storage:', copyErr);
+        }
+      }
+
+      let mediaMeta: MediaE2EEMetadata | null = null;
+
+      // 1-on-1 End-to-End Media Encryption (for ALL media: photos, videos, stickers, GIFs)
+      if (!isGroup && otherUser?.id) {
+        try {
+          const encResult = await MediaCipher.encryptMediaFile(
+            asset.uri,
+            uploadType,
+            uploadName
+          );
+          uploadUri = encResult.encryptedUri;
+          uploadName = encResult.fileName;
+          uploadType = 'application/octet-stream';
+
+          mediaMeta = {
+            is_media_encrypted: true,
+            media_key: encResult.mediaKey,
+            nonce: encResult.nonce,
+            file_hash: encResult.fileHash,
+            mime_type: encResult.mimeType,
+            file_name: encResult.fileName,
+            file_size: encResult.originalSize,
+            caption: caption,
+            width: asset.width,
+            height: asset.height,
+            is_sticker: isSticker,
+            is_gif: isGif,
+          };
+
+          // Encrypt metadata with Double Ratchet to recipient
+          payloadContent = await MessageCipher.encrypt(otherUser.id, JSON.stringify(mediaMeta));
+        } catch (encErr) {
+          console.warn('[E2EE] Media encryption fallback:', encErr);
+          uploadUri = asset.uri;
+          payloadContent = caption;
+        }
+      }
+
+      fd.append('content', payloadContent);
+      fd.append('message_type', isVideo ? 'video' : 'image');
+      if (mediaGroupId) {
+        fd.append('media_group_id', mediaGroupId);
+      }
+      fd.append('media_file', { uri: uploadUri, type: uploadType, name: uploadName } as any);
 
       const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
         method: 'POST',
@@ -2003,16 +2494,21 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         if (asset.uri && imageDimensionsCache.has(asset.uri)) {
           imageDimensionsCache.set(serverUrl, imageDimensionsCache.get(asset.uri)!);
         } else if (asset.width && asset.height) {
-          const resolved = calculateImageDimensions(asset.width, asset.height, false);
-          imageDimensionsCache.set(serverUrl, resolved);
+          imageDimensionsCache.set(serverUrl, { width: asset.width, height: asset.height });
+        }
+        if (mediaMeta && nm.id) {
+          AsyncStorage.setItem(`@e2ee_meta_${nm.id}`, JSON.stringify(mediaMeta)).catch(() => {});
         }
         const updatedMsg = {
           ...nm,
+          content: caption,
           local_id: localId,
           status: 'sent',
+          message_type: messageType,
           width: asset.width || optimisticMsg.width,
           height: asset.height || optimisticMsg.height,
-          media_file_local: asset.uri,
+          media_file_local: persistentLocalUri,
+          media_e2ee: mediaMeta,
         };
         setMessages(prev => prev.map(m => (m.local_id === localId || m.id === tempId) ? updatedMsg : m));
         localDatabase.saveMessage(updatedMsg, localId, 'sent');
@@ -2184,11 +2680,6 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       }
     }
     
-    if (finalDuration < 1) {
-      cancelRecordingProcess();
-      return;
-    }
-
     stopTimer();
     stopPulse();
     isRecordingRef.current = false;
@@ -2199,7 +2690,9 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     setSlideOffset(0);
     try {
       const path = await audioRecorder.stopRecording();
-      if (path) await sendVoiceMessage(path, finalDuration);
+      if (path) {
+        await sendVoiceMessage(path, Math.max(1, finalDuration));
+      }
     } catch {
       Toast.show({
         type: 'error',
@@ -2235,19 +2728,30 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       onMoveShouldSetPanResponder: () => true,
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: async () => {
+        const textToSend = (inputTextRef.current || '').trim();
+        if (textToSend.length > 0) {
+          isHoldingRef.current = false;
+          inputTextRef.current = '';
+          clearInputRef.current?.();
+          sendMessage(textToSend);
+          return;
+        }
+
         isHoldingRef.current = true;
         if (isRecordingRef.current) return;
         
         const ok = await requestPermission();
-        if (!ok) {
+        if (!ok || !isHoldingRef.current) {
           isHoldingRef.current = false;
           return;
         }
 
         if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
         holdTimerRef.current = setTimeout(() => {
-          if (isHoldingRef.current) startRecordingProcess();
-        }, 1000);
+          if (isHoldingRef.current) {
+            startRecordingProcess();
+          }
+        }, 120);
       },
       onPanResponderMove: (_, g) => {
         if (!isRecordingRef.current) return;
@@ -2272,6 +2776,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         }
       },
       onPanResponderRelease: (_, g) => {
+        const wasHolding = isHoldingRef.current;
         isHoldingRef.current = false;
         if (holdTimerRef.current) {
           clearTimeout(holdTimerRef.current);
@@ -2279,9 +2784,22 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         }
         Animated.spring(slideX, { toValue: 0, useNativeDriver: true }).start();
         setSlideOffset(0);
-        if (!isRecordingRef.current) return;
-        if (isCancelledRef.current || g.dx < -80) cancelRecordingProcess();
-        else stopRecordingAndSend();
+        if (!isRecordingRef.current) {
+          if (wasHolding) {
+            Toast.show({
+              type: 'info',
+              text1: 'Hold to record voice message',
+              position: 'bottom',
+              visibilityTime: 1500,
+            });
+          }
+          return;
+        }
+        if (isCancelledRef.current || g.dx < -80) {
+          cancelRecordingProcess();
+        } else {
+          stopRecordingAndSend();
+        }
       },
       onPanResponderTerminate: () => {
         isHoldingRef.current = false;
@@ -2364,21 +2882,22 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     )}`;
   const fmtMsgTime = (d: string) =>
     new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const fmtLastSeen = (d: string | null) => {
-    // If last_seen is null, user is currently online
-    if (!d) return 'Online';
+  const fmtLastSeen = (d: string | null | undefined) => {
+    if (!d) return '';
+
+    const lastSeenTime = new Date(d).getTime();
+    if (isNaN(lastSeenTime) || lastSeenTime <= 0) return '';
 
     const now = Date.now();
-    const lastSeenTime = new Date(d).getTime();
     const diffMs = now - lastSeenTime;
     const diffMin = diffMs / 60000;
     const diffHours = diffMs / 3600000;
     const diffDays = diffMs / 86400000;
 
-    // If less than 2 minutes, show "Online" (they just disconnected)
-    if (diffMin < 2) return 'Online';
+    // If within 2 minutes, show "Online"
+    if (diffMin < 2 && diffMin >= -1) return 'Online';
     // If less than 60 minutes, show minutes
-    if (diffMin < 60) return `${Math.floor(diffMin)}m ago`;
+    if (diffMin >= 2 && diffMin < 60) return `${Math.floor(diffMin)}m ago`;
     // If today (less than 24 hours), show time
     if (diffHours < 24) {
       const lastSeenDate = new Date(lastSeenTime);
@@ -2386,7 +2905,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       const minutes = lastSeenDate.getMinutes();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 || 12;
-      return `Today at ${displayHour}:${minutes
+      return `today at ${displayHour}:${minutes
         .toString()
         .padStart(2, '0')} ${ampm}`;
     }
@@ -2397,7 +2916,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       const minutes = lastSeenDate.getMinutes();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 || 12;
-      return `Yesterday at ${displayHour}:${minutes
+      return `yesterday at ${displayHour}:${minutes
         .toString()
         .padStart(2, '0')} ${ampm}`;
     }
@@ -2426,27 +2945,78 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
+  const isNearBottomRef = useRef(true);
+  const isScrollingToBottomRef = useRef(false);
+  const scrollAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Scroll to bottom button handler
   const scrollToBottom = () => {
-    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-    setShowScrollToBottom(false);
+    isScrollingToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    currentScrollOffset.current = 0;
+    isScrollButtonVisibleRef.current = false;
     setHighlightMessageId(null); // Clear highlight when returning to bottom
+
+    // Native instant fade out (0ms)
+    Animated.timing(scrollToBottomAnim, {
+      toValue: 0,
+      duration: 100,
+      useNativeDriver: true,
+    }).start();
+
+    if (scrollAnimTimeoutRef.current) {
+      clearTimeout(scrollAnimTimeoutRef.current);
+    }
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    scrollAnimTimeoutRef.current = setTimeout(() => {
+      isScrollingToBottomRef.current = false;
+    }, 650);
   };
 
   // Handle scroll to show/hide scroll-to-bottom button
-  const handleOnScroll = (event: any) => {
-    const offset = event.nativeEvent.contentOffset.y;
-    // Show button when scrolled up more than 120px from bottom
-    setShowScrollToBottom(offset > 120);
+  const handleOnScroll = useCallback((event: any) => {
+    const offset = event.nativeEvent?.contentOffset?.y ?? 0;
+    currentScrollOffset.current = offset;
+    isNearBottomRef.current = offset < 80;
+
+    // If currently performing programmatic scroll to bottom, keep button hidden
+    if (isScrollingToBottomRef.current) {
+      return;
+    }
+
+    // Native 0ms instant fade in / fade out with hysteresis
+    if (offset <= 120) {
+      if (isScrollButtonVisibleRef.current) {
+        isScrollButtonVisibleRef.current = false;
+        Animated.timing(scrollToBottomAnim, {
+          toValue: 0,
+          duration: 100,
+          useNativeDriver: true,
+        }).start();
+      }
+    } else if (offset > 280) {
+      if (!isScrollButtonVisibleRef.current) {
+        isScrollButtonVisibleRef.current = true;
+        Animated.timing(scrollToBottomAnim, {
+          toValue: 1,
+          duration: 150,
+          useNativeDriver: true,
+        }).start();
+      }
+    }
 
     // If we are highlighted and scroll back to very bottom, clear highlight
-    if (highlightMessageId && offset < 20) {
-        setHighlightMessageId(null);
+    if (highlightMessageId && offset < 30) {
+      setHighlightMessageId(null);
     }
-  };
+  }, [highlightMessageId, scrollToBottomAnim]);
 
   // Instagram-style long press menu handlers
   const handleMessageLongPress = (item: Message, event?: any) => {
+    if (selectedMessageIdsRef.current.length > 0) {
+      handleToggleSelectMessage(item.id);
+      return;
+    }
     setSelectedMessage(item);
     if (event && event.nativeEvent) {
       const { pageX, pageY } = event.nativeEvent;
@@ -2459,6 +3029,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   // Double-tap to react with heart
   const handleMessagePress = (item: Message, event: any) => {
+    if (selectedMessageIdsRef.current.length > 0) {
+      handleToggleSelectMessage(item.id);
+      return;
+    }
     const now = Date.now();
     const DOUBLE_TAP_DELAY = 300;
     const { pageX, pageY } = event.nativeEvent;
@@ -2476,15 +3050,73 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         lastTapTimeRef.current = 0;
         doubleTapTimeoutRef.current = null;
         
+        const isVideoMessage = item.message_type === 'video' ||
+          (item.media_e2ee as any)?.mime_type?.startsWith('video') ||
+          item.media_file?.toLowerCase().endsWith('.mp4') ||
+          item.media_file?.toLowerCase().endsWith('.mov') ||
+          item.media_file_local?.toLowerCase().endsWith('.mp4') ||
+          item.media_file_local?.toLowerCase().endsWith('.mov') ||
+          (typeof item.content === 'string' && (item.content.endsWith('.mp4') || item.content.endsWith('.mov')));
+
         // OPEN MEDIA (Only for media messages)
         if ((item as any).type === 'media_group') {
             // Single-tap on grouped media → open the scrollable list
             setSelectedGroupMessages((item as any).messages || []);
             setGroupListVisible(true);
-        } else if (item.message_type === 'image') {
-            navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'image' });
-        } else if (item.message_type === 'video') {
-            navigation.navigate('MediaViewer', { mediaUrl: resolveImageUrl((item as any).media_url || item.media_file), mediaType: 'video' });
+        } else if (isVideoMessage) {
+            let openUri = isLocalUriUsable((item as any).media_file_local) ? (item as any).media_file_local : null;
+            if (!openUri && isLocalUriUsable((item as any).media_file)) {
+              openUri = (item as any).media_file;
+            }
+            if (!openUri && (item as any).media_e2ee?.file_hash) {
+              openUri = await MediaCipher.getDecryptedLocalUriIfExists((item as any).media_e2ee.file_hash, 'mp4');
+              if (!openUri && (item as any).media_e2ee?.media_key) {
+                const rawEncUrl = resolveImageUrl((item as any).media_url || item.media_file);
+                if (rawEncUrl) {
+                  openUri = await MediaCipher.decryptMediaFile(rawEncUrl, (item as any).media_e2ee.media_key, (item as any).media_e2ee.nonce, (item as any).media_e2ee.file_hash, 'mp4').catch(() => null);
+                }
+              }
+            }
+            if (!openUri) {
+              openUri = resolveImageUrl((item as any).media_url || item.media_file || (item as any).media_file_local);
+            }
+            if (openUri) {
+              navigation.navigate('MediaViewer', { mediaUrl: openUri, mediaType: 'video' });
+            }
+        } else if (['image', 'sticker', 'gif'].includes(item.message_type) || Boolean(item.media_e2ee) || Boolean((item as any).media_file_local) || (item.media_file && !item.media_file.endsWith('.mp3') && !item.media_file.endsWith('.pdf'))) {
+            const isSticker = item.message_type === 'sticker' ||
+              (item.media_e2ee as any)?.is_sticker === true ||
+              (typeof item.media_file_local === 'string' && (item.media_file_local.includes('gboard_sticker') || item.media_file_local.includes('inputcontent') || item.media_file_local.includes('inputmethod'))) ||
+              (typeof item.media_file === 'string' && (item.media_file.includes('gboard_sticker') || item.media_file.includes('inputcontent') || item.media_file.includes('inputmethod')));
+
+            const isGif = item.message_type === 'gif' ||
+              (item.media_e2ee as any)?.is_gif === true ||
+              item.media_file?.toLowerCase().endsWith('.gif') ||
+              item.media_file_local?.toLowerCase().endsWith('.gif') ||
+              item.media_e2ee?.mime_type === 'image/gif' ||
+              item.media_e2ee?.file_name?.toLowerCase().endsWith('.gif') ||
+              (typeof item.content === 'string' && item.content.includes('.gif'));
+
+            const ext = isGif ? 'gif' : (isSticker ? (getMediaExtension((item as any).media_e2ee?.mime_type, (item as any).media_e2ee?.file_name) || 'webp') : getMediaExtension((item as any).media_e2ee?.mime_type, (item as any).media_e2ee?.file_name || (item as any).media_file));
+            let openUri = isLocalUriUsable((item as any).media_file_local) ? (item as any).media_file_local : null;
+            if (!openUri && isLocalUriUsable((item as any).media_file)) {
+              openUri = (item as any).media_file;
+            }
+            if (!openUri && (item as any).media_e2ee?.file_hash) {
+              openUri = await MediaCipher.getDecryptedLocalUriIfExists((item as any).media_e2ee.file_hash, ext);
+              if (!openUri && (item as any).media_e2ee?.media_key) {
+                const rawEncUrl = resolveImageUrl((item as any).media_url || item.media_file);
+                if (rawEncUrl) {
+                  openUri = await MediaCipher.decryptMediaFile(rawEncUrl, (item as any).media_e2ee.media_key, (item as any).media_e2ee.nonce, (item as any).media_e2ee.file_hash, ext).catch(() => null);
+                }
+              }
+            }
+            if (!openUri) {
+              openUri = resolveImageUrl((item as any).media_url || item.media_file || (item as any).media_file_local || item.content);
+            }
+            if (openUri) {
+              navigation.navigate('MediaViewer', { mediaUrl: openUri, mediaType: 'image' });
+            }
         }
       }, DOUBLE_TAP_DELAY);
       lastTapTimeRef.current = now;
@@ -2625,66 +3257,142 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     setSelectedMessage(null);
   };
 
-  const handleDeleteMessage = () => {
-    if (!selectedMessage) return;
-
-    const msgToDelete = selectedMessage;
-    const isGroup = (msgToDelete as any).type === 'media_group';
-    const isMe = msgToDelete.sender?.id === currentUser?.id;
-
-    // ── 1. INSTANT optimistic UI update ──────────────────────────────────────
-    if (isGroup) {
-      setMessages(prev => prev.filter(m => m.id !== msgToDelete.id));
-    } else {
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === msgToDelete.id
-            ? { ...m, is_deleted: true, content: 'The message was removed' }
-            : m,
-        ),
-      );
-      const localId = msgToDelete.local_id || msgToDelete.id.toString();
-      localDatabase.softDeleteMessage(localId);
-    }
-
-    // ── 2. Close menu instantly ───────────────────────────────────────────────
+  // ── MULTI-SELECT, FORWARD & DELETE ACTIONS ──────────────────────────────
+  const handleEnterSelectionMode = (msg: Message) => {
     setShowMessageActions(false);
     setSelectedMessage(null);
-    Toast.show({
-      type: 'success',
-      text1: isMe ? 'Message unsent' : 'Message deleted',
-      position: 'bottom',
+    setSelectedMessageIds([msg.id]);
+  };
+
+  const handleToggleSelectMessage = (msgId: number) => {
+    setSelectedMessageIds(prev =>
+      prev.includes(msgId) ? prev.filter(id => id !== msgId) : [...prev, msgId]
+    );
+  };
+
+  const handleForwardSingle = (msg: Message) => {
+    setShowMessageActions(false);
+    setSelectedMessage(null);
+    setMessagesToForward([msg]);
+    setShowForwardModal(true);
+  };
+
+  const handleForwardSelected = () => {
+    const selectedMsgs = groupedMessages.filter(m => selectedMessageIds.includes(m.id));
+    if (selectedMsgs.length === 0) return;
+    setMessagesToForward(selectedMsgs);
+    setShowForwardModal(true);
+  };
+
+  const handleCopySelected = () => {
+    const selectedMsgs = groupedMessages
+      .filter(m => selectedMessageIds.includes(m.id))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const combined = selectedMsgs.map(m => m.content).filter(Boolean).join('\n\n');
+    if (combined) {
+      Clipboard.setString(combined);
+      Toast.show({
+        type: 'success',
+        text1: `Copied ${selectedMsgs.length} message${selectedMsgs.length > 1 ? 's' : ''}`,
+        position: 'bottom',
+      });
+      setSelectedMessageIds([]);
+    }
+  };
+
+  const canUnsendAll = (msgs: Message[]) => {
+    if (msgs.length === 0) return false;
+    const now = Date.now();
+    return msgs.every(m => {
+      const isMe = m.sender?.id === currentUser?.id;
+      const isTemp = m.id > 1000000000;
+      const msgTime = new Date(m.created_at).getTime();
+      const diffMin = (now - msgTime) / (1000 * 60);
+      return isMe && !isTemp && diffMin <= 1440 && !m.is_deleted;
+    });
+  };
+
+  const handleOpenDeleteModalForSingle = (msg: Message) => {
+    setShowMessageActions(false);
+    setSelectedMessage(null);
+    if (canUnsendAll([msg])) {
+      handleUnsendForEveryone([msg]);
+    } else {
+      handleDeleteForMe([msg]);
+    }
+  };
+
+  const handleOpenDeleteModalForSelected = () => {
+    const selectedMsgs = groupedMessages.filter(m => selectedMessageIds.includes(m.id));
+    if (selectedMsgs.length === 0) return;
+    if (canUnsendAll(selectedMsgs)) {
+      handleUnsendForEveryone(selectedMsgs);
+    } else {
+      handleDeleteForMe(selectedMsgs);
+    }
+  };
+
+  const handleDeleteForMe = async (msgs: Message[]) => {
+    if (msgs.length === 0) return;
+    setSelectedMessageIds([]);
+
+    // 1. Optimistic remove from UI
+    setMessages(prev => prev.filter(m => !msgs.some(d => d.id === m.id)));
+
+    // 2. Remove locally from SQLite
+    msgs.forEach(m => {
+      const localId = m.local_id || m.id.toString();
+      localDatabase.hardDeleteMessage(localId);
     });
 
-    // ── 3. Fire API in background (no await) ─────────────────────────────────
-    const doDelete = async () => {
-      try {
-        if (isGroup) {
-          const groupMessages: any[] = (msgToDelete as any).messages || [];
-          await Promise.all(
-            groupMessages
-              .filter((m: any) => m.id && m.id < 1000000000)
-              .map((m: any) => chatAPI.deleteMessage(m.id))
-          );
-        } else {
-          await chatAPI.deleteMessage(msgToDelete.id);
-        }
-      } catch (error) {
-        console.error('[Chat] Delete API error (restoring):', error);
-        // Silently restore the message if API failed
-        if (isGroup) {
-          setMessages(prev => [msgToDelete, ...prev]);
-        } else {
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === msgToDelete.id ? msgToDelete : m,
-            ),
-          );
-        }
-        Toast.show({ type: 'error', text1: 'Could not delete, please try again', position: 'bottom' });
-      }
-    };
-    doDelete();
+    // 3. API call in background (for_everyone = false)
+    try {
+      await Promise.all(
+        msgs
+          .filter(m => m.id && m.id < 1000000000)
+          .map(m => chatAPI.deleteMessage(m.id, false))
+      );
+    } catch (err) {
+      console.warn('[Chat] DeleteForMe API warning:', err);
+    }
+  };
+
+  const handleUnsendForEveryone = async (msgs: Message[]) => {
+    if (msgs.length === 0) return;
+    setSelectedMessageIds([]);
+
+    // 1. Optimistic soft delete in UI
+    setMessages(prev =>
+      prev.map(m =>
+        msgs.some(d => d.id === m.id)
+          ? { ...m, is_deleted: true, content: 'The message was removed' }
+          : m
+      )
+    );
+
+    // 2. SQLite soft delete
+    msgs.forEach(m => {
+      const localId = m.local_id || m.id.toString();
+      localDatabase.softDeleteMessage(localId);
+    });
+
+    // 3. API call in background (for_everyone = true)
+    try {
+      await Promise.all(
+        msgs
+          .filter(m => m.id && m.id < 1000000000)
+          .map(m => chatAPI.deleteMessage(m.id, true))
+      );
+    } catch (err) {
+      console.error('[Chat] UnsendForEveryone API error:', err);
+      // Restore on failure
+      setMessages(prev =>
+        prev.map(m => {
+          const original = msgs.find(d => d.id === m.id);
+          return original ? original : m;
+        })
+      );
+    }
   };
 
   const handleCopyMessage = () => {
@@ -2709,20 +3417,42 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     return null;
   }, [messages, currentUser?.id]);
 
-  const fmtSeenTime = useCallback((d: string | null) => {
-    if (!d) return 'Seen now';
+  const getDirectMessageSeenTime = useCallback((msg: Message) => {
+    const otherUserId = otherUser?.id || route.params?.otherUser?.id;
+    if (otherUserId && liveReadTimes[Number(otherUserId)]) {
+      return liveReadTimes[Number(otherUserId)];
+    }
+    const otherParticipant = conversation?.participants?.find(
+      (p: any) => p.user && p.user.id !== currentUser?.id
+    );
+    if (otherParticipant?.last_read_at) {
+      return otherParticipant.last_read_at;
+    }
+    if ((msg as any).read_at) {
+      return (msg as any).read_at;
+    }
+    if (msg.delivered_at) {
+      return msg.delivered_at;
+    }
+    return null;
+  }, [otherUser?.id, route.params?.otherUser?.id, liveReadTimes, conversation?.participants, currentUser?.id]);
+
+  const fmtSeenTime = useCallback((d: string | null | undefined) => {
+    if (!d) return 'Seen';
     const now = Date.now();
     const seenTime = new Date(d).getTime();
+    if (isNaN(seenTime) || seenTime <= 0) return 'Seen';
+
     const diffMs = now - seenTime;
     const diffMin = diffMs / 60000;
     const diffHours = diffMs / 3600000;
     const diffDays = diffMs / 86400000;
 
-    if (diffMin < 1) return 'Seen now';
-    if (diffMin < 60) return `Seen ${Math.floor(diffMin)}m ago`;
+    if (diffMin < 1 && diffMin >= -1) return 'Seen now';
+    if (diffMin < 60 && diffMin >= 1) return `Seen ${Math.floor(diffMin)}m ago`;
     if (diffHours < 24) return `Seen ${Math.floor(diffHours)}h ago`;
     if (diffDays < 2) return 'Seen yesterday';
-    return `Seen ${new Date(seenTime).toLocaleDateString()}`;
+    return `Seen ${new Date(seenTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
   }, []);
 
   const getMessageViewers = (msg: Message, conversationDetails: any) => {
@@ -2814,11 +3544,8 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     const seenIds = new Set<string | number>();
     const deduplicated = (Array.isArray(messages) ? messages : []).filter(msg => {
       if (!msg) return false;
-      // Sync challenge & score payloads in the background for Trivia Hub, but keep chat 100% clean
+      // Filter out raw challenge payloads from chat bubbles (handled in background)
       if (isTriviaChallengeMessage(msg) || isScoreSubmissionMessage(msg)) {
-        if (msg.content) {
-          syncChallengeFromMessage(msg.content, conversationId);
-        }
         return false;
       }
       const uid = msg.local_id || msg.id;
@@ -2841,10 +3568,15 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
              currentGroup.push(msg);
           } else {
              const prevMsg = currentGroup[currentGroup.length - 1];
-             const timeDiff = Math.abs(new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime());
              const sameSender = msg.sender.id === prevMsg.sender.id;
              
-             if (sameSender && timeDiff < 60000) {
+             // ONLY group if both messages explicitly belong to the same multi-select batch (media_group_id)
+             // or programmatic simultaneous batch (within 800ms)
+             const hasMatchingGroupId = Boolean((msg as any).media_group_id && (prevMsg as any).media_group_id && (msg as any).media_group_id === (prevMsg as any).media_group_id);
+             const timeDiff = Math.abs(new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime());
+             const isSimultaneousLegacy = !(msg as any).media_group_id && !(prevMsg as any).media_group_id && sameSender && timeDiff <= 800;
+
+             if (sameSender && (hasMatchingGroupId || isSimultaneousLegacy)) {
                 currentGroup.push(msg);
              } else {
                 if (currentGroup.length > 1) {
@@ -2924,10 +3656,19 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     // the previous message (index + 1) is from a different sender (or doesn't exist).
     const isFirstInGroup = !isMe && (!groupedMessages[index + 1] || (groupedMessages[index + 1].sender?.id !== item.sender?.id));
 
+    const isSelected = selectedMessageIds.includes(item.id);
+
     // Handle deleted messages
     if (item.is_deleted) {
       return (
-        <View style={{ flexDirection: 'column', width: '100%' }}>
+        <TouchableOpacity
+          activeOpacity={isSelectionMode ? 0.7 : 1}
+          onPress={isSelectionMode ? () => handleToggleSelectMessage(item.id) : undefined}
+          style={[
+            { flexDirection: 'column', width: '100%' },
+            isSelected && { backgroundColor: theme.primary + '18' },
+          ]}
+        >
           {shouldShowDateSeparator(index, groupedMessages) && (
             <View style={s.dateSeparator}>
               <Text style={s.dateSeparatorText}>
@@ -2941,6 +3682,17 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               isMe ? s.myMessageContainer : s.theirMessageContainer,
             ]}
           >
+            {isSelectionMode && (
+              <View
+                style={[
+                  s.selectionCheckbox,
+                  { borderColor: isSelected ? theme.primary : '#AAA' },
+                  isSelected && { backgroundColor: theme.primary },
+                ]}
+              >
+                {isSelected && <Icon name="checkmark" size={13} color="#FFFFFF" />}
+              </View>
+            )}
             {!isMe && (
               isFirstInGroup ? (
                 <MessageAvatar
@@ -2973,14 +3725,52 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               </Text>
             </View>
           </View>
-        </View>
+        </TouchableOpacity>
       );
     }
+
+    const rawUrl = (item as any).media_url || item.media_file || (item as any).media_file_local || (item.content?.startsWith('http') ? item.content : null);
+    const url = resolveImageUrl(rawUrl);
+    
+    const isStatusReply = typeof item.content === 'string' && item.content.startsWith('↩ Replied to status');
+
+    const isGif = item.message_type === 'gif' ||
+      (item.media_e2ee as any)?.is_gif === true ||
+      item.media_file?.toLowerCase().endsWith('.gif') ||
+      item.media_file_local?.toLowerCase().endsWith('.gif') ||
+      item.media_file?.toLowerCase().includes('/gif_') ||
+      item.media_file_local?.toLowerCase().includes('/gif_') ||
+      item.media_e2ee?.mime_type === 'image/gif' ||
+      item.media_e2ee?.file_name?.toLowerCase().endsWith('.gif') ||
+      (typeof item.content === 'string' && item.content.includes('.gif'));
+
+    const isSticker = !isGif && (
+      item.message_type === 'sticker' ||
+      (item.media_e2ee as any)?.is_sticker === true ||
+      (typeof item.media_file_local === 'string' && (item.media_file_local.includes('gboard_sticker') || item.media_file_local.includes('inputcontent') || item.media_file_local.includes('inputmethod'))) ||
+      (typeof item.media_file === 'string' && (item.media_file.includes('gboard_sticker') || item.media_file.includes('inputcontent') || item.media_file.includes('inputmethod')))
+    );
+
+    const isVideo = item.message_type === 'video' ||
+      (item.media_e2ee as any)?.mime_type?.startsWith('video') ||
+      item.media_file?.toLowerCase().endsWith('.mp4') ||
+      item.media_file?.toLowerCase().endsWith('.mov') ||
+      item.media_file_local?.toLowerCase().endsWith('.mp4') ||
+      item.media_file_local?.toLowerCase().endsWith('.mov') ||
+      (typeof item.content === 'string' && (item.content.endsWith('.mp4') || item.content.endsWith('.mov')));
+
+    const isImage = !isVideo && (item.message_type === 'image' || item.message_type === 'sticker' || isSticker || isGif ||
+        Boolean(item.media_e2ee) || Boolean(item.media_file && !item.media_file.endsWith('.mp4') && !item.media_file.endsWith('.mov') && !item.media_file.endsWith('.mp3') && !item.media_file.endsWith('.pdf')) || Boolean((item as any).media_file_local));
+
+    const isMediaMessage = ['image', 'video', 'sticker'].includes(item.message_type) || item.type === 'media_group' || isSticker || isGif || isVideo || Boolean(item.media_file) || Boolean((item as any).media_file_local) || Boolean(item.media_e2ee);
+
+    const alignmentStyle = { alignSelf: isMe ? 'flex-end' : 'flex-start' };
+
     const renderMedia = () => {
     if (item.is_deleted) return null;
     
     // ONLY process media messages
-    if (!['image', 'video', 'audio', 'document'].includes(item.message_type) && item.type !== 'media_group') return null;
+    if (!['image', 'video', 'audio', 'document', 'sticker'].includes(item.message_type) && item.type !== 'media_group' && !isSticker && !isGif && !item.media_file && !(item as any).media_file_local && !item.media_e2ee) return null;
 
     if (item.type === 'media_group') {
       return (
@@ -3011,71 +3801,189 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       );
     }
 
-    const isMe = item.sender.id === currentUser?.id;
-    const rawUrl = (item as any).media_url || item.media_file || (item.content?.startsWith('http') ? item.content : null);
-    const url = resolveImageUrl(rawUrl);
-    
-    const isStatusReply = item.content?.startsWith('↩ Replied to status');
-    const hasMediaError = mediaErrorIds.includes(item.id);
-
-    const alignmentStyle = { alignSelf: isMe ? 'flex-end' : 'flex-start' };
-
-    // Unified Placeholder for deleted/unavailable media
-    if (!url || hasMediaError || (isStatusReply && !url)) {
-        let label = 'Media unavailable';
-        if (isStatusReply) label = 'Status unavailable';
-        else if (item.message_type === 'audio') label = 'Audio unavailable';
-        else if (item.message_type === 'video') label = 'Video unavailable';
-        else if (item.message_type === 'document') label = 'Document unavailable';
-
-        return (
-          <View 
-            pointerEvents="none"
-            style={[s.imageContainer, alignmentStyle, { backgroundColor: '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0', padding: 10 }]}
-          >
-            <Icon name="alert-circle-outline" size={32} color="#999" />
-            <Text style={{ color: theme.textMuted, fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
-               {label}
-            </Text>
-          </View>
-        );
-      }
-
-    const downloadAndOpenFile = async (url: string, fileName: string) => {
+    const downloadAndOpenFile = async (msgItem: Message) => {
         const { dirs } = RNFetchBlob.fs;
-        const path = `${dirs.DocumentDir}/${fileName}`;
+        const e2ee = (msgItem as any).media_e2ee;
+        const rawFileName = e2ee?.file_name || (msgItem.media_file || 'Document').split('/').pop() || 'Document';
+        const fileExt = (e2ee?.file_name || rawFileName).split('.').pop()?.toLowerCase() || '';
+        const fileName = rawFileName;
+        const localDest = `${dirs.DocumentDir}/${fileName}`;
         
         try {
-            const exists = await RNFetchBlob.fs.exists(path);
-            if (!exists) {
-                await RNFetchBlob.config({
-                    path,
-                    fileCache: true,
-                }).fetch('GET', url);
+            let targetPath: string | null = null;
+            const localUri = (msgItem as any).media_file_local || msgItem.media_file;
+
+            if (isLocalUriUsable(localUri)) {
+                targetPath = (localUri as string).replace('file://', '');
+            } else if (localUri && (localUri as string).startsWith('content://')) {
+                await RNFetchBlob.fs.cp(localUri, localDest).catch(() => {});
+                targetPath = localDest;
             }
-            await FileViewer.open(path);
-        } catch (e) {
-            console.error('File view error:', e);
-            Alert.alert('Error', 'Could not open file');
+
+            // If encrypted with E2EE, decrypt first!
+            if (!targetPath && e2ee?.file_hash) {
+                targetPath = await MediaCipher.getDecryptedLocalUriIfExists(e2ee.file_hash, fileExt);
+                if (targetPath) {
+                    targetPath = targetPath.replace('file://', '');
+                }
+                if (!targetPath && e2ee?.media_key) {
+                    const rawEncUrl = resolveImageUrl((msgItem as any).media_url || msgItem.media_file);
+                    if (rawEncUrl) {
+                        const decryptedUri = await MediaCipher.decryptMediaFile(
+                            rawEncUrl,
+                            e2ee.media_key,
+                            e2ee.nonce,
+                            e2ee.file_hash,
+                            fileExt
+                        );
+                        if (decryptedUri) {
+                            targetPath = decryptedUri.replace('file://', '');
+                        }
+                    }
+                }
+            }
+
+            // If not encrypted or plain download
+            if (!targetPath) {
+                const downloadUrl = resolveImageUrl((msgItem as any).media_url || msgItem.media_file);
+                if (downloadUrl) {
+                    const exists = await RNFetchBlob.fs.exists(localDest);
+                    if (!exists) {
+                        await RNFetchBlob.config({
+                            path: localDest,
+                            fileCache: true,
+                        }).fetch('GET', downloadUrl);
+                    }
+                    targetPath = localDest;
+                }
+            }
+
+            if (!targetPath) {
+                Alert.alert('Download Error', 'Could not locate or decrypt file.');
+                return;
+            }
+
+            // Attempt 1: Open with FileViewer
+            try {
+                await FileViewer.open(targetPath, { showOpenWithDialog: true });
+                return;
+            } catch (openErr: any) {
+                console.warn('FileViewer open with specific mime failed, trying generic intent:', openErr?.message);
+            }
+
+            // Attempt 2: If FileViewer failed due to mime type, try Android actionViewIntent with */*
+            if (Platform.OS === 'android' && RNFetchBlob.android) {
+                try {
+                    await RNFetchBlob.android.actionViewIntent(targetPath, '*/*');
+                    return;
+                } catch (intentErr) {
+                    console.warn('ActionViewIntent failed:', intentErr);
+                }
+
+                // Attempt 3: Add to Android system download manager with notification
+                try {
+                    RNFetchBlob.android.addCompleteDownload({
+                        title: fileName,
+                        description: 'File downloaded successfully',
+                        mime: 'application/octet-stream',
+                        path: targetPath,
+                        showNotification: true,
+                    });
+                    Toast.show({
+                        type: 'success',
+                        text1: 'Download Complete',
+                        text2: `${fileName} saved to Downloads`,
+                        position: 'bottom',
+                    });
+                    return;
+                } catch (downloadErr) {
+                    console.warn('addCompleteDownload failed:', downloadErr);
+                }
+            }
+
+            // Attempt 4: Share sheet fallback
+            try {
+                const { Share: RNShare } = require('react-native');
+                await RNShare.share({
+                    url: `file://${targetPath}`,
+                    title: fileName,
+                });
+            } catch {
+                Toast.show({
+                    type: 'success',
+                    text1: 'File Downloaded',
+                    text2: `${fileName} saved to device`,
+                    position: 'bottom',
+                });
+            }
+        } catch (e: any) {
+            console.error('Download and open error:', e);
+            Alert.alert('Download Error', 'Could not download or open file.');
         }
     };
 
     if (item.message_type === 'document') {
-        const fileName = (item.media_file || 'Document').split('/').pop() || 'Document';
-        const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
+        const e2ee = (item as any).media_e2ee;
+        const rawFileName = e2ee?.file_name || (item.media_file || 'Document').split('/').pop() || 'Document';
+        const fileExt = (e2ee?.file_name || rawFileName).split('.').pop()?.toLowerCase() || '';
+        const fileName = rawFileName;
         let iconName = 'document-text-outline';
         if (fileExt === 'pdf') iconName = 'document-outline';
-        else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
-        else if (['xlsx', 'csv', 'txt', 'zip', 'rar'].includes(fileExt || '')) iconName = 'document-text-outline';
-        
-        const fileColor = getFileIconColor(fileExt);
+        const fileColor = fileExt === 'pdf' 
+          ? '#EF4444' 
+          : ['doc', 'docx'].includes(fileExt) 
+          ? '#3B82F6' 
+          : ['xlsx', 'csv'].includes(fileExt) 
+          ? '#10B981' 
+          : ['zip', 'rar'].includes(fileExt) 
+          ? '#F59E0B' 
+          : (chatTheme?.accentColor || theme.primary);
+
+        const isCustom = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+        const docTextColor = isMe
+          ? (chatTheme?.myBubble?.textColor || '#FFFFFF')
+          : (isCustom ? (chatTheme?.theirBubble?.textColor || theme.textPrimary) : (isDark ? '#FFFFFF' : '#111B21'));
+        const docGradient = isMe ? (chatTheme?.myBubble?.gradient || null) : null;
+        const docBgColor = isMe
+          ? (docGradient ? 'transparent' : (chatTheme?.myBubble?.solidColor || theme.myMessage))
+          : (isCustom ? (chatTheme?.theirBubble?.backgroundColor || (isDark ? '#1E293B' : '#EAECEF')) : (isDark ? '#1E293B' : '#EAECEF'));
 
         return (
-          <View style={[s.documentBubbleInner, { alignSelf: isMe ? 'flex-end' : 'flex-start' }]}>
+          <View
+            style={[
+              s.documentBubbleInner,
+              {
+                alignSelf: isMe ? 'flex-end' : 'flex-start',
+                backgroundColor: docBgColor,
+                borderTopRightRadius: isMe ? 4 : borderRadius.lg,
+                borderTopLeftRadius: !isMe ? 4 : borderRadius.lg,
+                borderRadius: borderRadius.lg,
+                overflow: 'hidden',
+                ...(!isMe && !isDark && !isCustom ? {
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: 'rgba(0, 0, 0, 0.08)',
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.05,
+                  shadowRadius: 1.5,
+                  elevation: 1,
+                } : {}),
+              },
+            ]}
+          >
+            {isMe && docGradient && (
+              <LinearGradient
+                colors={docGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+            )}
+
             {/* Left side: Icon + Extension label below it */}
             <View style={s.documentLeftContainer}>
-              <Icon name={iconName} size={32} color={fileColor} />
-              <Text style={[s.documentExtLabel, { color: fileColor }]}>
+              <Icon name={iconName} size={32} color={isMe ? '#FFFFFF' : fileColor} />
+              <Text style={[s.documentExtLabel, { color: isMe ? 'rgba(255, 255, 255, 0.9)' : fileColor }]}>
                 {fileExt.toUpperCase() || 'FILE'}
               </Text>
             </View>
@@ -3083,7 +3991,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             {/* Middle: File name */}
             <View style={s.documentCenterContainer}>
               <Text 
-                style={s.documentFileNameText} 
+                style={[s.documentFileNameText, { color: docTextColor, fontWeight: '600' }]} 
                 numberOfLines={2}
                 ellipsizeMode="middle"
               >
@@ -3093,8 +4001,11 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
             {/* Right side: Green circular download button or Spinner */}
             <TouchableOpacity 
-              style={s.documentDownloadButton}
-              onPress={() => item.status !== 'sending' && downloadAndOpenFile(url, fileName)}
+              style={[
+                s.documentDownloadButton,
+                isMe && { backgroundColor: 'rgba(255, 255, 255, 0.25)' },
+              ]}
+              onPress={() => item.status !== 'sending' && downloadAndOpenFile(item)}
               activeOpacity={0.7}
               disabled={item.status === 'sending'}
             >
@@ -3109,11 +4020,6 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
 
 
-    const isImage = item.message_type === 'image' || 
-        (item.media_file && /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(item.media_file));
-
-    const isSticker = item.media_file?.toLowerCase().endsWith('.webp');
-
     if (isImage) {
       // While sending, use the local URI directly from item.media_file so we show the actual image
       const displayUrl = (item as any).status === 'sending' ? (item.media_file || url) : url;
@@ -3122,12 +4028,15 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           <ChatImage 
             url={displayUrl}
             isMe={isMe}
+            isDark={isDark}
             onPress={(e: any) => handleMessagePress(item, e)}
             onLongPress={(e: any) => handleMessageLongPress(item, e)}
             isSticker={isSticker}
+            isGif={isGif}
             origWidth={(item as any).width}
             origHeight={(item as any).height}
             localUri={(item as any).media_file_local || item.media_file}
+            mediaE2ee={(item as any).media_e2ee}
           />
           {(item as any).status === 'sending' && (
             <View style={{
@@ -3140,14 +4049,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               <ActivityIndicator size="large" color="#FFF" />
               <TouchableOpacity
                 style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
+                  width: 36,
+                  height: 36,
+                  borderRadius: 18,
                   borderWidth: 1.5,
                   borderColor: 'rgba(255,255,255,0.8)',
-                  borderRadius: 16,
-                  paddingHorizontal: 12,
-                  paddingVertical: 5,
+                  justifyContent: 'center',
+                  alignItems: 'center',
                 }}
                 onPress={() => {
                   const localId = item.local_id || item.id.toString();
@@ -3159,8 +4067,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                   localDatabase.updateMessageStatus(localId, 'failed');
                 }}
               >
-                <Icon name="close" size={14} color="#FFF" />
-                <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>Cancel</Text>
+                <Icon name="close" size={16} color="#FFF" />
               </TouchableOpacity>
             </View>
           )}
@@ -3208,31 +4115,127 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       );
     }
 
-    if (item.message_type === 'video') {
+    if (isVideo) {
       return (
-        <TouchableOpacity
-          style={[s.videoContainer, alignmentStyle, { alignItems: isMe ? 'flex-end' : 'flex-start' }]}
-          onPress={(e) => handleMessagePress(item, e)}
-          onLongPress={(e) => handleMessageLongPress(item, e)}
-          activeOpacity={0.9}
-          delayLongPress={500}
-          disabled={item.status === 'sending'}
-        >
-          <View style={{ justifyContent: 'center', alignItems: 'center', flex: 1, width: '100%' }}>
-            {item.status === 'sending' ? (
-                <ActivityIndicator size="large" color="#FFF" />
-            ) : (
-                <Icon name="play-circle" size={48} color="rgba(255,255,255,0.9)" />
-            )}
-          </View>
-        </TouchableOpacity>
+        <View style={{ position: 'relative' }}>
+          <TouchableOpacity
+            style={[
+              {
+                width: 240,
+                height: 160,
+                borderRadius: 14,
+                backgroundColor: '#1C1C1E',
+                justifyContent: 'center',
+                alignItems: 'center',
+                overflow: 'hidden',
+                alignSelf: isMe ? 'flex-end' : 'flex-start',
+              },
+            ]}
+            onPress={(e) => handleMessagePress(item, e)}
+            onLongPress={(e) => handleMessageLongPress(item, e)}
+            activeOpacity={0.9}
+            delayLongPress={500}
+            disabled={item.status === 'sending'}
+          >
+            <View style={{
+              width: 52,
+              height: 52,
+              borderRadius: 26,
+              backgroundColor: 'rgba(0,0,0,0.6)',
+              borderWidth: 1.5,
+              borderColor: 'rgba(255,255,255,0.7)',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}>
+              <Icon name="play" size={28} color="#FFF" style={{ marginLeft: 3 }} />
+            </View>
+            <View style={{
+              position: 'absolute',
+              bottom: 8,
+              right: 8,
+              backgroundColor: 'rgba(0,0,0,0.65)',
+              borderRadius: 6,
+              paddingHorizontal: 6,
+              paddingVertical: 2,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+            }}>
+              <Icon name="videocam" size={12} color="#FFF" />
+              <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '600' }}>Video</Text>
+            </View>
+          </TouchableOpacity>
+          {(item as any).status === 'sending' && (
+            <View style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.55)',
+                justifyContent: 'center', alignItems: 'center',
+                borderRadius: 14,
+                gap: 10,
+            }}>
+              <ActivityIndicator size="large" color="#FFF" />
+              <TouchableOpacity
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 18,
+                  borderWidth: 1.5,
+                  borderColor: 'rgba(255,255,255,0.8)',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+                onPress={() => {
+                  const localId = item.local_id || item.id.toString();
+                  if (activeUploadsRef.current[localId]) {
+                    activeUploadsRef.current[localId].abort();
+                    delete activeUploadsRef.current[localId];
+                  }
+                  setMessages(prev => prev.map(m => m.id === item.id ? { ...m, status: 'failed' } : m));
+                  localDatabase.updateMessageStatus(localId, 'failed');
+                }}
+              >
+                <Icon name="close" size={16} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+          )}
+          {(item as any).status === 'failed' && (
+            <TouchableOpacity
+              style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.65)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderRadius: 14,
+                gap: 6,
+              }}
+              onPress={() => retryMessage(item)}
+              activeOpacity={0.85}
+            >
+              <Icon name="refresh" size={32} color="#FFF" />
+              <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>Tap to retry</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       );
     }
-      
-      return null;
-    };
 
-    const isMediaMessage = ['image', 'video'].includes(item.message_type) || item.type === 'media_group';
+    if (!url && !item.media_e2ee && !(item as any).media_file_local) {
+      let label = isStatusReply ? 'Status unavailable' : 'Media unavailable';
+      return (
+        <View 
+          pointerEvents="none"
+          style={[s.imageContainer, alignmentStyle, { backgroundColor: isDark ? '#2C2C2E' : '#F0F0F0', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: isDark ? '#3A3A3C' : '#E0E0E0', padding: 10 }]}
+        >
+          <Icon name="alert-circle-outline" size={32} color="#999" />
+          <Text style={{ color: theme.textMuted, fontSize: 13, marginTop: 8, fontWeight: '500', textAlign: 'center' }}>
+             {label}
+          </Text>
+        </View>
+      );
+    }
+
+    return null;
+  };
 
     const renderReplyIndicator = (reply: Message, isSender: boolean) => {
       const hasThumbnail = ['image', 'video', 'document'].includes(getReplyMessageType(reply, messages) || '');
@@ -3253,7 +4256,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           </View>
           {hasThumbnail && (
             <View style={s.replyThumbnailContainer}>
-              {renderReplyThumbnail(reply, messages)}
+              {renderReplyThumbnail(reply, messages, theme.primary)}
             </View>
           )}
         </TouchableOpacity>
@@ -3288,7 +4291,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     );
 
     return (
-      <View style={{ flexDirection: 'column', width: '100%' }}>
+      <TouchableOpacity
+        activeOpacity={isSelectionMode ? 0.7 : 1}
+        onPress={isSelectionMode ? () => handleToggleSelectMessage(item.id) : undefined}
+        style={[
+          { flexDirection: 'column', width: '100%' },
+          isSelected && { backgroundColor: theme.primary + '18' },
+        ]}
+      >
         {shouldShowDateSeparator(index, groupedMessages) && (
           <View style={s.dateSeparator}>
             <Text style={s.dateSeparatorText}>
@@ -3303,6 +4313,18 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             hasReactions && { marginBottom: 12 },
           ]}
         >
+          {isSelectionMode && (
+            <View
+              style={[
+                s.selectionCheckbox,
+                { borderColor: isSelected ? theme.primary : '#AAA' },
+                isSelected && { backgroundColor: theme.primary },
+              ]}
+            >
+              {isSelected && <Icon name="checkmark" size={13} color="#FFFFFF" />}
+            </View>
+          )}
+
           {!isMe && (
             isFirstInGroup ? (
               <MessageAvatar
@@ -3329,9 +4351,17 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 onPress={() => {}}
               />
             </View>
-          ) : ['image', 'video', 'audio', 'document'].includes(item.message_type) || item.type === 'media_group' ? (
+          ) : isMediaMessage ? (
             (() => {
-              const hasCaption = !!(item.content && item.content.trim());
+              const isRawCipherOrError = (text?: string) => {
+                if (!text) return true;
+                const t = text.trim();
+                if (t.startsWith('{') && t.includes('"ciphertext"')) return true;
+                if (t.startsWith('🔒')) return true;
+                if (['📷 Photo', '📹 Video', '🎵 Audio', '📄 Document'].includes(t)) return true;
+                return false;
+              };
+              const hasCaption = !!(item.content && item.content.trim() && !isRawCipherOrError(item.content));
               return (
                 <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '80%', position: 'relative' }}>
                   <TouchableOpacity
@@ -3376,7 +4406,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                         }}>
                           <Text style={{
                             fontSize: 14,
-                            color: '#1A1A1A',
+                            color: isMe ? '#FFFFFF' : '#111B21',
                             lineHeight: 18,
                             textAlign: isMe ? 'right' : 'left',
                           }}>
@@ -3397,6 +4427,18 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               const emojiFontSize = emojiInfo.count === 1 ? 36 : emojiInfo.count === 2 ? 30 : emojiInfo.count === 3 ? 26 : 22;
               const emojiLineHeight = emojiFontSize + 8;
 
+              const isCustom = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+              const myBubbleGradient = chatTheme?.myBubble?.gradient || null;
+              const myBubbleBg = myBubbleGradient ? 'transparent' : (chatTheme?.myBubble?.solidColor || theme.myMessage);
+              const myBubbleTextColor = chatTheme?.myBubble?.textColor || '#FFFFFF';
+
+              const theirBubbleBg = isCustom
+                ? (chatTheme?.theirBubble?.backgroundColor || theme.theirMessage)
+                : (isDark ? '#1E293B' : '#EAECEF');
+              const theirBubbleTextColor = isCustom
+                ? (chatTheme?.theirBubble?.textColor || theme.textPrimary)
+                : (isDark ? '#FFFFFF' : '#111B21');
+
               return isMe ? (
                 <View style={{ maxWidth: '80%', minWidth: isEmojiOnly ? undefined : 50, alignSelf: 'flex-end' }}>
                   <TouchableOpacity
@@ -3411,10 +4453,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                       {
                         width: '100%',
                         alignItems: 'flex-end',
-                        backgroundColor: theme.myMessage,
+                        backgroundColor: myBubbleBg,
                         borderTopRightRadius: 4,
-                        padding: spacing.md,
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
                         borderRadius: borderRadius.lg,
+                        overflow: 'hidden',
                       }
                     ]}
                     onPress={(e) => handleMessagePress(item, e)}
@@ -3422,12 +4466,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                     activeOpacity={0.8}
                     delayLongPress={500}
                   >
+                    {!isEmojiOnly && myBubbleGradient && (
+                      <LinearGradient
+                        colors={myBubbleGradient}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={StyleSheet.absoluteFill}
+                      />
+                    )}
                     {item.reply_to && renderReplyIndicator(item.reply_to, true)}
                     {!!item.edited_at && (
-                      <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : 'rgba(255, 255, 255, 0.7)', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
+                      <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : (chatTheme?.myBubble?.timeColor || 'rgba(255, 255, 255, 0.75)'), marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                     )}
-                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: '#FFFFFF' }]}>
-                      {String(item.content || '')}
+                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: myBubbleTextColor }]}>
+                      {typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || '')}
                     </Text>
                   </TouchableOpacity>
                   {hasReactions && renderReactionsBadge(true)}
@@ -3446,10 +4498,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                       {
                         width: '100%',
                         alignItems: 'flex-start',
-                        backgroundColor: theme.theirMessage,
+                        backgroundColor: theirBubbleBg,
                         borderTopLeftRadius: 4,
-                        padding: spacing.md,
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
                         borderRadius: borderRadius.lg,
+                        ...(!isDark && !isCustom ? {
+                          borderWidth: StyleSheet.hairlineWidth,
+                          borderColor: 'rgba(0, 0, 0, 0.08)',
+                          shadowColor: '#000',
+                          shadowOffset: { width: 0, height: 1 },
+                          shadowOpacity: 0.05,
+                          shadowRadius: 1.5,
+                          elevation: 1,
+                        } : {}),
                       }
                     ]}
                     onPress={(e) => handleMessagePress(item, e)}
@@ -3462,8 +4524,8 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                     {!!item.edited_at && (
                       <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                     )}
-                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: theme.textPrimary }]}>
-                      {String(item.content || '')}
+                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: theirBubbleTextColor }]}>
+                      {typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || '')}
                     </Text>
                   </TouchableOpacity>
                   {hasReactions && renderReactionsBadge(false)}
@@ -3477,7 +4539,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         {!isGroup && item.id === latestSeenMessageId && (
           <View style={{ alignSelf: 'flex-end', marginRight: 16, marginTop: -2, marginBottom: 6 }}>
             <Text style={{ fontSize: 11, color: theme.textMuted, fontWeight: '500' }}>
-              {fmtSeenTime(item.delivered_at || item.created_at)}
+              {fmtSeenTime(getDirectMessageSeenTime(item))}
             </Text>
           </View>
         )}
@@ -3485,9 +4547,9 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         {isGroup && item.id === messages[0]?.id && (
           <GroupReadReceipts msg={item} />
         )}
-      </View>
+      </TouchableOpacity>
     );
-  }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, liveReadTimes, selectedReceiptUser]);
+  }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, getDirectMessageSeenTime, liveReadTimes, selectedReceiptUser, selectedMessageIds, isSelectionMode, chatTheme]);
   
 
   const renderGroupCallBanner = () => {
@@ -3512,23 +4574,89 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     );
   };
 
-  return (
-    <View style={{ flex: 1 }}>
-      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
-      <KeyboardWrapperView
-      style={[s.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
-      {...keyboardWrapperProps}
-    >
-      {/* Header */}
-      {searchMode ? renderSearchBar() : (
-      <View style={s.customHeader}>
+  const renderSelectionHeader = () => {
+    const selectedMsgs = groupedMessages.filter(m => selectedMessageIds.includes(m.id));
+    const allHaveText = selectedMsgs.length > 0 && selectedMsgs.every(m => !!m.content && m.content.trim() !== '');
+
+    return (
+      <View style={[s.customHeader, { paddingTop: insets.top, height: 60 + insets.top }]}>
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              backgroundColor: isDark ? 'rgba(10, 14, 22, 0.88)' : 'rgba(255, 255, 255, 0.92)',
+            },
+          ]}
+        />
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity
+            style={s.headerBackButton}
+            onPress={() => setSelectedMessageIds([])}
+            hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+          >
+            <Icon name="close" size={24} color={theme.textPrimary} />
+          </TouchableOpacity>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: theme.textPrimary, marginLeft: 12 }}>
+            {selectedMessageIds.length} Selected
+          </Text>
+        </View>
+
+        <View style={s.headerRight}>
+          {/* Forward */}
+          <TouchableOpacity
+            style={{ padding: 8, marginRight: 4 }}
+            onPress={handleForwardSelected}
+            activeOpacity={0.7}
+          >
+            <Icon name="arrow-redo-outline" size={22} color={theme.textPrimary} />
+          </TouchableOpacity>
+
+          {/* Copy */}
+          {allHaveText && (
+            <TouchableOpacity
+              style={{ padding: 8, marginRight: 4 }}
+              onPress={handleCopySelected}
+              activeOpacity={0.7}
+            >
+              <Icon name="copy-outline" size={22} color={theme.textPrimary} />
+            </TouchableOpacity>
+          )}
+
+          {/* Delete / Trash */}
+          <TouchableOpacity
+            style={{ padding: 8 }}
+            onPress={handleOpenDeleteModalForSelected}
+            activeOpacity={0.7}
+          >
+            <Icon name="trash-outline" size={22} color="#FF4444" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderCustomHeader = () => {
+    const isCustomTheme = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+    return (
+      <View style={[s.customHeader, { paddingTop: insets.top, height: 60 + insets.top }]}>
+        {/* Header Glass Backdrop Overlay */}
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              backgroundColor: isCustomTheme
+                ? 'rgba(0, 0, 0, 0.28)'
+                : (isDark ? 'rgba(10, 14, 22, 0.75)' : 'rgba(255, 255, 255, 0.82)'),
+            },
+          ]}
+        />
         <Pressable 
            style={s.headerBackButton}
            onPress={handleGoBack}
-           hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+           hitSlop={{ top: 16, bottom: 16, left: 16, right: 8 }}
            android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
         >
-          <Icon name="arrow-back" size={24} color={theme.textPrimary} />
+          <Icon name="arrow-back" size={24} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
         </Pressable>
         <View style={s.headerCenter}>
           <Pressable
@@ -3544,14 +4672,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 }
               }
             }}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           >
             <View
               style={[
                 {
-                  width: 40, height: 40, borderRadius: 20,
-                  marginRight: 8,
-                  borderWidth: (!isGroup && headerHasStatus) ? 2.5 : 0,
+                  width: 38, height: 38, borderRadius: 19,
+                  marginRight: 6,
+                  borderWidth: (!isGroup && headerHasStatus) ? 2 : 0,
                   borderColor: (!isGroup && headerHasStatus) ? theme.primary : 'transparent',
                   padding: (!isGroup && headerHasStatus) ? 2 : 0,
                 }
@@ -3562,7 +4690,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
                 displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
                 isGroup={isGroup}
-                style={{ width: '100%', height: '100%', borderRadius: 20 }}
+                style={{ width: '100%', height: '100%', borderRadius: 19 }}
               />
             </View>
           </Pressable>
@@ -3579,22 +4707,25 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 }
               }
             }}
-            hitSlop={{ top: 8, bottom: 8, left: 4, right: 12 }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
           >
-            <Text style={s.headerName} numberOfLines={1}>
+            <Text style={[s.headerName, isCustomTheme && { color: '#FFFFFF' }]} numberOfLines={1}>
               {chatTitle}
             </Text>
-            <Text style={s.headerStatus}>
+            <Text style={[s.headerStatus, isCustomTheme && { color: 'rgba(255, 255, 255, 0.75)' }]} numberOfLines={1}>
               {isGroup
                 ? groupDescription || 'Group details'
                 : otherUser
                 ? amIBlocked
-                  ? ''
-                  : otherUser.last_seen_privacy === 'nobody'
-                  ? ''
-                  : fmtLastSeen(otherUser.last_seen) === 'Online'
-                  ? 'Online'
-                  : `Last seen ${fmtLastSeen(otherUser.last_seen)}`
+                ? ''
+                : otherUser.last_seen_privacy === 'nobody'
+                ? ''
+                : (() => {
+                    const formatted = fmtLastSeen(otherUser.last_seen);
+                    if (!formatted) return '';
+                    if (formatted === 'Online') return 'Online';
+                    return `Last seen ${formatted}`;
+                  })()
                 : ''}
             </Text>
           </Pressable>
@@ -3603,7 +4734,11 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         <View style={s.headerRight}>
           {/* Call buttons are disabled and muted if users are not friends (except in groups) */}
           <TouchableOpacity
-            style={[s.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            style={[
+              s.callIcon,
+              isCustomTheme && { backgroundColor: 'rgba(255, 255, 255, 0.15)' },
+              !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }
+            ]}
             disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
@@ -3624,11 +4759,16 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               }
             }}
             activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           >
-            <Icon name="videocam" size={22} color={theme.textPrimary} />
+            <Icon name="videocam" size={19} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity
-            style={[s.callIcon, !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }]}
+            style={[
+              s.callIcon,
+              isCustomTheme && { backgroundColor: 'rgba(255, 255, 255, 0.15)' },
+              !isGroup && friendStatus !== 'friends' && { opacity: 0.3 }
+            ]}
             disabled={!isGroup && friendStatus !== 'friends'}
             onPress={() => {
               if (isGroup) {
@@ -3649,14 +4789,79 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               }
             }}
             activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           >
-            <Icon name="call" size={20} color={theme.textPrimary} />
+            <Icon name="call" size={17} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[s.callIcon, isCustomTheme && { backgroundColor: 'rgba(255, 255, 255, 0.15)' }]}
+            onPress={() => setShowThemeModal(true)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          >
+            <Icon name="color-palette-outline" size={18} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
-      )}
+    );
+  };
+
+  return (
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      {/* 1. Full Screen Edge-to-Edge Static Background Layer (Status Bar to Bottom Nav Bar) */}
+      {chatTheme?.background?.type === 'gradient' && chatTheme.background.colors ? (
+        <LinearGradient
+          colors={chatTheme.background.colors}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : chatTheme?.background?.type === 'image' && chatTheme.background.imageUrl ? (
+        <View style={StyleSheet.absoluteFill}>
+          <FastImage
+            source={{ uri: chatTheme.background.imageUrl }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+          />
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              { backgroundColor: `rgba(0, 0, 0, ${chatTheme.background.overlayDim ?? 0.35})` },
+            ]}
+          />
+        </View>
+      ) : chatTheme?.background?.solidColor && chatTheme.background.solidColor !== 'transparent' ? (
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            { backgroundColor: chatTheme.background.solidColor },
+          ]}
+        />
+      ) : null}
+
+      <StatusBar
+        barStyle={chatTheme?.id && chatTheme.id !== 'default' ? 'light-content' : (isDark ? 'light-content' : 'dark-content')}
+        backgroundColor="transparent"
+        translucent={true}
+      />
+      <KeyboardWrapperView
+        style={[s.container, { backgroundColor: 'transparent', paddingBottom: insets.bottom }]}
+        {...keyboardWrapperProps}
+      >
+        {/* Header */}
+        {isSelectionMode ? (
+          renderSelectionHeader()
+        ) : searchMode ? (
+          renderSearchBar()
+        ) : (
+          renderCustomHeader()
+        )}
 
       {renderGroupCallBanner()}
+
+      {/* Content area: messages + input bar lift together as one unit when keyboard opens.
+          Using translateY (GPU-only transform) means zero layout recalculation → no jerk/shake.
+          Wrapped in overflow: 'hidden' so translated messages are clipped cleanly below the header. */}
+      <View style={{ flex: 1, overflow: 'hidden' }}>
+        <Reanimated.View style={[{ flex: 1 }, contentLiftStyle]}>
 
       {/* Messages list container with relative positioning for FAB and overlays */}
       <View style={{ flex: 1, position: 'relative' }}>
@@ -3665,15 +4870,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           data={groupedMessages}
           renderItem={renderMessage}
           keyExtractor={item => (item.local_id || item.id).toString()}
-          contentContainerStyle={[s.messagesList, { paddingBottom: 8 }]}
+          style={{ backgroundColor: 'transparent' }}
+          contentContainerStyle={s.messagesList}
           inverted={true}
           // Disable scroll during back navigation so the FlatList gesture responder
           // does not compete with the back button tap and cause 500ms input latency.
           scrollEnabled={!isNavigatingBack.current}
+          keyboardShouldPersistTaps="handled"
           // Load older messages when user scrolls to top (= onEndReached in inverted list)
           onEndReached={loadOlderMessages}
           onEndReachedThreshold={0.3}
           onScroll={handleOnScroll}
+          onMomentumScrollEnd={handleOnScroll}
+          onScrollEndDrag={handleOnScroll}
+          scrollEventThrottle={16}
           onScrollToIndexFailed={info => {
             console.warn('ScrollToIndex failed, scrolling to estimated offset and retrying...', info);
             flatListRef.current?.scrollToOffset({
@@ -3692,17 +4902,18 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               }
             }, 100);
           }}
-          scrollEventThrottle={16}
           ListFooterComponent={
             isLoadingOlder ? (
               <View style={s.loadingOlderContainer}>
-                <ActivityIndicator size="small" color={theme.primary} />
-                <Text style={s.loadingOlderText}>
-                  Loading older messages...
-                </Text>
+                <ActivityIndicator size="small" color="rgba(255, 255, 255, 0.75)" />
               </View>
             ) : null
           }
+          onContentSizeChange={() => {
+            if (isNearBottomRef.current) {
+              flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+            }
+          }}
           initialNumToRender={10}
           maxToRenderPerBatch={8}
           windowSize={5}
@@ -3718,17 +4929,33 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           }
         />
 
-        {/* Scroll to bottom button */}
-        {showScrollToBottom && (
+        {/* Scroll to bottom button (GPU-accelerated native fade in/out) */}
+        <Animated.View
+          style={[
+            s.scrollToBottomButton,
+            {
+              opacity: scrollToBottomAnim,
+              transform: [
+                {
+                  scale: scrollToBottomAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.3, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+          pointerEvents="box-none"
+        >
           <TouchableOpacity
-            style={s.scrollToBottomButton}
+            style={s.scrollToBottomInner}
             onPress={scrollToBottom}
             activeOpacity={0.8}
             accessibilityLabel="Scroll to bottom"
           >
             <Icon name="chevron-down" size={22} color={theme.textPrimary} />
           </TouchableOpacity>
-        )}
+        </Animated.View>
       </View>
 
       {/* Typing */}
@@ -3832,9 +5059,6 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         </Modal>
       )}
 
-      {/* Double-tap reaction animation overlay */}
-      <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={currentUser?.quick_reaction || '❤️'} />
-
       {/* Instagram-style message actions menu */}
       {showMessageActions && (
         <Modal
@@ -3847,7 +5071,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           }}
         >
         <TouchableOpacity
-          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }}
+          style={{ flex: 1, backgroundColor: 'transparent' }}
           activeOpacity={1}
           onPress={() => {
             setShowMessageActions(false);
@@ -3932,7 +5156,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
                 {/* Vertical actions menu */}
                 <View style={s.actionsColumn}>
-                  {/* Row 3: Reply */}
+                  {/* Reply */}
                   <TouchableOpacity
                     style={s.actionMenuItem}
                     onPress={handleReplyFromMenu}
@@ -3948,100 +5172,91 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                     </View>
                   </TouchableOpacity>
 
-                  {/* Row 4 (Sender Edit, Receiver Copy) */}
-                  {isMe ? (
-                    <>
-                      {/* Edit */}
-                      {canEdit && (
-                        <TouchableOpacity
-                          style={s.actionMenuItem}
-                          onPress={handleEditMessage}
-                        >
-                          <View style={s.actionMenuItemContent}>
-                            <Icon
-                              name="create-outline"
-                              size={20}
-                              color="#333"
-                              style={{ marginRight: 12 }}
-                            />
-                            <Text style={s.actionMenuItemText}>Edit</Text>
-                          </View>
-                        </TouchableOpacity>
-                      )}
+                  {/* Forward */}
+                  <TouchableOpacity
+                    style={s.actionMenuItem}
+                    onPress={() => handleForwardSingle(selectedMessage)}
+                  >
+                    <View style={s.actionMenuItemContent}>
+                      <Icon
+                        name="arrow-redo-outline"
+                        size={20}
+                        color="#333"
+                        style={{ marginRight: 12 }}
+                      />
+                      <Text style={s.actionMenuItemText}>Forward</Text>
+                    </View>
+                  </TouchableOpacity>
 
-                      {/* Copy */}
-                      <TouchableOpacity
-                        style={s.actionMenuItem}
-                        onPress={handleCopyMessage}
-                      >
-                        <View style={s.actionMenuItemContent}>
-                          <Icon
-                            name="copy-outline"
-                            size={20}
-                            color="#333"
-                            style={{ marginRight: 12 }}
-                          />
-                          <Text style={s.actionMenuItemText}>Copy</Text>
-                        </View>
-                      </TouchableOpacity>
-
-                      {/* Unsend */}
-                      {canUnsend && (
-                        <TouchableOpacity
-                          style={s.actionMenuItem}
-                          onPress={handleDeleteMessage}
-                        >
-                          <View style={s.actionMenuItemContent}>
-                            <Icon
-                              name="trash-outline"
-                              size={20}
-                              color="#FF4444"
-                              style={{ marginRight: 12 }}
-                            />
-                            <Text style={[s.actionMenuItemText, { color: '#FF4444' }]}>
-                              Unsend
-                            </Text>
-                          </View>
-                        </TouchableOpacity>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {/* Copy */}
-                      <TouchableOpacity
-                        style={s.actionMenuItem}
-                        onPress={handleCopyMessage}
-                      >
-                        <View style={s.actionMenuItemContent}>
-                          <Icon
-                            name="copy-outline"
-                            size={20}
-                            color="#333"
-                            style={{ marginRight: 12 }}
-                          />
-                          <Text style={s.actionMenuItemText}>Copy</Text>
-                        </View>
-                      </TouchableOpacity>
-
-                      {/* Delete */}
-                      <TouchableOpacity
-                        style={s.actionMenuItem}
-                        onPress={handleDeleteMessage}
-                      >
-                        <View style={s.actionMenuItemContent}>
-                          <Icon
-                            name="trash-outline"
-                            size={20}
-                            color="#FF4444"
-                            style={{ marginRight: 12 }}
-                          />
-                          <Text style={[s.actionMenuItemText, { color: '#FF4444' }]}>
-                            Delete
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    </>
+                  {/* Copy */}
+                  {!!selectedMessage.content && (
+                    <TouchableOpacity
+                      style={s.actionMenuItem}
+                      onPress={handleCopyMessage}
+                    >
+                      <View style={s.actionMenuItemContent}>
+                        <Icon
+                          name="copy-outline"
+                          size={20}
+                          color="#333"
+                          style={{ marginRight: 12 }}
+                        />
+                        <Text style={s.actionMenuItemText}>Copy</Text>
+                      </View>
+                    </TouchableOpacity>
                   )}
+
+                  {/* Select */}
+                  <TouchableOpacity
+                    style={s.actionMenuItem}
+                    onPress={() => handleEnterSelectionMode(selectedMessage)}
+                  >
+                    <View style={s.actionMenuItemContent}>
+                      <Icon
+                        name="checkbox-outline"
+                        size={20}
+                        color="#333"
+                        style={{ marginRight: 12 }}
+                      />
+                      <Text style={s.actionMenuItemText}>Select</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Edit */}
+                  {isMe && canEdit && (
+                    <TouchableOpacity
+                      style={s.actionMenuItem}
+                      onPress={handleEditMessage}
+                    >
+                      <View style={s.actionMenuItemContent}>
+                        <Icon
+                          name="create-outline"
+                          size={20}
+                          color="#333"
+                          style={{ marginRight: 12 }}
+                        />
+                        <Text style={s.actionMenuItemText}>Edit</Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+
+                  {/* Unsend / Delete */}
+                  <TouchableOpacity
+                    style={s.actionMenuItem}
+                    onPress={() => handleOpenDeleteModalForSingle(selectedMessage)}
+                  >
+                    <View style={s.actionMenuItemContent}>
+                      <Icon
+                        name="trash-outline"
+                        size={20}
+                        color="#FF4444"
+                        style={{ marginRight: 12 }}
+                      />
+                      <Text style={[s.actionMenuItemText, { color: '#FF4444' }]}>
+                        {isMe && canUnsend ? 'Unsend' : 'Delete for me'}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
               </View>
             );
@@ -4159,6 +5374,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         </Modal>
       )}
 
+
       {/* Input bar */}
       {isUserBlocked ? (
         <View style={s.blockedContainer}>
@@ -4220,8 +5436,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         <>
           {hasLoadedInitialMessages && messages.length === 0 && (
             <View style={s.quickStickersRowWrapper}>
-              <View style={s.quickStickersContainerEvenly}>
-                {FRESH_CHAT_STICKERS.map((st) => (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={s.quickStickersScrollRow}
+              >
+                {NEW_CHAT_STICKERS.map((st) => (
                   <TouchableOpacity
                     key={st.id}
                     style={s.quickStickerCard}
@@ -4230,14 +5450,15 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                   >
                     <LottieView
                       source={{ uri: st.url }}
-                      autoPlay={false}
-                      progress={1}
+                      autoPlay={true}
+                      loop={true}
                       style={s.quickStickerLottie}
                       resizeMode="contain"
                     />
+                    <Text style={s.quickStickerCardLabel}>{st.emoji}</Text>
                   </TouchableOpacity>
                 ))}
-              </View>
+              </ScrollView>
             </View>
           )}
           {!isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' ? (
@@ -4331,16 +5552,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 micPanResponder={micPanResponder}
                 micButtonScale={micButtonScale}
                 THEME_COLOR={theme.primary}
-                inputClearKey={inputClearKey}
-                onRegisterClear={(fn) => { clearInputRef.current = fn; }}
+                onRegisterClear={handleRegisterClearStable}
                 isDisabled={false}
-                onOpenStickerPicker={() => setStickerPickerVisible(true)}
+                onOpenStickerPicker={handleOpenStickerPickerStable}
                 isStickerPickerVisible={stickerPickerVisible}
-                onCloseStickerPicker={() => setStickerPickerVisible(false)}
-                onFocus={() => {
-                  setIsKeyboardOpen(true);
-                  setStickerPickerVisible(false);
-                }}
+                onCloseStickerPicker={handleCloseStickerPickerStable}
+                onFocus={handleInputFocusStable}
+                isCustomTheme={Boolean(chatTheme?.id && chatTheme.id !== 'default')}
+                chatTheme={chatTheme}
               />
 
               {isRecording && (
@@ -4375,19 +5594,49 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           )}
         </>
       )}
+        </Reanimated.View>
+      </View>
+
+      {/* Forward Message Modal */}
+      {showForwardModal && (
+        <ForwardMessageModal
+          visible={showForwardModal}
+          onClose={() => {
+            setShowForwardModal(false);
+            setMessagesToForward([]);
+          }}
+          messagesToForward={messagesToForward}
+          onForwardComplete={() => {
+            setSelectedMessageIds([]);
+          }}
+        />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <DeleteConfirmationModal
+          visible={showDeleteModal}
+          onClose={() => {
+            setShowDeleteModal(false);
+            setMessagesToDelete([]);
+          }}
+          allCanUnsend={canUnsendAll(messagesToDelete)}
+          selectedCount={messagesToDelete.length}
+          onDeleteForMe={() => handleDeleteForMe(messagesToDelete)}
+          onUnsendForEveryone={() => handleUnsendForEveryone(messagesToDelete)}
+        />
+      )}
 
       <Toast />
 
-      {/* ── Lottie Sticker Picker Sheet (Root Level Overlay) ──────────────────────────────── */}
-      {(isStickerSheetReady || stickerPickerVisible) && (
-        <StickerPickerSheet
-          visible={stickerPickerVisible}
-          stickerPacks={BUILT_IN_STICKER_PACKS}
-          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-          onClose={() => setStickerPickerVisible(false)}
-          sheetHeight={286}
-        />
-      )}
+      {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide) ── */}
+      <StickerPickerSheet
+        visible={stickerPickerVisible}
+        stickerPacks={BUILT_IN_STICKER_PACKS}
+        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+        onClose={() => setStickerPickerVisible(false)}
+        sheetHeight={286}
+      />
 
       {!!stickerPreview && (
         <StickerPreviewModal
@@ -4399,7 +5648,9 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           restoreNavBarColor={theme.background}
           onSend={async (uri, mimeType, caption) => {
             setStickerPreview(null);
-            await sendImageMessage({ uri, type: mimeType });
+            const isGif = !!(mimeType === 'image/gif' || mimeType?.includes('gif') || uri?.toLowerCase().endsWith('.gif') || uri?.toLowerCase().includes('gif'));
+            const isSticker = !isGif;
+            await sendImageMessage({ uri, type: mimeType, isSticker, isGif }, caption);
           }}
         />
       )}
@@ -4482,14 +5733,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           onSend={(items) => {
             setMultiPreviewVisible(false);
             setSelectedMultiMedia([]);
+            const mediaGroupId = items.length > 1 ? `mg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}` : undefined;
             items.forEach(item => {
-              sendImageMessage(item, item.caption);
+              sendImageMessage(item, item.caption, mediaGroupId);
             });
           }}
           themeColor={theme.primary}
         />
       )}
-        <Reanimated.View style={animatedSpacerStyle} />
     </KeyboardWrapperView>
       {groupListVisible && (
         <MediaGroupListModal
@@ -4517,12 +5768,29 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         }}
       />
       )}
-    </View>
-      );
-      };
+      {showThemeModal && (
+        <ChatThemeModal
+          visible={showThemeModal}
+          onClose={() => setShowThemeModal(false)}
+          currentTheme={chatTheme}
+          conversationId={conversationId}
+          onSelectTheme={(theme) => setChatTheme(theme)}
+        />
+      )}
 
-const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.background },
+      {/* Double-tap reaction animation overlay (At absolute screen root for pixel-perfect coordinates) */}
+      <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={currentUser?.quick_reaction || '❤️'} />
+    </View>
+  );
+};
+
+let _cachedStyles: ReturnType<typeof StyleSheet.create> | null = null;
+let _cachedTheme: any = null;
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => {
+  if (_cachedStyles && _cachedTheme === theme) return _cachedStyles;
+  _cachedTheme = theme;
+  _cachedStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: 'transparent' },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -4533,61 +5801,68 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: theme.background,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    height: 60,
+    backgroundColor: 'transparent',
+    paddingLeft: 6,
+    paddingRight: 8,
+    paddingVertical: spacing.xs,
+    height: 56,
+    zIndex: 10,
   },
-  headerLeft: { width: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 28, color: theme.textPrimary, fontWeight: '300' },
+  headerLeft: { width: 36, justifyContent: 'center', alignItems: 'center' },
+  backIcon: { fontSize: 26, color: theme.textPrimary, fontWeight: '300' },
   headerBackButton: {
-    marginRight: spacing.sm,
-    padding: spacing.xs,
+    marginRight: 2,
+    padding: 6,
   },
   headerCenter: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    marginRight: 4,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: spacing.sm,
+    marginRight: 0,
   },
   callIcon: {
-    marginLeft: spacing.md,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    marginLeft: 4,
+    width: 33,
+    height: 33,
+    borderRadius: 16.5,
     backgroundColor: theme.inputBackground,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  callIconText: { fontSize: 18 },
+  callIconText: { fontSize: 16 },
   headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: spacing.sm,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    marginRight: 6,
   },
   headerSticker: {
-    fontSize: 28,
+    fontSize: 26,
     textAlign: 'center',
     textAlignVertical: 'center',
   },
   headerAvatarText: {
     color: theme.primary,
-    fontSize: fontSize.lg,
+    fontSize: fontSize.md,
     fontWeight: 'bold',
     textAlign: 'center',
     textAlignVertical: 'center',
   },
-  headerTextContainer: { flex: 1 },
-  headerName: { fontSize: fontSize.lg, fontWeight: '600', color: theme.textPrimary },
-  headerStatus: { fontSize: fontSize.xs, color: theme.textSecondary },
+  headerTextContainer: { flex: 1, justifyContent: 'center' },
+  headerName: { fontSize: 16, fontWeight: '600', color: theme.textPrimary, letterSpacing: 0.1 },
+  headerStatus: { fontSize: 12, color: theme.textSecondary, marginTop: 1 },
   activeText: { color: '#25D366', fontWeight: '500' },
-  messagesList: { padding: spacing.md },
+  messagesList: {
+    paddingHorizontal: spacing.md,
+    paddingTop: 2,
+    paddingBottom: 8,
+  },
   loadingOlderContainer: {
     padding: spacing.md,
     alignItems: 'center',
@@ -4873,10 +6148,11 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   cancelReplyText: { fontSize: fontSize.lg, color: theme.textSecondary },
   inputContainer: {
     flexDirection: 'row',
-    padding: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingTop: 0,
+    paddingBottom: 2,
     backgroundColor: 'transparent',
     alignItems: 'flex-end',
-    minHeight: 56,
     zIndex: 1000,
   },
   recordingContainerInline: {
@@ -5046,7 +6322,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   scrollToBottomButton: {
     position: 'absolute',
     bottom: 12,
-    right: 16,
+    alignSelf: 'center',
     width: 38,
     height: 38,
     borderRadius: 19,
@@ -5061,6 +6337,12 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     shadowRadius: 4,
     elevation: 4,
     zIndex: 50,
+  },
+  scrollToBottomInner: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   scrollToBottomIcon: {
     fontSize: 20,
@@ -5190,6 +6472,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     height: 60,
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
+    zIndex: 10,
   },
   searchInput: {
     flex: 1,
@@ -5241,8 +6524,8 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     maxWidth: '100%',
   },
   imageContainer: {
-    width: 250,
-    height: 250,
+    width: 210,
+    height: 210,
     marginTop: 2,
     borderRadius: borderRadius.lg,
     overflow: 'hidden',
@@ -5251,7 +6534,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
   },
   videoContainer: {
-    width: 250,
+    width: 210,
     aspectRatio: 16 / 9,
     marginTop: 2,
     borderRadius: borderRadius.lg,
@@ -5266,7 +6549,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   },
   audioContainer: {
     marginTop: 2,
-    width: 250,
+    width: 220,
     backgroundColor: 'rgba(0,0,0,0.05)',
     borderRadius: borderRadius.md,
     padding: spacing.xs,
@@ -5331,10 +6614,16 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
   },
   quickStickersRowWrapper: {
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: 'transparent',
     borderTopWidth: 0,
     width: '100%',
+  },
+  quickStickersScrollRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 12,
   },
   quickStickersContainerEvenly: {
     flexDirection: 'row',
@@ -5343,15 +6632,154 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     width: '100%',
   },
   quickStickerCard: {
-    width: 60,
-    height: 60,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.03)',
+    minWidth: 56,
   },
   quickStickerLottie: {
-    width: 56,
-    height: 56,
+    width: 48,
+    height: 48,
+  },
+  quickStickerCardLabel: {
+    fontSize: 11,
+    color: theme.textSecondary,
+    fontWeight: '600',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  selectionCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    alignSelf: 'center',
+  },
+  newChatCenteredOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    zIndex: 5,
+  },
+  newChatWelcomeCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: theme.card || theme.surface,
+    borderRadius: 24,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    elevation: 5,
+  },
+  newChatAvatar: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    marginBottom: 8,
+  },
+  newChatName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: theme.textPrimary,
+    textAlign: 'center',
+  },
+  newChatUsername: {
+    fontSize: 13,
+    color: theme.textMuted || theme.textSecondary,
+    fontWeight: '500',
+    marginTop: 1,
+    marginBottom: 4,
+  },
+  newChatBio: {
+    fontSize: 12.5,
+    color: theme.textSecondary,
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 14,
+    paddingHorizontal: 8,
+    lineHeight: 17,
+  },
+  newChatActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 16,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  newChatActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    minHeight: 36,
+  },
+  newChatActionBtnSecondary: {
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
+  newChatActionBtnDisabled: {
+    opacity: 0.6,
+  },
+  newChatActionBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  newChatActionBtnTextSecondary: {
+    color: theme.textPrimary,
+  },
+  newChatStickersSection: {
+    width: '100%',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.border,
+    paddingTop: 10,
+    alignItems: 'center',
+  },
+  newChatStickersLabel: {
+    fontSize: 11.5,
+    color: theme.textMuted || theme.textSecondary,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  quickStickersScrollContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    gap: 10,
+  },
+  quickStickerScrollBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0, 0, 0, 0.03)',
+    minWidth: 48,
+  },
+  quickStickerScrollEmoji: {
+    fontSize: 10,
+    marginTop: 2,
+    color: theme.textSecondary,
+    fontWeight: '600',
   },
 });
+  return _cachedStyles;
+};
 
 export const ChatRoomScreen = React.memo(ChatRoomScreenComponent);

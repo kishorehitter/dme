@@ -178,12 +178,22 @@ class TriviaChallengeView(APIView):
             'body': f'{sender_name} challenged you to {category_label} {set_label}. Tap to play!'
         }
 
+        # Stable deduplication ID — scoped per sender so repeated challenges don't stack endlessly
+        import uuid
+        notif_id = f'trivia_challenge_{request.user.id}_{int(__import__("time").time())}'
+
         data = {
             'type': 'trivia_challenge',
-            'challenge_category': str(category),
-            'challenge_set': str(set_id),
+            # Human-readable labels — used for notification display and deep-link routing
+            'category_label': category_label,
+            'set_label': set_label,
             'challenger_name': str(sender_name),
             'challenger_id': str(request.user.id),
+            # Raw routing keys (internal — not shown to user)
+            '_category': str(category),
+            '_set_id': str(set_id),
+            # Stable deduplication ID to prevent duplicate notifications
+            'notif_id': notif_id,
         }
 
         # Send with a 7-day TTL so the challenge is delivered even if the friend is offline

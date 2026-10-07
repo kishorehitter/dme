@@ -687,19 +687,59 @@ const StatusViewerScreen: React.FC = () => {
   };
 
   const handleSave = async () => {
-    if (saving) return;
+    if (saving || !current) return;
     setSaving(true);
     try {
-      const RNFetchBlob    = (await import('rn-fetch-blob')).default;
       const { CameraRoll } = await import('@react-native-camera-roll/camera-roll');
-      const { dirs }       = RNFetchBlob.fs;
-      const ext            = isVideo ? 'mp4' : 'jpg';
-      const dest           = `${dirs.CacheDir}/sv_${current.id}.${ext}`;
-      const url            = current.media_url || current.media_file;
-      await RNFetchBlob.config({ path: dest }).fetch('GET', url);
-      await CameraRoll.saveAsset(`file://${dest}`, { type: isVideo ? 'video' : 'photo' });
-      Alert.alert('Saved', 'Saved to your gallery.');
+      const RNFS = (await import('react-native-fs')).default;
+      const url = current.media_url || current.media_file;
+      if (!url) throw new Error('No media URL available.');
+
+      const isGifMedia = url.toLowerCase().includes('.gif') || url.toLowerCase().includes('format=gif');
+      const ext = isVideo ? 'mp4' : (isGifMedia ? 'gif' : 'jpg');
+      const mediaKind: 'video' | 'photo' = isVideo ? 'video' : 'photo';
+
+      if (Platform.OS === 'android' && Platform.Version < 29) {
+        const { PermissionsAndroid } = await import('react-native');
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Permission Denied', 'Storage permission is required to save media.');
+          return;
+        }
+      }
+
+      let localFilePath = '';
+      const dest = `${RNFS.CachesDirectoryPath}/sv_${current.id}.${ext}`;
+
+      if (url.startsWith('file://') || url.startsWith('/')) {
+        const cleanPath = url.startsWith('file://') ? url.slice(7) : url;
+        try {
+          await RNFS.copyFile(cleanPath, dest);
+          localFilePath = `file://${dest}`;
+        } catch {
+          localFilePath = url.startsWith('file://') ? url : `file://${url}`;
+        }
+      } else if (url.startsWith('content://')) {
+        await RNFS.copyFile(url, dest);
+        localFilePath = `file://${dest}`;
+      } else {
+        const download = RNFS.downloadFile({
+          fromUrl: url,
+          toFile: dest,
+        });
+        const res = await download.promise;
+        if (res.statusCode >= 400) {
+          throw new Error(`Download failed with status ${res.statusCode}`);
+        }
+        localFilePath = `file://${dest}`;
+      }
+
+      await CameraRoll.save(localFilePath, { type: mediaKind });
+      Alert.alert('Saved', isGifMedia ? 'GIF saved to gallery.' : 'Saved to your gallery.');
     } catch (err: any) {
+      console.error('[StatusViewer] Save error:', err);
       Alert.alert('Save failed', err?.message ?? 'Check storage permissions.');
     } finally {
       setSaving(false);

@@ -36,27 +36,64 @@ const ChatInputArea = memo(({
     isStickerPickerVisible,
     onCloseStickerPicker,
     onFocus,
+    isCustomTheme,
+    chatTheme,
 }: any) => {
 
     const { theme, isDark } = useTheme();
-    const styles = dynamicStyles(theme);
+    const styles = React.useMemo(() => dynamicStyles(theme), [theme]);
     const inputRef = useRef<RichTextInputRef>(null);
     const prevInputText = useRef(inputText);
+    // Mirror text in a ref so handleSend always reads the latest value
+    // synchronously without waiting for a React re-render cycle.
+    const localInputTextRef = useRef(inputText || '');
     const [localInputText, setLocalInputText] = useState(inputText || '');
     const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
     const [localClearKey, setLocalClearKey] = useState(0);
-    const isTypingRef = useRef(false);
+
+    // ── Instant native button toggle (bypasses React render entirely) ─────────
+    // Animated.Value.setValue() pushes directly to the native layer with zero
+    // JS reconciliation — this is how WhatsApp achieves 0-frame button switching.
+    //   0 = mic visible / send hidden
+    //   1 = send visible / mic hidden
+    const hasTextAnim = useRef(
+      new Animated.Value((inputText || '').length > 0 ? 1 : 0)
+    ).current;
 
     const handleTypingInternal = useCallback((text: string) => {
-      isTypingRef.current = true;
+      const t0 = performance.now();
+      localInputTextRef.current = text;
+      // Native instant toggle — no React re-render needed for button switch
+      hasTextAnim.setValue(text.length > 0 ? 1 : 0);
       setLocalInputText(text);
       handleTyping?.(text);
-    }, [handleTyping]);
+      const dt = (performance.now() - t0).toFixed(2);
+      if (text.length === 1) {
+        console.log(`⏱️ [PERF: TYPING] Native button switch in: ${dt}ms`);
+      }
+    }, [handleTyping, hasTextAnim]);
 
+    const handleSend = useCallback(() => {
+      const sendStartTime = performance.now();
+      const textToSend = (localInputTextRef.current || '').trim();
+      if (!textToSend) return;
+      // 1. Native instant reset — mic appears before React has rendered anything
+      hasTextAnim.setValue(0);
+      localInputTextRef.current = '';
+      setLocalInputText('');
+      setInputHeight(MIN_HEIGHT);
+      inputRef.current?.clear();
+      const resetTime = (performance.now() - sendStartTime).toFixed(2);
+      console.log(`⚡ [PERF: RESET] Native button+input reset in: ${resetTime}ms`);
+      // 2. Dispatch send
+      sendMessage?.(textToSend, sendStartTime);
+    }, [sendMessage, hasTextAnim]);
     useEffect(() => {
       const emojiSub = DeviceEventEmitter.addListener('INSERT_EMOJI_CHAR', (emoji) => {
         setLocalInputText(prev => {
           const next = prev + emoji;
+          localInputTextRef.current = next;
+          hasTextAnim.setValue(next.length > 0 ? 1 : 0);
           inputRef.current?.setText(next);
           handleTyping?.(next);
           return next;
@@ -66,18 +103,21 @@ const ChatInputArea = memo(({
       return () => {
         emojiSub.remove();
       };
-    }, []);
+    }, [handleTyping, hasTextAnim]);
 
     // Register clear function with parent on mount
     useEffect(() => {
       onRegisterClear?.(() => {
         setLocalClearKey(k => k + 1);
         setInputHeight(MIN_HEIGHT);
+        localInputTextRef.current = '';
+        hasTextAnim.setValue(0); // native instant: show mic immediately
         setLocalInputText('');
         inputRef.current?.clear();
-        inputRef.current?.focus();
+        // NOTE: No focus() here — calling focus after clear causes Android keyboard
+        // show/hide animation thrash which stalls the UI for 1-2s after every send.
       });
-    }, [onRegisterClear]);
+    }, [onRegisterClear, hasTextAnim]);
 
     useEffect(() => {
       return () => {
@@ -86,40 +126,33 @@ const ChatInputArea = memo(({
     }, []);
 
     const prevEditingId = useRef(editingMessageId);
-    // EDIT MODE: When editingMessageId changes to a truthy value,
-    // force-push inputText into the native field. This runs independently
-    // of the typing guard and guarantees the edit text always appears.
     useEffect(() => {
       if (editingMessageId && inputText) {
+        hasTextAnim.setValue(inputText.length > 0 ? 1 : 0);
         setLocalInputText(inputText);
         inputRef.current?.setText(inputText);
         prevInputText.current = inputText;
       } else if (prevEditingId.current && !editingMessageId) {
-        // If we stopped editing, clear the text
+        hasTextAnim.setValue(0);
         setLocalInputText('');
         inputRef.current?.clear();
         prevInputText.current = '';
       }
       prevEditingId.current = editingMessageId;
-    }, [editingMessageId]);
+    }, [editingMessageId, hasTextAnim]);
 
     const handleContentSizeChange = useCallback((event: any) => {
       const h = event.nativeEvent?.contentSize?.height;
-      console.log('[INPUT_GROWTH_DEBUG] ChatRoom onContentSizeChange height:', h);
       if (h) {
-        setInputHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, h)));
+        const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(h)));
+        setInputHeight(prev => (Math.abs(prev - next) >= 4 ? next : prev));
       }
     }, []);
-
 
     const handleContentCommitted = useCallback((event: any) => {
         const { uri, mimeType } = event.nativeEvent;
         if (uri) setStickerPreview({ uri, mimeType });
     }, [setStickerPreview]);
-
-    const handleSend = useCallback(() => {
-        sendMessage(localInputText);
-    }, [sendMessage, localInputText]);
 
     const placeholder = isDisabled ? 'Messaging is restricted' : (editingMessageId ? 'Edit your message...' : 'Message');
 
@@ -127,11 +160,24 @@ const ChatInputArea = memo(({
         <View style={styles.inputContainer}>
           {!isRecording && (
             <TouchableOpacity
-              style={[styles.attachmentButton, isDisabled && { opacity: 0.5 }]}
+              style={[
+                styles.attachmentButton,
+                {
+                  backgroundColor: isCustomTheme
+                    ? 'rgba(255, 255, 255, 0.22)'
+                    : (isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(0, 0, 0, 0.06)'),
+                },
+                isDisabled && { opacity: 0.5 },
+              ]}
               onPress={handleAttachment}
               disabled={isDisabled}
+              activeOpacity={0.7}
             >
-              <Icon name="add-outline" size={22} color={theme.icon} />
+              <Icon
+                name="add"
+                size={24}
+                color={isCustomTheme ? '#FFFFFF' : theme.textPrimary}
+              />
             </TouchableOpacity>
           )}
 
@@ -139,7 +185,17 @@ const ChatInputArea = memo(({
             const showStickerButton = !editingMessageId;
             return (
               <View
-                style={[styles.inputWrapper, { backgroundColor: theme.inputBackground }, isDisabled && { backgroundColor: theme.border }]}
+                style={[
+                  styles.inputWrapper,
+                  {
+                    backgroundColor: isCustomTheme
+                      ? 'rgba(0, 0, 0, 0.35)'
+                      : theme.inputBackground,
+                    borderWidth: isCustomTheme ? StyleSheet.hairlineWidth : 0,
+                    borderColor: isCustomTheme ? 'rgba(255, 255, 255, 0.18)' : 'transparent',
+                  },
+                  isDisabled && { backgroundColor: theme.border },
+                ]}
               >
                 {showStickerButton && (
                   <TouchableOpacity
@@ -159,26 +215,32 @@ const ChatInputArea = memo(({
                     accessibilityLabel={isStickerPickerVisible ? "Close sticker picker" : "Open sticker picker"}
                   >
                     <Icon
-                      name={isStickerPickerVisible ? "close-circle" : "sparkles-outline"}
+                      name={isStickerPickerVisible ? "close-circle" : "happy-outline"}
                       size={isStickerPickerVisible ? 22 : 24}
-                      color={isStickerPickerVisible ? (isDark ? "#8AB4F8" : "#1A73E8") : theme.icon}
+                      color={
+                        isStickerPickerVisible
+                          ? (isDark ? "#FFFFFF" : "#000000")
+                          : (isCustomTheme ? 'rgba(255, 255, 255, 0.85)' : theme.icon)
+                      }
                     />
                   </TouchableOpacity>
                 )}
 
                 <RichTextInput
-                  key={inputClearKey} 
                   ref={inputRef}
                   onFocus={onFocus}
                   style={[
                     styles.input,
-                    { height: inputHeight, color: theme.textPrimary },
+                    {
+                      height: inputHeight,
+                      color: isCustomTheme ? '#FFFFFF' : theme.textPrimary,
+                    },
                     showStickerButton ? { paddingLeft: 42 } : { paddingLeft: 12 },
                     isDisabled && { color: theme.textMuted }
                   ]}
                   pointerEvents={isDisabled ? 'none' : 'auto'}
                   placeholder={placeholder}
-                  placeholderTextColor={theme.placeholder}
+                  placeholderTextColor={isCustomTheme ? 'rgba(255, 255, 255, 0.60)' : theme.placeholder}
                   autoFocus={false}
                   onChangeText={handleTypingInternal}
                   onContentSizeChange={handleContentSizeChange}
@@ -193,7 +255,7 @@ const ChatInputArea = memo(({
           {isDisabled ? (
             <View
               style={[
-                styles.sendButton,
+                styles.actionButton,
                 { backgroundColor: theme.border },
               ]}
             >
@@ -204,42 +266,96 @@ const ChatInputArea = memo(({
                 style={{ marginLeft: 2 }}
               />
             </View>
-          ) : (!localInputText || localInputText.trim() === '' || isRecording) ? (
+          ) : (
             <Animated.View
               style={[
-                styles.micButton,
-                isRecording && styles.micButtonRecording,
-                { transform: [{ scale: isRecording ? 1 : micButtonScale }] },
+                styles.actionButton,
+                {
+                  backgroundColor: isRecording
+                    ? '#FF4444'
+                    : editingMessageId
+                    ? '#FF9800'
+                    : hasTextAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [
+                          isCustomTheme
+                            ? 'rgba(255, 255, 255, 0.22)'
+                            : (isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(0, 0, 0, 0.06)'),
+                          '#0EA5E9',
+                        ],
+                      }),
+                },
+                isRecording && styles.actionButtonRecording,
               ]}
-              {...micPanResponder.panHandlers}
-              collapsable={false}
             >
-              <Icon
-                name="mic"
-                size={22}
-                color={isRecording ? '#FFF' : theme.icon}
-              />
+              <TouchableOpacity
+                style={StyleSheet.absoluteFill}
+                onPressIn={() => {
+                  const text = (localInputTextRef.current || '').trim();
+                  if (text.length > 0) {
+                    handleSend();
+                  }
+                }}
+                activeOpacity={0.8}
+                delayPressIn={0}
+                {...micPanResponder.panHandlers}
+              >
+                {/* 1. Send Icon (Cross-fades in instantly on typing) */}
+                <Animated.View
+                  style={[
+                    styles.iconLayer,
+                    {
+                      opacity: hasTextAnim,
+                      transform: [
+                        {
+                          scale: hasTextAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0.4, 1],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                  pointerEvents="none"
+                >
+                  <Icon
+                    name={editingMessageId ? 'checkmark' : 'send'}
+                    size={20}
+                    color="#FFF"
+                    style={!editingMessageId ? { marginLeft: 2 } : {}}
+                  />
+                </Animated.View>
+
+                {/* 2. Mic Icon (Cross-fades in instantly when empty) */}
+                <Animated.View
+                  style={[
+                    styles.iconLayer,
+                    {
+                      opacity: hasTextAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [1, 0],
+                      }),
+                      transform: [
+                        { scale: isRecording ? 1 : micButtonScale },
+                        {
+                          scale: hasTextAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [1, 0.4],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                  pointerEvents="none"
+                >
+                  <Icon
+                    name="mic"
+                    size={22}
+                    color={isCustomTheme ? '#FFFFFF' : theme.textPrimary}
+                  />
+                </Animated.View>
+              </TouchableOpacity>
             </Animated.View>
-          ) : (
-            <TouchableOpacity
-              style={[
-                styles.sendButton,
-                { backgroundColor: editingMessageId ? '#FF9800' : THEME_COLOR },
-              ]}
-              onPress={handleSend}
-              disabled={isSending}
-            >
-              {isSending ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <Icon
-                  name={editingMessageId ? 'checkmark' : 'send'}
-                  size={20}
-                  color="#FFF"
-                  style={!editingMessageId ? { marginLeft: 2 } : {}}
-                />
-              )}
-            </TouchableOpacity>
           )}
         </View>
     );
@@ -294,25 +410,26 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
   },
-  micButton: {
+  actionButton: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    // backgroundColor applied via inline theme
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 4,
-    marginBottom: 1,
-  },
-  micButtonRecording: { backgroundColor: '#FF4444' },
-  sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 4,
     marginBottom: 2,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  actionButtonRecording: {
+    backgroundColor: '#FF4444',
+  },
+  iconLayer: {
+    position: 'absolute',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 38,
+    height: 38,
   },
 });
 

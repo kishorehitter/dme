@@ -231,12 +231,13 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'conversation', 'sender', 'sender_id', 'content', 'message_type',
             'media_file', 'media_url', 'thumbnail', 'is_read', 'delivered_at', 'is_deleted', 'created_at', 'edited_at',
-            'reply_to', 'reactions', 'audio_duration'
+            'reply_to', 'reactions', 'audio_duration', 'media_group_id'
         )
         read_only_fields = ('id', 'conversation', 'sender', 'sender_id', 'is_read', 'delivered_at', 'is_deleted', 'created_at', 'edited_at', 'audio_duration')
         extra_kwargs = {
             'media_file': {'required': False},
             'content': {'required': False},
+            'media_group_id': {'required': False},
         }
 
     def get_reply_to(self, obj):

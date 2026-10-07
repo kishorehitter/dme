@@ -189,36 +189,57 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await _mark_delivered()
     async def disconnect(self, close_code):
         """Update last_seen and notify room when user disconnects."""
-        # Broadcast that user stopped typing
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'typing_indicator',
-                'user_id': self.user.id,
-                'user_name': self.user.display_name,
-                'is_typing': False
-            }
-        )
+        user = getattr(self, 'user', None)
+        room_group_name = getattr(self, 'room_group_name', None)
+        user_group_name = getattr(self, 'user_group_name', None)
+        conversation_id = getattr(self, 'conversation_id', None)
+
+        if room_group_name and user and getattr(user, 'is_authenticated', False):
+            # Broadcast that user stopped typing
+            try:
+                await self.channel_layer.group_send(
+                    room_group_name,
+                    {
+                        'type': 'typing_indicator',
+                        'user_id': user.id,
+                        'user_name': getattr(user, 'display_name', '') or str(user.id),
+                        'is_typing': False
+                    }
+                )
+            except Exception as e:
+                print(f"Error sending typing_indicator on disconnect: {e}")
 
         # Leave room group
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
+        if room_group_name:
+            try:
+                await self.channel_layer.group_discard(
+                    room_group_name,
+                    self.channel_name
+                )
+            except Exception as e:
+                print(f"Error discarding room group: {e}")
         
         # Leave user-specific update group
-        await self.channel_layer.group_discard(
-            self.user_group_name,
-            self.channel_name
-        )
+        if user_group_name:
+            try:
+                await self.channel_layer.group_discard(
+                    user_group_name,
+                    self.channel_name
+                )
+            except Exception as e:
+                print(f"Error discarding user group: {e}")
         
         # Remove from active conversations tracking
-        if self.user.id in user_active_conversations:
-            del user_active_conversations[self.user.id]
-            print(f"   📍 User {self.user.id} left conversation {self.conversation_id}")
+        if user and getattr(user, 'id', None) in user_active_conversations:
+            del user_active_conversations[user.id]
+            print(f"   📍 User {user.id} left conversation {conversation_id}")
         
         # Set last_seen to current time (user went offline)
-        await self.update_last_seen(online=False)
+        if user and getattr(user, 'is_authenticated', False):
+            try:
+                await self.update_last_seen(online=False)
+            except Exception as e:
+                print(f"Error updating last_seen on disconnect: {e}")
 
     @database_sync_to_async
     def update_last_seen(self, online: bool = False):

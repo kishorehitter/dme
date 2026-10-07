@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   Platform,
   Dimensions,
   Modal,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -19,8 +21,23 @@ import { pinNavBarColor } from '../utils/navBarPin';
 import { getAllCustomSets } from '../services/CustomTriviaStorage';
 import { getAllLocalChallenges, getChallengeExpiryStatus } from '../services/TriviaChallengeService';
 import { getFullScoreboardData } from '../services/TriviaScoreDB';
+import LottieStickerMessage from '../components/LottieStickerMessage';
 
 const { width } = Dimensions.get('window');
+
+const BookLoadingView = ({ isDark = true, bgColor }: { isDark?: boolean; bgColor?: string }) => {
+  return (
+    <View style={[styles.loadingContainer, { backgroundColor: bgColor || (isDark ? '#070D1E' : '#F8FAFC') }]}>
+      <View style={styles.glowBookWrapper}>
+        <LottieStickerMessage
+          url="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4da/lottie.json"
+          size={100}
+          autoPlay={true}
+        />
+      </View>
+    </View>
+  );
+};
 
 interface TriviaHubScreenProps {
   navigation: any;
@@ -58,6 +75,29 @@ export const TriviaHubScreen: React.FC<TriviaHubScreenProps> = ({ navigation }) 
   const { theme, isDark } = useTheme();
   const [language, setLanguage] = useState<'english' | 'tamil'>('english');
   const [activeTab, setActiveTab] = useState<HubTab>('aspirants');
+
+  // Animated Book Opening Splash (matches YouTube Discovery screen experience)
+  const [showSplash, setShowSplash] = useState(true);
+  const splashFadeAnim = useRef(new Animated.Value(1)).current;
+
+  const dismissSplash = useCallback(() => {
+    Animated.timing(splashFadeAnim, {
+      toValue: 0,
+      duration: 350,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: true,
+    }).start(() => {
+      setShowSplash(false);
+    });
+  }, [splashFadeAnim]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      dismissSplash();
+    }, 1200);
+
+    return () => clearTimeout(timer);
+  }, [dismissSplash]);
 
   // Dynamic live stats
   const [customSetsCount, setCustomSetsCount] = useState<number>(0);
@@ -806,6 +846,20 @@ export const TriviaHubScreen: React.FC<TriviaHubScreenProps> = ({ navigation }) 
           </View>
         </View>
       </Modal>
+
+      {/* ── Animated Book Opening Splash Overlay (matching YouTube Discovery) ── */}
+      {showSplash && (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            styles.splashOverlay,
+            { opacity: splashFadeAnim, backgroundColor: isDark ? '#070D1E' : '#F8FAFC' },
+          ]}
+          pointerEvents="none"
+        >
+          <BookLoadingView isDark={isDark} bgColor={isDark ? '#070D1E' : '#F8FAFC'} />
+        </Animated.View>
+      )}
     </View>
   );
 };
@@ -813,6 +867,22 @@ export const TriviaHubScreen: React.FC<TriviaHubScreenProps> = ({ navigation }) 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  splashOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  loadingContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  glowBookWrapper: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   header: {
     flexDirection: 'row',

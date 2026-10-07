@@ -88,9 +88,9 @@ export const lightTheme: ThemeColors = {
   tabBar:       '#FFFFFF',
 
   // Chat
-  chatBackground: '#F2F2F7',
-  myMessage:      '#0F62FE',   // blue sent bubble
-  theirMessage:   '#F2F2F7',   // neutral received bubble
+  chatBackground: '#F0F2F5',
+  myMessage:      '#243B53',   // Plain Matte Faded Navy Blue
+  theirMessage:   '#EAECEF',   // elegant light grayish received bubble
 
   // Text
   textPrimary:   '#111827',
@@ -156,7 +156,7 @@ export const darkTheme: ThemeColors = {
 
   // Chat
   chatBackground: '#050F1E',
-  myMessage:      '#0B3C68',   // deep navy sent bubble
+  myMessage:      '#243B53',   // Plain Matte Faded Navy Blue
   theirMessage:   '#0B1B2D',   // neutral dark received bubble
 
   // Text

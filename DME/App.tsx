@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import Toast from 'react-native-toast-message';
 import { AuthProvider } from './src/context/AuthContext';
 import { CallProvider } from './src/context/CallContext';
@@ -20,6 +21,7 @@ import { ThemeProvider } from './src/context/ThemeContext';
 import CallOverlay from './src/components/CallOverlay';
 import AppNavigator from './src/navigation/AppNavigator';
 import AppSplash from './src/components/AppSplash';
+import YouTubeDecipherWorker from './src/components/YouTubeDecipherWorker';
 import { CommonActions, NavigationContainerRef } from '@react-navigation/native';
 import fcmService, { FCMData, ACTIONS } from './src/services/fcm';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -145,6 +147,16 @@ export function handleNotificationNavigation(data: FCMData) {
     return;
   }
 
+  if (type === 'new_message' && (data.is_trivia_challenge === 'true' || data.is_trivia_score === 'true')) {
+    console.log('[App] 🏆 Trivia group contest notification pressed, navigating to TriviaChallenges');
+    navigationRef.dispatch(
+      CommonActions.navigate('TriviaChallenges', {
+        initialTab: 'my_invites',
+      }),
+    );
+    return;
+  }
+
   if (type === 'new_message' && (data.conv_id || data.conversation_id)) {
     const convId = data.conv_id || data.conversation_id;
     navigationRef.dispatch(
@@ -152,6 +164,7 @@ export function handleNotificationNavigation(data: FCMData) {
         conversationId: parseInt(convId!, 10),
       }),
     );
+    return;
   }
 
   if (type === 'music_invite') {
@@ -170,12 +183,14 @@ export function handleNotificationNavigation(data: FCMData) {
   }
 
   if (type === 'trivia_challenge') {
-    console.log('[App] ⚔️ Trivia challenge FCM detected:', data.challenge_category, data.challenge_set);
+    const cat = data.category || data.challenge_category || data._category;
+    const sId = data.set_id || data.challenge_set || data._set_id;
+    console.log('[App] ⚔️ Trivia challenge FCM detected:', cat, sId);
     try {
       navigationRef.dispatch(
         CommonActions.navigate('TriviaSolo', {
-          challengeCategory: data.challenge_category,
-          challengeSet: data.challenge_set,
+          challengeCategory: cat,
+          challengeSet: sId,
         }),
       );
     } catch (e) {
@@ -185,11 +200,12 @@ export function handleNotificationNavigation(data: FCMData) {
   }
 
   if (type === 'trivia_challenge_token') {
-    console.log('[App] ⚔️ Trivia challenge deep link token:', (data as any).challengeToken);
+    const token = (data as any).challengeToken || (data as any)._challenge_token;
+    console.log('[App] ⚔️ Trivia challenge deep link token:', token);
     try {
       navigationRef.dispatch(
         CommonActions.navigate('TriviaSolo', {
-          challengeToken: (data as any).challengeToken,
+          challengeToken: token,
         }),
       );
     } catch (e) {
@@ -483,36 +499,39 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={styles.container}>
-      <SafeAreaProvider initialWindowMetrics={customInitialMetrics}>
-        <ThemeProvider>
-          <UpdateProvider>
-            <View style={styles.container}>
-              <StatusBar
-                translucent={true}
-                backgroundColor="transparent"
-                barStyle="light-content"
-              />
-              <AuthProvider>
-                <CallProvider>
-                  <AppNavigator
-                    setNavigationRef={setNavigationRef}
-                    onNavigatorReady={onNavigatorReady}
-                    isSplashFinished={isSplashFinished}
-                  />
-                  <CallOverlay />
-                  <Toast />
-                </CallProvider>
-              </AuthProvider>
-              {!isSplashFinished && (
-                <AppSplash 
-                  onFinish={() => setIsSplashFinished(true)} 
-                  startFadeOut={isAppReady}
+      <KeyboardProvider statusBarTranslucent={true} navigationBarTranslucent={true}>
+        <SafeAreaProvider initialWindowMetrics={customInitialMetrics}>
+          <ThemeProvider>
+            <UpdateProvider>
+              <View style={styles.container}>
+                <StatusBar
+                  translucent={true}
+                  backgroundColor="transparent"
+                  barStyle="light-content"
                 />
-              )}
-            </View>
-          </UpdateProvider>
-        </ThemeProvider>
-      </SafeAreaProvider>
+                <YouTubeDecipherWorker />
+                <AuthProvider>
+                  <CallProvider>
+                    <AppNavigator
+                      setNavigationRef={setNavigationRef}
+                      onNavigatorReady={onNavigatorReady}
+                      isSplashFinished={isSplashFinished}
+                    />
+                    <CallOverlay />
+                    <Toast />
+                  </CallProvider>
+                </AuthProvider>
+                {!isSplashFinished && (
+                  <AppSplash 
+                    onFinish={() => setIsSplashFinished(true)} 
+                    startFadeOut={isAppReady}
+                  />
+                )}
+              </View>
+            </UpdateProvider>
+          </ThemeProvider>
+        </SafeAreaProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

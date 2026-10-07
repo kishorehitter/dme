@@ -23,6 +23,7 @@ interface Props {
   videoId:        string;
   play:           boolean;
   muted?:         boolean;
+  initialPosition?: number;
   onReady?:       () => void;
   onStateChange?: (state: PlayerState) => void;
   onProgress?:    (currentTime: number, duration: number) => void;
@@ -34,6 +35,7 @@ interface Props {
   onAspectRatio?: (aspectRatio: number) => void;
   quality?:       string;
   onQualityChange?: (quality: string) => void;
+  onExactResolution?: (resolution: string) => void;
   style?:         any;
   onQualitiesAvailable?: (qualities: string[]) => void;
   isFullscreen?:  boolean;
@@ -43,9 +45,30 @@ interface Props {
 const pendingCT  = { current: false };
 const pendingDur = { current: false };
 
+const formatQualityLabel = (q: string): string => {
+  switch (q) {
+    case 'auto': return 'Auto';
+    case 'hd4320': return '4320p';
+    case 'highres':
+    case 'hd2160': return '2160p';
+    case 'hd1440': return '1440p';
+    case 'hd1080': return '1080p';
+    case 'hd720': return '720p';
+    case 'large': return '480p';
+    case 'medium': return '360p';
+    case 'small': return '240p';
+    case 'tiny': return '144p';
+    default:
+      if (/^\d+$/.test(q)) return `${q}p`;
+      if (/^\d+p$/i.test(q)) return q.toLowerCase();
+      return q;
+  }
+};
+
 const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   const {
     videoId, play, muted = false,
+    initialPosition = 0,
     onReady, onStateChange, onProgress,
     onAdStarted, onAdEnded, onError,
     onVideoData,
@@ -53,6 +76,7 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     onAspectRatio,
     quality = 'highres',
     onQualityChange,
+    onExactResolution,
     style,
     onQualitiesAvailable,
     isFullscreen = false,
@@ -114,8 +138,275 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
   var skipInterval = null;
   var progressInt  = null;
   window.userPaused = false; 
-  var selectedQuality = '${quality}';
+  var selectedQuality = '${quality || "auto"}';
+  var lastAntiDrift = 0;
   window.videoAR = ${aspectRatio || 1.7777};
+
+  // ── Downlink Bitrate Profiles for ABR Hijacking ───────────────────────────
+  var DOWNLINK_MAP = {
+    'tiny':    { downlink: 0.25,  effectiveType: '2g', saveData: true  }, // 144p
+    'small':   { downlink: 0.50,  effectiveType: '2g', saveData: true  }, // 240p
+    'medium':  { downlink: 0.95,  effectiveType: '3g', saveData: false }, // 360p
+    'large':   { downlink: 1.80,  effectiveType: '3g', saveData: false }, // 480p
+    'hd720':   { downlink: 7.00,  effectiveType: '4g', saveData: false }, // 720p
+    'hd1080':  { downlink: 18.00, effectiveType: '4g', saveData: false }, // 1080p
+    'hd1440':  { downlink: 45.00, effectiveType: '4g', saveData: false }, // 1440p
+    'hd2160':  { downlink: 80.00, effectiveType: '4g', saveData: false }, // 2160p
+    'highres': { downlink: 80.00, effectiveType: '4g', saveData: false }, // 4K
+    'hd4320':  { downlink: 150.0, effectiveType: '4g', saveData: false }, // 8K
+    'auto':    { downlink: 100.0, effectiveType: '4g', saveData: false }, // Auto
+    'default': { downlink: 100.0, effectiveType: '4g', saveData: false }
+  };
+
+  function normalizeQualityKey(q) {
+    if (!q) return 'default';
+    var k = String(q).trim().toLowerCase();
+    if (k === 'auto' || k === 'default') return 'default';
+    if (k === '144' || k === '144p') return 'tiny';
+    if (k === '240' || k === '240p') return 'small';
+    if (k === '360' || k === '360p') return 'medium';
+    if (k === '480' || k === '480p') return 'large';
+    if (k === '720' || k === '720p') return 'hd720';
+    if (k === '1080' || k === '1080p') return 'hd1080';
+    if (k === '1440' || k === '1440p') return 'hd1440';
+    if (k === '2160' || k === '2160p') return 'hd2160';
+    if (k === '4320' || k === '4320p') return 'hd4320';
+    return k;
+  }
+
+  function saveQualityPref(q) {
+    try {
+      if (q && q !== 'auto' && q !== 'default') {
+        var payload = JSON.stringify({ data: q, expiration: Date.now() + 2592000000, creation: Date.now() });
+        localStorage.setItem('yt-player-quality', payload);
+        localStorage.setItem('yt-player-sticky-quality', payload);
+        localStorage.setItem('yt-player-playback-quality', q);
+      } else {
+        localStorage.removeItem('yt-player-quality');
+        localStorage.removeItem('yt-player-sticky-quality');
+        localStorage.removeItem('yt-player-playback-quality');
+      }
+    } catch(e) {}
+  }
+
+  function setQualityViaMenu(doc, q) {
+    if (!doc) return false;
+    var labelMap = {
+      'tiny': '144p',
+      'small': '240p',
+      'medium': '360p',
+      'large': '480p',
+      'hd720': '720p',
+      'hd1080': '1080p',
+      'hd1440': '1440p',
+      'hd2160': '2160p',
+      'highres': '2160p',
+      'auto': 'Auto',
+      'default': 'Auto'
+    };
+    var targetLabel = labelMap[q] || q;
+
+    try {
+      var mp = doc.getElementById('movie_player') || doc.querySelector('.html5-video-player');
+      if (mp) {
+        if (typeof mp.setPlaybackQualityRange === 'function') {
+          if (q === 'auto' || q === 'default') {
+            mp.setPlaybackQualityRange('small', 'highres');
+          } else {
+            mp.setPlaybackQualityRange(q, q);
+          }
+        }
+        if (typeof mp.setPlaybackQuality === 'function') {
+          mp.setPlaybackQuality(q);
+        }
+      }
+
+      var settingsBtn = doc.querySelector('.ytp-settings-button');
+      if (!settingsBtn) return false;
+
+      var menu = doc.querySelector('.ytp-settings-menu') || doc.querySelector('.ytp-panel-menu');
+      if (!menu || menu.offsetParent === null) {
+        settingsBtn.click();
+      }
+
+      setTimeout(function() {
+        try {
+          var items = doc.querySelectorAll('.ytp-menuitem');
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var text = item.textContent || '';
+            if (text.indexOf('Quality') !== -1 || text.indexOf('quality') !== -1 || text.indexOf('Auto') !== -1 || /\d+p/.test(text)) {
+              item.click();
+              break;
+            }
+          }
+          setTimeout(function() {
+            try {
+              var qItems = doc.querySelectorAll('.ytp-menuitem');
+              for (var j = 0; j < qItems.length; j++) {
+                var qItem = qItems[j];
+                var qText = (qItem.textContent || '').trim();
+                if (qText.indexOf(targetLabel) !== -1 || (targetLabel === 'Auto' && qText.indexOf('Auto') !== -1)) {
+                  qItem.click();
+                  break;
+                }
+              }
+            } catch(_) {}
+            try {
+              var openMenu = doc.querySelector('.ytp-settings-menu');
+              if (openMenu && openMenu.offsetParent !== null) {
+                settingsBtn.click();
+              }
+            } catch(_) {}
+          }, 40);
+        } catch(_) {}
+      }, 40);
+
+      return true;
+    } catch(e) {
+      return false;
+    }
+  }
+
+  function applyQuality(q, isUserAction) {
+    var rawQ = q || 'auto';
+    selectedQuality = rawQ;
+    var targetQ = normalizeQualityKey(rawQ);
+
+    // 1. Throttle / Spoof Downlink & fire connection change to steer YouTube ABR
+    var netProfile = DOWNLINK_MAP[targetQ] || DOWNLINK_MAP['default'];
+    window.__netDownlink = netProfile.downlink;
+    window.__netType = netProfile.effectiveType;
+    window.__saveData = netProfile.saveData;
+    if (typeof window.__dispatchNetChange === 'function') {
+      window.__dispatchNetChange();
+    }
+
+    // 2. Persist to localStorage sticky keys
+    saveQualityPref(targetQ);
+
+    var switchedViaDOM = false;
+    var hasInnerDoc = false;
+    var hasMoviePlayer = false;
+
+    // 3. Direct DOM Access to player (same-origin child iframe or top document)
+    try {
+      var docList = [];
+      var iframeEl = document.querySelector('iframe');
+      if (iframeEl) {
+        try {
+          var innerDoc = iframeEl.contentDocument || (iframeEl.contentWindow && iframeEl.contentWindow.document);
+          if (innerDoc) {
+            hasInnerDoc = true;
+            docList.push(innerDoc);
+          }
+        } catch(_) {}
+      }
+      docList.push(document);
+
+      for (var i = 0; i < docList.length; i++) {
+        var targetDoc = docList[i];
+        var mp = targetDoc.getElementById('movie_player') || targetDoc.querySelector('.html5-video-player');
+        if (mp) {
+          hasMoviePlayer = true;
+          try {
+            if (typeof mp.setPlaybackQualityRange === 'function') {
+              if (targetQ === 'default') mp.setPlaybackQualityRange('small', 'highres');
+              else mp.setPlaybackQualityRange(targetQ, targetQ);
+              switchedViaDOM = true;
+            }
+          } catch(e) {}
+          try {
+            if (typeof mp.setPlaybackQuality === 'function') {
+              mp.setPlaybackQuality(targetQ);
+              switchedViaDOM = true;
+            }
+          } catch(e) {}
+        }
+        if (setQualityViaMenu(targetDoc, targetQ)) {
+          switchedViaDOM = true;
+        }
+      }
+    } catch(e) {}
+
+    // 4. Clamping on public player instance
+    if (player) {
+      try {
+        if (typeof player.setPlaybackQualityRange === 'function') {
+          if (targetQ === 'default') {
+            player.setPlaybackQualityRange('small', 'highres');
+          } else {
+            player.setPlaybackQualityRange(targetQ, targetQ);
+          }
+        }
+      } catch(e) {}
+
+      try {
+        if (typeof player.setPlaybackQuality === 'function') {
+          player.setPlaybackQuality(targetQ);
+        }
+      } catch(e) {}
+    }
+
+    // 5. Send postMessage directly to child iframe window
+    try {
+      var iframe = document.querySelector('iframe');
+      if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage(JSON.stringify({
+          event: 'command',
+          func: 'setPlaybackQuality',
+          args: [targetQ]
+        }), '*');
+
+        if (targetQ !== 'default') {
+          iframe.contentWindow.postMessage(JSON.stringify({
+            event: 'command',
+            func: 'setPlaybackQualityRange',
+            args: [targetQ, targetQ]
+          }), '*');
+        }
+      }
+    } catch(e) {}
+
+    // 6. Set quality on player if available (without reloading video)
+    if (player && typeof player.setPlaybackQuality === 'function') {
+      try {
+        player.setPlaybackQuality(targetQ);
+      } catch(e) {}
+    }
+
+    // 7. Adjust viewport dimensions to steer YouTube internal ABR engine
+    adjustPlayerSize(targetQ);
+
+    // 8. Diagnostic reporting
+    toRN({
+      type: 'qualityDebug',
+      targetQuality: targetQ,
+      switchedViaDOM: switchedViaDOM,
+      hasInnerDoc: hasInnerDoc,
+      hasMoviePlayer: hasMoviePlayer,
+      currentQuality: (player && typeof player.getPlaybackQuality === 'function') ? player.getPlaybackQuality() : 'unknown',
+      availableQualities: (player && typeof player.getAvailableQualityLevels === 'function') ? player.getAvailableQualityLevels() : []
+    });
+  }
+  window.applyQuality = applyQuality;
+
+  // Apply initial quality configuration right away (sets downlink spoofing & localStorage before player initializes)
+  applyQuality(selectedQuality, false);
+
+  var Q_WIDTHS = {
+    tiny: 256,
+    small: 426,
+    medium: 640,
+    large: 854,
+    hd720: 1280,
+    hd1080: 1920,
+    hd1440: 2560,
+    hd2160: 3840,
+    highres: 3840,
+    default: 1920,
+    auto: 1920
+  };
 
   function adjustPlayerSize(quality) {
     var p = document.getElementById('player');
@@ -129,35 +420,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     }
     
     var ar = window.videoAR || ${aspectRatio || 1.7777};
-    var W, H;
-    switch(quality) {
-      case 'tiny': // 144p
-        W = 160;
-        break;
-      case 'small': // 240p
-        W = 320;
-        break;
-      case 'medium': // 360p
-        W = 480;
-        break;
-      case 'large': // 480p
-        W = 720;
-        break;
-      case 'hd720': // 720p
-        W = 1280;
-        break;
-      case 'hd1080': // 1080p
-      case 'highres': // 4K/highres
-        W = 1920;
-        break;
-      case 'auto':
-      default:
-        p.style.width = '100%';
-        p.style.height = '100%';
-        p.style.transform = 'none';
-        return;
-    }
-    H = Math.round(W / ar);
+    var targetQ = quality || selectedQuality || 'auto';
+    var W = Q_WIDTHS[targetQ] || 1920;
+    var H = Math.round(W / ar);
     
     var scaleX = containerWidth / W;
     var scaleY = containerHeight / H;
@@ -170,34 +435,12 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     p.style.height = H + 'px';
     p.style.transform = 'translate(' + offsetX + 'px, ' + offsetY + 'px) scale(' + scale + ')';
     p.style.transformOrigin = 'top left';
-    
-    if (player && typeof player.setPlaybackQuality === 'function') {
-      try {
-        var targetQ = quality === 'auto' ? 'default' : quality;
-        player.setPlaybackQuality(targetQ);
-      } catch(e) {}
-    }
   }
   window.adjustPlayerSize = adjustPlayerSize;
 
   function updatePlayerSizeByState() {
     if (!player) return;
-    var state = 'paused';
-    try {
-      var s = player.getPlayerState();
-      if (s === 1) state = 'playing'; // Only 1 = playing (avoid buffering state 3 to prevent giant loading spinners)
-    } catch(e) {}
-    
-    if (state === 'playing') {
-      // If we are still waiting for play overlays to fade out, keep it at 1080p viewport
-      if (window.playResizeTimeout) {
-        adjustPlayerSize('hd1080');
-      } else {
-        adjustPlayerSize(selectedQuality);
-      }
-    } else {
-      adjustPlayerSize('hd1080'); // small overlays when paused/buffering
-    }
+    adjustPlayerSize(selectedQuality);
   }
   window.updatePlayerSizeByState = updatePlayerSizeByState;
 
@@ -349,6 +592,13 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
       img.crossOrigin = 'Anonymous';
       img.onload = function() {
         try {
+          if (isMaxRes) {
+            toRN({ type: 'qualitiesAvailable', qualities: ['auto', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'] });
+          } else {
+            toRN({ type: 'qualitiesAvailable', qualities: ['auto', 'hd720', 'large', 'medium', 'small', 'tiny'] });
+          }
+        } catch(e) {}
+        try {
           var W = 160;
           var H = Math.round(W * (img.naturalHeight / img.naturalWidth));
           if (!H || H <= 0) H = 90;
@@ -427,7 +677,13 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         } catch(e) {}
       };
       img.onerror = function() {
-        if (isMaxRes) checkThumb('https://i.ytimg.com/vi/' + vId + '/sddefault.jpg', false);
+        if (isMaxRes) {
+          checkThumb('https://i.ytimg.com/vi/' + vId + '/sddefault.jpg', false);
+        } else {
+          try {
+            toRN({ type: 'qualitiesAvailable', qualities: ['auto', 'large', 'medium', 'small', 'tiny'] });
+          } catch(e) {}
+        }
       };
       img.src = url;
     }
@@ -441,7 +697,11 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
 
   function onYouTubeIframeAPIReady() {
     try {
-      Object.defineProperty(window, 'devicePixelRatio', { value: 1, writable: false });
+      Object.defineProperty(window, 'devicePixelRatio', { value: 3.0, writable: true });
+      Object.defineProperty(screen, 'width', { value: 1920, writable: true });
+      Object.defineProperty(screen, 'height', { value: 1080, writable: true });
+      Object.defineProperty(screen, 'availWidth', { value: 1920, writable: true });
+      Object.defineProperty(screen, 'availHeight', { value: 1080, writable: true });
     } catch(e) {}
     player = new YT.Player('player', {
       width:  '100%',
@@ -457,30 +717,37 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         cc_load_policy: 0,
         fs:             0,
         disablekb:      1,
-        origin:         'https://localhost',
-        suggestedQuality: '${quality}',
+        origin:         'https://lonelycpp.github.io',
+        widget_referrer:'https://lonelycpp.github.io',
+        suggestedQuality: normalizeQualityKey('${quality || "hd1080"}'),
       },
       events: {
         onReady:       function(e) {
           var p = e.target;
           if (window.lastPlayerPosition && window.lastPlayerPosition > 1) {
             try { p.seekTo(window.lastPlayerPosition, true); } catch(err) {}
+          } else if (${initialPosition || 0} > 1) {
+            try { p.seekTo(${initialPosition || 0}, true); } catch(err) {}
           }
           var originalPlay = p.playVideo;
           p.playVideo = function() {
-            adjustPlayerSize('hd1080');
+            adjustPlayerSize(selectedQuality);
             originalPlay.apply(p, arguments);
           };
           var originalPause = p.pauseVideo;
           p.pauseVideo = function() {
-            adjustPlayerSize('hd1080');
+            adjustPlayerSize(selectedQuality);
             originalPause.apply(p, arguments);
           };
 
           updatePlayerSizeByState();
+          applyQuality(selectedQuality, false);
           var qualities = [];
           if (p && typeof p.getAvailableQualityLevels === 'function') {
-            qualities = p.getAvailableQualityLevels();
+            qualities = p.getAvailableQualityLevels() || [];
+          }
+          if (!qualities || qualities.length === 0) {
+            qualities = ['auto', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
           }
           toRN({ type: 'playerReady', qualities: qualities });
           startAdEngine();
@@ -508,20 +775,55 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
               clearTimeout(window.playResizeTimeout);
               window.playResizeTimeout = null;
             }
-            adjustPlayerSize('hd1080'); // keep it 1080p viewport when buffering/paused/etc.
+            adjustPlayerSize(selectedQuality);
           }
           
           var qualities = [];
           if (player && typeof player.getAvailableQualityLevels === 'function') {
-            qualities = player.getAvailableQualityLevels();
+            qualities = player.getAvailableQualityLevels() || [];
           }
           
-          toRN({ type: 'stateChange', state: state, qualities: qualities });
+          if (qualities && qualities.length > 0) {
+            toRN({ type: 'stateChange', state: state, qualities: qualities });
+          } else {
+            toRN({ type: 'stateChange', state: state });
+          }
           postVideoData();
           setTimeout(hideYouTubeUI, 200);
         },
         onPlaybackQualityChange: function(e) {
-          toRN({ type: 'playbackQualityChange', quality: e.data });
+          var newQ = e.data;
+          var qualities = [];
+          if (player && typeof player.getAvailableQualityLevels === 'function') {
+            qualities = player.getAvailableQualityLevels() || [];
+          }
+          if (qualities && qualities.length > 0) {
+            toRN({ type: 'playbackQualityChange', quality: newQ, qualities: qualities });
+          } else {
+            toRN({ type: 'playbackQualityChange', quality: newQ });
+          }
+
+          // Anti-drift watchdog: prevent YouTube ABR from bouncing away from user selection
+          if (selectedQuality && selectedQuality !== 'auto') {
+            var targetQ = normalizeQualityKey(selectedQuality);
+            var now = Date.now();
+            if (newQ !== targetQ && newQ !== selectedQuality) {
+              if (now - lastAntiDrift > 2000) {
+                lastAntiDrift = now;
+                if (window.__dispatchNetChange) window.__dispatchNetChange();
+                try {
+                  if (player && typeof player.setPlaybackQualityRange === 'function') {
+                    player.setPlaybackQualityRange(targetQ, targetQ);
+                  }
+                } catch(err) {}
+                try {
+                  if (player && typeof player.setPlaybackQuality === 'function') {
+                    player.setPlaybackQuality(targetQ);
+                  }
+                } catch(err) {}
+              }
+            }
+          }
         },
         onError: function(e) {
           toRN({ type: 'playerError', code: e.data });
@@ -601,6 +903,9 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         case 'getDuration':
           toRN({ type: 'duration', id: cmd.id, value: player.getDuration() });
           break;
+        case 'setPlaybackQuality':
+          applyQuality(cmd.quality, true);
+          break;
       }
     } catch(ex) {}
   }
@@ -616,15 +921,22 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
           pendingCT.current  = false;
           pendingDur.current = false;
           onReady?.();
-          if (msg.qualities) {
+          if (msg.qualities && msg.qualities.length > 0) {
+            console.log(`🎥 [YouTubePlayer] Available qualities for this video:`, JSON.stringify(msg.qualities));
             onQualitiesAvailable?.(msg.qualities);
           }
           if (play)  inject(`window.userPaused = false; player && player.playVideo()`);
           if (muted) inject(`player && player.mute()`);
           break;
+        case 'qualitiesAvailable':
+          if (msg.qualities && msg.qualities.length > 0) {
+            console.log(`🎥 [YouTubePlayer] Available qualities for this video:`, JSON.stringify(msg.qualities));
+            onQualitiesAvailable?.(msg.qualities);
+          }
+          break;
         case 'stateChange':
           onStateChange?.(msg.state as PlayerState);
-          if (msg.qualities) {
+          if (msg.qualities && msg.qualities.length > 0) {
             onQualitiesAvailable?.(msg.qualities);
           }
           break;
@@ -652,12 +964,21 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         case 'qualityDiagnostic':
           console.log(`🔬 [QUALITY_DIAGNOSTIC] Requested: ${msg.target} | Active Quality: ${msg.current} | Available Levels: ${JSON.stringify(msg.available)}`);
           break;
+        case 'qualityDebug':
+          console.log(`🔬 [QUALITY_DEBUG]`, JSON.stringify(msg));
+          break;
         case 'dataTransferStats':
           console.log(`📊 [DATA TRANSFER] Total: ${msg.totalMB} MB | Live Rate: ${msg.speedKBps} KB/s | Resolution: ${msg.quality} (${msg.chunks} segments)`);
           break;
         case 'playbackQualityChange':
           console.log(`📺 [YouTubePlayer] YouTube player switched stream quality to: ${msg.quality}`);
           onQualityChange?.(msg.quality);
+          if (onExactResolution && msg.quality) {
+            onExactResolution(formatQualityLabel(msg.quality));
+          }
+          if (msg.qualities && msg.qualities.length > 0) {
+            onQualitiesAvailable?.(msg.qualities);
+          }
           break;
         case 'duration':
           if (resolversRef.current[msg.id]) {
@@ -715,6 +1036,12 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     }
   }, [aspectRatio]);
 
+  React.useEffect(() => {
+    if (quality) {
+      inject(`if (typeof window.applyQuality === 'function') { window.applyQuality('${quality}', true); }`);
+    }
+  }, [quality]);
+
   useImperativeHandle(ref, () => ({
     seekTo: (seconds) => {
       inject(`player && player.seekTo(${seconds}, true)`);
@@ -756,63 +1083,12 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
     },
     setPlaybackQuality: (q) => {
       console.log(`⚡ [YouTubePlayer] Requesting quality switch to: ${q}`);
-      inject(`
-        (function() {
-          selectedQuality = '${q}';
-          var targetQ = '${q}' === 'auto' ? 'default' : '${q}';
-
-          if (window.playResizeTimeout) {
-            clearTimeout(window.playResizeTimeout);
-            window.playResizeTimeout = null;
-          }
-
-          if (typeof adjustPlayerSize === 'function') {
-            adjustPlayerSize(selectedQuality);
-          }
-
-          if (window.player) {
-            try {
-              if (typeof window.player.setPlaybackQualityRange === 'function') {
-                if (targetQ === 'default') {
-                  window.player.setPlaybackQualityRange('small', 'highres');
-                } else {
-                  window.player.setPlaybackQualityRange(targetQ, targetQ);
-                }
-              }
-            } catch(e) {}
-
-            try {
-              if (typeof window.player.setPlaybackQuality === 'function') {
-                window.player.setPlaybackQuality(targetQ);
-              }
-            } catch(e) {}
-          }
-
-          try {
-            var iframe = document.getElementById('player') || document.querySelector('iframe');
-            if (iframe && iframe.contentWindow) {
-              iframe.contentWindow.postMessage(JSON.stringify({
-                event: 'command',
-                func: 'setPlaybackQuality',
-                args: [targetQ]
-              }), '*');
-
-              if (targetQ !== 'default') {
-                iframe.contentWindow.postMessage(JSON.stringify({
-                  event: 'command',
-                  func: 'setPlaybackQualityRange',
-                  args: [targetQ, targetQ]
-                }), '*');
-              }
-            }
-          } catch(e) {}
-        })();
-      `);
+      inject(`if (typeof window.applyQuality === 'function') { window.applyQuality('${q}', true); }`);
     }
   }), []);
 
   // ✅ Memoize WebView source to prevent reload flashing when parent component re-renders
-  const webViewSource = React.useMemo(() => ({ html, baseUrl: 'https://localhost/' }), [videoId]);
+  const webViewSource = React.useMemo(() => ({ html, baseUrl: 'https://www.youtube.com' }), [videoId]);
 
   return (
     <View style={[styles.container, style]}>
@@ -833,6 +1109,24 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
         userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         injectedJavaScriptBeforeContentLoaded={`
           (function() {
+            // 0. Display & Quality Metrics Spoofing (FHD 1080p Profile)
+            try {
+              Object.defineProperty(window, 'devicePixelRatio', { get: function() { return 3.0; }, configurable: true });
+              Object.defineProperty(screen, 'width', { get: function() { return 1920; }, configurable: true });
+              Object.defineProperty(screen, 'height', { get: function() { return 1080; }, configurable: true });
+              Object.defineProperty(screen, 'availWidth', { get: function() { return 1920; }, configurable: true });
+              Object.defineProperty(screen, 'availHeight', { get: function() { return 1080; }, configurable: true });
+            } catch(e) {}
+
+            // Pre-seed sticky quality in youtube.com domain storage
+            try {
+              var qVal = '${quality || "hd1080"}';
+              if (qVal === 'auto' || qVal === 'default') qVal = 'hd1080';
+              var exp = Date.now() + 2592000000;
+              localStorage.setItem('yt-player-sticky-quality', JSON.stringify({ data: qVal, expiration: exp, creation: Date.now() }));
+              localStorage.setItem('yt-player-quality', JSON.stringify({ data: JSON.stringify({ quality: qVal, previousQuality: 'auto' }), expiration: exp, creation: Date.now() }));
+            } catch(e) {}
+
             // 1. BLIND YouTube Detection
             var block = (e) => { e.stopImmediatePropagation(); e.stopPropagation(); };
             window.addEventListener('visibilitychange', block, true);
@@ -855,18 +1149,53 @@ const YoutubePlayer = memo(forwardRef<YoutubePlayerRef, Props>((props, ref) => {
             };
 
             // 4. DYNAMIC NETWORK INFORMATION PROXY (Quality / Bitrate Controller)
-            window.__netDownlink = 25.0;
+            window.__netDownlink = 50.0;
             window.__netType = '4g';
             window.__saveData = false;
+            var netListeners = [];
+            var _onchange = null;
 
             var netConn = {
               get downlink() { return window.__netDownlink || 25.0; },
               get effectiveType() { return window.__netType || '4g'; },
-              get rtt() { return 80; },
-              get saveData() { return window.__saveData || false; },
-              addEventListener: function() {},
-              removeEventListener: function() {},
+              get rtt() { return (window.__netDownlink && window.__netDownlink < 1.0) ? 350 : 50; },
+              get saveData() { return !!window.__saveData; },
+              get onchange() { return _onchange; },
+              set onchange(fn) { _onchange = fn; },
+              addEventListener: function(type, fn) {
+                if (type === 'change' && typeof fn === 'function') {
+                  netListeners.push(fn);
+                }
+              },
+              removeEventListener: function(type, fn) {
+                if (type === 'change') {
+                  netListeners = netListeners.filter(function(l) { return l !== fn; });
+                }
+              },
+              dispatchEvent: function(e) {
+                if (typeof _onchange === 'function') {
+                  try { _onchange.call(netConn, e); } catch(_) {}
+                }
+                for (var i = 0; i < netListeners.length; i++) {
+                  try { netListeners[i].call(netConn, e); } catch(_) {}
+                }
+                return true;
+              }
             };
+
+            window.__dispatchNetChange = function() {
+              try {
+                var evt = new Event('change');
+                netConn.dispatchEvent(evt);
+              } catch(e) {
+                try {
+                  var evt2 = document.createEvent('Event');
+                  evt2.initEvent('change', false, false);
+                  netConn.dispatchEvent(evt2);
+                } catch(_) {}
+              }
+            };
+
             try {
               Object.defineProperty(navigator, 'connection', {
                 get: function() { return netConn; },

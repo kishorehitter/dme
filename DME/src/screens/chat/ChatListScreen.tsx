@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+import LottieStickerMessage from '../../components/LottieStickerMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import OnboardingTour, { TourTarget, TourStepKey } from '../../components/OnboardingTour';
+import LogoutConfirmationModal from '../../components/LogoutConfirmationModal';
 import {
   View,
   Text as RNText,
   FlatList,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   Image,
   RefreshControl,
@@ -28,7 +31,9 @@ import {
   InteractionManager,
   StatusBar,
   NativeModules,
+  AppState,
 } from 'react-native';
+import BiometricService from '../../services/BiometricService';
 
 
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -42,6 +47,25 @@ const SafeText = (props: any) => {
   return <RNText {...props}>{children}</RNText>;
 };
 const Text = SafeText;
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const fluidDropdownAnimation = {
+  duration: 220,
+  create: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+  update: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+  },
+  delete: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+};
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import Toast from 'react-native-toast-message';
@@ -57,6 +81,7 @@ import { StatusService, Status, UserStatusGroup } from '../../services/StatusSer
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useTheme } from '../../context/ThemeContext';
 import { Conversation, User } from '../../types';
+import { MessageCipher } from '../../services/e2ee';
 import {
   isTriviaChallengeMessage,
   isScoreSubmissionMessage,
@@ -149,15 +174,28 @@ const formatMessageTime = (dateString: string | undefined | null) => {
   }
 };
 
+const isEncryptedContent = (text: any): boolean => {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
+  return trimmed.includes('"ciphertext"') && trimmed.includes('"senderIdentityKey"');
+};
+
 const renderLastMessageContent = (lastMessage: Conversation['last_message']) => {
   if (!lastMessage) return 'No messages yet';
   
-  if (isTriviaChallengeMessage(lastMessage) || isScoreSubmissionMessage(lastMessage)) {
-    return 'No messages yet';
-  }
+  try {
+    if (typeof isTriviaChallengeMessage === 'function' && isTriviaChallengeMessage(lastMessage)) {
+      return 'No messages yet';
+    }
+    if (typeof isScoreSubmissionMessage === 'function' && isScoreSubmissionMessage(lastMessage)) {
+      return 'No messages yet';
+    }
+  } catch {}
 
-  const message_type = lastMessage.message_type;
-  const content = lastMessage.content || '';
+  const message_type = typeof lastMessage.message_type === 'string' ? lastMessage.message_type : '';
+  const rawContent = lastMessage.content;
+  const content = typeof rawContent === 'string' ? rawContent : (rawContent ? JSON.stringify(rawContent) : '');
 
   if (
     message_type === 'lottie_sticker' || 
@@ -169,12 +207,27 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
 
   // Guard against any raw JSON or TRIVIA prefix leaks
   if (
-    typeof content === 'string' &&
-    (content.startsWith('[TRIVIA_') ||
-      content.includes('[TRIVIA_') ||
-      (content.includes('"challengeId"') && (content.includes('"questions"') || content.includes('"entry"') || content.includes('"leaderboard"'))))
+    content.startsWith('[TRIVIA_') ||
+    content.includes('[TRIVIA_') ||
+    (content.includes('"challengeId"') && (content.includes('"questions"') || content.includes('"entry"') || content.includes('"leaderboard"')))
   ) {
     return 'No messages yet';
+  }
+
+  if (
+    content.includes('"ciphertext"') ||
+    content.includes('"senderIdentityKey"') ||
+    isEncryptedContent(content)
+  ) {
+    if (lastMessage.id) {
+      try {
+        const local = localDatabase.getMessageById(lastMessage.id);
+        if (local && local.content && typeof local.content === 'string' && !isEncryptedContent(local.content) && !local.content.includes('Unable to decrypt')) {
+          return local.content;
+        }
+      } catch {}
+    }
+    return <><Icon name="lock-closed-outline" size={13} color="#888" /> Encrypted message</>;
   }
   
   switch (message_type) {
@@ -246,6 +299,214 @@ const renderMessageTicks = (lastMessage: any) => {
   }
 };
 
+interface ConversationItemRowProps {
+  item: Conversation;
+  isSelected: boolean;
+  selectionMode: boolean;
+  statusGroups: UserStatusGroup[];
+  friends: any[];
+  user: any;
+  theme: any;
+  isDark: boolean;
+  s: any;
+  onPress: () => void;
+  onLongPress: () => void;
+  onAvatarPress: () => void;
+}
+
+const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
+  item,
+  isSelected,
+  selectionMode,
+  statusGroups,
+  friends,
+  user,
+  theme,
+  isDark,
+  s,
+  onPress,
+  onLongPress,
+  onAvatarPress,
+}) => {
+  const selectAnim = useRef(new Animated.Value(isSelected ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(selectAnim, {
+      toValue: isSelected ? 1 : 0,
+      duration: 250,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: false,
+    }).start();
+  }, [isSelected, selectAnim]);
+
+  const userId = item.is_group ? null : item.other_user?.id;
+  const statusGroup = userId ? statusGroups.find(g => g.user_id === userId) : null;
+  const userStatuses = statusGroup ? statusGroup.statuses : [];
+  const isFriend = userId ? friends.some((f: any) => f.id === userId || String(f.id) === String(userId)) : false;
+  const hasStatus = isFriend && userStatuses && userStatuses.length > 0;
+  const hasUnseen = statusGroup ? statusGroup.has_unseen : false;
+
+  let isOnline = false;
+  if (isFriend && !item.is_group && item.other_user) {
+    const isPrivacyNobody = item.other_user.last_seen_privacy === 'nobody';
+    if (!isPrivacyNobody) {
+      const lastSeen = new Date(item.other_user.last_seen).getTime();
+      const now = Date.now();
+      isOnline = (now - lastSeen) < 120000;
+    }
+  }
+
+  // Clean neutral light grey row background when selected / clicked:
+  // Light Mode: soft light grey tint rgba(0, 0, 0, 0.06)
+  // Dark Mode: subtle translucent grey rgba(255, 255, 255, 0.08)
+  const rowHighlightBg = selectAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [theme.surface, isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)'],
+  });
+
+  return (
+    <Animated.View style={{ backgroundColor: rowHighlightBg, position: 'relative' }}>
+      <Pressable
+        android_ripple={{
+          color: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
+          borderless: false,
+        }}
+        style={({ pressed }) => [
+          s.conversationItem,
+          { backgroundColor: 'transparent' },
+          Platform.OS === 'ios' && pressed && { opacity: 0.75 },
+        ]}
+        unstable_pressDelay={0}
+        delayPressIn={0}
+        pressRetentionOffset={{ top: 20, left: 20, right: 20, bottom: 20 }}
+        onPress={onPress}
+        onLongPress={onLongPress}
+      >
+        {/* Left animated indicator bar */}
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 4,
+            backgroundColor: isDark ? '#94A3B8' : '#64748B',
+            opacity: selectAnim,
+          }}
+        />
+
+        {selectionMode && (
+          <View style={s.checkboxContainer}>
+            <Icon
+              name={isSelected ? 'checkbox' : 'square-outline'}
+              size={22}
+              color={isSelected ? (isDark ? '#38BDF8' : '#00A884') : (isDark ? '#64748B' : '#94A3B8')}
+            />
+          </View>
+        )}
+
+        <View style={{ position: 'relative', width: 50, height: 50, justifyContent: 'center', alignItems: 'center' }}>
+          {hasStatus && (
+            hasUnseen ? (
+              <LinearGradient
+                colors={['#ff4d6d', '#4597f5f6']}
+                start={{ x: 0, y: 1 }}
+                end={{ x: 1, y: 0 }}
+                style={{
+                  position: 'absolute',
+                  width: 50,
+                  height: 50,
+                  borderRadius: 25,
+                }}
+              />
+            ) : (
+              <View
+                style={{
+                  position: 'absolute',
+                  width: 50,
+                  height: 50,
+                  borderRadius: 25,
+                  borderWidth: 2,
+                  borderColor: '#ccc',
+                }}
+              />
+            )
+          )}
+          <AvatarWithFallback
+            uri={item.is_group ? item.profile_picture : item.other_user?.profile_picture}
+            sticker={item.is_group ? null : item.other_user?.avatar_sticker}
+            displayName={
+              item.is_group
+                ? item.name || 'Group'
+                : item.other_user?.display_name || item.other_user?.email || 'User'
+            }
+            isGroup={item.is_group}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+            }}
+            onPress={selectionMode ? onPress : onAvatarPress}
+          />
+          {!item.is_group && isOnline && <View style={s.onlineDot} />}
+        </View>
+
+        <View style={s.content}>
+          <Text style={s.name}>
+            {String(
+              item.is_group
+                ? item.name || 'Group'
+                : item.other_user?.display_name || item.other_user?.email || 'User' || ''
+            )}
+          </Text>
+          <View style={s.lastMessageRow}>
+            {item.last_message && item.last_message.sender_id === user?.id && renderMessageTicks(item.last_message)}
+            <Text style={s.lastMessage} numberOfLines={1}>
+              {!item.is_group &&
+              item.message_request_status === 'pending' &&
+              item.message_request_sender_id === user?.id ? (
+                <>
+                  <Icon name="hourglass-outline" size={14} color="#666" /> Message request pending
+                </>
+              ) : !item.is_group &&
+                item.message_request_status === 'rejected' &&
+                item.message_request_sender_id === user?.id ? (
+                <>
+                  <Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined
+                </>
+              ) : !item.is_group &&
+                item.message_request_status === 'accepted' &&
+                item.message_request_sender_id === user?.id &&
+                item.last_message === null ? (
+                <>
+                  <Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved
+                </>
+              ) : item.is_group && item.last_message === null ? (
+                <>
+                  <Icon name="chatbubble-outline" size={13} color={isDark ? '#64748B' : '#94A3B8'} /> Tap to start
+                  chatting
+                </>
+              ) : (
+                renderLastMessageContent(item.last_message)
+              )}
+            </Text>
+          </View>
+        </View>
+
+        <View style={s.rightContent}>
+          <Text style={s.time}>{formatMessageTime(item.last_message?.created_at || item.updated_at)}</Text>
+          {item.unread_count > 0 && (
+            <View style={s.unreadBadge}>
+              <Text style={s.unreadCount}>{item.unread_count}</Text>
+            </View>
+          )}
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+};
+
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
@@ -261,6 +522,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     }, [isDark])
   );
 
+  const navigateToChatRoom = useCallback((params: any) => {
+    navigation.navigate('ChatRoom', params);
+  }, [navigation]);
+
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
       const cached = localDatabase.getConversations();
@@ -271,11 +536,25 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   });
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
   const initialTabParam = route?.params?.initialTab || route?.params?.tab;
-  const [activeTab, setActiveTab] = useState<'all' | 'friends' | 'groups' | 'pending'>(
-    initialTabParam === 'pending' || initialTabParam === 'friends' || initialTabParam === 'groups'
+  const [activeTab, setActiveTab] = useState<'all' | 'groups' | 'pending' | 'locked'>(
+    initialTabParam === 'pending' || initialTabParam === 'groups' || initialTabParam === 'locked'
       ? initialTabParam
       : 'all'
   );
+  const [lockedIds, setLockedIds] = useState<number[]>(() => {
+    try {
+      return localDatabase.getLockedConversationIds() || [];
+    } catch {
+      return [];
+    }
+  });
+  const [isLockedAuthenticated, setIsLockedAuthenticated] = useState<boolean>(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
+  const chevronAnim = useRef(new Animated.Value(0)).current;
+  const arrowRotation = chevronAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '180deg'],
+  });
   const [friends, setFriends] = useState<any[]>([]);
   const [messageRequests, setMessageRequests] = useState<any[]>([]);
   const [friendRequestsCount, setFriendRequestsCount] = useState<number>(0);
@@ -289,6 +568,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const { user, logout } = useAuth();
   const updateInfo = useUpdateInfo();
   const insets = useSafeAreaInsets();
@@ -527,34 +808,45 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   };
 
   const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
+  const [isMusicPlaying, setIsMusicPlaying] = useState<boolean>(() => Boolean((global as any).isMusicPlaying));
   const spinValue = useRef(new Animated.Value(0)).current;
 
   useFocusEffect(
     useCallback(() => {
       userTouchedSearch.current = false;
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
+      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
     }, [])
   );
 
   useEffect(() => {
     const handleVisibility = () => {
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
+      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
+    };
+    const handlePlaybackState = (playing: boolean) => {
+      setIsMusicPlaying(Boolean(playing));
     };
 
     const subMinimize = DeviceEventEmitter.addListener('minimize_music_room', handleVisibility);
     const subOpen = DeviceEventEmitter.addListener('open_music_room', handleVisibility);
-    const subClose = DeviceEventEmitter.addListener('close_music_room', () => setActiveRoomCode(null));
+    const subClose = DeviceEventEmitter.addListener('close_music_room', () => {
+      setActiveRoomCode(null);
+      setIsMusicPlaying(false);
+    });
+    const subPlayback = DeviceEventEmitter.addListener('music_playback_state_changed', handlePlaybackState);
 
     return () => {
       subMinimize.remove();
       subOpen.remove();
       subClose.remove();
+      subPlayback.remove();
     };
   }, []);
 
   useEffect(() => {
     let animation: Animated.CompositeAnimation | null = null;
-    if (activeRoomCode) {
+    if (activeRoomCode && isMusicPlaying) {
       animation = Animated.loop(
         Animated.timing(spinValue, {
           toValue: 1,
@@ -571,7 +863,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         animation.stop();
       }
     };
-  }, [activeRoomCode]);
+  }, [activeRoomCode, isMusicPlaying]);
 
   const spin = spinValue.interpolate({
     inputRange: [0, 1],
@@ -707,6 +999,34 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           last_message: null,
         };
       }
+
+      // If last_message content is encrypted, resolve plaintext from local SQLite
+      if (conv.last_message && conv.last_message.content && MessageCipher.isEncrypted(conv.last_message.content)) {
+        try {
+          const local = conv.last_message.id ? localDatabase.getMessageById(conv.last_message.id) : null;
+          if (local && local.content && !MessageCipher.isEncrypted(local.content) && !local.content.includes('Unable to decrypt')) {
+            return {
+              ...conv,
+              last_message: {
+                ...conv.last_message,
+                content: local.content,
+              },
+            };
+          }
+          const recentMsgs = localDatabase.getRecentMessages(conv.id, 5);
+          const latestReal = recentMsgs.find(m => m.content && !MessageCipher.isEncrypted(m.content) && !m.content.includes('Unable to decrypt'));
+          if (latestReal && latestReal.content) {
+            return {
+              ...conv,
+              last_message: {
+                ...conv.last_message,
+                content: latestReal.content,
+              },
+            };
+          }
+        } catch {}
+      }
+
       return conv;
     },
     [fetchRealLastMessage]
@@ -768,6 +1088,15 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 }
                 return;
             }
+            let resolvedContent = newMessage.content;
+            if (MessageCipher.isEncrypted(resolvedContent)) {
+                try {
+                    const local = localDatabase.getMessageById(newMessage.id);
+                    if (local && local.content && !MessageCipher.isEncrypted(local.content) && !local.content.includes('Unable to decrypt')) {
+                        resolvedContent = local.content;
+                    }
+                } catch {}
+            }
             setConversations(prev => {
                 const existing = prev.find(c => c.id === newMessage.conversation);
                 if (existing) {
@@ -778,7 +1107,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                         ...existing, 
                         last_message: {
                             id: newMessage.id,
-                            content: newMessage.content,
+                            content: resolvedContent,
                             message_type: newMessage.message_type,
                             created_at: newMessage.created_at,
                             sender_id: newMessage.sender.id,
@@ -905,16 +1234,25 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   useEffect(() => {
     const tabParam = route?.params?.initialTab || route?.params?.tab;
-    if (tabParam && ['all', 'friends', 'groups', 'pending'].includes(tabParam)) {
-      setActiveTab(tabParam);
+    if (tabParam && ['all', 'groups', 'pending', 'locked'].includes(tabParam)) {
+      setActiveTab(tabParam as any);
     }
   }, [route?.params?.initialTab, route?.params?.tab]);
 
-  const handleLogout = async () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: async () => await logout() },
-    ]);
+  const handleLogout = () => {
+    setLogoutModalVisible(true);
+  };
+
+  const handleConfirmLogout = async () => {
+    try {
+      setIsLoggingOut(true);
+      await logout();
+    } catch (e) {
+      console.error('Logout error:', e);
+    } finally {
+      setIsLoggingOut(false);
+      setLogoutModalVisible(false);
+    }
   };
 
   const handleClearAll = () => {
@@ -943,10 +1281,111 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
+  const toggleDropdown = useCallback(() => {
+    LayoutAnimation.configureNext(fluidDropdownAnimation);
+    const nextState = !isDropdownOpen;
+    setIsDropdownOpen(nextState);
+    Animated.timing(chevronAnim, {
+      toValue: nextState ? 1 : 0,
+      duration: 220,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [isDropdownOpen, chevronAnim]);
+
+  const handleCancelDropdown = useCallback(() => {
+    LayoutAnimation.configureNext(fluidDropdownAnimation);
+    setIsDropdownOpen(false);
+    Animated.timing(chevronAnim, {
+      toValue: 0,
+      duration: 200,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: true,
+    }).start();
+    setActiveTab('all');
+  }, [chevronAnim]);
+
+  // ── Center-screen animated modal toast (matching friend request style) ─────
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastIcon, setToastIcon] = useState('checkmark-circle');
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showToast = useCallback((message: string, icon: string = 'checkmark-circle') => {
+    setToastMessage(message);
+    setToastIcon(icon);
+    setToastVisible(true);
+    toastOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+      Animated.delay(900),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToastVisible(false));
+  }, [toastOpacity]);
+
+  const handleLockedTabPress = async () => {
+    if (activeTab === 'locked') {
+      setActiveTab('all');
+      return;
+    }
+
+    if (isLockedAuthenticated) {
+      setActiveTab('locked');
+      return;
+    }
+
+    const success = await BiometricService.authenticate(
+      'Locked Chats',
+      'Verify your identity with fingerprint or PIN to view locked chats'
+    );
+
+    if (success) {
+      setIsLockedAuthenticated(true);
+      setActiveTab('locked');
+    }
+  };
+
+  // Auto-relock when app is backgrounded or minimized
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        setIsLockedAuthenticated(false);
+        setActiveTab(prev => (prev === 'locked' ? 'all' : prev));
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   const toggleSelection = (id: number) => {
     setSelectedIds(prev => 
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
+  };
+
+  const handleBatchToggleLock = async () => {
+    if (selectedIds.length === 0) return;
+
+    const allLocked = selectedIds.every(id => lockedIds.includes(id));
+    const newLockState = !allLocked;
+
+    const success = await BiometricService.authenticate(
+      newLockState ? 'Lock Selected Chats' : 'Unlock Selected Chats',
+      `Verify your identity to ${newLockState ? 'lock' : 'unlock'} selected chats`
+    );
+
+    if (!success) return;
+
+    selectedIds.forEach(id => {
+      localDatabase.setChatLocked(id, newLockState);
+    });
+
+    const updated = localDatabase.getLockedConversationIds();
+    setLockedIds(updated);
+    setSelectionMode(false);
+    setSelectedIds([]);
+    loadConversations();
+
+    showToast(newLockState ? 'Chat Locked' : 'Chat Unlocked', newLockState ? 'lock-closed' : 'lock-open');
   };
 
   const handleBatchDelete = async () => {
@@ -967,17 +1406,29 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     navigation.setOptions({
       headerShown: true,
       headerTitleAlign: 'center',
+      headerStyle: {
+        backgroundColor: selectionMode 
+          ? (isDark ? '#0F172A' : '#0B192C') 
+          : theme.surface,
+        elevation: 0,
+        shadowOpacity: 0,
+        borderBottomWidth: 0,
+      },
       headerTitle: () => (
-        selectionMode ? (
-          <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#8212c7' }}>{selectedIds.length} Selected</Text>
-        ) : (
-          <View ref={triviaBtnRef} collapsable={false}>
+        selectionMode ? null : (
+          <View ref={triviaBtnRef} collapsable={false} style={{ alignItems: 'center', justifyContent: 'center' }}>
             <TouchableOpacity
               onPress={() => navigation.navigate('TriviaHub')}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
             >
-              <View style={{ alignItems: 'center' }}>
-                <Icon name="book-outline" size={30} color={theme.textPrimary} />
-                
+              <View pointerEvents="none" style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
+                <LottieStickerMessage
+                  url="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4da/lottie.json"
+                  size={34}
+                  autoPlay={false}
+                />
               </View>
             </TouchableOpacity>
           </View>
@@ -985,33 +1436,64 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       ),
       headerLeft: () => (
         selectionMode ? (
-          <TouchableOpacity style={{marginLeft: 16}} onPress={() => { setSelectionMode(false); setSelectedIds([]); }}>
-              <Text style={{color: '#666', fontSize: 16}}>Cancel</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}>
+            <TouchableOpacity
+              onPress={() => { setSelectionMode(false); setSelectedIds([]); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              activeOpacity={0.7}
+              style={{ padding: 4 }}
+            >
+              <Icon name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={{ fontWeight: 'bold', fontSize: 16, color: '#FFFFFF', marginLeft: 12 }}>
+              {selectedIds.length} Selected
+            </Text>
+          </View>
         ) : (
           <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#222', marginLeft: 16 }}>Yesenta</Text>
         )
       ),
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 14 }}>
           {selectionMode ? (
-            <TouchableOpacity style={{ marginRight: 16 }} onPress={handleBatchDelete} disabled={selectedIds.length === 0}>
-                <Text style={{color: '#F44336', fontWeight: 'bold'}}>Delete</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {/* Lock / Unlock Pill with Vector Icon */}
+              <TouchableOpacity
+                style={[s.headerPillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
+                onPress={handleBatchToggleLock}
+                disabled={selectedIds.length === 0}
+                activeOpacity={0.7}
+              >
+                <Icon
+                  name={selectedIds.every(id => lockedIds.includes(id)) ? 'lock-open' : 'lock-closed'}
+                  size={13}
+                  color="#FFFFFF"
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={s.headerPillBtnText}>
+                  {selectedIds.every(id => lockedIds.includes(id)) ? 'Unlock' : 'Lock'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* Delete Pill */}
+              <TouchableOpacity
+                style={[s.headerDeletePillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
+                onPress={handleBatchDelete}
+                disabled={selectedIds.length === 0}
+                activeOpacity={0.7}
+              >
+                <Icon
+                  name="trash-outline"
+                  size={13}
+                  color="#FFFFFF"
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={s.headerDeletePillBtnText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
           ) : (
              <>
-                <TouchableOpacity
-                  onPress={() => navigation.navigate('Profile')}
-                  style={{ marginRight: 32 }}
-                >
-                  <AvatarWithFallback
-                    uri={user?.profile_picture}
-                    sticker={user?.avatar_sticker}
-                    displayName={user?.display_name || user?.username || ''}
-                    style={{ width: 34, height: 34, borderRadius: 17 }}
-                  />
-                </TouchableOpacity>
-                <View ref={playBtnRef} collapsable={false}>
+                <View ref={playBtnRef} collapsable={false} style={{ marginRight: 22 }}>
                   <TouchableOpacity
                     onPress={() => {
                       if (activeRoomCode) {
@@ -1020,42 +1502,68 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                         navigation.navigate('YouTubeDiscovery', {});
                       }
                     }}
-                    style={{ marginRight: 12 }}
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                    style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
                   >
-                    {activeRoomCode ? (
-                      <Animated.View style={{ transform: [{ rotate: spin }] }}>
-                        <LinearGradient
-                          colors={['#FF007F', '#000000', '#b10000', '#333333']}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={{
-                            width: 28,
-                            height: 28,
-                            borderRadius: 14,
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                          }}
-                        >
-                          <Icon name="disc" size={15} color="#fff" />
-                        </LinearGradient>
-                      </Animated.View>
-                    ) : (
-                      <Icon name="play" size={32} color="#af0000" />
-                    )}
+                    <View pointerEvents="none" style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
+                      {activeRoomCode && isMusicPlaying ? (
+                        <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                          <LottieStickerMessage
+                            url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
+                            size={38}
+                            autoPlay={true}
+                          />
+                        </Animated.View>
+                      ) : (
+                        <LottieStickerMessage
+                          url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
+                          size={38}
+                          autoPlay={false}
+                        />
+                      )}
+                    </View>
                   </TouchableOpacity>
                 </View>
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('Profile')}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                  style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center', marginRight: 16 }}
+                >
+                  <View pointerEvents="none">
+                    <AvatarWithFallback
+                      uri={user?.profile_picture}
+                      sticker={user?.avatar_sticker}
+                      displayName={user?.display_name || user?.username || ''}
+                      style={{ width: 34, height: 34, borderRadius: 17 }}
+                    />
+                  </View>
+                </TouchableOpacity>
                 <View ref={menuBtnRef} collapsable={false}>
-                  <TouchableOpacity onPress={() => setMenuVisible(true)}>
-                      <Icon name="menu" size={26} color={theme.textPrimary} />
+                  <TouchableOpacity
+                    onPress={() => setMenuVisible(true)}
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                    style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Icon name="menu" size={26} color={theme.textPrimary} />
                   </TouchableOpacity>
                 </View>
              </>
           )}
         </View>
       ),
-      headerStyle: { backgroundColor: selectionMode ? '#F8F0FF' : theme.surface, elevation: 0, shadowOpacity: 0, borderBottomWidth: 0 },
+      headerStyle: { 
+        backgroundColor: selectionMode 
+          ? (isDark ? '#0F172A' : '#0B192C') 
+          : theme.surface, 
+        elevation: 0, 
+        shadowOpacity: 0, 
+        borderBottomWidth: 0 
+      },
     });
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode, isMusicPlaying, spin]);
 
   const handleShareApp = async () => {
     try {
@@ -1068,28 +1576,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     }
   };
 
-  // ── Center-screen toast ─────────────────────────────────────────────────────
-  const [toastVisible, setToastVisible] = useState(false);
-  const [toastMessage, setToastMessage] = useState('');
-  const [toastType, setToastType] = useState<'success' | 'info' | 'error'>('success');
-  const toastOpacity = useRef(new Animated.Value(0)).current;
-
-  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setToastMessage(message);
-    setToastType(type);
-    setToastVisible(true);
-    toastOpacity.setValue(0);
-    Animated.sequence([
-      Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-      Animated.delay(700),
-      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
-    ]).start(() => setToastVisible(false));
-  };
-
   const handleAcceptRequest = async (requestId: number) => {
     try {
       await chatAPI.acceptMessageRequest(requestId);
-      showToast('Message request accepted!');
+      showToast('Message request accepted', 'checkmark-circle');
       loadConversations();
     } catch (error) {
       console.error(error);
@@ -1099,7 +1589,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   const handleRejectRequest = async (requestId: number) => {
     try {
-      showToast('Message request declined. You can accept it later to continue chatting.', 'info');
+      showToast('Message request declined', 'close-circle');
       loadConversations();
     } catch (error) {
       console.error(error);
@@ -1107,8 +1597,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     }
   };
 
-  const unreadChatsCount = conversations.filter(c => !c.is_group).reduce((acc, c) => acc + (c.unread_count || 0), 0);
-  const unreadGroupsCount = conversations.filter(c => c.is_group).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+  const unreadChatsCount = conversations.filter(c => !c.is_group && !lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+  const unreadGroupsCount = conversations.filter(c => c.is_group && !lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+  const unreadLockedCount = conversations.filter(c => lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
   const unreadTotalCount = unreadChatsCount + unreadGroupsCount;
 
   const filteredConversations = conversations.filter(c => {
@@ -1126,15 +1617,24 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       }
     }
 
-    if (activeTab === 'friends') {
-      const isFriend = c.other_user ? friends.some((f: any) => f.id === c.other_user?.id || String(f.id) === String(c.other_user?.id)) : false;
-      matchesTab = !c.is_group && isFriend;
-    } else if (activeTab === 'groups') {
-      matchesTab = c.is_group;
-    } else if (activeTab === 'pending') {
-      return false;
-    } else if (activeTab === 'all') {
+    const isLocked = lockedIds.includes(c.id);
+
+    if (activeTab === 'locked') {
+      if (!isLocked) return false;
       matchesTab = true;
+    } else {
+      if (isLocked) return false;
+
+      if (activeTab === 'friends') {
+        const isFriend = c.other_user ? friends.some((f: any) => f.id === c.other_user?.id || String(f.id) === String(c.other_user?.id)) : false;
+        matchesTab = !c.is_group && isFriend;
+      } else if (activeTab === 'groups') {
+        matchesTab = c.is_group;
+      } else if (activeTab === 'pending') {
+        return false;
+      } else if (activeTab === 'all') {
+        matchesTab = true;
+      }
     }
     if (!matchesTab) return false;
     
@@ -1209,6 +1709,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           }
         }}
       />
+      <LogoutConfirmationModal
+        visible={logoutModalVisible}
+        onClose={() => setLogoutModalVisible(false)}
+        onConfirm={handleConfirmLogout}
+        loading={isLoggingOut}
+      />
       <Modal visible={isDownloadingUpdate} transparent animationType="fade">
         <View style={{
           flex: 1,
@@ -1253,20 +1759,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               {downloadProgress}%
             </Text>
           </View>
-        </View>
-      </Modal>
-      {/* ── Center-screen fade toast ── */}
-      <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
-        <View style={s.toastOverlay} pointerEvents="none">
-          <Animated.View style={[s.toastBox, { opacity: toastOpacity }]}>
-            <Icon
-              name={toastType === 'success' ? 'checkmark-circle' : 'close-circle'}
-              size={22}
-              color={toastType === 'success' ? '#4CAF50' : '#FF5252'}
-              style={{ marginRight: 8 }}
-            />
-            <Text style={s.toastText}>{toastMessage}</Text>
-          </Animated.View>
         </View>
       </Modal>
       <View
@@ -1374,115 +1866,156 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
       <FlatList
         ListHeaderComponent={
-          <View style={[s.tabContainer, { backgroundColor: theme.surface }]}>
-            {/* ── Category Switcher: Left-aligned (< Category >) ── */}
-            <View style={s.tabNavRow}>
-              {/* Prev arrow */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (activeTab === 'pending') {
-                    setActiveTab('all');
-                    return;
-                  }
-                  const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
-                  const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
-                  const next = (cur - 1 + cycle.length) % cycle.length;
-                  setActiveTab(cycle[next]);
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-                activeOpacity={0.7}
-                style={{ padding: 2 }}
-              >
-                <Icon
-                  name="chevron-back"
-                  size={14}
-                  color={activeTab === 'pending' ? (isDark ? '#38BDF8' : '#0EA5E9') : (isDark ? '#93C5FD' : '#0B192C')}
-                />
-              </TouchableOpacity>
-
-              {/* Category label */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (activeTab === 'pending') {
-                    setActiveTab('all');
-                  } else {
-                    const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
-                    const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
-                    const next = (cur + 1) % cycle.length;
-                    setActiveTab(cycle[next]);
-                  }
-                }}
-                activeOpacity={0.7}
-                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-                style={{ marginHorizontal: 6 }}
-              >
-                <Text
+          <View style={[s.tabContainerWrapper, { backgroundColor: theme.surface }]}>
+            {/* ── 2 Visible Main Tabs: All & Groups ── */}
+            <View style={s.tabContainer}>
+              <View style={s.tabsGroupRow}>
+                {/* All Tab */}
+                <TouchableOpacity
                   style={[
-                    s.tabNavLabel,
-                    activeTab === 'pending' && s.tabNavLabelInactive,
+                    s.mainTabPill,
+                    activeTab === 'all' && s.mainTabPillActive,
                   ]}
-                  numberOfLines={1}
-                >
-                  {activeTab === 'all'
-                    ? 'All Messages'
-                    : activeTab === 'friends'
-                    ? 'Friends Chat'
-                    : activeTab === 'groups'
-                    ? 'Groups Chat'
-                    : 'All Messages'}
-                </Text>
-              </TouchableOpacity>
-
-              {/* Next arrow */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (activeTab === 'pending') {
+                  onPress={() => {
+                    if (isDropdownOpen) setIsDropdownOpen(false);
                     setActiveTab('all');
-                    return;
-                  }
-                  const cycle: Array<'all' | 'friends' | 'groups'> = ['all', 'friends', 'groups'];
-                  const cur = cycle.includes(activeTab as any) ? cycle.indexOf(activeTab as any) : 0;
-                  const next = (cur + 1) % cycle.length;
-                  setActiveTab(cycle[next]);
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      s.mainTabPillText,
+                      activeTab === 'all' ? s.mainTabPillTextActive : s.mainTabPillTextInactive,
+                    ]}
+                  >
+                    All Messages
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Groups Tab */}
+                <TouchableOpacity
+                  style={[
+                    s.mainTabPill,
+                    activeTab === 'groups' && s.mainTabPillActive,
+                  ]}
+                  onPress={() => {
+                    if (isDropdownOpen) setIsDropdownOpen(false);
+                    setActiveTab('groups');
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      s.mainTabPillText,
+                      activeTab === 'groups' ? s.mainTabPillTextActive : s.mainTabPillTextInactive,
+                    ]}
+                  >
+                    Groups
+                  </Text>
+                  {unreadGroupsCount > 0 && (
+                    <View style={s.mainTabBadge}>
+                      <Text style={s.mainTabBadgeText}>{unreadGroupsCount}</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              {/* ── Dropdown / Close Toggle Button in Right Corner ── */}
+              <TouchableOpacity
+                style={[
+                  s.dropdownToggleBtn,
+                  isDropdownOpen && s.dropdownToggleBtnActive,
+                ]}
+                onPress={isDropdownOpen ? handleCancelDropdown : toggleDropdown}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 activeOpacity={0.7}
-                style={{ padding: 2 }}
               >
-                <Icon
-                  name="chevron-forward"
-                  size={14}
-                  color={activeTab === 'pending' ? (isDark ? '#38BDF8' : '#0EA5E9') : (isDark ? '#93C5FD' : '#0B192C')}
-                />
+                <Animated.View style={{ transform: [{ rotate: arrowRotation }] }}>
+                  <Icon
+                    name="chevron-down"
+                    size={18}
+                    color={isDark ? (isDropdownOpen ? '#38BDF8' : '#94A3B8') : (isDropdownOpen ? '#0EA5E9' : '#64748B')}
+                  />
+                </Animated.View>
+                {!isDropdownOpen && (unreadLockedCount > 0 || pendingRequestsCount > 0) && (
+                  <View style={s.dropdownGlowWrapper}>
+                    <View style={s.dropdownGlowHalo} />
+                    <View style={s.dropdownBadgeDot} />
+                  </View>
+                )}
               </TouchableOpacity>
             </View>
 
-            {/* ── Pending: Right-aligned ── */}
-            <TouchableOpacity
-              style={s.pendingTabBtn}
-              onPress={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              activeOpacity={0.7}
-            >
-              <Text
-                style={[
-                  s.pendingTabText,
-                  activeTab === 'pending' ? s.pendingTabTextActive : s.pendingTabTextInactive,
-                ]}
-              >
-                Pending
-              </Text>
-              {pendingRequestsCount > 0 && (
-                <View
-                  style={[
-                    s.requestsCountBadge,
-                    activeTab === 'pending' ? s.requestsCountBadgeActive : s.requestsCountBadgeInactive,
-                  ]}
-                >
-                  <Text style={s.requestsCountText}>{pendingRequestsCount}</Text>
+            {/* ── Collapsible Sub-Drawer: Right-aligned [ Locked ] [ Pending ] ── */}
+            {isDropdownOpen && (
+              <View style={s.subDrawerContainer}>
+                <View style={s.subDrawerRightGroup}>
+                  {/* Locked Tab */}
+                  <TouchableOpacity
+                    style={[
+                      s.subDrawerTabBtn,
+                      activeTab === 'locked' && s.subDrawerTabBtnActive,
+                    ]}
+                    onPress={handleLockedTabPress}
+                    activeOpacity={0.7}
+                  >
+                    <Icon
+                      name={activeTab === 'locked' && isLockedAuthenticated ? 'lock-open-outline' : 'lock-closed'}
+                      size={13}
+                      color={activeTab === 'locked' ? (isDark ? '#38BDF8' : '#0B192C') : (isDark ? '#94A3B8' : '#64748B')}
+                      style={{ marginRight: 5 }}
+                    />
+                    <Text
+                      style={[
+                        s.subDrawerTabText,
+                        activeTab === 'locked' ? s.subDrawerTabTextActive : s.subDrawerTabTextInactive,
+                      ]}
+                    >
+                      Locked
+                    </Text>
+                    {unreadLockedCount > 0 ? (
+                      <View style={[s.drawerBadge, s.drawerBadgeActive]}>
+                        <Text style={s.drawerBadgeText}>{unreadLockedCount}</Text>
+                      </View>
+                    ) : lockedIds.length > 0 ? (
+                      <View style={[s.drawerBadge, activeTab === 'locked' ? s.drawerBadgeActive : s.drawerBadgeInactive]}>
+                        <Text style={s.drawerBadgeText}>{lockedIds.length}</Text>
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+
+                  {/* Pending Tab */}
+                  <TouchableOpacity
+                    style={[
+                      s.subDrawerTabBtn,
+                      activeTab === 'pending' && s.subDrawerTabBtnActive,
+                    ]}
+                    onPress={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
+                    activeOpacity={0.7}
+                  >
+                    <Icon
+                      name="time-outline"
+                      size={13}
+                      color={activeTab === 'pending' ? (isDark ? '#38BDF8' : '#0B192C') : (isDark ? '#94A3B8' : '#64748B')}
+                      style={{ marginRight: 5 }}
+                    />
+                    <Text
+                      style={[
+                        s.subDrawerTabText,
+                        activeTab === 'pending' ? s.subDrawerTabTextActive : s.subDrawerTabTextInactive,
+                      ]}
+                    >
+                      Pending
+                    </Text>
+                    {pendingRequestsCount > 0 && (
+                      <View style={[s.drawerBadge, activeTab === 'pending' ? s.drawerBadgeActive : s.drawerBadgeInactive]}>
+                        <Text style={s.drawerBadgeText}>{pendingRequestsCount}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
                 </View>
-              )}
-            </TouchableOpacity>
+              </View>
+            )}
           </View>
         }
 
@@ -1505,7 +2038,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 delayPressIn={0}
                 onPress={() => {
                   if (convId) {
-                    navigation.navigate('ChatRoom', { 
+                    navigateToChatRoom({ 
                       conversationId: Number(convId),
                       name: displayName,
                       avatarUri: reqSender?.profile_picture,
@@ -1580,30 +2113,24 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           const userId = item.is_group ? null : item.other_user?.id;
           const statusGroup = userId ? statusGroups.find(g => g.user_id === userId) : null;
           const userStatuses = statusGroup ? statusGroup.statuses : [];
-          const isFriend = userId ? friends.some((f: any) => f.id === userId || String(f.id) === String(userId)) : false;
-          const hasStatus = isFriend && userStatuses && userStatuses.length > 0;
-          const hasUnseen = statusGroup ? statusGroup.has_unseen : false;
-          
-          let isOnline = false;
-          if (isFriend && !item.is_group && item.other_user) {
-            const isPrivacyNobody = item.other_user.last_seen_privacy === 'nobody';
-            if (!isPrivacyNobody) {
-              const lastSeen = new Date(item.other_user.last_seen).getTime();
-              const now = Date.now();
-              isOnline = (now - lastSeen) < 120000;
-            }
-          }
 
           return (
-            <TouchableOpacity
-              style={[s.conversationItem, isSelected && s.logItemSelected]}
-              activeOpacity={0.7}
-              delayPressIn={0}
+            <ConversationItemRow
+              key={item.id}
+              item={item}
+              isSelected={isSelected}
+              selectionMode={selectionMode}
+              statusGroups={statusGroups}
+              friends={friends}
+              user={user}
+              theme={theme}
+              isDark={isDark}
+              s={s}
               onPress={() => {
                 if (selectionMode) {
                   toggleSelection(item.id);
                 } else {
-                  navigation.navigate('ChatRoom', { 
+                  navigateToChatRoom({ 
                     conversationId: item.id, 
                     name: item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || 'User'),
                     avatarUri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
@@ -1619,100 +2146,30 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                   toggleSelection(item.id);
                 }
               }}
-            >
-              {selectionMode && (
-                <View style={s.checkboxContainer}>
-                  <Icon name={isSelected ? "checkbox" : "square-outline"} size={22} color="#4597f5f6" />
-                </View>
-              )}
-              <View style={{ position: 'relative', width: 50, height: 50, justifyContent: 'center', alignItems: 'center' }}>
-                {hasStatus && (
-                  hasUnseen ? (
-                    <LinearGradient
-                      colors={['#ff4d6d', '#4597f5f6']}
-                      start={{ x: 0, y: 1 }}
-                      end={{ x: 1, y: 0 }}
-                      style={{
-                        position: 'absolute',
-                        width: 50,
-                        height: 50,
-                        borderRadius: 25,
-                      }}
-                    />
-                  ) : (
-                    <View
-                      style={{
-                        position: 'absolute',
-                        width: 50,
-                        height: 50,
-                        borderRadius: 25,
-                        borderWidth: 2,
-                        borderColor: '#ccc',
-                      }}
-                    />
-                  )
-                )}
-                <AvatarWithFallback
-                  uri={item.is_group ? item.profile_picture : item.other_user?.profile_picture}
-                  sticker={item.is_group ? null : item.other_user?.avatar_sticker}
-                  displayName={item.is_group
-                    ? (item.name || 'Group')
-                    : (item.other_user?.display_name || item.other_user?.email || 'User')}
-                  isGroup={item.is_group}
-                  style={{
-                    width:        44,
-                    height:       44,
-                    borderRadius: 22,
-                  }}
-                  onPress={() => {
-                    if (hasStatus) {
-                      navigation.navigate('StatusViewer', {
-                        statuses: userStatuses,
-                        initialIndex: 0,
-                      });
-                    } else {
-                      setPreviewData({
-                        visible: true,
-                        uri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
-                        isGroup: item.is_group,
-                        displayName: item.is_group 
-                          ? (item.name || 'Group') 
-                          : (item.other_user?.display_name || item.other_user?.email || 'User'),
-                        sticker: item.is_group ? null : item.other_user?.avatar_sticker,
-                      });
-                    }
-                  }}
-                />
-                {!item.is_group && isOnline && <View style={s.onlineDot} />}
-              </View>
-              <View style={s.content}>
-                <Text style={s.name}>{String(item.is_group ? (item.name || 'Group') : (item.other_user?.display_name || item.other_user?.email || 'User') || '')}</Text>
-                <View style={s.lastMessageRow}>
-                  {item.last_message && item.last_message.sender_id === user?.id && renderMessageTicks(item.last_message)}
-                  <Text style={s.lastMessage} numberOfLines={1}>
-                    {!item.is_group && item.message_request_status === 'pending' && item.message_request_sender_id === user?.id ? (
-                      <><Icon name="hourglass-outline" size={14} color="#666" /> Message request pending</>
-                    ) : !item.is_group && item.message_request_status === 'rejected' && item.message_request_sender_id === user?.id ? (
-                      <><Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined</>
-                    ) : !item.is_group && item.message_request_status === 'accepted' && item.message_request_sender_id === user?.id && item.last_message === null ? (
-                      <><Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved</>
-                    ) : item.is_group && item.last_message === null ? (
-                      <><Icon name="chatbubble-outline" size={13} color={isDark ? '#64748B' : '#94A3B8'} /> Tap to start chatting</>
-                    ) : (
-                      renderLastMessageContent(item.last_message)
-                    )}
-                  </Text>
-                </View>
-              </View>
-              <View style={s.rightContent}>
-                <Text style={s.time}>{formatMessageTime(item.last_message?.created_at || item.updated_at)}</Text>
-                {item.unread_count > 0 && (
-                  <View style={s.unreadBadge}>
-                      <Text style={s.unreadCount}>{item.unread_count}</Text>
-                  </View>
-                )}
-              </View>
-            </TouchableOpacity>
+              onAvatarPress={() => {
+                const userId = item.is_group ? null : item.other_user?.id;
+                const statusGroup = userId ? statusGroups.find(g => g.user_id === userId) : null;
+                const userStatuses = statusGroup ? statusGroup.statuses : [];
+                const isFriend = userId ? friends.some((f: any) => f.id === userId || String(f.id) === String(userId)) : false;
+                const hasStatus = isFriend && userStatuses && userStatuses.length > 0;
+                if (hasStatus) {
+                  navigation.navigate('StatusViewer', {
+                    statuses: userStatuses,
+                    initialIndex: 0,
+                  });
+                } else {
+                  setPreviewData({
+                    visible: true,
+                    uri: item.is_group ? item.profile_picture : item.other_user?.profile_picture,
+                    isGroup: item.is_group,
+                    displayName: item.is_group 
+                      ? (item.name || 'Group') 
+                      : (item.other_user?.display_name || item.other_user?.email || 'User'),
+                    sticker: item.is_group ? null : item.other_user?.avatar_sticker,
+                  });
+                }
+              }}
+            />
           );
         }}
         keyExtractor={(item) => item.id.toString()}
@@ -1723,7 +2180,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 320, paddingHorizontal: 24, paddingVertical: 40 }}>
               <Icon 
                 name={
-                  activeTab === 'pending'
+                  activeTab === 'locked'
+                    ? 'lock-closed-outline'
+                    : activeTab === 'pending'
                     ? 'mail-unread-outline'
                     : activeTab === 'groups' 
                     ? 'people-outline' 
@@ -1735,7 +2194,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 color={isDark ? '#4A4A4D' : '#D0C8E0'} 
               />
               <Text style={{ fontSize: 17, fontWeight: '600', color: theme.textPrimary, marginTop: 12, textAlign: 'center' }}>
-                {activeTab === 'pending'
+                {activeTab === 'locked'
+                  ? 'No locked chats'
+                  : activeTab === 'pending'
                   ? 'No pending requests'
                   : activeTab === 'groups' 
                   ? 'No groups yet' 
@@ -1744,7 +2205,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                   : 'No conversations yet'}
               </Text>
               <Text style={{ fontSize: 13, color: theme.textSecondary, marginTop: 4, textAlign: 'center' }}>
-                {activeTab === 'pending'
+                {activeTab === 'locked'
+                  ? 'Select chats and tap Lock to store them securely'
+                  : activeTab === 'pending'
                   ? 'Message and friend requests will appear here'
                   : activeTab === 'groups'
                   ? 'Group chats you join will appear here'
@@ -1781,7 +2244,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       >
         <TouchableOpacity 
           style={s.composeButton} 
-          onPress={() => navigation.navigate('FriendList')}
+          onPress={() => {
+            if (friendRequestsCount > 0) {
+              navigation.navigate('FriendList', { initialTab: 'approve' });
+            } else {
+              navigation.navigate('FriendList', { initialTab: 'friends' });
+            }
+          }}
           activeOpacity={0.82}
         >
           {/* Theme-Consistent Premium Glass Gradient */}
@@ -1818,6 +2287,21 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         </TouchableOpacity>
       </View>
 
+      {/* ── Center-screen animated modal toast (matching friend request) ── */}
+      <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
+        <View style={s.toastOverlay} pointerEvents="none">
+          <Animated.View style={[s.toastBox, { opacity: toastOpacity }]}>
+            <Icon
+              name={toastIcon || 'checkmark-circle'}
+              size={20}
+              color="#FFFFFF"
+              style={{ marginRight: 8 }}
+            />
+            <Text style={s.toastText}>{toastMessage}</Text>
+          </Animated.View>
+        </View>
+      </Modal>
+
       {tourVisible && (
         <OnboardingTour
           targets={tourTargets}
@@ -1836,24 +2320,189 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
   avatar: { width: 50, height: 50, borderRadius: 25 },
   avatarPlaceholder: { backgroundColor: theme.surface, borderWidth: 1, borderColor: THEME_COLOR, justifyContent: 'center', alignItems: 'center' },
   avatarText: { color: THEME_COLOR, fontSize: fontSize.lg, fontWeight: 'bold' },
-  conversationItem: { flexDirection: 'row', backgroundColor: theme.surface, padding: spacing.md },
+  conversationItem: {
+    flexDirection: 'row',
+    backgroundColor: theme.surface,
+    padding: spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: 'transparent',
+  },
   content: { flex: 1, justifyContent: 'center', marginLeft: spacing.md },
   name: { fontSize: fontSize.lg, fontWeight: '600', color: theme.textPrimary },
   lastMessageRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   lastMessage: { fontSize: fontSize.md, color: theme.textSecondary, flex: 1 },
+  tabContainerWrapper: {
+    backgroundColor: theme.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
   tabContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     backgroundColor: theme.surface,
   },
-  tabNavRow: {
+  tabsGroupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mainTabPill: {
+    paddingVertical: 5,
+    paddingHorizontal: 13,
+    borderRadius: 16,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
     flexDirection: 'row',
     alignItems: 'center',
   },
-  tabNavLabel: { fontSize: 13.5, fontWeight: '700', color: isDark ? '#93C5FD' : '#0B192C', letterSpacing: 0.1 },
-  tabNavLabelInactive: { color: isDark ? '#38BDF8' : '#0EA5E9', fontWeight: '500' },
+  mainTabPillActive: {
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.16)' : '#E0F2FE',
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(56, 189, 248, 0.35)' : 'rgba(14, 165, 233, 0.28)',
+  },
+  mainTabPillText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  mainTabPillTextActive: {
+    color: isDark ? '#38BDF8' : '#0B192C',
+    fontWeight: '700',
+  },
+  mainTabPillTextInactive: {
+    color: isDark ? '#94A3B8' : '#64748B',
+  },
+  mainTabBadge: {
+    marginLeft: 6,
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    backgroundColor: isDark ? '#38BDF8' : '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  mainTabBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9.5,
+    fontWeight: '700',
+    lineHeight: 11,
+  },
+  dropdownToggleBtn: {
+    minWidth: 32,
+    minHeight: 30,
+    paddingTop: 4,
+    paddingBottom: 6,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto' as any,
+    position: 'relative',
+  },
+  dropdownToggleBtnActive: {
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.16)' : 'rgba(14, 165, 233, 0.12)',
+  },
+  dropdownGlowWrapper: {
+    position: 'absolute',
+    bottom: 2,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dropdownGlowHalo: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.45)' : 'rgba(14, 165, 233, 0.35)',
+  },
+  dropdownBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: isDark ? '#38BDF8' : '#0284C7',
+    shadowColor: isDark ? '#38BDF8' : '#0284C7',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  cancelDropdownBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.12)' : 'rgba(14, 165, 233, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto' as any,
+  },
+  cancelDropdownText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: isDark ? '#38BDF8' : '#0284C7',
+  },
+  subDrawerContainer: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
+  },
+  subDrawerRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 6,
+  },
+  subDrawerTabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+  },
+  subDrawerTabBtnActive: {
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.2)' : 'rgba(14, 165, 233, 0.15)',
+    borderWidth: 1,
+    borderColor: isDark ? '#38BDF8' : '#0EA5E9',
+  },
+  subDrawerTabText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  subDrawerTabTextActive: {
+    color: isDark ? '#38BDF8' : '#0369A1',
+    fontWeight: '700',
+  },
+  subDrawerTabTextInactive: {
+    color: isDark ? '#94A3B8' : '#64748B',
+  },
+  drawerBadge: {
+    marginLeft: 6,
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  drawerBadgeActive: {
+    backgroundColor: isDark ? '#38BDF8' : '#0EA5E9',
+  },
+  drawerBadgeInactive: {
+    backgroundColor: isDark ? '#475569' : '#94A3B8',
+  },
+  drawerBadgeText: {
+    color: '#FFF',
+    fontSize: 9.5,
+    fontWeight: '700',
+    lineHeight: 11,
+  },
   pendingTabBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1861,11 +2510,63 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     paddingHorizontal: 4,
     paddingVertical: 3,
   },
-  pendingTabText: { fontSize: 13.5 },
-  pendingTabTextInactive: { color: isDark ? '#38BDF8' : '#0EA5E9', fontWeight: '500' },
-  pendingTabTextActive: { color: isDark ? '#93C5FD' : '#0B192C', fontWeight: '700' },
+  headerPillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+  },
+  headerPillBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  headerDeletePillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+  },
+  headerDeletePillBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  toastOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  toastBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(11, 25, 44, 0.92)',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  toastText: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '600',
+  },
   logItemSelected: {
-    backgroundColor: theme.surface,
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.16)' : '#E0F2FE',
+    borderLeftColor: isDark ? '#38BDF8' : '#2563EB',
   },
   checkboxContainer: {
     marginRight: 10,

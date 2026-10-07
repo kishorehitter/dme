@@ -16,6 +16,7 @@ export interface Song {
   title: string;
   thumbnail: string;
   channelTitle: string;
+  channelLogo?: string;
   addedBy: string;
   duration?: number;
   source?: 'youtube' | 'drive'; 
@@ -42,6 +43,7 @@ export interface RoomState {
   isPlaying: boolean;
   queue: QueueItem[];
   participants: Participant[];
+  allowedSpeakers: number[];
 }
 
 // Backend sends queue items as snake_case
@@ -94,7 +96,8 @@ export const useMusicRoom = (
       position: 0,
       isPlaying: false,
       queue: [],
-      participants: []
+      participants: [],
+      allowedSpeakers: []
     };
   });
 
@@ -152,7 +155,8 @@ export const useMusicRoom = (
             position: message.data.position,
             isPlaying: message.data.is_playing,
             queue: normalizeQueue(message.data.queue),
-            participants: message.data.participants
+            participants: message.data.participants,
+            allowedSpeakers: message.data.allowed_speakers || []
           }));
           
           // ✅ Save snapshot for the screen to consume on player ready
@@ -161,6 +165,13 @@ export const useMusicRoom = (
             isPlaying: message.data.is_playing,
             receivedAt: Date.now(), // ✅ timestamp for drift compensation
           });
+          break;
+
+        case 'mic_permission_update':
+          setRoomState(prev => ({
+            ...prev,
+            allowedSpeakers: message.data.allowed_speakers || []
+          }));
           break;
 
         case 'watch_load':
@@ -236,6 +247,10 @@ export const useMusicRoom = (
           break;
 
         case 'aux_passed':
+          if (isPlayerReadyRef) isPlayerReadyRef.current = false;
+          if (playerRef?.current) {
+            try { playerRef.current.pauseVideo?.(); } catch (_) {}
+          }
           setRoomState(prev => ({
             ...prev,
             currentSong: message.data.next_song,
@@ -329,6 +344,20 @@ export const useMusicRoom = (
   }, []);
 
   const passAux = useCallback(() => {
+    setRoomState(prev => {
+      if (prev.queue && prev.queue.length > 0) {
+        const nextItem = prev.queue[0];
+        const nextSong = nextItem?.song || nextItem;
+        return {
+          ...prev,
+          currentSong: nextSong,
+          queue: prev.queue.slice(1),
+          position: 0,
+          isPlaying: true,
+        };
+      }
+      return prev;
+    });
     musicWebSocketService.passAux();
   }, []);
 
@@ -345,6 +374,10 @@ export const useMusicRoom = (
   }, []);
 
 
+  const updateMicPermission = useCallback((targetUserId: number, allowed: boolean) => {
+    musicWebSocketService.updateMicPermission(targetUserId, allowed);
+  }, []);
+
   return {
     roomState,
     setRoomState,
@@ -354,6 +387,7 @@ export const useMusicRoom = (
     playerRef,
     updateCurrentSongMetadata,
     updateRoomName,
+    updateMicPermission,
     loadSong,
     syncPlay,
     syncPause,

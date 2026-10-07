@@ -17,6 +17,7 @@ import com.facebook.react.bridge.UiThreadUtil;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 public class SystemBarModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
@@ -37,6 +38,112 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
     private volatile String lastStatusColor = null;
     private volatile boolean lastStatusLightIcons = false;
     private volatile String lastWindowBackground = null;
+    private volatile boolean isImmersive = false;
+
+    @ReactMethod
+    public void setImmersiveMode(final boolean enabled) {
+        isImmersive = enabled;
+        final Activity activity = getCurrentActivity();
+        if (activity == null) return;
+        applyImmersiveMode(activity, enabled);
+
+        if (enabled) {
+            UiThreadUtil.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        final View decorView = activity.getWindow().getDecorView();
+                        decorView.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (isImmersive) applyImmersiveMode(activity, true);
+                            }
+                        }, 150);
+                        decorView.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (isImmersive) applyImmersiveMode(activity, true);
+                            }
+                        }, 400);
+                    } catch (Exception ignored) {}
+                }
+            });
+        }
+    }
+
+    private void applyImmersiveMode(final Activity activity, final boolean enabled) {
+        if (activity == null) return;
+        UiThreadUtil.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Window window = activity.getWindow();
+                    View decorView = window.getDecorView();
+
+                    // 1. Permanently disable decor fits system windows (edge-to-edge)
+                    WindowCompat.setDecorFitsSystemWindows(window, false);
+
+                    // 2. Display cutout mode: ALWAYS on Android 11+ (API 30+) so notch never letterboxes opposite navigation edge!
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                        window.setAttributes(lp);
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                        window.setAttributes(lp);
+                    }
+
+                    // 3. Navigation & status bar transparency and no contrast enforcement
+                    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                    window.setStatusBarColor(Color.TRANSPARENT);
+                    window.setNavigationBarColor(Color.TRANSPARENT);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        window.setNavigationBarContrastEnforced(false);
+                        window.setStatusBarContrastEnforced(false);
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        window.setNavigationBarDividerColor(Color.TRANSPARENT);
+                    }
+
+                    // 4. WindowInsetsControllerCompat
+                    WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, decorView);
+                    if (controller != null) {
+                        if (enabled) {
+                            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                            controller.hide(WindowInsetsCompat.Type.systemBars());
+                        } else {
+                            controller.show(WindowInsetsCompat.Type.systemBars());
+                        }
+                    }
+
+                    // 5. Direct View system UI visibility flags (smooth edge-to-edge without window jumping)
+                    if (enabled) {
+                        int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                        decorView.setSystemUiVisibility(flags);
+                    } else {
+                        int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                        decorView.setSystemUiVisibility(flags);
+                        if (lastNavColor != null) {
+                            applyNavigationBarColor(lastNavColor, lastNavLightIcons);
+                        }
+                        if (lastStatusColor != null) {
+                            applyStatusBarColor(lastStatusColor, lastStatusLightIcons);
+                        }
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e("SystemBarNav", "applyImmersiveMode error", e);
+                }
+            }
+        });
+    }
 
     @ReactMethod
     public void setNavigationBarColor(final String colorHex, final boolean lightIcons) {
@@ -104,6 +211,7 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
     private String currentWindowBg = null;
 
     private void applyNavigationBarColor(final String colorHex, final boolean lightIcons) {
+        if (isImmersive) return;
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
@@ -146,6 +254,7 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
     }
 
     private void applyStatusBarColor(final String colorHex, final boolean lightIcons) {
+        if (isImmersive) return;
         final Activity activity = getCurrentActivity();
         if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
@@ -264,6 +373,9 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
         }
         if (lastWindowBackground != null) {
             setWindowBackground(lastWindowBackground);
+        }
+        if (isImmersive) {
+            setImmersiveMode(true);
         }
     }
 

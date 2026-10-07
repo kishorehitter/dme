@@ -1,7 +1,7 @@
-import React, { useLayoutEffect, useState, useEffect } from 'react';
+import React, { useLayoutEffect, useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, StatusBar, Dimensions, Platform, 
-  NativeModules, Alert, ActivityIndicator, FlatList 
+  NativeModules, Alert, ActivityIndicator, FlatList, Animated, Easing, PermissionsAndroid 
 } from 'react-native';
 import Video from 'react-native-video';
 import ImageViewer from 'react-native-image-zoom-viewer';
@@ -10,7 +10,7 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import RNFetchBlob from 'rn-fetch-blob';
+import RNFS from 'react-native-fs';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 
 const saveAsset = CameraRoll.saveAsset || CameraRoll.save;
@@ -47,9 +47,37 @@ const MediaViewerScreen: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [videoLoaded, setVideoLoaded] = useState(false);
 
+  const scaleAnim = useRef(new Animated.Value(0.82)).current;
+  const opacityAnim = useRef(new Animated.Value(0)).current;
+  const bgOpacityAnim = useRef(new Animated.Value(0)).current;
+  const isClosingRef = useRef(false);
+
   const activeItem = list[currentIndex] || { mediaUrl: '', mediaType: 'image' };
   const activeUrl = activeItem.mediaUrl;
   const activeType = activeItem.mediaType;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(bgOpacityAnim, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacityAnim, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        friction: 8.5,
+        tension: 75,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
 
   useEffect(() => {
     setVideoLoaded(false);
@@ -64,19 +92,81 @@ const MediaViewerScreen: React.FC = () => {
     return `${mins}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const handleClose = () => navigation.goBack();
+  const handleClose = () => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    Animated.parallel([
+      Animated.timing(bgOpacityAnim, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacityAnim, {
+        toValue: 0,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scaleAnim, {
+        toValue: 0.82,
+        duration: 180,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      navigation.goBack();
+    });
+  };
 
   const handleSave = async () => {
     if (saving || !activeUrl) return;
     setSaving(true);
     try {
-      const { dirs } = RNFetchBlob.fs;
-      const ext = activeType === 'video' ? 'mp4' : 'jpg';
-      const dest = `${dirs.CacheDir}/mv_${Date.now()}.${ext}`;
-      await RNFetchBlob.config({ path: dest }).fetch('GET', activeUrl);
-      await saveAsset(`file://${dest}`, { type: activeType });
-      Alert.alert('Saved', 'Saved to gallery.');
+      const isGifMedia = activeUrl.toLowerCase().includes('.gif') || activeUrl.toLowerCase().includes('format=gif');
+      const isVideoMedia = activeType === 'video' || activeUrl.toLowerCase().includes('.mp4');
+      const ext = isVideoMedia ? 'mp4' : (isGifMedia ? 'gif' : 'jpg');
+      const mediaKind: 'video' | 'photo' = isVideoMedia ? 'video' : 'photo';
+
+      if (Platform.OS === 'android' && Platform.Version < 29) {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Permission Denied', 'Storage permission is required to save media.');
+          return;
+        }
+      }
+
+      let localFilePath = '';
+      const dest = `${RNFS.CachesDirectoryPath}/mv_${Date.now()}.${ext}`;
+
+      if (activeUrl.startsWith('file://') || activeUrl.startsWith('/')) {
+        const cleanPath = activeUrl.startsWith('file://') ? activeUrl.slice(7) : activeUrl;
+        try {
+          await RNFS.copyFile(cleanPath, dest);
+          localFilePath = `file://${dest}`;
+        } catch {
+          localFilePath = activeUrl.startsWith('file://') ? activeUrl : `file://${activeUrl}`;
+        }
+      } else if (activeUrl.startsWith('content://')) {
+        await RNFS.copyFile(activeUrl, dest);
+        localFilePath = `file://${dest}`;
+      } else {
+        const download = RNFS.downloadFile({
+          fromUrl: activeUrl,
+          toFile: dest,
+        });
+        const res = await download.promise;
+        if (res.statusCode >= 400) {
+          throw new Error(`Download failed with status ${res.statusCode}`);
+        }
+        localFilePath = `file://${dest}`;
+      }
+
+      await saveAsset(localFilePath, { type: mediaKind });
+      Alert.alert('Saved', isGifMedia ? 'GIF saved to gallery.' : 'Saved to gallery.');
     } catch (err: any) {
+      console.error('[MediaViewerScreen] Save error:', err);
       Alert.alert('Save failed', err?.message ?? 'Permission or storage error.');
     } finally {
       setSaving(false);
@@ -144,6 +234,10 @@ const MediaViewerScreen: React.FC = () => {
                       setCurrentTime(data.currentTime);
                     }
                   }}
+                  onError={(err) => {
+                    console.warn('[MediaViewer] Video error:', err);
+                    setVideoLoaded(true);
+                  }}
                   repeat
                 />
                 {(!videoLoaded || !isCurrent) && (
@@ -188,20 +282,23 @@ const MediaViewerScreen: React.FC = () => {
   };
 
   return (
-    <View style={styles.container}>
+    <Animated.View style={[styles.container, { opacity: bgOpacityAnim }]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} animated={true} />
       
-      {renderMediaContent()}
+      <Animated.View style={[styles.mediaWrapper, { transform: [{ scale: scaleAnim }], opacity: opacityAnim }]}>
+        {renderMediaContent()}
+      </Animated.View>
       
       {/* Top Scrim */}
-      <LinearGradient
-        colors={['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.3)', 'transparent']}
-        style={[styles.topScrim, { height: safeTop + 90 }]}
-        pointerEvents="none"
-      />
+      <Animated.View style={[styles.topScrim, { height: safeTop + 90, opacity: opacityAnim }]} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.3)', 'transparent']}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
 
       {/* Custom Action Bar */}
-      <View style={[styles.topBar, { top: safeTop + 10 }]}>
+      <Animated.View style={[styles.topBar, { top: safeTop + 10, opacity: opacityAnim }]}>
         <TouchableOpacity style={styles.iconBtn} onPress={handleClose}>
           <Icon name="close" size={26} color="#fff" />
         </TouchableOpacity>
@@ -213,11 +310,11 @@ const MediaViewerScreen: React.FC = () => {
         <TouchableOpacity style={styles.iconBtn} onPress={handleSave} disabled={saving}>
           {saving ? <ActivityIndicator color="#fff" /> : <Icon name="download-outline" size={24} color="#fff" />}
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* Video Controls Overlay */}
       {activeType === 'video' && (
-        <>
+        <Animated.View style={{ opacity: opacityAnim }}>
           <LinearGradient
             colors={['transparent', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.65)']}
             style={[styles.bottomScrim, { height: safeBottom + 90 }]}
@@ -232,14 +329,15 @@ const MediaViewerScreen: React.FC = () => {
             </View>
             <Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
           </View>
-        </>
+        </Animated.View>
       )}
-    </View>
+    </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
+  mediaWrapper: { flex: 1, width: W, height: H, justifyContent: 'center', alignItems: 'center' },
   media: { width: W, height: H },
   mediaList: { flex: 1 },
   mediaItemContainer: { width: W, height: H, justifyContent: 'center', alignItems: 'center' },

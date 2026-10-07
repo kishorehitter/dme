@@ -258,6 +258,54 @@ class FCMService:
             elif lower_content.endswith('.gif'):
                 return "👾 GIF"
 
+        # Encrypted message detection: don't leak ciphertext or raw JSON in notifications
+        if (content.startswith('{') and '"ciphertext"' in content) or (content.startswith('{') and '"encrypted"' in content):
+            return "🔒 Encrypted message"
+
+        # Trivia Group Contest Hosted:
+        if content.startswith('[TRIVIA_CHALLENGE]:') or ('"challengeId"' in content and '"questions"' in content):
+            try:
+                raw_json = content
+                if raw_json.startswith('[TRIVIA_CHALLENGE]:'):
+                    raw_json = raw_json[len('[TRIVIA_CHALLENGE]:'):].strip()
+                import json
+                payload = json.loads(raw_json)
+                title = payload.get('title') or 'Custom Quiz Contest'
+                q_count = payload.get('totalQuestions') or len(payload.get('questions', []))
+                time_str = payload.get('formattedTime') or ''
+                
+                parts = []
+                if q_count:
+                    parts.append(f"{q_count} Questions")
+                if time_str:
+                    parts.append(f"⏱️ {time_str}")
+                
+                specs = f" ({' · '.join(parts)})" if parts else ""
+                return f"🏆 Group Contest: \"{title}\"{specs} · Tap to play!"
+            except Exception:
+                return "🏆 Hosted a Group Trivia Contest! Tap to play."
+
+        # Trivia Score Submission:
+        if content.startswith('[TRIVIA_SCORE_SUBMISSION]:') or ('"challengeId"' in content and '"entry"' in content):
+            try:
+                raw_json = content
+                if raw_json.startswith('[TRIVIA_SCORE_SUBMISSION]:'):
+                    raw_json = raw_json[len('[TRIVIA_SCORE_SUBMISSION]:'):].strip()
+                import json
+                payload = json.loads(raw_json)
+                entry = payload.get('entry', {})
+                score = entry.get('score', 0)
+                total = entry.get('totalQuestions', 0)
+                user_name = entry.get('userName', 'Someone')
+                contest_title = payload.get('title')
+                title_suffix = f" in \"{contest_title}\"" if contest_title else ""
+                if total > 0:
+                    pct = entry.get('percentage') or round((score / total) * 100)
+                    return f"🎯 {user_name} scored {score}/{total} ({pct}%){title_suffix}! Can you beat it?"
+                return f"🎯 {user_name} submitted a score{title_suffix}!"
+            except Exception:
+                return "🎯 New score submitted to Group Contest!"
+
         if len(content) > 100:
             content = content[:97] + '...'
 
@@ -283,6 +331,17 @@ class FCMService:
         """
         body_text = FCMService.format_notification_body(message_content, message_type)
 
+        content_str = str(message_content or '').strip()
+        is_trivia_challenge = content_str.startswith('[TRIVIA_CHALLENGE]:') or ('"challengeId"' in content_str and '"questions"' in content_str)
+        is_trivia_score = content_str.startswith('[TRIVIA_SCORE_SUBMISSION]:') or ('"challengeId"' in content_str and '"entry"' in content_str)
+
+        # Build engaging notification title
+        title_text = sender_name
+        if is_trivia_challenge:
+            title_text = f"🏆 Trivia Contest · {sender_name}"
+        elif is_trivia_score:
+            title_text = f"🎯 Contest Score · {sender_name}"
+
         # DATA-ONLY message - no notification payload!
         # The app will receive this and display via Notifee with action buttons
         data = {
@@ -293,9 +352,13 @@ class FCMService:
             'ts': timezone.now().isoformat(),
             'is_message_request': 'true' if is_message_request else 'false',
             # For Notifee notification display:
-            'notif_title': sender_name,
+            'notif_title': title_text,
             'notif_body': body_text,
         }
+        if is_trivia_challenge:
+            data['is_trivia_challenge'] = 'true'
+        if is_trivia_score:
+            data['is_trivia_score'] = 'true'
 
         if message_id:
             data['msg_id'] = str(message_id)

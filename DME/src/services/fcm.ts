@@ -69,6 +69,58 @@ function sanitizeNotifBody(body?: string, msgType?: string): string {
   if (type === 'location') return '📍 Location';
 
   const clean = body.trim();
+
+  // Trivia Group Contest Hosted:
+  if (
+    clean.startsWith('[TRIVIA_CHALLENGE]:') ||
+    (clean.includes('"challengeId"') && clean.includes('"questions"'))
+  ) {
+    try {
+      let raw = clean;
+      if (raw.startsWith('[TRIVIA_CHALLENGE]:')) {
+        raw = raw.substring('[TRIVIA_CHALLENGE]:'.length).trim();
+      }
+      const payload = JSON.parse(raw);
+      const title = payload.title || 'Custom Quiz Contest';
+      const qCount = payload.totalQuestions || payload.questions?.length;
+      const timeStr = payload.formattedTime || '';
+      const parts: string[] = [];
+      if (qCount) parts.push(`${qCount} Questions`);
+      if (timeStr) parts.push(`⏱️ ${timeStr}`);
+      const specs = parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+      return `🏆 Group Contest: "${title}"${specs} · Tap to play!`;
+    } catch {
+      return '🏆 Hosted a Group Trivia Contest! Tap to play.';
+    }
+  }
+
+  // Trivia Score Submission:
+  if (
+    clean.startsWith('[TRIVIA_SCORE_SUBMISSION]:') ||
+    (clean.includes('"challengeId"') && clean.includes('"entry"'))
+  ) {
+    try {
+      let raw = clean;
+      if (raw.startsWith('[TRIVIA_SCORE_SUBMISSION]:')) {
+        raw = raw.substring('[TRIVIA_SCORE_SUBMISSION]:'.length).trim();
+      }
+      const payload = JSON.parse(raw);
+      const entry = payload.entry || {};
+      const score = entry.score ?? 0;
+      const total = entry.totalQuestions ?? 0;
+      const userName = entry.userName || 'Someone';
+      const contestTitle = payload.title;
+      const titleSuffix = contestTitle ? ` in "${contestTitle}"` : '';
+      if (total > 0) {
+        const pct = entry.percentage ?? Math.round((score / total) * 100);
+        return `🎯 ${userName} scored ${score}/${total} (${pct}%)${titleSuffix}! Can you beat it?`;
+      }
+      return `🎯 ${userName} submitted a score${titleSuffix}!`;
+    } catch {
+      return '🎯 New score submitted to Group Contest!';
+    }
+  }
+
   if (clean.startsWith('http://') || clean.startsWith('https://')) {
     const lower = clean.toLowerCase();
     if (lower.includes('/stickers/') || lower.includes('/lottie/') || lower.endsWith('.json') || lower.includes('sticker')) {
@@ -375,7 +427,7 @@ class FCMService {
 
     const notificationPayload: any = {
       id: notifId,
-      title: data.sender || 'New Message',
+      title: data.notif_title || data.sender || 'New Message',
       body: notifBodyText,
       data: {
         ...(data as { [key: string]: string }),
@@ -446,10 +498,28 @@ class FCMService {
       importance: AndroidImportance.HIGH,
     });
 
+    const challengerName = data.challenger_name || 'Someone';
+    // Use human-readable labels from new backend format;
+    // fall back to raw fields for backward compat with older backend versions
+    const categoryLabel =
+      data.category_label ||
+      (data.challenge_category || data._category || '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    const setLabel =
+      data.set_label ||
+      (data.challenge_set || data._set_id || '').replace(/set(\d+)/i, 'Set $1');
+
+    // Stable notification ID — scoped by challenger, not a raw internal ID
+    const notifId = `trivia_challenge_from_${data.challenger_id || 'unknown'}`;
+
+    const bodyParts = [categoryLabel, setLabel].filter(Boolean).join(' · ');
+    const body = bodyParts
+      ? `${challengerName} challenged you · ${bodyParts}`
+      : `${challengerName} sent you a Trivia Challenge!`;
+
     await notifee.displayNotification({
-      id: `trivia_challenge_${data.challenge_id || Date.now()}`,
-      title: data.notif_title || '⚔️ Trivia Challenge!',
-      body: data.notif_body || 'Someone challenged you to a trivia game! Tap to play.',
+      id: notifId,
+      title: '⚔️ Trivia Challenge!',
+      body,
       data: { ...data } as { [key: string]: string },
       android: {
         channelId,

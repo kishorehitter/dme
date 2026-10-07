@@ -104,3 +104,22 @@ replay_pid*.log
 
 .opencodeignore
 opencode.json
+
+*.bundle
+scratch_* 
+test_* 
+dumped_*
+
+base_current.js
+extracted_classes_summary.txt
+inspect_interp.py
+inspect_youtube_client.py
+lg.md
+lg_clean.txt
+lg_utf8.txt
+lg_view.md
+rv.md
+stream_debug.log
+
+DME/scratch_check_obtain_call.py
+       

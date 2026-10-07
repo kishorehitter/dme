@@ -51,17 +51,18 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; background:#000; overflow:hidden; }
-  #bg-video {
+  #bg-canvas {
     position: absolute;
-    top: -10%;
-    left: -10%;
-    width: 120%;
-    height: 120%;
+    top: -15%;
+    left: -15%;
+    width: 130%;
+    height: 130%;
     object-fit: cover;
     background: #000;
-    filter: blur(35px) brightness(0.45);
+    filter: blur(40px) brightness(0.60) saturate(1.5);
     opacity: 0.85;
     z-index: 1;
+    transform: translateZ(0);
   }
   #dmevideo {
     position: absolute;
@@ -89,15 +90,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 </head>
 <body>
 <div id="status">Loading video...</div>
-<video
-  id="bg-video"
-  playsinline
-  webkit-playsinline
-  preload="auto"
-  src="${initialUrl}"
-  muted
-  loop
-></video>
+<canvas id="bg-canvas" width="64" height="36"></canvas>
 <video
   id="dmevideo"
   playsinline
@@ -109,10 +102,21 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 
 <script>
 var v = document.getElementById('dmevideo');
-var bgV = document.getElementById('bg-video');
+var bgCanvas = document.getElementById('bg-canvas');
+var bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
 var statusEl = document.getElementById('status');
 var ready = false;
 var hasAttemptedBypass = false;
+var animFrameId = null;
+
+function renderAmbientFrame() {
+  if (v && !v.paused && !v.ended && v.readyState >= 2 && bgCtx) {
+    try {
+      bgCtx.drawImage(v, 0, 0, 64, 36);
+    } catch(e) {}
+  }
+  animFrameId = requestAnimationFrame(renderAmbientFrame);
+}
 
 function toRN(obj) {
   try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch(e) {}
@@ -123,9 +127,12 @@ toRN({ type: 'log', msg: 'navigator.userAgent: [' + navigator.userAgent + ']' })
 
 function showPlayer() {
   if (v) v.style.display = 'block';
-  if (bgV) bgV.style.display = 'block';
+  if (bgCanvas) bgCanvas.style.display = 'block';
   statusEl.style.display = 'none';
   syncFullscreenState();
+  if (!animFrameId) {
+    renderAmbientFrame();
+  }
 }
 
 function attemptWarningBypass() {
@@ -137,7 +144,7 @@ function attemptWarningBypass() {
   statusEl.innerText = "Bypassing Google Drive scan...";
   statusEl.style.display = 'block';
   v.style.display = 'none';
-  if (bgV) bgV.style.display = 'none';
+  if (bgCanvas) bgCanvas.style.display = 'none';
 
   toRN({ type: 'log', msg: 'document.cookie at bypass time: [' + document.cookie + ']' });
 
@@ -146,18 +153,6 @@ function attemptWarningBypass() {
 
 function attachEvents() {
   if (!v) return;
-
-  function syncBgVideo() {
-    if (!bgV) return;
-    if (v.paused) {
-      bgV.pause();
-    } else {
-      bgV.play().catch(function(){});
-    }
-    if (Math.abs(bgV.currentTime - v.currentTime) > 0.3) {
-      bgV.currentTime = v.currentTime;
-    }
-  }
 
   function reportAR() {
     if (v && v.videoWidth > 0 && v.videoHeight > 0) {
@@ -181,28 +176,22 @@ function attachEvents() {
 
   v.addEventListener('timeupdate', function() {
     toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
-    syncBgVideo();
   });
 
   v.addEventListener('play',    function() { 
     toRN({ type: 'stateChange', state: 'playing' }); 
-    if (bgV) bgV.play().catch(function(){});
   });
   v.addEventListener('pause',   function() { 
     if (!v.ended) toRN({ type: 'stateChange', state: 'paused' }); 
-    if (bgV) bgV.pause();
   });
   v.addEventListener('ended',   function() { 
     toRN({ type: 'stateChange', state: 'ended' }); 
-    if (bgV) bgV.pause();
   });
   v.addEventListener('waiting', function() { 
     toRN({ type: 'stateChange', state: 'buffering' }); 
-    if (bgV) bgV.pause();
   });
   v.addEventListener('playing', function() { 
     toRN({ type: 'stateChange', state: 'playing' }); 
-    if (bgV) bgV.play().catch(function(){});
   });
   v.addEventListener('error',   function(e) {
     var err = v.error;
@@ -269,17 +258,12 @@ attachEvents();
         inject(`
           (function() {
             var v = document.getElementById('dmevideo');
-            var bgV = document.getElementById('bg-video');
             var statusEl = document.getElementById('status');
             if (statusEl) statusEl.innerText = "Loading stream...";
             if (v) {
               v.src = "${finalDownloadUrl}";
               v.load();
               v.play().catch(function(){});
-            }
-            if (bgV) {
-              bgV.src = "${finalDownloadUrl}";
-              bgV.load();
             }
           })();
         `);

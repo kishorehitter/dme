@@ -198,6 +198,7 @@ export async function submitChallengeScore(
       try {
         const broadcastMsg = `${TRIVIA_SCORE_SUBMISSION_PREFIX}${JSON.stringify({
           challengeId,
+          title: challenge.title,
           entry,
         })}`;
         await chatAPI.sendMessage(Number(challenge.conversationId), broadcastMsg, 'text');

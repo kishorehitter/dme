@@ -13,13 +13,14 @@ import {
   Dimensions,
   Modal,
   BackHandler,
+  PermissionsAndroid,
 } from 'react-native';
 import Video from 'react-native-video';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import FastImage from 'react-native-fast-image';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import RNFetchBlob from 'rn-fetch-blob';
+import RNFS from 'react-native-fs';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 import { pinNavBarColor } from '../utils/navBarPin';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
@@ -130,13 +131,51 @@ export const MediaViewerModal: React.FC<MediaViewerModalProps> = ({
     if (saving || !activeUrl) return;
     setSaving(true);
     try {
-      const { dirs } = RNFetchBlob.fs;
-      const ext = activeType === 'video' ? 'mp4' : 'jpg';
-      const dest = `${dirs.CacheDir}/mv_${Date.now()}.${ext}`;
-      await RNFetchBlob.config({ path: dest }).fetch('GET', activeUrl);
-      await saveAsset(`file://${dest}`, { type: activeType });
-      Alert.alert('Saved', 'Saved to gallery.');
+      const isGifMedia = activeUrl.toLowerCase().includes('.gif') || activeUrl.toLowerCase().includes('format=gif');
+      const isVideoMedia = activeType === 'video' || activeUrl.toLowerCase().includes('.mp4');
+      const ext = isVideoMedia ? 'mp4' : (isGifMedia ? 'gif' : 'jpg');
+      const mediaKind: 'video' | 'photo' = isVideoMedia ? 'video' : 'photo';
+
+      if (Platform.OS === 'android' && Platform.Version < 29) {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Permission Denied', 'Storage permission is required to save media.');
+          return;
+        }
+      }
+
+      let localFilePath = '';
+      const dest = `${RNFS.CachesDirectoryPath}/mv_${Date.now()}.${ext}`;
+
+      if (activeUrl.startsWith('file://') || activeUrl.startsWith('/')) {
+        const cleanPath = activeUrl.startsWith('file://') ? activeUrl.slice(7) : activeUrl;
+        try {
+          await RNFS.copyFile(cleanPath, dest);
+          localFilePath = `file://${dest}`;
+        } catch {
+          localFilePath = activeUrl.startsWith('file://') ? activeUrl : `file://${activeUrl}`;
+        }
+      } else if (activeUrl.startsWith('content://')) {
+        await RNFS.copyFile(activeUrl, dest);
+        localFilePath = `file://${dest}`;
+      } else {
+        const download = RNFS.downloadFile({
+          fromUrl: activeUrl,
+          toFile: dest,
+        });
+        const res = await download.promise;
+        if (res.statusCode >= 400) {
+          throw new Error(`Download failed with status ${res.statusCode}`);
+        }
+        localFilePath = `file://${dest}`;
+      }
+
+      await saveAsset(localFilePath, { type: mediaKind });
+      Alert.alert('Saved', isGifMedia ? 'GIF saved to gallery.' : 'Saved to gallery.');
     } catch (err: any) {
+      console.error('[MediaViewerModal] Save error:', err);
       Alert.alert('Save failed', err?.message ?? 'Permission or storage error.');
     } finally {
       setSaving(false);

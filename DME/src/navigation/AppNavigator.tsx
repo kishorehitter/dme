@@ -312,7 +312,14 @@ const ChatStack: React.FC<any> = ({ logout }) => {
   useEffect(() => {
     const openSub = DeviceEventEmitter.addListener('open_music_room', (data) => {
       (global as any).activeMusicRoomCode = data.roomCode;
+      setWindowBackground('#000000');
       pinNavBarColor('#00000000', true);
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setWindowBackground('#000000');
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+        NativeModules.SystemBar.setFitsSystemWindows(false);
+      }
       setMusicRoom({
         roomCode: data.roomCode,
         params: data,
@@ -347,7 +354,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
           pinNavBarColor('#00000000', isDark);
         }, 200);
       } else {
-        setWindowBackground('#0A0A0C');
+        setWindowBackground('#000000');
         pinNavBarColor('#00000000', true);
       }
     });
@@ -366,7 +373,6 @@ const ChatStack: React.FC<any> = ({ logout }) => {
     <Stack.Navigator
       screenOptions={{
         contentStyle: { backgroundColor: theme.background },
-        animation: 'simple_push',
         headerStyle: {
           backgroundColor: theme.surface,
         },
@@ -386,21 +392,25 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       <Stack.Screen 
         name="ChatRoom"     
         component={ChatRoomScreen}     
-        options={{ headerShown: false }} 
+        options={{ 
+          headerShown: false,
+          animation: 'slide_from_right',
+          animationDuration: 10,
+        }} 
       />
       <Stack.Screen name="Call"         component={CallScreen}         options={{ headerShown: false }} />
       <Stack.Screen name="IncomingCall" component={IncomingCallScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="FriendList"   component={FriendListScreen}   options={{ title: 'My Friends', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint }} />
-      <Stack.Screen name="CreateGroup"  component={CreateGroupScreen}  options={{ title: 'New Group', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint }} />
+      <Stack.Screen name="FriendList"   component={FriendListScreen}   options={{ title: 'My Friends', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, animation: 'slide_from_right', animationDuration: 130 }} />
+      <Stack.Screen name="CreateGroup"  component={CreateGroupScreen}  options={{ title: 'New Group', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, animation: 'slide_from_right', animationDuration: 130 }} />
       <Stack.Screen 
         name="GroupInfo"    
         component={GroupInfoScreen}    
-        options={{ headerShown: false }} 
+        options={{ headerShown: false, animation: 'slide_from_right', animationDuration: 130 }} 
       />
       <Stack.Screen 
         name="Profile"      
         component={ProfileScreen}      
-        options={{ headerShown: false }} 
+        options={{ headerShown: false, animation: 'slide_from_right', animationDuration: 130 }} 
       />
       <Stack.Screen
         name="StatusViewer"
@@ -425,7 +435,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         component={MediaViewerScreen} 
         options={{ 
           headerShown: false, 
-          animation: 'none',
+          animation: 'fade',
           contentStyle: { backgroundColor: '#000000' },
         }} 
       />
@@ -434,6 +444,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         component={YouTubeDiscoveryScreen} 
         options={{ 
           headerShown: false,
+          animation: 'none',
           contentStyle: { backgroundColor: '#020912' },
         }} 
       />
@@ -516,6 +527,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
           pointerEvents={musicRoom.isMinimized ? 'none' : 'auto'}
         >
           <MusicRoomScreen
+            key={musicRoom.roomCode}
             route={{ params: musicRoom.params }}
             navigation={navigationRef}
             isMinimized={musicRoom.isMinimized}
@@ -530,6 +542,7 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady, isSpl
   const { isAuthenticated, isLoading, user } = useAuth();
   const { isDark, theme } = useTheme();
   const fadeRef = React.useRef(new Animated.Value(0)).current;
+  const lastAppliedModeRef = React.useRef<string | null>(null);
 
   // Build a navigation theme matching our color palette
   const navTheme = React.useMemo(() => ({
@@ -560,7 +573,7 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady, isSpl
   React.useLayoutEffect(() => {
     if (isLoading) return;
     const currentRouteName = navigationRef.current?.getCurrentRoute()?.name;
-    if (currentRouteName === 'StatusViewer' || currentRouteName === 'MediaViewer' || currentRouteName === 'FullScreenMediaViewer' || currentRouteName === 'StatusEditor' || currentRouteName === 'YouTubeDiscovery') {
+    if (currentRouteName === 'StatusViewer' || currentRouteName === 'MediaViewer' || currentRouteName === 'FullScreenMediaViewer' || currentRouteName === 'StatusEditor') {
       return;
     }
     if (isAuthenticated) {
@@ -596,12 +609,23 @@ const AppNavigator: React.FC<any> = ({ setNavigationRef, onNavigatorReady, isSpl
         const currentRouteName = navigationRef.current.getCurrentRoute()?.name;
         if (!currentRouteName) return;
 
+        const isBlackMode = ['StatusViewer', 'StatusEditor', 'MediaViewer', 'FullScreenMediaViewer', 'GoogleLogin', 'MusicRoom'].includes(currentRouteName) || (global as any).activeMusicRoomCode;
+        const isAuthMode = ['Login', 'Register', 'OTP'].includes(currentRouteName);
+        const mode = isBlackMode ? 'black' : isAuthMode ? 'auth' : `normal_${isDark}`;
+
+        if (lastAppliedModeRef.current === mode) {
+          return; // Skip redundant synchronous native bridge calls during transitions between normal screens
+        }
+        lastAppliedModeRef.current = mode;
+
         if (Platform.OS === 'android' && NativeModules.SystemBar) {
-          if (['StatusViewer', 'StatusEditor', 'MediaViewer', 'FullScreenMediaViewer', 'YouTubeDiscovery', 'GoogleLogin'].includes(currentRouteName)) {
+          if (isBlackMode) {
+            NativeModules.SystemBar.setWindowBackground('#000000');
             NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
             NativeModules.SystemBar.setStatusBarColor('#00000000', true);
+            NativeModules.SystemBar.setFitsSystemWindows(false);
             pinNavBarColor('#00000000', true);
-          } else if (['Login', 'Register', 'OTP'].includes(currentRouteName)) {
+          } else if (isAuthMode) {
             NativeModules.SystemBar.setNavigationBarColor('#00000000', false);
             NativeModules.SystemBar.setStatusBarColor('#00000000', false);
             pinNavBarColor('#00000000', false);

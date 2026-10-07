@@ -51,6 +51,11 @@ const GoogleLoginScreen = () => {
   const starfieldPulse = useRef(new Animated.Value(0.7)).current;
   const buttonGlowAnim = useRef(new Animated.Value(0)).current;
 
+  // Wave & 3-Dot Loading Animations for Google Sign-In button
+  const buttonWaveScale = useRef(new Animated.Value(0)).current;
+  const buttonShimmerAnim = useRef(new Animated.Value(0)).current;
+  const dotsWaveAnim = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     // 1. Earth Atmosphere Gentle Breathing Pulse
     const earthLoop = Animated.loop(
@@ -225,6 +230,95 @@ const GoogleLoginScreen = () => {
     }
   };
 
+  useEffect(() => {
+    if (isOpeningGoogle) {
+      // 1. Button breathing wave scale loop
+      const scaleLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(buttonWaveScale, {
+            toValue: 1,
+            duration: 700,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(buttonWaveScale, {
+            toValue: 0,
+            duration: 700,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      // 2. Button wave shimmer light streak loop
+      buttonShimmerAnim.setValue(0);
+      const shimmerLoop = Animated.loop(
+        Animated.timing(buttonShimmerAnim, {
+          toValue: 1,
+          duration: 1400,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      );
+
+      // 3. Staggered 3-dots wave bounce loop
+      dotsWaveAnim.setValue(0);
+      const dotsLoop = Animated.loop(
+        Animated.timing(dotsWaveAnim, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      );
+
+      scaleLoop.start();
+      shimmerLoop.start();
+      dotsLoop.start();
+
+      return () => {
+        scaleLoop.stop();
+        shimmerLoop.stop();
+        dotsLoop.stop();
+        buttonWaveScale.setValue(0);
+        buttonShimmerAnim.setValue(0);
+        dotsWaveAnim.setValue(0);
+      };
+    } else {
+      buttonWaveScale.setValue(0);
+      buttonShimmerAnim.setValue(0);
+      dotsWaveAnim.setValue(0);
+    }
+  }, [isOpeningGoogle]);
+
+  // 3-Dot Staggered Wave Interpolations
+  const dot1TranslateY = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.16, 0.32, 1],
+    outputRange: [0, -4.5, 0, 0],
+  });
+  const dot1Opacity = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.16, 0.32, 1],
+    outputRange: [0.35, 1, 0.35, 0.35],
+  });
+
+  const dot2TranslateY = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.16, 0.32, 0.48, 1],
+    outputRange: [0, 0, -4.5, 0, 0],
+  });
+  const dot2Opacity = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.16, 0.32, 0.48, 1],
+    outputRange: [0.35, 0.35, 1, 0.35, 0.35],
+  });
+
+  const dot3TranslateY = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.32, 0.48, 0.64, 1],
+    outputRange: [0, 0, 0, -4.5, 0],
+  });
+  const dot3Opacity = dotsWaveAnim.interpolate({
+    inputRange: [0, 0.32, 0.48, 0.64, 1],
+    outputRange: [0.35, 0.35, 0.35, 1, 0.35],
+  });
+
   const safeTop = Math.max(insets.top, StatusBar.currentHeight || 0, 24);
   const safeBottom = Math.max(insets.bottom, 16);
   const isBusy = isOpeningGoogle || loading;
@@ -358,8 +452,22 @@ const GoogleLoginScreen = () => {
             Moments made better together.
           </Text>
 
-          {/* ── Glowing Google Button ── */}
-          <View style={styles.buttonOuterWrapper}>
+          {/* ── Glowing Google Button with Wave Loading ── */}
+          <Animated.View
+            style={[
+              styles.buttonOuterWrapper,
+              isOpeningGoogle && {
+                transform: [
+                  {
+                    scale: buttonWaveScale.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [1, 1.025],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
             <TouchableOpacity
               onPress={handleGoogleLogin}
               disabled={isBusy}
@@ -373,23 +481,89 @@ const GoogleLoginScreen = () => {
                 end={{ x: 1, y: 1 }}
                 style={styles.buttonGradientBorder}
               >
-                {/* Dark Obsidian Glass Center */}
+                {/* Button Inner */}
                 <View style={styles.buttonInner}>
-                  {isOpeningGoogle ? (
-                    <ActivityIndicator color="#0F172A" size="small" style={{ marginRight: 12 }} />
-                  ) : (
-                    <Image
-                      source={require('../assets/google.png')}
-                      style={styles.googleIcon}
-                    />
+                  {/* Wave shimmer of flowing light across button when connecting */}
+                  {isOpeningGoogle && (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        styles.waveShimmerOverlay,
+                        {
+                          transform: [
+                            {
+                              translateX: buttonShimmerAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [-SCREEN_WIDTH * 0.85, SCREEN_WIDTH * 0.85],
+                              }),
+                            },
+                          ],
+                        },
+                      ]}
+                    >
+                      <LinearGradient
+                        colors={[
+                          'transparent',
+                          'rgba(56, 189, 248, 0.12)',
+                          'rgba(129, 140, 248, 0.28)',
+                          'rgba(244, 114, 182, 0.25)',
+                          'rgba(56, 189, 248, 0.12)',
+                          'transparent',
+                        ]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={StyleSheet.absoluteFillObject}
+                      />
+                    </Animated.View>
                   )}
-                  <Text style={styles.googleButtonText}>
-                    {isOpeningGoogle ? 'Connecting with Google...' : 'Continue with Google'}
-                  </Text>
+
+                  {/* Google Icon — Always visible, spinner removed */}
+                  <Image
+                    source={require('../assets/google.png')}
+                    style={styles.googleIcon}
+                  />
+
+                  {/* Button Text with 3-dot Loading Wave Animation */}
+                  {isOpeningGoogle ? (
+                    <View style={styles.buttonTextRow}>
+                      <Text style={styles.googleButtonText}>Connecting with Google</Text>
+                      <View style={styles.dotsContainer}>
+                        <Animated.View
+                          style={[
+                            styles.loadingDot,
+                            {
+                              opacity: dot1Opacity,
+                              transform: [{ translateY: dot1TranslateY }],
+                            },
+                          ]}
+                        />
+                        <Animated.View
+                          style={[
+                            styles.loadingDot,
+                            {
+                              opacity: dot2Opacity,
+                              transform: [{ translateY: dot2TranslateY }],
+                            },
+                          ]}
+                        />
+                        <Animated.View
+                          style={[
+                            styles.loadingDot,
+                            {
+                              opacity: dot3Opacity,
+                              transform: [{ translateY: dot3TranslateY }],
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  ) : (
+                    <Text style={styles.googleButtonText}>Continue with Google</Text>
+                  )}
                 </View>
               </LinearGradient>
             </TouchableOpacity>
-          </View>
+          </Animated.View>
 
           {/* Terms and Privacy Footer */}
           <Text style={styles.footer}>
@@ -403,8 +577,8 @@ const GoogleLoginScreen = () => {
       {/* Full Screen Loading Indicator for Server Sync */}
       {loading && (
         <View style={styles.fullScreenLoader} pointerEvents="auto">
-          <ActivityIndicator color="#38BDF8" size="large" />
-          <Text style={styles.loaderText}>Signing you in...</Text>
+          <ActivityIndicator color="#FFFFFF" size="large" />
+          <Text style={styles.loaderText}>Signing in...</Text>
         </View>
       )}
     </View>
@@ -564,6 +738,28 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 24,
     borderRadius: 14.5,
+    overflow: 'hidden',
+  },
+  waveShimmerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  buttonTextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dotsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 3,
+    gap: 3.5,
+    height: 18,
+    justifyContent: 'center',
+  },
+  loadingDot: {
+    width: 3.5,
+    height: 3.5,
+    borderRadius: 2,
+    backgroundColor: '#0F172A',
   },
   googleIcon: {
     width: 21,

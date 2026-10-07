@@ -752,6 +752,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
                 initialNumToRender={24}
                 maxToRenderPerBatch={24}
                 windowSize={7}
+                contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 12 }}
                 ListFooterComponent={
                   loadingPhotos && photos.length > 0 ? (
                     <View style={{ padding: 20, alignItems: 'center' }}>

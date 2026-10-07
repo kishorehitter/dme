@@ -266,6 +266,13 @@ export const chatAPI = {
     return response.data;
   },
 
+  markConversationAsRead: async (conversationId: number) => {
+    const response = await api.post(
+      `/chat/conversations/${conversationId}/mark-read/`,
+    );
+    return response.data;
+  },
+
   clearChat: async (conversationId: number) => {
     const response = await api.post(
       `/chat/conversations/${conversationId}/clear/`,
@@ -318,8 +325,8 @@ export const chatAPI = {
     return response.data;
   },
 
-  deleteMessage: async (messageId: number) => {
-    const response = await api.delete(`/chat/messages/${messageId}/delete/`);
+  deleteMessage: async (messageId: number, forEveryone: boolean = true) => {
+    const response = await api.delete(`/chat/messages/${messageId}/delete/?for_everyone=${forEveryone}`);
     return response.data;
   },
 
@@ -383,7 +390,7 @@ export const chatAPI = {
     return response.data;
   },
 
-  rejectMessageRequest: async (requestId: number) => {
+  rejectMessageRequestById: async (requestId: number) => {
     const response = await api.post(`/chat/message-requests/${requestId}/reject/`);
     return response.data;
   },
@@ -458,6 +465,33 @@ export const musicAPI = {
   removeLike: async (videoId: string, source: string = 'youtube') => {
     const response = await api.delete(`/music/likes/?video_id=${videoId}&source=${source}`);
     return response.data;
+  },
+  // ── Direct stream URL extraction (yt-dlp backend) ─────────────────────────
+  // Returns available quality levels with direct googlevideo.com URLs.
+  // Falls back gracefully — caller must handle errors.
+  getStreams: async (videoId: string): Promise<{
+    video_id: string;
+    title: string;
+    duration: number;
+    streams: Array<{
+      height: number;
+      width: number;
+      quality: string;
+      label: string;
+      url: string;
+      has_audio: boolean;
+      vcodec: string;
+      acodec: string | null;
+      ext: string;
+    }>;
+    dash_url: string | null;
+    best_audio: { url: string; acodec: string; abr: number; ext: string } | null;
+  }> => {
+    const response = await api.get(`/music/youtube/stream/${videoId}/`);
+    return response.data;
+  },
+  getYoutubeStream: async (videoId: string) => {
+    return musicAPI.getStreams(videoId);
   },
 };
 

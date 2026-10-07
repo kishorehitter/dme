@@ -32,8 +32,12 @@ class MusicConsumer(AsyncWebsocketConsumer):
                 'position': 0,
                 'is_playing': False,
                 'queue': [],
-                'is_dj_background': False # ✅ NEW
+                'is_dj_background': False, # ✅ NEW
+                'allowed_speakers': [self.user.id] # ✅ Leader allowed by default
             }
+        else:
+            if 'allowed_speakers' not in music_rooms[self.room_code]:
+                music_rooms[self.room_code]['allowed_speakers'] = [music_rooms[self.room_code]['host_id']]
 
         # Add participant
         music_rooms[self.room_code]['participants'][self.user.id] = {
@@ -74,7 +78,8 @@ class MusicConsumer(AsyncWebsocketConsumer):
                 'position': room['position'],
                 'is_playing': room['is_playing'],
                 'queue': room['queue'],
-                'participants': list(room['participants'].values())
+                'participants': list(room['participants'].values()),
+                'allowed_speakers': room.get('allowed_speakers', [room['host_id']])
             }
         }))
 
@@ -353,6 +358,47 @@ class MusicConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+        elif msg_type == 'update_mic_permission' and is_dj:
+            target_user_id = data.get('target_user_id')
+            allowed = data.get('allowed', False)
+            allowed_speakers = list(room.get('allowed_speakers', [room['host_id']]))
+            
+            # Host is always in allowed_speakers
+            if room['host_id'] not in allowed_speakers:
+                allowed_speakers.append(room['host_id'])
+            
+            if allowed:
+                if target_user_id not in allowed_speakers and len(allowed_speakers) < 4:
+                    allowed_speakers.append(target_user_id)
+            else:
+                if target_user_id != room['host_id'] and target_user_id in allowed_speakers:
+                    allowed_speakers.remove(target_user_id)
+            
+            room['allowed_speakers'] = allowed_speakers
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'mic_permission_update',
+                    'allowed_speakers': room['allowed_speakers']
+                }
+            )
+
+        # ── WebRTC Signaling Relay (stateless — server only forwards to target) ──
+        elif msg_type in ('webrtc_offer', 'webrtc_answer', 'webrtc_ice', 'webrtc_request_offer'):
+            target_user_id = data.get('to_user_id')
+            if not target_user_id:
+                return
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'webrtc_signal',
+                    'signal_type': msg_type,
+                    'from_user_id': self.user.id,
+                    'to_user_id': target_user_id,
+                    'payload': data.get('payload'),
+                }
+            )
+
     # Channel layer event handlers
     async def typing_indicator(self, event):
         await self.send(text_data=json.dumps({
@@ -361,6 +407,26 @@ class MusicConsumer(AsyncWebsocketConsumer):
                 'user_id': event['user_id'],
                 'user_name': event['user_name'],
                 'is_typing': event['is_typing']
+            }
+        }))
+
+    async def webrtc_signal(self, event):
+        # Only deliver to the intended recipient — silently drop for others
+        if event['to_user_id'] != self.user.id:
+            return
+        await self.send(text_data=json.dumps({
+            'type': event['signal_type'],
+            'data': {
+                'from_user_id': event['from_user_id'],
+                'payload': event['payload'],
+            }
+        }))
+
+    async def mic_permission_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'mic_permission_update',
+            'data': {
+                'allowed_speakers': event['allowed_speakers']
             }
         }))
 

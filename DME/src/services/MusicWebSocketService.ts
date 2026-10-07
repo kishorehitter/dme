@@ -17,7 +17,13 @@ export type MusicWSMessage = {
     | 'room_name_update'
     | 'dj_background'
     | 'typing'
-    | 'connection_established';
+    | 'connection_established'
+    // ── WebRTC Signaling ────────────────────────────────────────────────────
+    | 'webrtc_offer'
+    | 'webrtc_answer'
+    | 'webrtc_ice'
+    | 'webrtc_request_offer'
+    | 'mic_permission_update';
   data: any;
 };
 
@@ -187,12 +193,37 @@ class MusicWebSocketService {
     this.send({ type: 'room_name_update', room_name });
   }
 
+  // ── WebRTC Signaling ───────────────────────────────────────────────────────
+
+  sendWebRTCOffer(toUserId: number, payload: RTCSessionDescriptionInit) {
+    this.send({ type: 'webrtc_offer', to_user_id: toUserId, payload });
+  }
+
+  sendWebRTCAnswer(toUserId: number, payload: RTCSessionDescriptionInit) {
+    this.send({ type: 'webrtc_answer', to_user_id: toUserId, payload });
+  }
+
+  sendWebRTCIce(toUserId: number, payload: RTCIceCandidateInit) {
+    this.send({ type: 'webrtc_ice', to_user_id: toUserId, payload });
+  }
+
+  sendWebRTCRequestOffer(toUserId: number) {
+    this.send({ type: 'webrtc_request_offer', to_user_id: toUserId });
+  }
+
+  updateMicPermission(targetUserId: number, allowed: boolean) {
+    this.send({ type: 'update_mic_permission', target_user_id: targetUserId, allowed });
+  }
+
   // ── Core ─────────────────────────────────────────
 
   private send(data: any) {
     if (this.isConnected && this.ws) {
       this.ws.send(JSON.stringify(data));
     } else {
+      if (data?.type === 'typing') {
+        return;
+      }
       console.warn('🎵 Music WS not connected, dropping:', data.type);
     }
   }

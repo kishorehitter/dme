@@ -1179,18 +1179,23 @@ class YouTubeDecipherService {
         const muxedFormats: any[] = streamingData?.formats || [];
         const allRawFormats: any[] = [];
 
-        // 1. Add all adaptive formats from MWEB (matches authentic Web PO-token)
-        if (adaptiveFormats && adaptiveFormats.length > 0) {
-            for (const af of adaptiveFormats) {
-                allRawFormats.push(af);
+        // 1. Prioritize direct native adaptive formats (IOS InnerTube) with pre-signed direct URLs (144p to 1080p/4K)
+        if (nativeAdaptive && nativeAdaptive.length > 0) {
+            for (const na of nativeAdaptive) {
+                if (na.url && !na.signatureCipher && !na.cipher) {
+                    allRawFormats.push(na);
+                }
             }
         }
 
-        // 2. Only add native adaptive formats (IOS) if not already present
-        if (nativeAdaptive && nativeAdaptive.length > 0) {
-            for (const na of nativeAdaptive) {
-                if (!allRawFormats.some(f => f.itag === na.itag)) {
-                    allRawFormats.push(na);
+        // 2. Add or supplement MWEB adaptive formats if not already present with a direct URL
+        if (adaptiveFormats && adaptiveFormats.length > 0) {
+            for (const af of adaptiveFormats) {
+                const existingIdx = allRawFormats.findIndex(f => f.itag === af.itag);
+                if (existingIdx === -1) {
+                    allRawFormats.push(af);
+                } else if (!allRawFormats[existingIdx].url && (af.url || af.signatureCipher || af.cipher)) {
+                    allRawFormats[existingIdx] = af;
                 }
             }
         }
@@ -1422,7 +1427,19 @@ class YouTubeDecipherService {
 
         console.log(`✅ [YouTubeDecipherService] MWEB extraction produced ${validFormats.length} formats (decipherSuccess: ${decipherSuccess})`);
 
-        const finalFormats = validFormats.length > 0 ? validFormats : (nativeAdaptive.length > 0 ? nativeAdaptive : []);
+        // Ensure all valid direct formats from nativeAdaptive are merged into finalFormats
+        const finalFormatsMap = new Map<number, any>();
+        for (const vf of validFormats) {
+            finalFormatsMap.set(vf.itag, vf);
+        }
+        if (nativeAdaptive && nativeAdaptive.length > 0) {
+            for (const na of nativeAdaptive) {
+                if (na.url && !finalFormatsMap.has(na.itag)) {
+                    finalFormatsMap.set(na.itag, na);
+                }
+            }
+        }
+        const finalFormats = Array.from(finalFormatsMap.values());
         console.log(`🎬 [YouTubeDecipherService] Final stream selection: ${finalFormats.length} formats (decipherSuccess: ${decipherSuccess}), progressive: ${Boolean(nativeProgUrl)}`);
         let finalProgUrl = nativeProgUrl;
         // Do NOT attach Web PO-token to ANDROID progressive URL (nativeProgUrl is c=ANDROID and plays cleanly without pot)

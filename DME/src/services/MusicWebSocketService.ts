@@ -87,7 +87,7 @@ class MusicWebSocketService {
         };
 
         this.ws.onerror = (error) => {
-          console.error('🎵 Music WS error:', error);
+          console.warn('🎵 Music WS error (network/backend unavailable):', error);
         };
 
         this.ws.onclose = (event) => {

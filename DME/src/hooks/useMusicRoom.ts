@@ -131,7 +131,7 @@ export const useMusicRoom = (
           setIsConnected(true);
         }
       } catch (error) {
-        console.error('Failed to connect to music room:', error);
+        console.warn('Failed to connect to music room (network/backend unavailable):', error);
       } finally {
         setIsLoading(false);
       }

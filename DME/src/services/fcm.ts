@@ -1076,7 +1076,7 @@ class FCMService {
       });
       console.log('[FCMService] Device registered');
     } catch (e) {
-      console.error('[FCMService] registerDevice error:', e);
+      console.warn('[FCMService] registerDevice skipped (network unavailable):', e);
     }
   }
 

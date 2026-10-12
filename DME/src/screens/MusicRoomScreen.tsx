@@ -1330,7 +1330,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       const liked = likes.some((l: any) => l.video_id === videoId && l.source === source);
       setIsLiked(liked);
     } catch (e) {
-      console.error('Error checking like status:', e);
+      console.warn('Like status check skipped (network unavailable):', e);
     }
   }, []);
 

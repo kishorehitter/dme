@@ -599,6 +599,37 @@ class YouTubeDecipherService {
     public async generatePoToken(videoId: string = '', visitorData: string = '', watchPageHtml?: string): Promise<{ po_token: string; visitor_data: string }> {
         const now = Date.now();
 
+        // ── Guard: flush all account-bound cached state ───────────────────────────────────────
+        // When logged into YouTube, two things happen:
+        // 1. visitor_data is long (100+ chars) — account-bound identifier
+        // 2. The BotGuard att/get challenge runs WITH account cookies → cachedIntegrityToken
+        //    is account-bound → fast-mint always produces a 182-char account-bound token
+        //    regardless of what identifier is passed.
+        // The CDN expects matching YouTube account cookies on every ExoPlayer chunk request,
+        // which OkHttp never sends → HTTP 403 at ~60 s.
+        //
+        // Fix: when we detect account-bound visitor_data, flush ALL cached account-bound state:
+        //   • cachedIntegrityToken  (the root cause — it's account-bound)
+        //   • latestVisitorBoundToken  (cached account-bound token)
+        //   • cachedPoTokens  (all stale account-bound entries)
+        // This forces a FULL fresh anonymous BotGuard attestation with no account context,
+        // producing the correct ~127-char visitor-bound token that the CDN accepts forever.
+        if (visitorData && visitorData.length > 50) {
+            console.log(`🔒 [PoToken] Detected account-bound visitorData (len: ${visitorData.length}) — flushing all cached tokens and integrityToken for anonymous re-attestation`);
+            visitorData = '';
+            this.cachedIntegrityToken = null;
+            this.latestVisitorBoundToken = null;
+            this.cachedPoTokens.clear();
+        }
+
+        // Also guard: if the latest cached token is account-bound (> 150 chars), discard it
+        if (this.latestVisitorBoundToken && this.latestVisitorBoundToken.token.length > 150) {
+            console.log(`🔒 [PoToken] Cached token is account-bound (len: ${this.latestVisitorBoundToken.token.length}) — discarding and forcing fresh anonymous attestation`);
+            this.cachedIntegrityToken = null;
+            this.latestVisitorBoundToken = null;
+            this.cachedPoTokens.clear();
+        }
+
         // 1. Return cached authentic visitor-bound token if valid (cached for 5 hours)
         if (visitorData && this.cachedPoTokens.has(visitorData)) {
             const cached = this.cachedPoTokens.get(visitorData)!;
@@ -643,26 +674,35 @@ class YouTubeDecipherService {
                             identifier: visitorData
                         }, 3000);
                         if (fastMint && fastMint.poToken && typeof fastMint.poToken === 'string' && fastMint.poToken.length > 0) {
-                            const expiresAt = now + (5 * 60 * 60 * 1000);
-                            this.cachedPoTokens.set(visitorData, {
-                                token: fastMint.poToken,
-                                visitorData,
-                                expiresAt
-                            });
-                            if (videoId) {
-                                this.cachedPoTokens.set(videoId, {
+                            // Guard: reject account-bound token (>130 chars) — flush and fall through to full attestation
+                            if (fastMint.poToken.length > 130) {
+                                console.log(`🔒 [PoToken] Fast-mint produced account-bound token (len: ${fastMint.poToken.length}) — flushing integrityToken + caches, forcing full anonymous re-attestation`);
+                                this.cachedIntegrityToken = null;
+                                this.latestVisitorBoundToken = null;
+                                this.cachedPoTokens.clear();
+                                // fall through to full attestation below
+                            } else {
+                                const expiresAt = now + (5 * 60 * 60 * 1000);
+                                this.cachedPoTokens.set(visitorData, {
                                     token: fastMint.poToken,
                                     visitorData,
                                     expiresAt
                                 });
+                                if (videoId) {
+                                    this.cachedPoTokens.set(videoId, {
+                                        token: fastMint.poToken,
+                                        visitorData,
+                                        expiresAt
+                                    });
+                                }
+                                this.latestVisitorBoundToken = {
+                                    token: fastMint.poToken,
+                                    visitorData,
+                                    expiresAt
+                                };
+                                console.log(`⚡ [PoToken] Fast-minted authentic visitor-bound PO-Token in <15ms for visitor_data=${visitorData.substring(0, 16)}... (len: ${fastMint.poToken.length})`);
+                                return { po_token: fastMint.poToken, visitor_data: visitorData };
                             }
-                            this.latestVisitorBoundToken = {
-                                token: fastMint.poToken,
-                                visitorData,
-                                expiresAt
-                            };
-                            console.log(`⚡ [PoToken] Fast-minted authentic visitor-bound PO-Token in <15ms for visitor_data=${visitorData.substring(0, 16)}... (len: ${fastMint.poToken.length})`);
-                            return { po_token: fastMint.poToken, visitor_data: visitorData };
                         }
                     } catch (_) {
                         // Fast mint failed, proceed to full attestation
@@ -778,9 +818,15 @@ class YouTubeDecipherService {
 
                     if (attData) {
                         // Extract genuine visitorData returned directly by YouTube's att/get responseContext
+                        // Guard: only use if anonymous (≤50 chars) — account-bound values cause 403
                         if (!resolvedVisitorData && attData.responseContext?.visitorData) {
-                            resolvedVisitorData = attData.responseContext.visitorData;
-                            console.log(`🤖 [PoToken] Resolved genuine visitorData from att/get: ${resolvedVisitorData.substring(0, 16)}...`);
+                            const attVd = attData.responseContext.visitorData;
+                            if (attVd.length <= 50) {
+                                resolvedVisitorData = attVd;
+                                console.log(`🤖 [PoToken] Resolved genuine visitorData from att/get: ${resolvedVisitorData.substring(0, 16)}...`);
+                            } else {
+                                console.log(`🔒 [PoToken] att/get returned account-bound visitorData (len: ${attVd.length}) — ignoring, keeping anonymous`);
+                            }
                         }
 
                         const bg = attData.bgChallenge || attData.challenge?.bgChallenge || attData.challengeData;
@@ -859,6 +905,11 @@ class YouTubeDecipherService {
                 if (!integrityToken || typeof integrityToken !== 'string') {
                     throw new Error('GenerateIT returned no valid integrity token');
                 }
+                // ── Pre-cache guard: only store integrityToken if we're in anonymous context ──────────────
+                // The integrityToken is derived from a BotGuard session that ran WITH account cookies
+                // (because WebView shares CookieManager). If we cache it, all future fast-mints will
+                // produce account-bound 182-char tokens → 403 at 60s. We detect this AFTER minting
+                // by checking the token length: anonymous ≤130 chars, account-bound >130 chars.
                 this.cachedIntegrityToken = integrityToken;
                 console.log(`🤖 [PoToken] Integrity token acquired: ${integrityToken.substring(0, 25)}..., minting PO-Token for visitor_data=${resolvedVisitorData.substring(0, 16)}...`);
 
@@ -880,6 +931,17 @@ class YouTubeDecipherService {
 
                 if (!authenticToken || authenticToken.length === 0) {
                     throw new Error('Could not obtain authentic PO-Token (skipping pot)');
+                }
+
+                // ── Account-bound token guard ─────────────────────────────────────────────────────────────
+                // Anonymous visitor-bound token: ~127 chars. Account-bound: 182+ chars.
+                // If account-bound, discard integrityToken so it is never reused by fast-mint.
+                if (authenticToken.length > 130) {
+                    console.log(`🔒 [PoToken] Minted token is account-bound (len: ${authenticToken.length}) — discarding integrityToken + all caches, NOT caching this token`);
+                    this.cachedIntegrityToken = null;
+                    this.latestVisitorBoundToken = null;
+                    this.cachedPoTokens.clear();
+                    throw new Error(`Account-bound PO-Token detected (len: ${authenticToken.length}) — refusing to use, forcing fresh anonymous attestation next call`);
                 }
 
                 const expiresAt = now + (5 * 60 * 60 * 1000); // 5 hours
@@ -1096,7 +1158,7 @@ class YouTubeDecipherService {
             throw new Error('Failed to fetch watch page HTML and no native formats available');
         }
 
-        const playerResponse = html ? this.parsePlayerResponseFromHtml(html) : null;
+        let playerResponse = html ? this.parsePlayerResponseFromHtml(html) : null;
 
         // ── Extract genuine visitorData from InnerTube / watch page HTML / player response ──
         let visitor_data = innertubeVisitorData || '';
@@ -1111,6 +1173,17 @@ class YouTubeDecipherService {
         }
         if (!visitor_data && this.latestVisitorBoundToken?.visitorData) {
             visitor_data = this.latestVisitorBoundToken.visitorData;
+        }
+
+        // ── Guard: flush all account-bound cached state at extraction time ───────────────────
+        // visitor_data > 50 chars = account-bound. Flush everything so generatePoToken()
+        // performs a full fresh anonymous BotGuard attestation (no account context).
+        if (visitor_data && visitor_data.length > 50) {
+            console.log(`🔒 [YouTubeDecipherService] Account-bound visitor_data detected (len: ${visitor_data.length}) — flushing integrityToken + all caches for anonymous re-attestation`);
+            visitor_data = '';
+            this.cachedIntegrityToken = null;
+            this.latestVisitorBoundToken = null;
+            this.cachedPoTokens.clear();
         }
 
         // ── Acquire or generate guaranteed PO-Token ──

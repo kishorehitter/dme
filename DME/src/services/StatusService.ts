@@ -82,7 +82,7 @@ export const StatusService = {
       const data = res.data;
       return Array.isArray(data) ? data : (data.results ?? []);
     } catch (err) {
-      console.error('[StatusService] getStatuses error:', err);
+      console.warn('[StatusService] getStatuses skipped (network unavailable):', err);
       return [];
     }
   },

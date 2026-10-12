@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><title></title><script>
+/**
+ * Factory method to create and load a BotGuardClient instance.
+ * @param options - Configuration options for the BotGuardClient.
+ * @returns A promise that resolves to a loaded BotGuardClient instance.
+ */
+function loadBotGuard(challengeData) {
+  this.vm = this[challengeData.globalName];
+  this.program = challengeData.program;
+  this.vmFunctions = {};
+  this.syncSnapshotFunction = null;
+
+  if (!this.vm)
+    throw new Error('[BotGuardClient]: VM not found in the global object');
+
+  if (!this.vm.a)
+    throw new Error('[BotGuardClient]: Could not load program');
+
+  const vmFunctionsCallback = function (
+    asyncSnapshotFunction,
+    shutdownFunction,
+    passEventFunction,
+    checkCameraFunction
+  ) {
+    this.vmFunctions = {
+      asyncSnapshotFunction: asyncSnapshotFunction,
+      shutdownFunction: shutdownFunction,
+      passEventFunction: passEventFunction,
+      checkCameraFunction: checkCameraFunction
+    };
+  };
+
+  this.syncSnapshotFunction = this.vm.a(this.program, vmFunctionsCallback, true, this.userInteractionElement, function () {/** no-op */ }, [ [], [] ])[0]
+
+  // an asynchronous function runs in the background and it will eventually call
+  // `vmFunctionsCallback`, however we need to manually tell JavaScript to pass
+  // control to the things running in the background by interrupting this async
+  // function in any way, e.g. with a delay of 1ms. The loop is most probably not
+  // needed but is there just because.
+  return new Promise(function (resolve, reject) {
+    i = 0
+    refreshIntervalId = setInterval(function () {
+      if (!!this.vmFunctions.asyncSnapshotFunction) {
+        resolve(this)
+        clearInterval(refreshIntervalId);
+      }
+      if (i >= 10000) {
+        reject("asyncSnapshotFunction is null even after 10 seconds")
+        clearInterval(refreshIntervalId);
+      }
+      i += 1;
+    }, 1);
+  })
+}
+
+/**
+ * Takes a snapshot asynchronously.
+ * @returns The snapshot result.
+ * @example
+ * ```ts
+ * const result = await botguard.snapshot({
+ *   contentBinding: {
+ *     c: "a=6&a2=10&b=SZWDwKVIuixOp7Y4euGTgwckbJA&c=1729143849&d=1&t=7200&c1a=1&c6a=1&c6b=1&hh=HrMb5mRWTyxGJphDr0nW2Oxonh0_wl2BDqWuLHyeKLo",
+ *     e: "ENGAGEMENT_TYPE_VIDEO_LIKE",
+ *     encryptedVideoId: "P-vC09ZJcnM"
+ *    }
+ * });
+ *
+ * console.log(result);
+ * ```
+ */
+function snapshot(args) {
+  return new Promise(function (resolve, reject) {
+    if (!this.vmFunctions.asyncSnapshotFunction)
+      return reject(new Error('[BotGuardClient]: Async snapshot function not found'));
+
+    this.vmFunctions.asyncSnapshotFunction(function (response) { resolve(response) }, [
+      args.contentBinding,
+      args.signedTimestamp,
+      args.webPoSignalOutput,
+      args.skipPrivacyBuffer
+    ]);
+  });
+}
+
+function runBotGuard(challengeData) {
+  const interpreterJavascript = challengeData.interpreterJavascript;
+
+  if (interpreterJavascript) {
+    new Function(interpreterJavascript)();
+  } else throw new Error('Could not load VM');
+
+  const webPoSignalOutput = [];
+  return loadBotGuard({
+    globalName: challengeData.globalName,
+    globalObj: this,
+    program: challengeData.program
+  }).then(function (botguard) {
+    return botguard.snapshot({ webPoSignalOutput: webPoSignalOutput })
+  }).then(function (botguardResponse) {
+    return { webPoSignalOutput: webPoSignalOutput, botguardResponse: botguardResponse }
+  })
+}
+
+window.__mintCallback = window.__mintCallback || null;
+window.__mintCallbackToken = window.__mintCallbackToken || null;
+
+function base64ToU8(base64) {
+  if (base64 instanceof Uint8Array) return base64;
+  var binary = atob(String(base64).replace(/-/g, '+').replace(/_/g, '/'));
+  var u8 = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) {
+    u8[i] = binary.charCodeAt(i);
+  }
+  return u8;
+}
+
+function stringToU8(str) {
+  if (str instanceof Uint8Array) return str;
+  if (!str) return new Uint8Array(0);
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(str);
+  }
+  var u8 = new Uint8Array(str.length);
+  for (var i = 0; i < str.length; i++) {
+    u8[i] = str.charCodeAt(i) & 0xff;
+  }
+  return u8;
+}
+
+function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
+  var getMinter = webPoSignalOutput ? webPoSignalOutput[0] : null;
+  if (!getMinter) throw new Error('PMD:Undefined');
+
+  var tokenU8 = (integrityToken instanceof Uint8Array) ? integrityToken : base64ToU8(integrityToken);
+  var idU8 = (identifier instanceof Uint8Array) ? identifier : stringToU8(identifier);
+
+  var tokenKey = tokenU8.length + ':' + tokenU8[0] + ':' + tokenU8[tokenU8.length - 1];
+  if (!window.__mintCallback || window.__mintCallbackToken !== tokenKey) {
+    window.__mintCallback = getMinter(tokenU8);
+    window.__mintCallbackToken = tokenKey;
+  }
+  var mintCallback = window.__mintCallback;
+  if (!(mintCallback instanceof Function)) throw new Error('APF:Failed');
+
+  var result = mintCallback(idU8);
+  if (!result) throw new Error('YNJ:Undefined');
+  if (!(result instanceof Uint8Array)) throw new Error('ODM:Invalid');
+  return result;
+}
+</script></head><body></body></html>

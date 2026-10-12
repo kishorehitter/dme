@@ -11,7 +11,7 @@ import {
   StatusBar, Text, DeviceEventEmitter,
   TextInput, Keyboard, BackHandler,
   Platform, Dimensions, Image, FlatList, ActivityIndicator,
-  KeyboardAvoidingView, Animated, Easing,
+  KeyboardAvoidingView, Animated, Easing, PanResponder,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
@@ -29,6 +29,13 @@ import { checkGoogleDriveAuth } from '../utils/driveAuth';
 const { width } = Dimensions.get('window');
 
 type TabType = 'youtube' | 'drive' | 'likes' | 'history';
+
+const TAB_META: Record<TabType, { icon: string; label: string; color: string }> = {
+  youtube:  { icon: 'logo-youtube',  label: 'YouTube', color: '#FF3B3B' },
+  drive:    { icon: 'logo-google',   label: 'Drive',   color: '#4DA3FF' },
+  likes:    { icon: 'heart',         label: 'Likes',   color: '#FF6EB4' },
+  history:  { icon: 'time',          label: 'History', color: '#FFBB45' },
+};
 
 // Tracks which tab the selected video came from
 // so we can emit the correct source in the event
@@ -196,6 +203,59 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
+
+  // Bottom tab bar
+  const TABS: TabType[] = ['youtube', 'drive', 'likes', 'history'];
+
+  function tabIndexFor(t: TabType): number {
+    return TABS.indexOf(t);
+  }
+
+  const switchTab = useCallback((tab: TabType) => {
+    setActiveTab(tab);
+  }, []);
+
+  // Edge-to-edge toggle: swipe up expands content to full screen (hides header + tabs);
+  // swipe down restores the chrome.
+  const [hideChrome, setHideChrome] = useState(false);
+  const panY = useRef(new Animated.Value(0)).current;
+  const headerHeight = useRef(0);
+  const chromeAnim = useRef(new Animated.Value(1)).current;
+
+  const toggleChrome = useCallback((expand: boolean) => {
+    if (hideChrome === expand) return;
+    setHideChrome(expand);
+    Animated.timing(chromeAnim, {
+      toValue: expand ? 0 : 1,
+      duration: 260,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [hideChrome, chromeAnim]);
+
+  const CHROME_HEIGHT = 128;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: (e) => {
+        return Math.abs(e.nativeEvent.translationY) < 6 && e.nativeEvent.y < 140;
+      },
+      onPanResponderGrant: () => { panY.setValue(0); },
+      onPanResponderMove: (_, g) => {
+        if (hideChrome && g.dy > 0) panY.setValue(g.dy);
+        if (!hideChrome && g.dy < 0) panY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_, g) => {
+        const threshold = CHROME_HEIGHT * 0.35;
+        if (g.dy > threshold) {
+          toggleChrome(true);
+        } else if (g.dy < -threshold) {
+          toggleChrome(false);
+        }
+        Animated.timing(panY, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+      },
+    })
+  ).current;
 
   // History / Likes
   const [history, setHistory]           = useState<any[]>([]);
@@ -574,20 +634,26 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         <TouchableOpacity
           style={styles.gridItemClick}
           onPress={() => handleSelectMedia(
-            type === 'youtube' ? { video_id: videoId, videoId, title, thumbnail: thumb, channel_title: channel, channelTitle: channel } : item, 
+            type === 'youtube' ? { video_id: videoId, videoId, title, thumbnail: thumb, channel_title: channel, channelTitle: channel } : item,
             source
           )}
         >
-          <Image source={{ uri: thumb }} style={styles.gridThumb} resizeMode="cover" />
-          <View style={styles.gridInfo}>
-            <Text style={[styles.gridTitle, { color: theme.textPrimary }]} numberOfLines={2}>
-              {title}
-            </Text>
-            {type === 'youtube' && channel ? (
-              <Text style={[styles.gridSub, { color: theme.textSecondary }]}>
-                {channel}
+          <View style={styles.gridThumb}>
+            <Image source={{ uri: thumb }} style={styles.gridThumbImage} resizeMode="cover" />
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.85)']}
+              style={styles.thumbGradient}
+            />
+            <View style={styles.thumbInfo}>
+              <Text style={styles.thumbTitle} numberOfLines={2}>
+                {title}
               </Text>
-            ) : null}
+              {type === 'youtube' && channel ? (
+                <Text style={styles.thumbSub}>
+                  {channel}
+                </Text>
+              ) : null}
+            </View>
           </View>
         </TouchableOpacity>
         {canRemove && (
@@ -599,7 +665,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 : removeLikeItem(videoId, source)
             }
           >
-            <Icon name="close-circle" size={20} color={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.4)"} />
+            <View style={styles.removeBtnBg}>
+              <Icon name="trash-outline" size={18} color="#FFFFFF" />
+            </View>
           </TouchableOpacity>
         )}
       </View>
@@ -617,73 +685,46 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   );
 
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+// ─── Render ────────────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, { backgroundColor: isDark ? '#0F0F0F' : theme.background }]}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent={true} />
 
-      {/* ── Header ── */}
-      <View style={[styles.header, { paddingTop: (insets.top || 28) + 8 }]}>
-        <TouchableOpacity
-          onPress={() => navigation?.goBack?.()}
-          style={[styles.backBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }]}
-        >
-          <Icon name="arrow-back" size={22} color={theme.textPrimary} />
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Icon name="play-circle" size={18} color="#fd0000" style={{ marginRight: 6 }} />
-          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Media Center</Text>
-        </View>
-        <View style={{ width: 40 }} />
-      </View>
-
-      {/* ── Tab Selector Cards ── */}
-      <View style={styles.tabCardRow}>
-        {(['youtube', 'drive', 'likes', 'history'] as TabType[]).map((tab) => {
-          const meta: Record<TabType, { icon: string; label: string; color: string }> = {
-            youtube:  { icon: 'logo-youtube',  label: 'YouTube', color: '#FF3B3B' },
-            drive:    { icon: 'logo-google',   label: 'Drive',   color: '#4DA3FF' },
-            likes:    { icon: 'heart',         label: 'Likes',   color: '#FF6EB4' },
-            history:  { icon: 'time',          label: 'History', color: '#FFBB45' },
-          };
-          const isActive = activeTab === tab;
-          const m = meta[tab];
-          return (
-            <TouchableOpacity
-              key={tab}
-              onPress={() => setActiveTab(tab)}
-              style={styles.tabCard}
-              activeOpacity={0.75}
-            >
-              {isActive ? (
-                <LinearGradient
-                  colors={isDark ? ['#1e1830', '#251a35'] : ['#F1F5F9', '#E2E8F0']}
-                  style={[styles.tabCardInner, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }]}
+{/* ── Top Tab Bar ── */}
+        <View style={[styles.topTabBar, { height: 64 + (insets.top || 28), paddingTop: (insets.top || 28) + 14 }]}>
+          <View style={styles.topTabRow}>
+            {TABS.map((tab) => {
+              const m = TAB_META[tab];
+              const isActive = activeTab === tab;
+              return (
+                <TouchableOpacity
+                  key={tab}
+                  style={[
+                    styles.topTabBox,
+                    { backgroundColor: isActive ? m.color + '18' : 'transparent' },
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => switchTab(tab)}
                 >
-                  <View style={[styles.tabCardIconRing, { borderColor: m.color + '55', backgroundColor: m.color + (isDark ? '22' : '15') }]}>
-                    <Icon name={m.icon} size={22} color={m.color} />
-                  </View>
-                  <Text style={[styles.tabCardLabel, { color: m.color }]}>{m.label}</Text>
-                  <View style={[styles.tabCardDot, { backgroundColor: m.color }]} />
-                </LinearGradient>
-              ) : (
-                <View style={[styles.tabCardInner, { backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)', borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }]}>
-                  <View style={styles.tabCardIconRingOff}>
-                    <Icon name={m.icon} size={20} color={isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.35)'} />
-                  </View>
-                  <Text style={[styles.tabCardLabelOff, { color: isDark ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.45)' }]}>{m.label}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+                  <Icon
+                    name={m.icon}
+                    size={isActive ? 24 : 22}
+                    color={isActive ? m.color : '#AAAAAA'}
+                  />
+                  <Text style={[styles.topTabLabel, { color: isActive ? m.color : '#999999' }]}>
+                    {m.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
 
-      {/* ── Content Card + Overlay wrapper (shared container for exact size match) ── */}
-      <View style={[styles.cardWrapper, { marginBottom: 12 + (insets.bottom || 0) }]}>
+      {/* ── Content Card (full screen) ── */}
+      <View style={[styles.cardWrapper, { flex: 1, marginBottom: 0 }]} {...(panResponder as any).panHandlers}>
 
         {/* Content Card */}
-        <View style={[styles.contentCard, { backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF', borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }]}>
+        <View style={[styles.contentCard, { flex: 1, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF', borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', marginTop: (insets.top || 28) + 64, marginHorizontal: 0 }]}>
 
           {/* YouTube Tab — Mobile YouTube Interface (Rave Architecture) */}
           {activeTab === 'youtube' && (
@@ -742,301 +783,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                   handleYouTubeNavChange(navState);
                 }}
                 onMessage={handleYouTubeMessage}
-                injectedJavaScriptBeforeContentLoaded={`
-                  window._userHasTyped = window._userHasTyped || false;
-                  window._userInteracted = window._userInteracted || false;
-
-                  (function() {
-                    // 1. Hook HTMLInputElement value & defaultValue descriptors so 'trending' is never stored or rendered
-                    try {
-                      var origValDesc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-                      if (origValDesc && origValDesc.set && origValDesc.get) {
-                        var origSet = origValDesc.set;
-                        var origGet = origValDesc.get;
-                        window._ytOrigValSet = origSet;
-                        window._ytOrigValGet = origGet;
-
-                        Object.defineProperty(window.HTMLInputElement.prototype, 'value', {
-                          get: function() {
-                            var v = origGet.call(this);
-                            if (!window._userHasTyped && typeof v === 'string' && (v.trim().toLowerCase() === 'trending' || v.trim().toLowerCase() === '#trending')) {
-                              return '';
-                            }
-                            return v;
-                          },
-                          set: function(newVal) {
-                            if (!window._userHasTyped && typeof newVal === 'string' && (newVal.trim().toLowerCase() === 'trending' || newVal.trim().toLowerCase() === '#trending')) {
-                              return origSet.call(this, '');
-                            }
-                            return origSet.call(this, newVal);
-                          },
-                          configurable: true,
-                          enumerable: true
-                        });
-                      }
-
-                      var origDefDesc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'defaultValue');
-                      if (origDefDesc && origDefDesc.set && origDefDesc.get) {
-                        var origDefSet = origDefDesc.set;
-                        var origDefGet = origDefDesc.get;
-                        Object.defineProperty(window.HTMLInputElement.prototype, 'defaultValue', {
-                          get: function() {
-                            var v = origDefGet.call(this);
-                            if (!window._userHasTyped && typeof v === 'string' && (v.trim().toLowerCase() === 'trending' || v.trim().toLowerCase() === '#trending')) {
-                              return '';
-                            }
-                            return v;
-                          },
-                          set: function(newVal) {
-                            if (!window._userHasTyped && typeof newVal === 'string' && (newVal.trim().toLowerCase() === 'trending' || newVal.trim().toLowerCase() === '#trending')) {
-                              return origDefSet.call(this, '');
-                            }
-                            return origDefSet.call(this, newVal);
-                          },
-                          configurable: true,
-                          enumerable: true
-                        });
-                      }
-
-                      // Hook setAttribute
-                      var origSetAttr = window.Element.prototype.setAttribute;
-                      window._ytOrigSetAttr = origSetAttr;
-                      window.Element.prototype.setAttribute = function(name, val) {
-                        if (!window._userHasTyped && name === 'value' && typeof val === 'string' && (val.trim().toLowerCase() === 'trending' || val.trim().toLowerCase() === '#trending')) {
-                          return origSetAttr.call(this, name, '');
-                        }
-                        return origSetAttr.call(this, name, val);
-                      };
-                    } catch(e) {}
-
-                    // 2. Track user interaction & typing
-                    document.addEventListener('touchstart', function() { window._userInteracted = true; }, { passive: true, capture: true });
-                    document.addEventListener('pointerdown', function() { window._userInteracted = true; }, { passive: true, capture: true });
-                    document.addEventListener('mousedown', function() { window._userInteracted = true; }, { passive: true, capture: true });
-
-                    document.addEventListener('keydown', function(e) {
-                      if ((e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) || e.key === 'Backspace' || e.key === 'Delete') {
-                        window._userHasTyped = true;
-                      }
-                    }, true);
-
-                    document.addEventListener('beforeinput', function(e) {
-                      if (e.isTrusted && (e.data || e.inputType)) {
-                        window._userHasTyped = true;
-                      }
-                    }, true);
-
-                    document.addEventListener('input', function(e) {
-                      if (e.isTrusted && e.target && e.target.value !== '' && e.target.value.toLowerCase() !== 'trending' && e.target.value.toLowerCase() !== '#trending') {
-                        window._userHasTyped = true;
-                      }
-                    }, true);
-
-                    // 3. Clear on focus, click, or tap using composedPath (shadow DOM aware)
-                    function handleActivation(e) {
-                      if (window._userHasTyped) return;
-                      var path = (e.composedPath && e.composedPath()) || [e.target];
-                      for (var i = 0; i < path.length; i++) {
-                        var node = path[i];
-                        if (!node) continue;
-                        if (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') {
-                          var v = node.value;
-                          if (v && (v.trim().toLowerCase() === 'trending' || v.trim().toLowerCase() === '#trending')) {
-                            if (window._ytOrigValSet) window._ytOrigValSet.call(node, '');
-                            node.value = '';
-                            if (window._ytOrigSetAttr) window._ytOrigSetAttr.call(node, 'value', '');
-                            if (!node.placeholder || node.placeholder.toLowerCase() === 'trending') {
-                              node.placeholder = 'Search YouTube';
-                            }
-                            try {
-                              node.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                              node.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-                            } catch(err) {}
-                          }
-                          break;
-                        }
-                      }
-                    }
-
-                    ['focus', 'focusin', 'click', 'pointerdown', 'touchstart'].forEach(function(evt) {
-                      document.addEventListener(evt, handleActivation, true);
-                    });
-                  })();
-                  true;
-                `}
-                injectedJavaScript={`
-                  (function() {
-                    // 1. Hide mobile app promotion banners, open app headers, and upsells
-                    var style = document.createElement('style');
-                    style.innerHTML = \`
-                      ytm-app-banner,
-                      .mobile-topbar-header-button-group ytm-open-app-button-renderer,
-                      .ytm-app-banner,
-                      .banner-entry-point,
-                      ytm-upsell-dialog-renderer,
-                      .upsell-dialog,
-                      #consent-bump,
-                      .consent-bump,
-                      ytm-mealbar-promo-renderer,
-                      .fullscreen-engagement-panel-open-app-button,
-                      ytm-pivot-bar-item-renderer[aria-label*="Get YouTube"] {
-                        display: none !important;
-                      }
-                    \`;
-                    document.head.appendChild(style);
-
-                    // 2. Intercept YouTube logo clicks to avoid empty home feed for logged-out users
-                    document.addEventListener('click', function(e) {
-                      var path = (e.composedPath && e.composedPath()) || [e.target];
-                      for (var i = 0; i < path.length; i++) {
-                        var el = path[i];
-                        if (el && el.closest) {
-                          var logo = el.closest('a[href="/"], a[href="https://m.youtube.com/"], a[href="https://m.youtube.com"], .header-logo, .yt-header-logo');
-                          if (logo) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            window._userHasTyped = false;
-                            window.location.href = 'https://m.youtube.com/results?search_query=trending';
-                            return;
-                          }
-                        }
-                      }
-
-                      // 3. Intercept video clicks (Rave Architecture)
-                      for (var j = 0; j < path.length; j++) {
-                        var node = path[j];
-                        if (node && node.closest) {
-                          var link = node.closest('a[href*="watch?v="], a[href*="/shorts/"]');
-                          if (link) {
-                            var href = link.href || link.getAttribute('href') || '';
-                            var match = href.match(/[?&]v=([^&]+)/) || href.match(/\\\\/shorts\\\\/([^/?#]+)/);
-                            if (match && match[1]) {
-                              var vId = match[1];
-                              e.preventDefault();
-                              e.stopPropagation();
-
-                              // Stop all inline videos
-                              document.querySelectorAll('video').forEach(function(v) {
-                                try { v.pause(); } catch(err) {}
-                              });
-
-                              var card = link.closest('ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-compact-video-renderer, ytm-reel-item-renderer') || link;
-                              var titleEl = card.querySelector('.media-item-headline, .compact-media-item-headline, .reel-item-title, h3, h4');
-                              var title = titleEl ? titleEl.innerText.trim() : (link.getAttribute('aria-label') || '');
-                              var channelEl = card.querySelector('.ytm-badge-and-byline-item-byline, .compact-media-item-byline');
-                              var channel = channelEl ? channelEl.innerText.trim() : '';
-                              var thumb = 'https://i.ytimg.com/vi/' + vId + '/hqdefault.jpg';
-
-                              window.ReactNativeWebView.postMessage(JSON.stringify({
-                                type: 'youtubeVideoClicked',
-                                videoId: vId,
-                                title: title,
-                                channelTitle: channel,
-                                thumbnail: thumb
-                              }));
-                              return;
-                            }
-                          }
-                        }
-                      }
-                    }, true);
-
-                    // 4. Redirect blank home feed to trending search if detected
-                    function checkEmptyHome() {
-                      if (window.location.pathname === '/' || window.location.pathname === '') {
-                        var emptyPrompt = document.querySelector('ytm-feed-empty-state-view-model, .ytm-feed-empty-state');
-                        if (emptyPrompt) {
-                          window._userHasTyped = false;
-                          window.location.replace('https://m.youtube.com/results?search_query=trending');
-                        }
-                      }
-                    }
-                    checkEmptyHome();
-
-                    // 5. Deep Shadow DOM traversal helper
-                    function deepTraverse(root, cb) {
-                      var q = [root || document.documentElement || document.body];
-                      while (q.length > 0) {
-                        var n = q.shift();
-                        if (!n) continue;
-                        try { cb(n); } catch(err) {}
-                        if (n.shadowRoot) q.push(n.shadowRoot);
-                        var ch = n.children;
-                        if (ch) {
-                          for (var i = 0; i < ch.length; i++) q.push(ch[i]);
-                        }
-                      }
-                    }
-
-                    // 6. Deep clear all inputs containing "trending" across light & shadow DOM
-                    function clearAllTrendingDeep() {
-                      if (window._userHasTyped) return;
-
-                      deepTraverse(document.documentElement, function(n) {
-                        if (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA') {
-                          var val = (window._ytOrigValGet ? window._ytOrigValGet.call(n) : n.value) || '';
-                          if (val && (val.trim().toLowerCase() === 'trending' || val.trim().toLowerCase() === '#trending')) {
-                            if (window._ytOrigValSet) {
-                              window._ytOrigValSet.call(n, '');
-                            } else {
-                              n.value = '';
-                            }
-                            n.value = '';
-                            if (window._ytOrigSetAttr) {
-                              window._ytOrigSetAttr.call(n, 'value', '');
-                            } else {
-                              n.setAttribute('value', '');
-                            }
-                            if (!n.placeholder || n.placeholder.toLowerCase() === 'trending') {
-                              n.placeholder = 'Search YouTube';
-                            }
-                            try {
-                              n.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                              n.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-                            } catch(e) {}
-
-                            // If auto-focused by YouTube on load without user interaction, blur to hide keyboard
-                            if (!window._userInteracted) {
-                              try { n.blur(); } catch(e) {}
-                            }
-                          }
-                        }
-
-                        // Also click clear buttons if rendered by YouTube
-                        if (n.tagName === 'BUTTON' || (n.getAttribute && n.getAttribute('role') === 'button')) {
-                          var aria = (n.getAttribute('aria-label') || '').toLowerCase();
-                          var cls = (n.className || '').toString().toLowerCase();
-                          if (aria.indexOf('clear') !== -1 || cls.indexOf('clear') !== -1 || n.id === 'clear-button') {
-                            try { n.click(); } catch(e) {}
-                          }
-                        }
-                      });
-                    }
-
-                    // Run immediately and periodically
-                    clearAllTrendingDeep();
-
-                    var clearCount = 0;
-                    var clearTimer = setInterval(function() {
-                      if (window._userHasTyped) {
-                        clearInterval(clearTimer);
-                        return;
-                      }
-                      clearAllTrendingDeep();
-                      clearCount++;
-                      if (clearCount > 50 && clearCount % 5 !== 0) return;
-                    }, 100);
-
-                    var obs = new MutationObserver(function() {
-                      checkEmptyHome();
-                      if (!window._userHasTyped) {
-                        clearAllTrendingDeep();
-                      }
-                    });
-                    obs.observe(document.body, { childList: true, subtree: true });
-                  })();
-                  true;
-                `}
               />
             )
           )}
@@ -1326,34 +1072,44 @@ const styles = StyleSheet.create({
   // Header
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 12,
+    paddingHorizontal: 16, paddingVertical: 8,
+    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 50,
   },
   headerCenter: { flexDirection: 'row', alignItems: 'center' },
   backBtn: { padding: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.08)' },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: '#fff' },
+  headerTitle: { fontSize: 18, fontWeight: '800', color: '#fff' },
+  headerIconRing: {
+    width: 34, height: 34, borderRadius: 17, borderWidth: 1.5,
+    justifyContent: 'center', alignItems: 'center', marginRight: 8,
+  },
 
-  // Tab Cards
-  tabCardRow: {
-    flexDirection: 'row', paddingHorizontal: 12, paddingBottom: 14, gap: 8,
+  // Top Tab Bar
+  topTabBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    position: 'absolute', top: 0, left: 0, right: 0,
+    borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: '#FFFFFF',
+    zIndex: 60,
+    height: 64,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
-  tabCard: { flex: 1, borderRadius: 16, overflow: 'hidden' },
-  tabCardInner: {
-    alignItems: 'center', paddingVertical: 12, paddingHorizontal: 4,
-    borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  topTabRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
   },
-  tabCardInactive: { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.06)' },
-  tabCardIconRing: {
-    width: 40, height: 40, borderRadius: 20, borderWidth: 1.5,
-    justifyContent: 'center', alignItems: 'center', marginBottom: 6,
+  topTabBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    marginHorizontal: 6,
+    overflow: 'hidden',
   },
-  tabCardIconRingOff: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    justifyContent: 'center', alignItems: 'center', marginBottom: 6,
-  },
-  tabCardLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
-  tabCardLabelOff: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.28)' },
-  tabCardDot: { width: 4, height: 4, borderRadius: 2, marginTop: 5 },
+  topTabLabel: { fontSize: 11, fontWeight: '700', color: '#999999' },
 
   // Card wrapper — shared container for contentCard + overlay
   cardWrapper: {
@@ -1412,11 +1168,47 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   gridItemClick: { flex: 1 },
-  gridThumb: { width: '100%', height: 96, backgroundColor: 'rgba(255,255,255,0.05)' },
-  gridInfo: { padding: 8 },
-  gridTitle: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.88)', height: 32 },
-  gridSub: { fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 3 },
-  removeItem: { position: 'absolute', top: 5, right: 5, zIndex: 10 },
+  gridThumb: {
+    width: '100%', height: 96,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  gridThumbImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  thumbGradient: {
+    position: 'absolute',
+    left: 0, right: 0, bottom: 0, height: '55%',
+  },
+  thumbInfo: {
+    position: 'absolute',
+    left: 0, right: 0, bottom: 0,
+    paddingHorizontal: 7, paddingVertical: 6,
+    justifyContent: 'flex-end',
+  },
+  thumbTitle: {
+    fontSize: 10, fontWeight: '700',
+    color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+    lineHeight: 13,
+  },
+  thumbSub: {
+    fontSize: 8, fontWeight: '500',
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  removeItem: { position: 'absolute', top: 6, right: 6, zIndex: 10 },
+  removeBtnBg: {
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center', alignItems: 'center',
+  },
 
   // Empty state
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 60 },

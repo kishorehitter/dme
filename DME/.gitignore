@@ -122,4 +122,19 @@ rv.md
 stream_debug.log
 
 DME/scratch_check_obtain_call.py
+
+androguard.db
+androguard.db-shm
+androguard.db-wal
+scratch/
+DME/scratch/
+scratch/bgutils-js-4.0.3.tgz
+scratch/package/
+scratch/window_dump.xml
+run_browser_test.js
+scratch/run_real_test.js
+scratch/find_caller_method.py
+scratch/debug_vm.js
+scratch/session_manager.ts
+er.md
        

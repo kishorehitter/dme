@@ -38,7 +38,7 @@ def get_method_name(idx):
     class_idx, proto_idx, name_idx = struct.unpack_from('<HHI', dex_bytes, method_ids_off + idx * 8)
     return get_type(class_idx), get_string(name_idx)
 
-target_offsets = [5198992, 5200082]
+target_offsets = [5377000, 5378036]
 
 for i in range(class_defs_size):
     class_idx, access_flags, superclass_idx, interfaces_off, source_file_idx, \

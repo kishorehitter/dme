@@ -7,7 +7,7 @@ import Video, {
   OnProgressData,
   OnBufferData,
 } from 'react-native-video';
-import { YOUTUBE_MOBILE_USER_AGENT, RAVE_IOS_USER_AGENT, RAVE_ANDROID_USER_AGENT } from '../services/YouTubeDecipherService';
+import { YOUTUBE_DESKTOP_USER_AGENT, RAVE_IOS_USER_AGENT, RAVE_ANDROID_USER_AGENT } from '../services/YouTubeDecipherService';
 
 export interface DirectVideoPlayerRef {
   seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
@@ -126,7 +126,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
   const initialPositionAppliedRef = useRef(false);
   const lastVideoUriRef = useRef<string | null>(null);
 
-  // Resolve source: videoUri is already a file:// path (dash_<videoId>.mpd) written by TrackPlayerService.
+  // Resolve source: videoUri is already a file:// path (dash_<videoId>_<ts>.mpd) written by TrackPlayerService.
   // No MPD rewriting needed here — just set the source directly.
   useEffect(() => {
     if (!videoUri) {
@@ -140,17 +140,9 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       return;
     }
 
-    const isNewVideo = lastVideoUriRef.current !== videoUri;
+    const prevUri = lastVideoUriRef.current;
+    const isNewUri = prevUri !== videoUri;
     lastVideoUriRef.current = videoUri;
-
-    if (isNewVideo) {
-      positionRef.current = (initialPosition && initialPosition > 0) ? initialPosition : 0;
-      durationRef.current = 0;
-      isRecoveringRef.current = false;
-      recoveryAttemptsRef.current = 0;
-      initialPositionAppliedRef.current = false;
-      blockedQualityHeightsRef.current.clear();
-    }
 
     const isMpd =
       streamType === 'mpd' ||
@@ -159,20 +151,40 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       videoUri.includes('<?xml') ||
       videoUri.endsWith('.mpd');
 
+    if (isNewUri) {
+      // Rave rescrape detection: if previous URI was also a DASH MPD (not null/mp4),
+      // this is a re-extraction of the SAME video with fresh CDN URLs — preserve position.
+      // Otherwise it's a genuinely new video — reset to initialPosition.
+      const prevIsMpd = prevUri
+        ? (prevUri.endsWith('.mpd') || prevUri.startsWith('data:application/dash+xml') || prevUri.includes('<MPD'))
+        : false;
+      const isRescrape = prevIsMpd && isMpd;
+
+      if (isRescrape) {
+        // Rave rescrape: preserve current playback position so ExoPlayer resumes seamlessly
+        console.log(`🔄 [DirectVideoPlayer] DASH rescrape detected — preserving pos ${positionRef.current.toFixed(1)}s`);
+        // positionRef.current is already at current position — don't overwrite it
+        isRecoveringRef.current = false;
+        recoveryAttemptsRef.current = 0;
+        blockedQualityHeightsRef.current.clear();
+      } else {
+        // New video: reset to initialPosition
+        positionRef.current = (initialPosition && initialPosition > 0) ? initialPosition : 0;
+        durationRef.current = 0;
+        isRecoveringRef.current = false;
+        recoveryAttemptsRef.current = 0;
+        initialPositionAppliedRef.current = false;
+        blockedQualityHeightsRef.current.clear();
+      }
+    }
+
     setPlayableSource({
       uri: videoUri,
       type: isMpd ? 'mpd' : (streamType || 'mp4'),
-      headers: {
-        'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
-        'Origin': 'https://www.youtube.com',
-        'Referer': 'https://www.youtube.com',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'cross-site',
-        'Accept-Encoding': 'gzip, identity',
-      },
+      startPosition: isNewUri ? positionRef.current : undefined,
     });
   }, [videoUri, streamType]);
+
 
   // Mirror selectedVideoTrack into a ref so applyQuality can read the current value
   // without taking it as a useCallback dependency (which causes the infinite loop:
@@ -360,21 +372,18 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       qualityDebounceTimer.current = null;
     }
 
-    // Step 1: If player was locked to a specific track resolution, revert to AUTO
-    // within the active ExoPlayer session. This seamlessly drops bitrate without reloading.
+    // Step 1: If player was locked to a specific track resolution, revert to AUTO in-place
     if (selectedVideoTrackRef.current.type !== SelectedVideoTrackType.AUTO) {
       const failedHeight = selectedVideoTrackRef.current.value;
       if (failedHeight) {
         blockedQualityHeightsRef.current.add(failedHeight);
       }
-      console.warn(`[DirectVideoPlayer] Error on fixed track (${failedHeight || 'unknown'}p) — adding to blocked list and reverting to AUTO`);
+      console.warn(`[DirectVideoPlayer] Error on fixed track (${failedHeight || 'unknown'}p) — reverting in-place to AUTO track`);
       setSelectedVideoTrackSafe({ type: SelectedVideoTrackType.AUTO });
       onExactResolutionRef.current?.('Auto');
       onQualityFallback?.('auto');
 
-      // CRITICAL FIX: ExoPlayer is in error state (STATE_IDLE).
-      // Simply updating the React state does NOT make native ExoPlayer restart playback.
-      // We must seek to the current position so ExoPlayer re-prepares and resumes on the AUTO track!
+      // Seek to current position to make ExoPlayer resume on AUTO track without reloading player
       const currentPos = positionRef.current;
       if (videoRef.current && currentPos > 0) {
         videoRef.current.seek(currentPos);
@@ -382,41 +391,21 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       return;
     }
 
-    // Step 2a: 403 CDN throttle or stream failure on DASH
-    // Seamlessly switch to the unthrottled progressive stream without disrupting the user!
-    if (is403) {
-      if (fallbackUri && playableSource?.uri !== fallbackUri) {
-        console.log(`🎬 [DirectVideoPlayer] 403 on DASH — seamlessly switching to fallback progressive URL at pos ${positionRef.current.toFixed(1)}s`);
-        setPlayableSource({
-          uri: fallbackUri,
-          type: 'mp4',
-          startPosition: positionRef.current,
-          headers: {
-            'User-Agent': RAVE_ANDROID_USER_AGENT,
-          },
-        });
-        return;
-      }
-      console.warn('[DirectVideoPlayer] 403 CDN throttle at AUTO track — escalating immediately for re-extraction');
-      onError?.(err);
-      return;
-    }
-
-    // Step 2b: Non-403 error — attempt in-stream seek recovery (2 attempts max)
+    // Attempt in-stream seek recovery (up to 3 attempts)
     const now = Date.now();
     if (now - lastRecoveryTimeRef.current > 15000) {
       recoveryAttemptsRef.current = 0;
     }
     lastRecoveryTimeRef.current = now;
 
-    if (recoveryAttemptsRef.current < 2) {
+    if (recoveryAttemptsRef.current < 3) {
       recoveryAttemptsRef.current++;
       const capturedPos = positionRef.current;
       recoveryPositionRef.current = capturedPos;
       isRecoveringRef.current = true;
 
       console.warn(
-        `[DirectVideoPlayer] Attempting in-stream seek recovery at pos: ${capturedPos.toFixed(2)}s (attempt ${recoveryAttemptsRef.current})`
+        `[DirectVideoPlayer] In-stream seek recovery at pos: ${capturedPos.toFixed(2)}s (attempt ${recoveryAttemptsRef.current})`
       );
 
       if (videoRef.current && capturedPos > 0) {
@@ -425,22 +414,10 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       return;
     }
 
-    if (fallbackUri && playableSource?.uri !== fallbackUri) {
-      console.log(`🎬 [DirectVideoPlayer] Recovery attempts exhausted on DASH — switching to fallback progressive stream at pos ${positionRef.current.toFixed(1)}s`);
-      setPlayableSource({
-        uri: fallbackUri,
-        type: 'mp4',
-        startPosition: positionRef.current,
-        headers: {
-          'User-Agent': RAVE_ANDROID_USER_AGENT,
-        },
-      });
-      return;
-    }
-
-    console.warn('[DirectVideoPlayer] Recovery attempts exhausted — escalating to parent onError');
+    // Step 4: If in-stream recovery is exhausted, notify parent to refresh DASH manifest
+    console.warn('[DirectVideoPlayer] In-stream recovery exhausted — triggering DASH manifest refresh');
     onError?.(err);
-  }, [fallbackUri, playableSource, setSelectedVideoTrackSafe, onError, onQualityFallback]);
+  }, [setSelectedVideoTrackSafe, onError, onQualityFallback]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds: number, _allowSeekAhead?: boolean) => {

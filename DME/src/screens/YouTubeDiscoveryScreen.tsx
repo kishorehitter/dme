@@ -25,6 +25,7 @@ import LottieStickerMessage from '../components/LottieStickerMessage';
 import { useTheme } from '../context/ThemeContext';
 
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
+import DiscoveryFeedService from '../services/DiscoveryFeedService';
 
 const { width } = Dimensions.get('window');
 
@@ -238,7 +239,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: (e) => {
-        return Math.abs(e.nativeEvent.translationY) < 6 && e.nativeEvent.y < 140;
+        const ne = e.nativeEvent as any;
+        return Math.abs(ne.translationY || 0) < 6 && (ne.locationY || ne.y || 0) < 140;
       },
       onPanResponderGrant: () => { panY.setValue(0); },
       onPanResponderMove: (_, g) => {
@@ -432,7 +434,17 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'youtubeVideoClicked' && data.videoId) {
+        DiscoveryFeedService.addVideos([{
+          videoId: data.videoId,
+          title: data.title || '',
+          channelTitle: data.channelTitle || '',
+          thumbnail: data.thumbnail || `https://img.youtube.com/vi/${data.videoId}/hqdefault.jpg`,
+          addedBy: 'YouTube',
+          source: 'youtube',
+        }]);
         handleSelectYouTubeVideo(data.videoId, data.title, data.thumbnail, data.channelTitle);
+      } else if (data.type === 'homeVideosExtracted' && Array.isArray(data.videos)) {
+        DiscoveryFeedService.addVideos(data.videos);
       }
     } catch (e) {}
   }, [handleSelectYouTubeVideo]);
@@ -739,7 +751,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             ) : (
               <WebView
                 ref={youtubeWebViewRef}
-                source={{ uri: 'https://m.youtube.com/results?search_query=trending' }}
+                source={{ uri: 'https://m.youtube.com' }}
                 onLoadEnd={dismissSplash}
                 onError={() => {
                   dismissSplash();
@@ -776,8 +788,114 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 sharedCookiesEnabled={true}
                 allowsInlineMediaPlayback={false}
                 mediaPlaybackRequiresUserAction={true}
-                backgroundColor={isDark ? "#0F0F0F" : "#FFFFFF"}
                 style={{ flex: 1, backgroundColor: isDark ? "#0F0F0F" : "#FFFFFF" }}
+                injectedJavaScript={`
+                  (function() {
+                    function extractCardMeta(el, videoId) {
+                      try {
+                        var container = el.closest('ytm-compact-video-renderer, ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-item-section-renderer, .compact-media-item, .media-item, [class*="media-item"]') || el;
+                        var titleEl = container.querySelector('h3, h4, [class*="headline"], [class*="title"], .media-item-headline');
+                        var title = (titleEl ? titleEl.textContent : '') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                        title = title.replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
+
+                        var channelEl = container.querySelector('[class*="channel"], [class*="byline"], [class*="subhead"], [class*="subtitle"], ytm-badge-and-byline-renderer');
+                        var channel = (channelEl ? channelEl.textContent : '') || '';
+                        channel = channel.replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
+
+                        var img = container.querySelector('img[src*="ytimg"], img[src*="googleusercontent"], img[src*="ggpht"], img');
+                        var thumb = (img && img.src && !img.src.startsWith('data:')) ? img.src : ('https://img.youtube.com/vi/' + videoId + '/hqdefault.jpg');
+
+                        return { title: title, channelTitle: channel, thumbnail: thumb };
+                      } catch(e) {
+                        return { title: '', channelTitle: '', thumbnail: 'https://img.youtube.com/vi/' + videoId + '/hqdefault.jpg' };
+                      }
+                    }
+
+                    function checkUrl(url) {
+                      if (!url) return;
+                      var m = url.match(/[?&]v=([^&]+)/) || url.match(/\\/shorts\\/([^/?#]+)/);
+                      if (m && m[1]) {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                          type: 'youtubeVideoClicked',
+                          videoId: m[1]
+                        }));
+                      }
+                    }
+
+                    document.addEventListener('click', function(e) {
+                      var el = e.target.closest('a');
+                      if (el && el.href) {
+                        var m = el.href.match(/[?&]v=([^&]+)/) || el.href.match(/\\/shorts\\/([^/?#]+)/);
+                        if (m && m[1]) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          var meta = extractCardMeta(el, m[1]);
+                          window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'youtubeVideoClicked',
+                            videoId: m[1],
+                            title: meta.title,
+                            channelTitle: meta.channelTitle,
+                            thumbnail: meta.thumbnail
+                          }));
+                        }
+                      }
+                    }, true);
+
+                    function harvestVideos() {
+                      try {
+                        var links = document.querySelectorAll('a[href*="/watch?v="], a[href*="v="], a[href*="/shorts/"]');
+                        var found = [];
+                        var seen = {};
+                        for (var i = 0; i < links.length; i++) {
+                          var a = links[i];
+                          var href = a.href || a.getAttribute('href') || '';
+                          var m = href.match(/[?&]v=([^&]+)/) || href.match(/\\/shorts\\/([^/?#]+)/);
+                          if (!m || !m[1]) continue;
+                          var vId = m[1];
+                          if (seen[vId]) continue;
+                          seen[vId] = true;
+
+                          var meta = extractCardMeta(a, vId);
+                          found.push({
+                            videoId: vId,
+                            title: meta.title || 'YouTube Video',
+                            channelTitle: meta.channelTitle || 'YouTube',
+                            thumbnail: meta.thumbnail,
+                            source: 'youtube'
+                          });
+                        }
+                        if (found.length > 0) {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'homeVideosExtracted',
+                            videos: found
+                          }));
+                        }
+                      } catch(e) {}
+                    }
+
+                    setTimeout(harvestVideos, 1500);
+                    setTimeout(harvestVideos, 3500);
+                    setTimeout(harvestVideos, 6000);
+                    window.addEventListener('scroll', function() {
+                      if (window._harvestTimeout) clearTimeout(window._harvestTimeout);
+                      window._harvestTimeout = setTimeout(harvestVideos, 1200);
+                    }, { passive: true });
+
+                    var origPush = history.pushState;
+                    history.pushState = function() {
+                      origPush.apply(this, arguments);
+                      checkUrl(location.href);
+                    };
+                    var origReplace = history.replaceState;
+                    history.replaceState = function() {
+                      origReplace.apply(this, arguments);
+                      checkUrl(location.href);
+                    };
+                    window.addEventListener('popstate', function() {
+                      checkUrl(location.href);
+                    });
+                  })(); true;
+                `}
                 onNavigationStateChange={(navState) => {
                   ytCanGoBackRef.current = navState.canGoBack;
                   handleYouTubeNavChange(navState);
@@ -831,7 +949,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               sharedCookiesEnabled={true}
               allowsInlineMediaPlayback={true}
               mediaPlaybackRequiresUserAction={false}
-              backgroundColor={isDark ? "#121212" : "#FFFFFF"}
               style={{ flex: 1, backgroundColor: isDark ? "#121212" : "#FFFFFF" }}
               onNavigationStateChange={(navState) => handleDriveNavChange(navState)}
               onMessage={(event) => {

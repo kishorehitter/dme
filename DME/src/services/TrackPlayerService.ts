@@ -694,7 +694,11 @@ export const extractVideoStreamUrlClientSide = async (
                     // AND audio through a single unified player using deciphered MWEB streams with PO-token.
                     const mpdXml = buildDashMpdXml(dashStreams, bestAudio, duration);
                     if (mpdXml) {
-                        const filePath = `${RNFS.CachesDirectoryPath}/dash_${videoId}.mpd`;
+                        // Use timestamp suffix so re-extraction always creates a new path.
+                        // This forces DirectVideoPlayer's useEffect to fire and ExoPlayer to reload
+                        // with fresh stream URLs (Rave rescrape architecture — same video, new CDN URLs).
+                        const ts = Date.now();
+                        const filePath = `${RNFS.CachesDirectoryPath}/dash_${videoId}_${ts}.mpd`;
                         await RNFS.writeFile(filePath, mpdXml, 'utf8');
                         dashMpdUri = `file://${filePath}`;
                         console.log(`✅ [DirectExtract] DASH MPD written → ExoPlayer quality switching ready`);

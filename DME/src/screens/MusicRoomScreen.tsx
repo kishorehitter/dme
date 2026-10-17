@@ -44,6 +44,7 @@ import api, { musicAPI } from '../services/api';
 import InviteModal from '../components/InviteModal';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import RelatedVideosGrid from '../components/RelatedVideosGrid';
+import DiscoveryFeedService from '../services/DiscoveryFeedService';
 import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
@@ -401,6 +402,7 @@ const VideoControls: React.FC<ControlsProps> = ({
   const knobX      = useRef(new Animated.Value(0)).current;
   const knobOpacity = useRef(new Animated.Value(0)).current;
   const isSeeking  = useRef(false);
+  const [isDraggingSeek, setIsDraggingSeek] = useState(false);
   const seekTarget = useRef(0);
   const barLayoutX = useRef(0);
   const barWidth   = useRef(width);
@@ -433,6 +435,7 @@ const VideoControls: React.FC<ControlsProps> = ({
 
     onPanResponderGrant: (evt) => {
       isSeeking.current = true;
+      setIsDraggingSeek(true);
       const rawX = Math.max(0, Math.min(barWidth.current, evt.nativeEvent.locationX));
       const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
       knobX.setValue(clampedX);
@@ -455,12 +458,18 @@ const VideoControls: React.FC<ControlsProps> = ({
 
     onPanResponderRelease: () => {
       isSeeking.current = false;
+      setIsDraggingSeek(false);
       if (!canControlRef.current) {
         console.warn('📊 [DRAG DENIED] User is not DJ, cannot seek');
         return;
       }
       if (seekTarget.current < 0 || isNaN(seekTarget.current)) return;
       onSeek(seekTarget.current);
+    },
+
+    onPanResponderTerminate: () => {
+      isSeeking.current = false;
+      setIsDraggingSeek(false);
     },
   })).current;
 
@@ -570,7 +579,7 @@ const VideoControls: React.FC<ControlsProps> = ({
         </TouchableOpacity>
 
         {/* Center: Play / Pause */}
-        {!isBuffering && !isEnded ? (
+        {!isBuffering && !isEnded && !isDraggingSeek ? (
           <View style={cv.centreBtn} pointerEvents={visible ? 'auto' : 'none'}>
             <TouchableOpacity
               style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
@@ -1463,6 +1472,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     return () => sub.remove();
   }, []);
   const [relatedVideos, setRelatedVideos] = useState<Song[]>([]);
+  const relatedCacheRef = useRef<Map<string, Song[]>>(new Map());
+  const fetchRelatedRef = useRef<(id?: string) => Promise<void>>(() => Promise.resolve());
   const [isLoadingRelated, setIsLoadingRelated] = useState(false);
   // ✅ Single related-videos panel state. Opened either via the top-left
   // icon button (available anytime, anyone — DJ or participant) or
@@ -1848,9 +1859,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           showControlsForRef.current();
         }
       } else if (Math.abs(gestureState.dx) > 40) {
-        // Swipe detected! Open the related videos grid
+        // Swipe detected! Open the related videos grid instantly (Rave UX)
         if (!showRelatedRef.current && currentSongRef.current?.source !== 'drive') {
-          fetchRelated();
+          const activeId = currentSongRef.current?.videoId || initialVideoId;
+          if (activeId && relatedCacheRef.current.has(activeId)) {
+            setRelatedVideos(relatedCacheRef.current.get(activeId)!);
+          } else if (activeId) {
+            fetchRelated(activeId);
+          }
           setShowRelated(true);
         }
       }
@@ -1994,6 +2010,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
 
         // Activate DirectVideoPlayer via DASH MPD manifest (ExoPlayer architecture)
+        // DASH gives quality switching for all users. For guests, CDN may 403 after ~60s
+        // but onError below handles that by switching to ANDROID progressive at current position.
         if (res.dashUrl) {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with DASH manifest (${res.streams.length} representations)`);
           setDirectStreamUrl(res.dashUrl);
@@ -2714,6 +2732,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     } else {
       addToQueue({ ...song, addedBy: song.addedBy ?? user?.display_name ?? 'Someone' });
     }
+    if (song?.videoId) {
+      fetchRelatedRef.current(song.videoId);
+    }
     Keyboard.dismiss();
   }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName]);
 
@@ -3152,86 +3173,97 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // badges) via the `queue` prop — showing them again here as plain
   // suggestions would be a confusing duplicate. Does NOT itself open the
   // panel — callers decide when (see call sites below).
-  const fetchRelated = useCallback(async () => {
-    setIsLoadingRelated(true);
-    // Don't clear the list immediately — keep previous results visible while
-    // re-fetching so the user never sees an empty black grid with a spinner.
+  // ─── Related Videos (Rave Architecture: instant prefetch & cache) ────────────
+  const fetchRelated = useCallback(async (targetVideoId?: string) => {
+    const videoId = targetVideoId || currentSongRef.current?.videoId || initialVideoId;
+    if (!videoId) return;
+
+    // Fast-path: if already in cache, synchronously restore to state so swiping is 0ms instant
+    const cached = relatedCacheRef.current.get(videoId);
+    if (cached && cached.length > 0) {
+      if ((currentSongRef.current?.videoId || initialVideoId) === videoId) {
+        setRelatedVideos(cached);
+        setIsLoadingRelated(false);
+      }
+      return;
+    }
+
     try {
       const queuedIds = new Set(roomStateQueueRef.current.map(q => q.song.videoId));
 
-      if (currentSongRef.current?.source === 'drive') {
-        console.log('📂 [RELATED] Drive video detected — fetching from watch history or trending');
-        let fallbackSongs: Song[] = [];
+      // Step 1: Immediate baseline smart recommendation (0ms synchronous from memory & feed)
+      const baseline = DiscoveryFeedService.buildSmartRelated({
+        currentSong: currentSongRef.current,
+        queuedIds,
+        limit: 20,
+      });
 
-        try {
-          const historyData = await musicAPI.getWatchHistory();
-          if (Array.isArray(historyData) && historyData.length > 0) {
-            const mappedHistory = historyData
-              .map((item: any) => ({
-                videoId: item.video_id,
-                title: item.title,
-                thumbnail: item.thumbnail,
-                channelTitle: item.channel_title || 'Music History',
-                source: item.source || 'youtube',
-              }))
-              .filter((song: Song) => song.videoId !== currentSongRef.current?.videoId && !queuedIds.has(song.videoId));
-
-            // Shuffle history to show random suggestions
-            fallbackSongs = mappedHistory.sort(() => 0.5 - Math.random());
-          }
-        } catch (err) {
-          console.warn('📂 [RELATED] Failed to load history:', err);
+      if (baseline.length > 0) {
+        relatedCacheRef.current.set(videoId, baseline);
+        if ((currentSongRef.current?.videoId || initialVideoId) === videoId) {
+          setRelatedVideos(baseline);
+          setIsLoadingRelated(false);
         }
-
-        // If history is empty or loading history failed, fetch trending YouTube videos
-        if (fallbackSongs.length === 0) {
-          try {
-            console.log('📂 [RELATED] History empty — fetching trending YouTube videos');
-            const searchData = await musicAPI.searchYouTube('trending music');
-            if (searchData && Array.isArray(searchData.items)) {
-              fallbackSongs = searchData.items
-                .map((item: any) => ({
-                  videoId: item.id.videoId,
-                  title: item.snippet.title,
-                  thumbnail: item.snippet.thumbnails.medium.url,
-                  channelTitle: item.snippet.channelTitle,
-                  source: 'youtube',
-                }))
-                .filter((song: Song) => !queuedIds.has(song.videoId));
-            }
-          } catch (err) {
-            console.error('📂 [RELATED] Failed to fetch search trending:', err);
-          }
-        }
-
-        setRelatedVideos(fallbackSongs.slice(0, 15));
       } else {
-        const data = await musicAPI.getRelatedVideos(currentSongRef.current?.videoId || '');
-        const fresh = data.items
-          .map((item: any) => ({
-            videoId: item.id.videoId,
-            title: item.snippet.title,
-            thumbnail: item.snippet.thumbnails.medium.url,
-            channelTitle: item.snippet.channelTitle,
-          }))
-          .filter((song: Song) => !queuedIds.has(song.videoId) && song.videoId !== currentSongRef.current?.videoId);
-        setRelatedVideos(fresh);
+        setIsLoadingRelated(true);
+      }
+
+      // Step 2: Enrich with user's Liked videos and Watch History in parallel
+      let likesList: any[] = [];
+      let historyList: any[] = [];
+      try {
+        const [likesRes, histRes] = await Promise.allSettled([
+          musicAPI.getLikes(),
+          musicAPI.getWatchHistory(),
+        ]);
+        if (likesRes.status === 'fulfilled' && Array.isArray(likesRes.value)) {
+          likesList = likesRes.value;
+        }
+        if (histRes.status === 'fulfilled' && Array.isArray(histRes.value)) {
+          historyList = histRes.value;
+        }
+      } catch (_) {}
+
+      const enriched = DiscoveryFeedService.buildSmartRelated({
+        currentSong: currentSongRef.current,
+        likes: likesList,
+        history: historyList,
+        queuedIds,
+        limit: 20,
+      });
+
+      if (enriched.length > 0) {
+        relatedCacheRef.current.set(videoId, enriched);
+        if ((currentSongRef.current?.videoId || initialVideoId) === videoId) {
+          setRelatedVideos(enriched);
+        }
       }
     } catch (e) {
-      console.error('Related videos fetch failed:', e);
+      console.error('Related videos smart recommendation failed:', e);
     } finally {
       setIsLoadingRelated(false);
     }
-  }, []);
+  }, [initialVideoId]);
+  fetchRelatedRef.current = fetchRelated;
 
-  // Re-fetch whenever the panel opens (button or auto-on-end), and again
-  // if the current song changes while it's still open (so suggestions
-  // don't go stale if playback advances to a new song mid-browse).
+  // Proactive background prefetch: whenever current song changes or mounts, prefetch related videos immediately
   useEffect(() => {
-    if (showRelated) {
+    const activeVideoId = currentSong?.videoId || initialVideoId;
+    if (activeVideoId) {
+      const cached = relatedCacheRef.current.get(activeVideoId);
+      if (cached && cached.length > 0) {
+        setRelatedVideos(cached);
+      }
+      fetchRelated(activeVideoId);
+    }
+  }, [currentSong?.videoId, initialVideoId, fetchRelated]);
+
+  // Re-fetch when panel opens if not already loaded
+  useEffect(() => {
+    if (showRelated && relatedVideos.length === 0) {
       fetchRelated();
     }
-  }, [showRelated, currentSong?.videoId, fetchRelated]);
+  }, [showRelated, relatedVideos.length, fetchRelated]);
 
   const onPlayerStateChange = async (state: string) => {
     // ✅ Always update the ref so intervals/timeouts can read the
@@ -3898,56 +3930,17 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       }
                     }}
                     onError={(err) => {
-                      const errStr = JSON.stringify(err);
-                      console.warn('[MusicRoomScreen] DirectVideoPlayer error (after internal recovery failed):', errStr);
-
-                      const reextractVideoId = currentDirectFetchId.current;
-                      if (reextractVideoId) {
-                        console.log('🔄 [MusicRoomScreen] Re-extracting fresh streams after failure...');
-                        dashUrlRef.current = null;
-                        currentDirectFetchId.current = null;
-                        setIsDirectLoading(true);
-
-                        extractVideoStreamUrlClientSide(reextractVideoId).then((res) => {
-                          if (!res) return;
-                          currentDirectFetchId.current = reextractVideoId;
-                          const progFallback = res.fallbackProgressiveUrl || fallbackProgressiveUrlRef.current;
-                          if (res.dashUrl) {
-                            console.log('✅ [MusicRoomScreen] Re-extraction success — restoring DASH quality switching');
-                            setDirectStreamsList(res.streams || []);
-                            directStreamsListRef.current = res.streams || [];
-                            dashUrlRef.current = res.dashUrl;
-                            setVideoQuality('auto');
-                            setLiveExactResolution('Auto');
+                      console.warn('[MusicRoomScreen] DirectVideoPlayer error:', err);
+                      // Never downgrade to progressive! Refresh DASH manifest while preserving current position.
+                      const targetVideoId = currentSong?.videoId || initialVideoId;
+                      if (targetVideoId) {
+                        extractVideoStreamUrlClientSide(targetVideoId).then((res) => {
+                          if (res && res.dashUrl) {
+                            console.log('🎬 [MusicRoomScreen] Refreshed DASH manifest for seamless recovery');
                             setDirectStreamUrl(res.dashUrl);
-                            setDirectAudioUrl(null);
                             setDirectStreamType('mpd');
-                          } else if (progFallback) {
-                            console.log('🎬 [MusicRoomScreen] Escalated recovery: falling back to progressive stream');
-                            setDirectStreamUrl(progFallback);
-                            setDirectAudioUrl(null);
-                            setDirectStreamType('mp4');
-                          } else if (res.url) {
-                            setDirectStreamUrl(res.url);
-                            setDirectAudioUrl(null);
-                            setDirectStreamType('mp4');
-                          } else {
-                            console.warn('[MusicRoomScreen] Re-extraction produced no streams, retrying direct player');
                           }
-                          setIsDirectLoading(false);
-                        }).catch(() => {
-                          if (fallbackProgressiveUrlRef.current) {
-                            setDirectStreamUrl(fallbackProgressiveUrlRef.current);
-                            setDirectStreamType('mp4');
-                          }
-                          setIsDirectLoading(false);
-                        });
-                        return;
-                      }
-
-                      if (fallbackProgressiveUrlRef.current) {
-                        setDirectStreamUrl(fallbackProgressiveUrlRef.current);
-                        setDirectStreamType('mp4');
+                        }).catch(() => {});
                       }
                     }}
                   />
@@ -4152,14 +4145,22 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               isPlaying={isPlaying}
               isEnded={playerState === 'ended'}
               canControl={(isDJ || isDJMode) && isPlayerReady}
-              isBuffering={!isReseeking && (isBuffering || (currentSong?.source === 'drive' && !isTrackPlayerReady)) && !!currentSong}
+              isBuffering={Boolean((isBuffering || isReseeking || seekingRef.current || !isPlayerReady || (currentSong?.source === 'drive' && !isTrackPlayerReady)) && !!currentSong)}
               position={livePosition}
               duration={duration}
               onPlayPause={handlePlayPause}
               onSeek={handleSeek}
               onNext={handleNext}
               onToggleFullscreen={() => setFullscreen(!fullscreen)}
-              onShowRelated={() => setShowRelated(true)}
+              onShowRelated={() => {
+                const activeId = currentSongRef.current?.videoId || initialVideoId;
+                if (activeId && relatedCacheRef.current.has(activeId)) {
+                  setRelatedVideos(relatedCacheRef.current.get(activeId)!);
+                } else if (activeId) {
+                  fetchRelated(activeId);
+                }
+                setShowRelated(true);
+              }}
               onSettings={() => {
                 setShowQualityOptions(prev => !prev);
               }}
@@ -4215,14 +4216,13 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             {showRelated && !fullscreen && currentSong?.source !== 'drive' && (
               <View style={s.relatedOverlay}>
 
-                {isLoadingRelated && relatedVideos.length === 0 && (
+                {isLoadingRelated && relatedVideos.length === 0 && queue.length === 0 && (
                   <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }]}>
                     <ActivityIndicator size="large" color="rgba(255,255,255,0.6)" animating={true} />
                   </View>
                 )}
-                {/* Only render the grid once we have videos — avoids the brief
-                    flash of an empty grid with a spinner box in slot 1 */}
-                {relatedVideos.length > 0 && (
+                {/* Render the grid immediately when we have related videos or pinned queue items */}
+                {(relatedVideos.length > 0 || queue.length > 0) && (
                   <RelatedVideosGrid
                     queueItems={queue}
                     suggestedVideos={relatedVideos}
@@ -4237,6 +4237,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                         handleSelectSong(song, true);
                       } else {
                         pinVideo(song);
+                        if (song?.videoId) {
+                          fetchRelated(song.videoId);
+                        }
                       }
                     }}
                     onUnpinVideo={(videoId) => unpinVideo(videoId)}

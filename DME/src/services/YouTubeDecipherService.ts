@@ -78,14 +78,65 @@ function u8ToUrlSafeBase64(u8: Uint8Array): string {
     return result.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+function decodeBase64ToU8(b64: string): Uint8Array {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let clean = b64.replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/]/g, '');
+    while (clean.length % 4 !== 0) clean += 'A';
+    const bytes: number[] = [];
+    for (let i = 0; i < clean.length; i += 4) {
+        const c0 = chars.indexOf(clean[i]);
+        const c1 = chars.indexOf(clean[i + 1]);
+        const c2 = chars.indexOf(clean[i + 2]);
+        const c3 = chars.indexOf(clean[i + 3]);
+        if (c0 === -1 || c1 === -1) break;
+        bytes.push((c0 << 2) | (c1 >> 4));
+        if (c2 !== -1) bytes.push(((c1 & 15) << 4) | (c2 >> 2));
+        if (c3 !== -1) bytes.push(((c2 & 3) << 6) | c3);
+    }
+    return new Uint8Array(bytes);
+}
+
+/**
+ * Extracts the 11-character visitor ID from YouTube protobuf visitorData
+ * (Protobuf field 1: tag 0x0a, length byte, ASCII string like 'MrjCaqsSN4o' or 'Ub3kmDqUBhU').
+ * If visitorData is already an 11-20 char raw visitor ID, returns it directly.
+ */
+export function extractVisitorId(visitorData?: string): string {
+    if (!visitorData || typeof visitorData !== 'string') return '';
+    if (visitorData.length <= 20) return visitorData;
+    try {
+        const decoded = decodeURIComponent(visitorData);
+        const bytes = decodeBase64ToU8(decoded);
+        if (bytes.length >= 2 && bytes[0] === 0x0a) {
+            const len = bytes[1];
+            if (len > 0 && len <= 32 && bytes.length >= 2 + len) {
+                let id = '';
+                for (let i = 0; i < len; i++) {
+                    id += String.fromCharCode(bytes[2 + i]);
+                }
+                return id;
+            }
+        }
+    } catch (_) {}
+    return '';
+}
+
+/**
+ * Genuine authentic Google BotGuard visitor-bound PO-tokens are 100 to 150 characters.
+ * Cold-start tokens are 28-36 characters and cannot authenticate video chunk playback.
+ */
+export function isAuthenticPoToken(token?: any): boolean {
+    return typeof token === 'string' && token.length >= 100 && token.length <= 150;
+}
+
 /**
  * Generates an authentic Proof of Origin (PO) token based on BgUtils specification.
  * Satisfies YouTube GVS CDN verification to eliminate the 59-second cutoff.
  */
 export function createColdStartToken(contentBinding: string = '', clientState: number = 1): string {
-    // Content binding in WebPO is videoId (11 chars) or empty string (unbound).
-    // Restrict length to prevent 1-byte packet[1] length overflow (>255 bytes).
-    const safeBinding = (contentBinding && contentBinding.length <= 64) ? contentBinding : '';
+    // Content binding in WebPO is visitorId (11 chars), videoId (11 chars) or empty string (unbound).
+    const cleanId = extractVisitorId(contentBinding);
+    const safeBinding = cleanId || ((contentBinding && contentBinding.length <= 64) ? contentBinding : '');
     const contentBindingBytes = encodeUtf8(safeBinding);
     const timestamp = Math.floor(Date.now() / 1000);
     const randomKeys = [Math.floor(Math.random() * 256), Math.floor(Math.random() * 256)];
@@ -273,7 +324,16 @@ class YouTubeDecipherService {
     private cachedPoTokens: Map<string, { token: string; visitorData: string; expiresAt: number }> = new Map();
     private poTokenPromises: Map<string, Promise<{ po_token: string; visitor_data: string }>> = new Map();
     private cachedIntegrityToken: string | null = null;
+    private cachedIntegrityVisitorId: string | null = null;
+    public sessionVisitorId: string | null = null;
+    public sessionVisitorData: string | null = null;
     public latestVisitorBoundToken: { token: string; visitorData: string; expiresAt: number } | null = null;
+
+    public invalidateVideo(videoId: string): void {
+        this.cachedPoTokens.delete(videoId);
+        this.extractionPromises.delete(videoId);
+        console.log(`🧹 [YouTubeDecipherService] Invalidated cached extraction and PO-token for: ${videoId}`);
+    }
 
     public registerWorker(sendFn: WorkerSendFunction) {
         this.workerSendFn = sendFn;
@@ -291,6 +351,8 @@ class YouTubeDecipherService {
 
     public notifyWorkerReady() {
         this.isWorkerReadyFlag = true;
+        this.cachedIntegrityToken = null; // Worker reloaded - reset old integrityToken so fresh VM attestation runs
+        this.cachedIntegrityVisitorId = null;
         console.log('🤖 [YouTubeDecipherService] Worker confirmed ready by WebView handshake');
         this.readyListeners.forEach(l => {
             try { l(); } catch (_) {}
@@ -470,9 +532,9 @@ class YouTubeDecipherService {
                 } catch (_) {}
             }
 
-            console.log('🤖 [YouTubeDecipherService] Sending base.js to Meriyah AST preprocessor worker...');
+            console.log(`🤖 [YouTubeDecipherService] Requesting AST preprocessing for player: ${targetUrl}...`);
             const t0 = Date.now();
-            const res = await this.workerSendFn!('preprocess', { code: baseJs, playerUrl: targetUrl });
+            const res = await this.workerSendFn!('preprocess', { playerUrl: targetUrl, code: baseJs }, 35000);
             if (res && res.success) {
                 console.log(`✅ [YouTubeDecipherService] AST Preprocessing complete in ${Date.now() - t0}ms`);
                 this.isPreprocessedFlag = true;
@@ -591,6 +653,10 @@ class YouTubeDecipherService {
         return null;
     }
 
+    public extractVisitorId(visitorData?: string): string {
+        return extractVisitorId(visitorData);
+    }
+
     /**
      * Generates an authentic Google-signed Proof of Origin (PO) token using Rave's
      * BotGuard attestation pipeline (ytAtN challenge / att/get -> VM -> GenerateIT -> obtainPoToken).
@@ -607,34 +673,11 @@ class YouTubeDecipherService {
         //    regardless of what identifier is passed.
         // The CDN expects matching YouTube account cookies on every ExoPlayer chunk request,
         // which OkHttp never sends → HTTP 403 at ~60 s.
-        //
-        // Fix: when we detect account-bound visitor_data, flush ALL cached account-bound state:
-        //   • cachedIntegrityToken  (the root cause — it's account-bound)
-        //   • latestVisitorBoundToken  (cached account-bound token)
-        //   • cachedPoTokens  (all stale account-bound entries)
-        // This forces a FULL fresh anonymous BotGuard attestation with no account context,
-        // producing the correct ~127-char visitor-bound token that the CDN accepts forever.
-        if (visitorData && visitorData.length > 50) {
-            console.log(`🔒 [PoToken] Detected account-bound visitorData (len: ${visitorData.length}) — flushing all cached tokens and integrityToken for anonymous re-attestation`);
-            visitorData = '';
-            this.cachedIntegrityToken = null;
-            this.latestVisitorBoundToken = null;
-            this.cachedPoTokens.clear();
-        }
-
-        // Also guard: if the latest cached token is account-bound (> 150 chars), discard it
-        if (this.latestVisitorBoundToken && this.latestVisitorBoundToken.token.length > 150) {
-            console.log(`🔒 [PoToken] Cached token is account-bound (len: ${this.latestVisitorBoundToken.token.length}) — discarding and forcing fresh anonymous attestation`);
-            this.cachedIntegrityToken = null;
-            this.latestVisitorBoundToken = null;
-            this.cachedPoTokens.clear();
-        }
-
         // 1. Return cached authentic visitor-bound token if valid (cached for 5 hours)
         if (visitorData && this.cachedPoTokens.has(visitorData)) {
             const cached = this.cachedPoTokens.get(visitorData)!;
-            if (now < cached.expiresAt && cached.token && cached.token.length > 0) {
-                console.log(`🔑 [PoToken] Returning cached authentic VISITOR-BOUND PO-Token for visitorData=${visitorData.substring(0, 16)}... (valid for ${Math.round((cached.expiresAt - now) / 60000)}min)`);
+            if (now < cached.expiresAt && isAuthenticPoToken(cached.token)) {
+                console.log(`🔑 [PoToken] Returning cached authentic VISITOR-BOUND PO-Token for visitorData=${visitorData.substring(0, 16)}... (valid for ${Math.round((cached.expiresAt - now) / 60000)}min, len: ${cached.token.length})`);
                 return { po_token: cached.token, visitor_data: cached.visitorData };
             }
         }
@@ -642,8 +685,8 @@ class YouTubeDecipherService {
         // If no visitorData was passed, but we have a valid latest visitor-bound token, return it
         if (!visitorData && this.latestVisitorBoundToken) {
             const latest = this.latestVisitorBoundToken;
-            if (now < latest.expiresAt && latest.token && latest.token.length > 0) {
-                console.log(`🔑 [PoToken] Returning active authentic visitor-bound PO-Token (valid for ${Math.round((latest.expiresAt - now) / 60000)}min)`);
+            if (now < latest.expiresAt && isAuthenticPoToken(latest.token)) {
+                console.log(`🔑 [PoToken] Returning active authentic visitor-bound PO-Token (valid for ${Math.round((latest.expiresAt - now) / 60000)}min, len: ${latest.token.length})`);
                 return { po_token: latest.token, visitor_data: latest.visitorData };
             }
         }
@@ -651,8 +694,8 @@ class YouTubeDecipherService {
         // If videoId is provided and cached specifically for this video, check that
         if (videoId && this.cachedPoTokens.has(videoId)) {
             const cached = this.cachedPoTokens.get(videoId)!;
-            if (now < cached.expiresAt && cached.token && cached.token.length > 0 && (!visitorData || cached.visitorData === visitorData)) {
-                console.log(`🔑 [PoToken] Returning cached authentic PO-Token for videoId=${videoId} (valid for ${Math.round((cached.expiresAt - now) / 60000)}min)`);
+            if (now < cached.expiresAt && isAuthenticPoToken(cached.token) && (!visitorData || cached.visitorData === visitorData)) {
+                console.log(`🔑 [PoToken] Returning cached authentic PO-Token for videoId=${videoId} (valid for ${Math.round((cached.expiresAt - now) / 60000)}min, len: ${cached.token.length})`);
                 return { po_token: cached.token, visitor_data: cached.visitorData };
             }
         }
@@ -663,49 +706,54 @@ class YouTubeDecipherService {
         if (inFlight) return inFlight;
 
         const promise = (async () => {
+            let resolvedVisitorData = visitorData;
             try {
                 await this.waitForWorker();
 
-                // 3. Fast-mint attempt if worker is ready, integrityToken is cached, and visitorData is provided:
-                if (visitorData && this.cachedIntegrityToken && this.workerSendFn) {
+                // 3. Fast-mint attempt if worker is ready, integrityToken is cached, and visitor identity matches:
+                const targetVisitorId = this.extractVisitorId(visitorData) || this.sessionVisitorId || '';
+                const targetIdentifier = targetVisitorId || videoId || '';
+                const canFastMint = Boolean(
+                    targetIdentifier &&
+                    this.cachedIntegrityToken &&
+                    (!this.cachedIntegrityVisitorId || !targetVisitorId || this.cachedIntegrityVisitorId === targetVisitorId) &&
+                    this.workerSendFn
+                );
+
+                if (canFastMint) {
                     try {
-                        const fastMint = await this.workerSendFn('obtainPoToken', {
+                        const fastMint = await this.workerSendFn!('obtainPoToken', {
                             integrityToken: this.cachedIntegrityToken,
-                            identifier: visitorData
+                            identifier: targetIdentifier
                         }, 3000);
-                        if (fastMint && fastMint.poToken && typeof fastMint.poToken === 'string' && fastMint.poToken.length > 0) {
-                            // Guard: reject account-bound token (>130 chars) — flush and fall through to full attestation
-                            if (fastMint.poToken.length > 130) {
-                                console.log(`🔒 [PoToken] Fast-mint produced account-bound token (len: ${fastMint.poToken.length}) — flushing integrityToken + caches, forcing full anonymous re-attestation`);
-                                this.cachedIntegrityToken = null;
-                                this.latestVisitorBoundToken = null;
-                                this.cachedPoTokens.clear();
-                                // fall through to full attestation below
-                            } else {
-                                const expiresAt = now + (5 * 60 * 60 * 1000);
+                        if (fastMint && isAuthenticPoToken(fastMint.poToken)) {
+                            const expiresAt = now + (5 * 60 * 60 * 1000);
+                            if (visitorData) {
                                 this.cachedPoTokens.set(visitorData, {
                                     token: fastMint.poToken,
                                     visitorData,
                                     expiresAt
                                 });
-                                if (videoId) {
-                                    this.cachedPoTokens.set(videoId, {
-                                        token: fastMint.poToken,
-                                        visitorData,
-                                        expiresAt
-                                    });
-                                }
-                                this.latestVisitorBoundToken = {
+                            }
+                            if (videoId) {
+                                this.cachedPoTokens.set(videoId, {
                                     token: fastMint.poToken,
                                     visitorData,
                                     expiresAt
-                                };
-                                console.log(`⚡ [PoToken] Fast-minted authentic visitor-bound PO-Token in <15ms for visitor_data=${visitorData.substring(0, 16)}... (len: ${fastMint.poToken.length})`);
-                                return { po_token: fastMint.poToken, visitor_data: visitorData };
+                                });
                             }
+                            this.latestVisitorBoundToken = {
+                                token: fastMint.poToken,
+                                visitorData: visitorData || '',
+                                expiresAt
+                            };
+                            console.log(`⚡ [PoToken] Fast-minted authentic visitor-bound PO-Token in <15ms for identifier=${targetIdentifier} (len: ${fastMint.poToken.length})`);
+                            return { po_token: fastMint.poToken, visitor_data: visitorData };
+                        } else {
+                            this.cachedIntegrityToken = null;
                         }
                     } catch (_) {
-                        // Fast mint failed, proceed to full attestation
+                        this.cachedIntegrityToken = null;
                     }
                 }
 
@@ -715,6 +763,7 @@ class YouTubeDecipherService {
                     program: string;
                     interpreterUrl: string;
                     ytcfg?: any;
+                    requestKey?: string;
                 } | null = null;
 
                 let ytcfgData: any = null;
@@ -743,13 +792,24 @@ class YouTubeDecipherService {
                                 if (rawUrl && !rawUrl.startsWith('http')) {
                                     rawUrl = 'https:' + (rawUrl.startsWith('/') ? '' : '/') + rawUrl;
                                 }
+
+                                let extractedKey: string | undefined = undefined;
+                                const chStr = (typeof parsed.challenge === 'string') ? parsed.challenge : (typeof parsed.challengeData === 'string' ? parsed.challengeData : null);
+                                if (chStr) {
+                                    const mb = chStr.match(/(?:^|[?&])b=([^&]+)/);
+                                    if (mb && mb[1]) {
+                                        extractedKey = decodeURIComponent(mb[1]);
+                                    }
+                                }
+
                                 challengeData = {
                                     globalName: bg.globalName,
                                     program: bg.program,
                                     interpreterUrl: rawUrl,
                                     ytcfg: ytcfgData,
+                                    requestKey: extractedKey,
                                 };
-                                console.log(`🤖 [PoToken] Extracted page-embedded ytAtN challenge: globalName=${bg.globalName}, programLen=${bg.program.length}`);
+                                console.log(`🤖 [PoToken] Extracted page-embedded ytAtN challenge: globalName=${bg.globalName}, programLen=${bg.program.length}, requestKey=${extractedKey ? extractedKey.substring(0, 16) + '...' : 'default'}`);
                             }
                         } catch (e: any) {
                             console.warn('⚠️ [PoToken] Failed to parse ytAtN embedded challenge:', e?.message || e);
@@ -758,7 +818,7 @@ class YouTubeDecipherService {
                 }
 
                 // Fallback: If watch page does not contain window.ytAtN, query YouTube att/get endpoint (Rave architecture)
-                let resolvedVisitorData = visitorData;
+                if (!resolvedVisitorData) resolvedVisitorData = visitorData;
                 if (!challengeData) {
                     const attPayload = {
                         engagementType: 'ENGAGEMENT_TYPE_UNBOUND',
@@ -818,15 +878,9 @@ class YouTubeDecipherService {
 
                     if (attData) {
                         // Extract genuine visitorData returned directly by YouTube's att/get responseContext
-                        // Guard: only use if anonymous (≤50 chars) — account-bound values cause 403
                         if (!resolvedVisitorData && attData.responseContext?.visitorData) {
-                            const attVd = attData.responseContext.visitorData;
-                            if (attVd.length <= 50) {
-                                resolvedVisitorData = attVd;
-                                console.log(`🤖 [PoToken] Resolved genuine visitorData from att/get: ${resolvedVisitorData.substring(0, 16)}...`);
-                            } else {
-                                console.log(`🔒 [PoToken] att/get returned account-bound visitorData (len: ${attVd.length}) — ignoring, keeping anonymous`);
-                            }
+                            resolvedVisitorData = attData.responseContext.visitorData;
+                            console.log(`🤖 [PoToken] Resolved genuine visitorData from att/get: ${resolvedVisitorData.substring(0, 16)}... (len: ${resolvedVisitorData.length})`);
                         }
 
                         const bg = attData.bgChallenge || attData.challenge?.bgChallenge || attData.challengeData;
@@ -837,13 +891,24 @@ class YouTubeDecipherService {
                             if (rawUrl && !rawUrl.startsWith('http')) {
                                 rawUrl = 'https:' + (rawUrl.startsWith('/') ? '' : '/') + rawUrl;
                             }
+
+                            let attKey: string | undefined = undefined;
+                            const attChStr = (typeof attData.challenge === 'string') ? attData.challenge : (typeof attData.challengeData === 'string' ? attData.challengeData : null);
+                            if (attChStr) {
+                                const mb2 = attChStr.match(/(?:^|[?&])b=([^&]+)/);
+                                if (mb2 && mb2[1]) {
+                                    attKey = decodeURIComponent(mb2[1]);
+                                }
+                            }
+
                             challengeData = {
                                 globalName: bg.globalName,
                                 program: bg.program,
                                 interpreterUrl: rawUrl,
                                 ytcfg: ytcfgData,
+                                requestKey: attKey,
                             };
-                            console.log(`🤖 [PoToken] Acquired att/get challenge: globalName=${bg.globalName}, programLen=${bg.program.length}`);
+                            console.log(`🤖 [PoToken] Acquired att/get challenge: globalName=${bg.globalName}, programLen=${bg.program.length}, requestKey=${attKey ? attKey.substring(0, 16) + '...' : 'default'}`);
                         }
                     }
                 }
@@ -872,6 +937,8 @@ class YouTubeDecipherService {
                 console.log(`🤖 [PoToken] BotGuard snapshot received (len: ${bgRes.botguardResponse.length}), calling GenerateIT...`);
 
                 // 7. Request Integrity Token from Google
+                const requestKey = challengeData.requestKey || 'O43z0dpjhgX20SCx4KAo';
+                console.log(`🤖 [PoToken] Calling GenerateIT with requestKey: ${requestKey.substring(0, 16)}...`);
                 let integrityToken: string = '';
                 try {
                     const genRes = await fetch('https://www.youtube.com/api/jnn/v1/GenerateIT', {
@@ -882,22 +949,41 @@ class YouTubeDecipherService {
                             'x-user-agent': 'grpc-web-javascript/0.1',
                             'Origin': 'https://www.youtube.com'
                         },
-                        body: JSON.stringify(['O43z0dpjhgX20SCx4KAo', bgRes.botguardResponse])
+                        body: JSON.stringify([requestKey, bgRes.botguardResponse])
                     });
                     if (genRes.ok) {
                         const genData = await genRes.json();
-                        integrityToken = (Array.isArray(genData) ? genData.find((x: any) => typeof x === 'string' && x.length > 20) : null) || genData[0] || '';
+                        if (Array.isArray(genData)) {
+                            if (typeof genData[0] === 'string' && genData[0].length > 20) {
+                                integrityToken = genData[0];
+                            } else if (typeof genData[3] === 'string' && genData[3].length > 20) {
+                                integrityToken = genData[3];
+                                console.log('🤖 [PoToken] Using GenerateIT fallback token (index 3)');
+                            } else {
+                                const found = genData.find((x: any) => typeof x === 'string' && x.length > 20);
+                                if (found) integrityToken = found;
+                            }
+                        }
                     }
                 } catch (_) {}
 
                 if (!integrityToken && this.workerSendFn) {
                     try {
                         const wGen = await this.workerSendFn('fetchGenerateIT', {
-                            body: ['O43z0dpjhgX20SCx4KAo', bgRes.botguardResponse]
+                            body: [requestKey, bgRes.botguardResponse]
                         });
                         if (wGen && wGen.success && wGen.data) {
                             const genData = wGen.data;
-                            integrityToken = (Array.isArray(genData) ? genData.find((x: any) => typeof x === 'string' && x.length > 20) : null) || genData[0] || '';
+                            if (Array.isArray(genData)) {
+                                if (typeof genData[0] === 'string' && genData[0].length > 20) {
+                                    integrityToken = genData[0];
+                                } else if (typeof genData[3] === 'string' && genData[3].length > 20) {
+                                    integrityToken = genData[3];
+                                } else {
+                                    const found = genData.find((x: any) => typeof x === 'string' && x.length > 20);
+                                    if (found) integrityToken = found;
+                                }
+                            }
                         }
                     } catch (_) {}
                 }
@@ -911,19 +997,24 @@ class YouTubeDecipherService {
                 // produce account-bound 182-char tokens → 403 at 60s. We detect this AFTER minting
                 // by checking the token length: anonymous ≤130 chars, account-bound >130 chars.
                 this.cachedIntegrityToken = integrityToken;
-                console.log(`🤖 [PoToken] Integrity token acquired: ${integrityToken.substring(0, 25)}..., minting PO-Token for visitor_data=${resolvedVisitorData.substring(0, 16)}...`);
+                this.cachedIntegrityVisitorId = this.extractVisitorId(resolvedVisitorData) || null;
+                console.log(`🤖 [PoToken] Integrity token acquired: ${integrityToken.substring(0, 25)}..., minting PO-Token for visitor_data=${resolvedVisitorData.substring(0, 16)}... (visitorId: ${this.cachedIntegrityVisitorId})`);
 
-                // 8. Mint authentic PO-Token inside worker via obtainPoToken (pass visitorData or empty string, never videoId)
+                // 8. Mint authentic PO-Token inside worker via obtainPoToken (pass 11-char visitorId or videoId)
                 let authenticToken = '';
+                const attestationVisitorId = this.extractVisitorId(resolvedVisitorData);
+                const attestationIdentifier = attestationVisitorId || videoId || '';
                 try {
                     const mintRes = await this.workerSendFn!('obtainPoToken', {
                         integrityToken,
-                        identifier: resolvedVisitorData || ''
+                        identifier: attestationIdentifier
                     });
-                    if (mintRes && mintRes.poToken && typeof mintRes.poToken === 'string' && mintRes.poToken.length > 0) {
+                    if (mintRes && isAuthenticPoToken(mintRes.poToken)) {
                         authenticToken = mintRes.poToken;
                     } else if (mintRes && mintRes.error) {
                         throw new Error(mintRes.error);
+                    } else {
+                        throw new Error(`PO-Token rejected due to invalid length: ${mintRes?.poToken?.length || 0} (expected 100-150 chars)`);
                     }
                 } catch (mintErr: any) {
                     throw new Error(`obtainPoToken failed: ${mintErr?.message || mintErr}`);
@@ -933,16 +1024,6 @@ class YouTubeDecipherService {
                     throw new Error('Could not obtain authentic PO-Token (skipping pot)');
                 }
 
-                // ── Account-bound token guard ─────────────────────────────────────────────────────────────
-                // Anonymous visitor-bound token: ~127 chars. Account-bound: 182+ chars.
-                // If account-bound, discard integrityToken so it is never reused by fast-mint.
-                if (authenticToken.length > 130) {
-                    console.log(`🔒 [PoToken] Minted token is account-bound (len: ${authenticToken.length}) — discarding integrityToken + all caches, NOT caching this token`);
-                    this.cachedIntegrityToken = null;
-                    this.latestVisitorBoundToken = null;
-                    this.cachedPoTokens.clear();
-                    throw new Error(`Account-bound PO-Token detected (len: ${authenticToken.length}) — refusing to use, forcing fresh anonymous attestation next call`);
-                }
 
                 const expiresAt = now + (5 * 60 * 60 * 1000); // 5 hours
 
@@ -970,7 +1051,7 @@ class YouTubeDecipherService {
                 return { po_token: authenticToken, visitor_data: resolvedVisitorData };
 
             } catch (err: any) {
-                console.warn('⚠️ [PoToken] BotGuard attestation failed, skipping token (no dummy pot):', err?.message || err);
+                console.warn('⚠️ [PoToken] BotGuard attestation failed, proceeding with clean URLs (no fake cold start for stream playback):', err?.message || err);
                 return { po_token: '', visitor_data: visitorData };
             }
         })().finally(() => {
@@ -1014,9 +1095,9 @@ class YouTubeDecipherService {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'User-Agent': 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)',
+                        'User-Agent': 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)',
                         'X-YouTube-Client-Name': '5',
-                        'X-YouTube-Client-Version': '20.10.4',
+                        'X-YouTube-Client-Version': '21.02.3',
                         'X-Goog-Api-Format-Version': '2',
                     },
                     body: JSON.stringify({
@@ -1024,9 +1105,9 @@ class YouTubeDecipherService {
                         context: {
                             client: {
                                 clientName: 'IOS',
-                                clientVersion: '20.10.4',
+                                clientVersion: '21.02.3',
                                 deviceModel: 'iPhone16,2',
-                                userAgent: 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)',
+                                userAgent: 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)',
                                 osName: 'iPhone OS',
                                 osVersion: '18.3.2',
                                 ...(this.latestVisitorBoundToken?.visitorData ? { visitorData: this.latestVisitorBoundToken.visitorData } : {})
@@ -1132,11 +1213,15 @@ class YouTubeDecipherService {
         let html: string | null = null;
 
         // Fetch mobile watch page with Android Chrome UA (fast, lightweight)
+        // Send established VISITOR_INFO1_LIVE cookie so YouTube locks the watch page session
+        // to our exact BotGuard session visitor identity (eliminating 403 on subsequent room creations).
         try {
+            const cookieHeader = this.sessionVisitorId ? `VISITOR_INFO1_LIVE=${this.sessionVisitorId}` : '';
             const mRes = await fetch(`https://m.youtube.com/watch?v=${videoId}&hl=en`, {
                 headers: {
                     'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
                     'Accept-Language': 'en-US,en;q=0.9',
+                    ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
                 }
             });
             if (mRes.ok) html = await mRes.text();
@@ -1144,10 +1229,12 @@ class YouTubeDecipherService {
 
         if (!html) {
             try {
+                const cookieHeader = this.sessionVisitorId ? `VISITOR_INFO1_LIVE=${this.sessionVisitorId}` : '';
                 const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                         'Accept-Language': 'en-US,en;q=0.9',
+                        ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
                     }
                 });
                 if (res.ok) html = await res.text();
@@ -1160,37 +1247,41 @@ class YouTubeDecipherService {
 
         let playerResponse = html ? this.parsePlayerResponseFromHtml(html) : null;
 
-        // ── Extract genuine visitorData from InnerTube / watch page HTML / player response ──
-        let visitor_data = innertubeVisitorData || '';
-        if (!visitor_data && html) {
+        // ── Extract genuine visitorData from watch page HTML / player response / InnerTube ──
+        // For MWEB streams, the watch page HTML's VISITOR_DATA is the authoritative session identity
+        // that signed the stream URLs' bui and spc parameters. It must take precedence so the
+        // fast-minted PO-Token perfectly matches the URL's visitor binding.
+        let visitor_data = '';
+        if (html) {
             const vm = html.match(/"VISITOR_DATA":\s*"([^"]+)"/i) || html.match(/"visitorData":\s*"([^"]+)"/);
             if (vm && vm[1]) {
                 visitor_data = vm[1];
+                if (!this.sessionVisitorId) {
+                    const extractedId = this.extractVisitorId(visitor_data);
+                    if (extractedId) {
+                        this.sessionVisitorId = extractedId;
+                        this.sessionVisitorData = visitor_data;
+                        console.log(`🌐 [YouTubeDecipherService] Established session visitor identity from watch page: ${extractedId}`);
+                    }
+                }
             }
         }
         if (!visitor_data && playerResponse?.responseContext?.visitorData) {
             visitor_data = playerResponse.responseContext.visitorData;
         }
+        if (!visitor_data && innertubeVisitorData) {
+            visitor_data = innertubeVisitorData;
+        }
         if (!visitor_data && this.latestVisitorBoundToken?.visitorData) {
             visitor_data = this.latestVisitorBoundToken.visitorData;
         }
 
-        // ── Guard: flush all account-bound cached state at extraction time ───────────────────
-        // visitor_data > 50 chars = account-bound. Flush everything so generatePoToken()
-        // performs a full fresh anonymous BotGuard attestation (no account context).
-        if (visitor_data && visitor_data.length > 50) {
-            console.log(`🔒 [YouTubeDecipherService] Account-bound visitor_data detected (len: ${visitor_data.length}) — flushing integrityToken + all caches for anonymous re-attestation`);
-            visitor_data = '';
-            this.cachedIntegrityToken = null;
-            this.latestVisitorBoundToken = null;
-            this.cachedPoTokens.clear();
-        }
 
         // ── Acquire or generate guaranteed PO-Token ──
         let po_token: string = '';
         try {
             const tokenRes = await this.generatePoToken(videoId, visitor_data, html || undefined);
-            if (tokenRes && tokenRes.po_token && tokenRes.po_token.length > 0) {
+            if (tokenRes && isAuthenticPoToken(tokenRes.po_token)) {
                 po_token = tokenRes.po_token;
                 if (!visitor_data && tokenRes.visitor_data) {
                     visitor_data = tokenRes.visitor_data;
@@ -1198,15 +1289,18 @@ class YouTubeDecipherService {
             }
         } catch (_) {}
 
-        if (po_token && po_token.length > 0) {
+        if (isAuthenticPoToken(po_token)) {
             console.log(`🔑 [YouTubeDecipherService] Acquired authentic PO-Token for extraction: ${po_token.substring(0, 16)}... (len: ${po_token.length})`);
+        } else if (this.latestVisitorBoundToken && isAuthenticPoToken(this.latestVisitorBoundToken.token)) {
+            po_token = this.latestVisitorBoundToken.token;
+            console.log(`🔑 [YouTubeDecipherService] Using latest cached authentic PO-Token: ${po_token.substring(0, 16)}... (len: ${po_token.length})`);
         } else {
             po_token = '';
             console.log(`ℹ️ [YouTubeDecipherService] No authentic PO-Token — proceeding with clean deciphered URLs (no dummy pot parameter)`);
         }
 
-        // ── 1. If playerResponse from HTML lacked adaptiveFormats, query InnerTube MWEB ──
         let streamingData = playerResponse?.streamingData;
+
         if (!streamingData?.adaptiveFormats || streamingData.adaptiveFormats.length === 0) {
             try {
                 const mwebRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
@@ -1252,14 +1346,21 @@ class YouTubeDecipherService {
         const muxedFormats: any[] = streamingData?.formats || [];
         const allRawFormats: any[] = [];
 
-        // 1. Add all adaptive formats from MWEB (matches authentic Web PO-token)
+        // ── Step 1: Prioritize MWEB Adaptive Formats (Mobile Watch Page / InnerTube MWEB) ──
+        // MWEB adaptive formats deliver all representations (144p to 1080p/4K) and AAC audio (itag 140)
+        // with signatureCipher, initRange, and indexRange.
+        // Deciphered via Meriyah AST and authenticated with the visitor-bound PO-Token, they stream
+        // indefinitely on Google Video CDN for both guest and logged-in users.
         if (adaptiveFormats && adaptiveFormats.length > 0) {
             for (const af of adaptiveFormats) {
-                allRawFormats.push(af);
+                if (!allRawFormats.some(f => f.itag === af.itag)) {
+                    allRawFormats.push(af);
+                }
             }
+            console.log(`🌐 [YouTubeDecipherService] Populated ${allRawFormats.length} MWEB adaptive formats as primary DASH streams`);
         }
 
-        // 2. Only add native adaptive formats (IOS) if not already present
+        // ── Step 2: Emergency fallback to native adaptive formats only if MWEB did not supply them ──
         if (nativeAdaptive && nativeAdaptive.length > 0) {
             for (const na of nativeAdaptive) {
                 if (!allRawFormats.some(f => f.itag === na.itag)) {
@@ -1268,7 +1369,7 @@ class YouTubeDecipherService {
             }
         }
 
-        // 3. Add progressive itag 18
+        // ── Step 3: Progressive fallback (only if itag 18 is not present) ──
         if (nativeProgUrl && !allRawFormats.some(f => f.itag === 18)) {
             allRawFormats.push({
                 itag: 18,
@@ -1374,7 +1475,7 @@ class YouTubeDecipherService {
 
         // Pre-apply Hermes signature deciphering to all cipher formats
         if (sigTransforms && sigTransforms.length > 0) {
-            for (const [, meta] of formatMetaMap.entries()) {
+            for (const [, meta] of Array.from(formatMetaMap.entries())) {
                 if (meta.isCipher && meta.sig && meta.rawUrl) {
                     try {
                         let cleanSig = meta.sig;
@@ -1410,6 +1511,11 @@ class YouTubeDecipherService {
                     });
                     decipherSuccess = anyNTransformed || itemsToDecipher.every(it => !it.n);
                     console.log(`🤖 [YouTubeDecipherService] Decipher Sample (itag ${sample.itag}): newSig=${sample.newSig ? sample.newSig.substring(0, 15) + '...' : 'null'}, newN=${sample.newN || 'null'} (nTransformed: ${isNTransformed})`);
+                    const audioDec = deciphered.find(d => d.itag === 140);
+                    if (audioDec) {
+                        const m = formatMetaMap.get(140);
+                        console.log(`🔊 [YouTubeDecipherService] Audio (itag 140) Decipher: rawN=${m?.n} -> newN=${audioDec.newN} (transformed: ${audioDec.newN !== m?.n})`);
+                    }
                 }
                 for (const dec of deciphered) {
                     const meta = formatMetaMap.get(dec.itag);
@@ -1460,23 +1566,27 @@ class YouTubeDecipherService {
             decipherSuccess = true;
         }
 
-        // Sanitize all formats and attach authentic PO-Token only to Web/MWEB formats
-        for (const [, meta] of formatMetaMap.entries()) {
+        // Sanitize all formats and ensure query parameters are clean
+        for (const [, meta] of Array.from(formatMetaMap.entries())) {
             if (meta.url) {
                 try {
                     const parsed = new URL(meta.url);
                     parsed.searchParams.delete('alr');
                     const client = parsed.searchParams.get('c');
 
-                    // Attaching a Web PO-Token to IOS or ANDROID streams causes Google CDN to reject the token with HTTP 403.
-                    // Web PO-Token is ONLY valid for MWEB / WEB clients (exact Rave architecture).
-                    if (po_token && client !== 'IOS' && client !== 'ANDROID') {
-                        if (!client) {
-                            parsed.searchParams.set('c', 'MWEB');
-                        }
-                        parsed.searchParams.set('pot', po_token);
-                    } else if (!po_token) {
+                    // CRITICAL: NEVER modify 'c' parameter! 'c' is in 'sparams' and signed by 'lsig'.
+                    // Native formats (IOS / ANDROID) do not accept Web PO-tokens and must remain pristine.
+                    if (client === 'IOS' || client === 'ANDROID') {
                         parsed.searchParams.delete('pot');
+                    } else {
+                        // Web/MWEB formats: attach authentic PO-token if available
+                        if (isAuthenticPoToken(po_token)) {
+                            parsed.searchParams.set('pot', po_token);
+                        } else if (this.latestVisitorBoundToken && isAuthenticPoToken(this.latestVisitorBoundToken.token)) {
+                            parsed.searchParams.set('pot', this.latestVisitorBoundToken.token);
+                        } else {
+                            parsed.searchParams.delete('pot');
+                        }
                     }
                     meta.url = parsed.toString();
                 } catch (_) {}

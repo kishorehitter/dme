@@ -11,6 +11,7 @@ import React, { useEffect, useRef, useCallback } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import YouTubeDecipherService from '../services/YouTubeDecipherService';
+import { MERIYAH_CODE, EXTRACTOR_CODE } from '../services/YouTubeExtractorBundle';
 
 // ── Static HTML Bundle defined OUTSIDE component so it is never recreated on re-renders ──
 const HTML_BUNDLE = `<!DOCTYPE html>
@@ -28,6 +29,14 @@ window.onerror = function(msg, url, line) {
     }
   } catch(_) {}
 };
+</script>
+<script>
+${MERIYAH_CODE}
+</script>
+<script>
+${EXTRACTOR_CODE}
+</script>
+<script>
 
 // ── BotGuard & WebPO Implementation ──
 function base64ToU8(base64) {
@@ -94,6 +103,10 @@ function loadBotGuard(challengeData) {
   } catch(e) {
     throw new Error('[BotGuardClient]: Could not load program: ' + (e && (e.message || String(e))));
   }
+  if (syncSnapshot && typeof syncSnapshot[0] === 'function') {
+    window.__syncSnapshotFunction = syncSnapshot[0];
+    window.__getMinter = syncSnapshot[0];
+  }
 
   return new Promise(function(resolve, reject) {
     var i = 0;
@@ -130,6 +143,49 @@ function loadBotGuard(challengeData) {
   });
 }
 
+function extractVisitorIdFromProtobuf(visitorData) {
+  if (!visitorData || typeof visitorData !== 'string') return '';
+  if (visitorData.length <= 24) return visitorData;
+  try {
+    var b64 = decodeURIComponent(visitorData).replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64);
+    if (bin.charCodeAt(0) === 0x0a) {
+      var len = bin.charCodeAt(1);
+      if (len > 0 && len <= 32 && bin.length >= 2 + len) {
+        return bin.substring(2, 2 + len);
+      }
+    }
+  } catch (_) {}
+  return '';
+}
+
+function createColdStartToken(contentBinding, clientState) {
+  var cleanBinding = extractVisitorIdFromProtobuf(contentBinding);
+  var contentBindingBytes = stringToU8(cleanBinding || '');
+  var timestamp = Math.floor(Date.now() / 1000);
+  var randomKeys = [Math.floor(Math.random() * 256), Math.floor(Math.random() * 256)];
+  var header = randomKeys.concat([
+    0, (clientState || 1)
+  ], [
+    (timestamp >> 24) & 0xFF,
+    (timestamp >> 16) & 0xFF,
+    (timestamp >> 8) & 0xFF,
+    timestamp & 0xFF
+  ]);
+  var packet = new Uint8Array(2 + header.length + contentBindingBytes.length);
+  packet[0] = 34;
+  packet[1] = header.length + contentBindingBytes.length;
+  for (var h = 0; h < header.length; h++) packet[2 + h] = header[h];
+  for (var c = 0; c < contentBindingBytes.length; c++) packet[2 + header.length + c] = contentBindingBytes[c];
+  var payload = packet.subarray(2);
+  var keyLength = randomKeys.length;
+  for (var i = keyLength; i < payload.length; i++) {
+    payload[i] ^= payload[i % keyLength];
+  }
+  return u8ToBase64(packet, true);
+}
+
 function runBotGuard(challengeData) {
   var interpreterJavascript = challengeData.interpreterJavascript;
   if (interpreterJavascript) {
@@ -155,12 +211,19 @@ function runBotGuard(challengeData) {
     globalName: challengeData.globalName,
     program: challengeData.program
   }).then(function(botguard) {
+    if (botguard.syncSnapshotFunction && typeof botguard.syncSnapshotFunction === 'function') {
+      window.__syncSnapshotFunction = botguard.syncSnapshotFunction;
+      window.__getMinter = botguard.syncSnapshotFunction;
+    }
     // Exact Rave po_token.html behavior: pass ONLY webPoSignalOutput.
     // Leaving contentBinding and signedTimestamp undefined signals WebPO token mint mode.
     return botguard.snapshot({
       webPoSignalOutput: webPoSignalOutput
     });
   }).then(function(botguardResponse) {
+    if (webPoSignalOutput.length === 0 && window.__getMinter) {
+      webPoSignalOutput.push(window.__getMinter);
+    }
     return { webPoSignalOutput: webPoSignalOutput, botguardResponse: botguardResponse };
   });
 }
@@ -177,7 +240,7 @@ function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
           ? window.webPoSignalOutput
           : ((window.__webPoSignalOutput && Array.isArray(window.__webPoSignalOutput) && window.__webPoSignalOutput.length > 0)
             ? window.__webPoSignalOutput
-            : null));
+            : (window.__getMinter ? [window.__getMinter] : null)));
 
       if (!integrityToken) {
         return reject(new Error('No integrityToken provided to obtainPoToken'));
@@ -197,12 +260,16 @@ function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
 
       if (!mintCallback || mintCallbackToken !== tokenKey) {
         if (!signals || signals.length === 0) {
-          return reject(new Error('PMD:Undefined - webPoSignalOutput is empty'));
+          if (window.__getMinter && typeof window.__getMinter === 'function') {
+            signals = [window.__getMinter];
+          } else {
+            return reject(new Error('PMD:Undefined - webPoSignalOutput is empty'));
+          }
         }
 
         var getMinter = (typeof signals[0] === 'function')
           ? signals[0]
-          : (signals.find(function(s) { return typeof s === 'function'; }) || null);
+          : (signals.find(function(s) { return typeof s === 'function'; }) || (typeof window.__getMinter === 'function' ? window.__getMinter : null));
 
         if (!getMinter || typeof getMinter !== 'function') {
           return reject(new Error('PMD:Undefined - getMinter function not found in webPoSignalOutput (len=' + signals.length + ')'));
@@ -229,6 +296,9 @@ function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
 
       // Convert identifier to Uint8Array (exact Rave JavaScriptUtilKt.stringToU8)
       var idStr = (identifier !== undefined && identifier !== null) ? String(identifier) : '';
+      if (idStr.length > 24) {
+        idStr = extractVisitorIdFromProtobuf(idStr);
+      }
       var u8Identifier = stringToU8(idStr);
 
       var result = null;
@@ -254,204 +324,15 @@ function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
       }
 
       var pot = u8ToBase64(result, true);
+      if (pot && (pot.length < 100 || pot.length > 150)) {
+        return reject(new Error('PO-Token length invalid: ' + pot.length + ' (expected 100-150 chars)'));
+      }
       resolve(pot);
     } catch (err) {
       reject(new Error('obtainPoToken error: ' + (err && (err.message || String(err)))));
     }
   });
 }
-
-// ── YouTube Player Native Opcode VM & URL Class Engine ──
-var _dynamicUrlClass = null;
-
-function runUrlClassTransform(inst) {
-  if (!inst) return;
-  try {
-    var proto = Object.getPrototypeOf(inst);
-    var keys = Object.keys(proto).concat(Object.getOwnPropertyNames(proto));
-    for (var k = 0; k < keys.length; k++) {
-      var prop = keys[k];
-      if (['constructor', 'set', 'get', 'clone'].indexOf(prop) === -1 && typeof inst[prop] === 'function') {
-        try { inst[prop](); } catch(_) {}
-        break;
-      }
-    }
-  } catch(_) {}
-}
-
-function findUrlClass(playerSource) {
-  if (_dynamicUrlClass) return _dynamicUrlClass;
-  var target = window._yt_player || window;
-  var testSampleUrl = 'https://rr1---sn-test.googlevideo.com/videoplayback?n=v9gO1XF2_jMsdS_K&itag=18';
-
-  // 1. Multi-Pattern AST/Regex extraction from playerSource:
-  if (playerSource && typeof playerSource === 'string') {
-    var patterns = [
-      // Pattern A (exact modern closure): (new g.YI(L, !0)).get("n") or (new g.fk(L, true)).get("n")
-      /\\(\\s*new\\s+(?:g|[a-zA-Z0-9$]+)\\.([a-zA-Z0-9$]+)\\s*\\([^,]+,\\s*(?:!0|true|1)\\s*\\)\\s*\\)\\.get\\(\\s*["']n["']\\s*\\)/,
-      // Pattern B (permissive arguments): (new g.YI(...)).get("n")
-      /\\(\\s*new\\s+(?:g|[a-zA-Z0-9$]+)\\.([a-zA-Z0-9$]+)\\s*\\([^)]*\\)\\s*\\)\\.get\\(\\s*["']n["']\\s*\\)/,
-      // Pattern C (unwrapped instantiation): new g.YI(...).get("n")
-      /new\\s+(?:g|[a-zA-Z0-9$]+)\\.([a-zA-Z0-9$]+)\\s*\\([^)]*\\)\\.get\\(\\s*["']n["']\\s*\\)/,
-      // Pattern D (generic class with .get("n")): ([a-zA-Z0-9$]+)\([^)]*\)\.get("n")
-      /([a-zA-Z0-9$]+)\\s*\\([^)]*\\)\\.get\\(\\s*["']n["']\\s*\\)/
-    ];
-
-    for (var p = 0; p < patterns.length; p++) {
-      var m = playerSource.match(patterns[p]);
-      if (m && m[1]) {
-        var clsName = m[1];
-        var candidate = (typeof target[clsName] === 'function') ? target[clsName] : ((typeof window[clsName] === 'function') ? window[clsName] : null);
-        if (candidate) {
-          try {
-            var testInst = new candidate(testSampleUrl, true);
-            testInst.set('n', 'v9gO1XF2_jMsdS_K');
-            runUrlClassTransform(testInst);
-            var testVal = testInst.get('n');
-            if (typeof testVal === 'string' && testVal.length > 0 && testVal !== 'v9gO1XF2_jMsdS_K') {
-              console.log('🤖 [findUrlClass] Verified active UrlClass by pattern [' + p + ']:', clsName, 'testVal:', testVal);
-              _dynamicUrlClass = candidate;
-              return candidate;
-            }
-          } catch(_) {}
-        }
-      }
-    }
-  }
-
-  // 2. Behavioral scan across all classes in target (no regex reliance):
-  // Tests EVERY class with prototype.set & prototype.get using a live test token
-  for (var k in target) {
-    try {
-      var v = target[k];
-      if (typeof v === 'function' && v.prototype && typeof v.prototype.set === 'function' && typeof v.prototype.get === 'function') {
-        var testInst2 = new v(testSampleUrl, true);
-        testInst2.set('n', 'v9gO1XF2_jMsdS_K');
-        runUrlClassTransform(testInst2);
-        var testVal2 = testInst2.get('n');
-        if (typeof testVal2 === 'string' && testVal2.length > 0 && testVal2 !== 'v9gO1XF2_jMsdS_K') {
-          console.log('🤖 [findUrlClass] Verified active UrlClass by behavioral scan:', k, 'testVal:', testVal2);
-          _dynamicUrlClass = v;
-          return v;
-        }
-      }
-    } catch(_) {}
-  }
-
-  // 3. Behavioral scan across window globals:
-  for (var wk in window) {
-    try {
-      var wv = window[wk];
-      if (typeof wv === 'function' && wv.prototype && typeof wv.prototype.set === 'function' && typeof wv.prototype.get === 'function') {
-        var testInst3 = new wv(testSampleUrl, true);
-        testInst3.set('n', 'v9gO1XF2_jMsdS_K');
-        runUrlClassTransform(testInst3);
-        var testVal3 = testInst3.get('n');
-        if (typeof testVal3 === 'string' && testVal3.length > 0 && testVal3 !== 'v9gO1XF2_jMsdS_K') {
-          console.log('🤖 [findUrlClass] Verified active UrlClass on window:', wk, 'testVal:', testVal3);
-          _dynamicUrlClass = wv;
-          return wv;
-        }
-      }
-    } catch(_) {}
-  }
-
-  return null;
-}
-
-function preprocessAndEval(playerSource) {
-  if (!playerSource || typeof playerSource !== 'string' || playerSource.length < 50000) {
-    throw new Error('Invalid playerSource provided to preprocessAndEval');
-  }
-
-  var sigPattern = /([a-zA-Z0-9$]+)\\s*&&\\s*\\(\\1=([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),\\1\\)\\),\\s*([a-zA-Z0-9$]+)\\[[a-zA-Z0-9$]+\\[[0-9]+\\]\\]\\(([a-zA-Z0-9$]+),([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),\\1\\)\\)\\)/;
-  var m = playerSource.match(sigPattern);
-  var sigExpr = m ? (m[10] + '(' + m[11] + ', ' + m[12] + ', ' + m[2] + '(' + m[3] + ', ' + m[4] + ', ' + m[5] + '(' + m[6] + ', ' + m[7] + ', sig)))') : 'null';
-
-  if (!m) {
-    var bxjMatch = playerSource.match(/let\\s+([a-zA-Z0-9$]+)=([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),[a-zA-Z0-9$]+\\.s\\)\\);[a-zA-Z0-9$]+\\[[a-zA-Z0-9$]+\\[[0-9]+\\]\\]\\([a-zA-Z0-9$]+,([a-zA-Z0-9$]+)\\(([0-9]+),([0-9]+),\\1\\)\\)/);
-    if (bxjMatch) {
-      sigExpr = bxjMatch[7] + '(' + bxjMatch[8] + ', ' + bxjMatch[9] + ', ' + bxjMatch[2] + '(' + bxjMatch[3] + ', ' + bxjMatch[4] + ', ' + bxjMatch[5] + '(' + bxjMatch[6] + ', ' + bxjMatch[7] + ', sig)))';
-    }
-  }
-
-  var injection = '\\ng._yt_sig = function(sig) {\\n  try {\\n    ' + (sigExpr !== 'null' ? 'return ' + sigExpr + ';' : 'return null;') + '\\n  } catch(e) { return null; }\\n};\\n';
-
-  var lastIdx = playerSource.lastIndexOf('})(_yt_player);');
-  var modifiedCode;
-  if (lastIdx !== -1) {
-    modifiedCode = playerSource.slice(0, lastIdx) + injection + playerSource.slice(lastIdx);
-  } else {
-    modifiedCode = playerSource;
-  }
-
-  modifiedCode = modifiedCode.replace(/var\\s+_yt_player\\s*=\\s*\\{\\};?/, 'window._yt_player = window._yt_player || {}; var _yt_player = window._yt_player;');
-  try {
-    (new Function(modifiedCode))();
-  } catch(e) {
-    console.warn('[YouTubeDecipherWorker] Player script execution warning:', e);
-  }
-  _dynamicUrlClass = findUrlClass(playerSource);
-}
-
-function decipherBatch(itemsJson) {
-  var items = typeof itemsJson === 'string' ? JSON.parse(itemsJson) : itemsJson;
-  var UrlClass = findUrlClass();
-  var sigFn = (window._yt_player && typeof window._yt_player._yt_sig === 'function') ? window._yt_player._yt_sig : null;
-  var results = [];
-
-  for (var i = 0; i < items.length; i++) {
-    var item = items[i];
-    var newN = null;
-    var newSig = null;
-    var newUrl = null;
-
-    var cleanSig = item.sig || '';
-    while (cleanSig.indexOf('%') !== -1) {
-      try {
-        var next = decodeURIComponent(cleanSig);
-        if (next === cleanSig) break;
-        cleanSig = next;
-      } catch(_) { break; }
-    }
-
-    if (item.isCipher && cleanSig && sigFn) {
-      try {
-        var s = sigFn(cleanSig);
-        if (s && typeof s === 'string' && s.length > 10) newSig = s;
-      } catch(_) {}
-    }
-
-    if (item.n && UrlClass) {
-      try {
-        var testUrl = item.rawUrl || ('https://rr1---sn-test.googlevideo.com/videoplayback?n=' + encodeURIComponent(item.n));
-        var inst = new UrlClass(testUrl, true);
-        inst.set('n', item.n);
-        runUrlClassTransform(inst);
-        var tn = inst.get('n');
-        if (tn) newN = tn;
-      } catch(_) {}
-    }
-
-    if (item.rawUrl) {
-      try {
-        var u = new URL(item.rawUrl);
-        u.searchParams.delete('alr');
-        if (newN) u.searchParams.set('n', newN);
-        if (newSig && item.isCipher) u.searchParams.set(item.sp || 'sig', newSig);
-        newUrl = u.toString();
-      } catch(_) {}
-    }
-
-    results.push({ itag: item.itag, newN: newN || item.n, newSig: newSig, newUrl: newUrl });
-  }
-  return JSON.stringify(results);
-}
-
-window.YT_PREPROCESS = {
-  preprocessAndEval: preprocessAndEval,
-  decipher: decipherBatch
-};
 
 window.handleHostMessage = function(data) {
   if (!data || !data.action) return;
@@ -461,26 +342,37 @@ window.handleHostMessage = function(data) {
     window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, type: 'pong' }));
   } else if (data.action === 'preprocess') {
     try {
+      if (!window.YT_PREPROCESS || typeof window.YT_PREPROCESS.preprocessAndEval !== 'function') {
+        throw new Error('YT_PREPROCESS.preprocessAndEval not available');
+      }
       if (data.code) {
-        preprocessAndEval(data.code);
+        window.YT_PREPROCESS.preprocessAndEval(data.code);
         window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: true }));
       } else if (data.playerUrl) {
-        fetch(data.playerUrl).then(function(r) { return r.text(); }).then(function(code) {
-          preprocessAndEval(code);
+        fetch(data.playerUrl).then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching player');
+          return r.text();
+        }).then(function(code) {
+          window.YT_PREPROCESS.preprocessAndEval(code);
           window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: true }));
         }).catch(function(err) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, error: err.message || String(err) }));
         });
       } else {
-        throw new Error('preprocess requires code or playerUrl');
+        throw new Error('preprocess requires playerUrl or code');
       }
     } catch(err) {
       window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, error: err.message || String(err) }));
     }
   } else if (data.action === 'decipher') {
     try {
-      var jsonResults = decipherBatch(data.items);
-      window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, results: JSON.parse(jsonResults) }));
+      if (!window.YT_PREPROCESS || typeof window.YT_PREPROCESS.decipher !== 'function') {
+        throw new Error('YT_PREPROCESS.decipher not available');
+      }
+      var items = typeof data.items === 'string' ? JSON.parse(data.items) : data.items;
+      var rawResults = window.YT_PREPROCESS.decipher(items);
+      var parsedRes = typeof rawResults === 'string' ? JSON.parse(rawResults) : rawResults;
+      window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, results: parsedRes }));
     } catch(err) {
       window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, error: err.message || String(err) }));
     }
@@ -529,6 +421,22 @@ window.handleHostMessage = function(data) {
         poToken: null
       }));
     });
+  } else if (data.action === 'createColdStartToken') {
+    try {
+      var tok = createColdStartToken(data.identifier || '', data.clientState || 1);
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        id: id,
+        success: true,
+        poToken: tok
+      }));
+    } catch (err) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        id: id,
+        success: false,
+        error: err && (err.message || String(err)),
+        poToken: null
+      }));
+    }
   } else if (data.action === 'fetchAttGet') {
     fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false', {
       method: 'POST',
@@ -602,7 +510,7 @@ const YouTubeDecipherWorker: React.FC = () => {
     const pendingRequests = useRef<Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>>(new Map());
 
     const sendToWorker = useCallback((action: string, payload: any = {}, timeoutMs?: number): Promise<any> => {
-        const effectiveTimeout = timeoutMs ?? (action === 'runBotGuard' || action === 'obtainPoToken' || action === 'po_token' ? 35000 : action === 'extractVideo' ? 30000 : 15000);
+        const effectiveTimeout = timeoutMs ?? (action === 'runBotGuard' || action === 'obtainPoToken' || action === 'po_token' || action === 'preprocess' ? 35000 : action === 'extractVideo' ? 30000 : 15000);
         return new Promise((resolve, reject) => {
             const id = `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             pendingRequests.current.set(id, { resolve, reject });

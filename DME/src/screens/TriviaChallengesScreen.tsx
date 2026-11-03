@@ -13,6 +13,10 @@ import {
   RefreshControl,
   Dimensions,
   Animated,
+  Alert,
+  TextInput,
+  BackHandler,
+  Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -30,8 +34,9 @@ import {
   deleteLocalChallenge,
   createChallengePayload,
   sendChallengeToConversation,
+  shareChallengeResultsToGroup,
 } from '../services/TriviaChallengeService';
-import { getAllCustomSets, CustomTriviaSet } from '../services/CustomTriviaStorage';
+import { getCustomSets, CustomTriviaSet } from '../services/CustomTriviaStorage';
 import { chatAPI } from '../services/api';
 import localDatabase from '../services/LocalDatabase';
 
@@ -42,7 +47,9 @@ interface TriviaChallengesScreenProps {
   route?: any;
 }
 
-type ChallengeTab = 'my_invites' | 'hosted' | 'completed';
+type MainTab = 'invited' | 'hosted';
+type InvitedSubTab = 'pending' | 'completed' | 'missed';
+type HostedSubTab = 'active' | 'expired';
 
 export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
@@ -51,12 +58,22 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
   const { theme, isDark } = useTheme();
   const { user } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<ChallengeTab>(route?.params?.initialTab || 'my_invites');
+  // Dedicated screen mode: 'hosted' vs 'invited' (no tab switching between them)
+  const screenMode: 'hosted' | 'invited' =
+    route?.params?.initialTab === 'hosted' || route?.params?.mode === 'hosted' ? 'hosted' : 'invited';
+
+  // Sub Tabs for Invited: 'pending' | 'completed' | 'missed'
+  const [invitedSubTab, setInvitedSubTab] = useState<InvitedSubTab>('pending');
+
+  // Sub Tabs for Hosted: 'active' | 'expired'
+  const [hostedSubTab, setHostedSubTab] = useState<HostedSubTab>('active');
+
   const [challenges, setChallenges] = useState<TriviaChallengePayload[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [sharingResultsId, setSharingResultsId] = useState<string | null>(null);
 
-  // Leaderboard Modal State
+  // Leaderboard / Standings Modal State
   const [selectedLeaderboardChallenge, setSelectedLeaderboardChallenge] = useState<TriviaChallengePayload | null>(null);
   const [leaderboardModalVisible, setLeaderboardModalVisible] = useState(false);
 
@@ -64,9 +81,71 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [customSets, setCustomSets] = useState<CustomTriviaSet[]>([]);
   const [selectedSetForChallenge, setSelectedSetForChallenge] = useState<CustomTriviaSet | null>(null);
+  const [selectedDurationHours, setSelectedDurationHours] = useState<number>(4);
   const [conversations, setConversations] = useState<any[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  const [searchChatQuery, setSearchChatQuery] = useState('');
   const [sendingChallengeId, setSendingChallengeId] = useState<number | null>(null);
+
+  // Delete Confirmation Modal State (Buttery Smooth)
+  const [challengeToDelete, setChallengeToDelete] = useState<TriviaChallengePayload | null>(null);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const deleteModalScale = useRef(new Animated.Value(0.88)).current;
+  const deleteModalOpacity = useRef(new Animated.Value(0)).current;
+
+  const openDeleteModal = (challenge: TriviaChallengePayload) => {
+    setChallengeToDelete(challenge);
+    setDeleteModalVisible(true);
+    deleteModalScale.setValue(0.88);
+    deleteModalOpacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(deleteModalScale, {
+        toValue: 1,
+        tension: 65,
+        friction: 8,
+        useNativeDriver: true,
+      }),
+      Animated.timing(deleteModalOpacity, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const closeDeleteModal = () => {
+    Animated.parallel([
+      Animated.timing(deleteModalScale, {
+        toValue: 0.92,
+        duration: 150,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(deleteModalOpacity, {
+        toValue: 0,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setDeleteModalVisible(false);
+      setChallengeToDelete(null);
+    });
+  };
+
+  const confirmDeleteChallenge = async () => {
+    if (!challengeToDelete) return;
+    const challengeId = challengeToDelete.challengeId;
+    closeDeleteModal();
+    try {
+      await deleteLocalChallenge(challengeId);
+      setChallenges(prev => prev.filter(c => c.challengeId !== challengeId));
+      showToast('Contest Deleted 🗑️');
+    } catch (err) {
+      console.error('Error deleting contest:', err);
+      showToast('Failed to Delete Contest');
+    }
+  };
 
   // Center Animated Toast
   const [toastVisible, setToastVisible] = useState(false);
@@ -79,7 +158,7 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
     toastOpacity.setValue(0);
     Animated.sequence([
       Animated.timing(toastOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-      Animated.delay(800),
+      Animated.delay(900),
       Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
     ]).start(() => setToastVisible(false));
   };
@@ -101,14 +180,45 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
     }
   };
 
+  const handleGoBack = useCallback(() => {
+    if (deleteModalVisible) {
+      closeDeleteModal();
+      return true;
+    }
+    if (leaderboardModalVisible) {
+      setLeaderboardModalVisible(false);
+      return true;
+    }
+    if (createModalVisible) {
+      setCreateModalVisible(false);
+      return true;
+    }
+
+    const state = navigation.getState?.();
+    const routes = state?.routes || [];
+    const prevRoute = routes.length >= 2 ? routes[routes.length - 2] : null;
+
+    if (prevRoute && prevRoute.name === 'TriviaSolo') {
+      navigation.navigate('TriviaHub');
+    } else if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('TriviaHub');
+    }
+    return true;
+  }, [deleteModalVisible, leaderboardModalVisible, createModalVisible, navigation]);
+
   useFocusEffect(
     useCallback(() => {
       pinNavBarColor(isDark ? '#0B132B' : '#F8FAFC', isDark);
-      if (route?.params?.initialTab) {
-        setActiveTab(route.params.initialTab);
-      }
+      // Mode is driven by screenMode
       loadChallenges(true);
-    }, [isDark, route?.params?.initialTab])
+
+      const onBackPress = () => handleGoBack();
+
+      const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => backSub.remove();
+    }, [isDark, route?.params?.initialTab, handleGoBack])
   );
 
   const handleRefresh = () => {
@@ -116,32 +226,56 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
     loadChallenges(true);
   };
 
-  // Filtered lists
-  const activeChallenges = challenges.filter(c => !getChallengeExpiryStatus(c.createdAt).isExpired);
-  const completedChallenges = challenges.filter(c => getChallengeExpiryStatus(c.createdAt).isExpired);
-
-  // 1. Invites to Play: Active contests where I haven't played yet
-  const myInvitedChallenges = activeChallenges.filter(c => {
-    const hasPlayed = c.leaderboard && c.leaderboard.some(e => String(e.userId) === String(user?.id));
-    return !hasPlayed;
-  });
-
-  // 2. Hosted by Me: Active contests created by current user
-  const myHostedChallenges = activeChallenges.filter(c => {
+  // ── Filtered Contests ──
+  // 1. Hosted by Me: Created by current user
+  const myHostedChallenges = challenges.filter(c => {
     return String(c.creatorId) === String(user?.id) || String((c as any).createdBy?.id) === String(user?.id);
   });
 
+  // Active Hosted: Expiry time has not passed
+  const activeHostedChallenges = myHostedChallenges.filter(c => {
+    const exp = getChallengeExpiryStatus(c.createdAt, c.durationHours, c.expiresAt);
+    return !exp.isExpired;
+  });
+
+  // Expired Hosted: Expiry time has passed
+  const expiredHostedChallenges = myHostedChallenges.filter(c => {
+    const exp = getChallengeExpiryStatus(c.createdAt, c.durationHours, c.expiresAt);
+    return exp.isExpired;
+  });
+
+  // 2. Invited Contests: Created by others
+  const myInvitedChallenges = challenges.filter(c => {
+    return String(c.creatorId) !== String(user?.id) && String((c as any).createdBy?.id) !== String(user?.id);
+  });
+
+  // Pending Invites: User has NOT played, and time is not expired
+  const pendingInvited = myInvitedChallenges.filter(c => {
+    const hasPlayed = c.leaderboard && c.leaderboard.some(e => String(e.userId) === String(user?.id));
+    const exp = getChallengeExpiryStatus(c.createdAt, c.durationHours, c.expiresAt);
+    return !hasPlayed && !exp.isExpired;
+  });
+
+  // Completed Invites: User has played
+  const completedInvited = myInvitedChallenges.filter(c => {
+    const hasPlayed = c.leaderboard && c.leaderboard.some(e => String(e.userId) === String(user?.id));
+    return hasPlayed;
+  });
+
+  // Missed Invites: User did NOT play and time is expired
+  const missedInvited = myInvitedChallenges.filter(c => {
+    const hasPlayed = c.leaderboard && c.leaderboard.some(e => String(e.userId) === String(user?.id));
+    const exp = getChallengeExpiryStatus(c.createdAt, c.durationHours, c.expiresAt);
+    return !hasPlayed && exp.isExpired;
+  });
+
   const getDisplayData = () => {
-    switch (activeTab) {
-      case 'my_invites':
-        return myInvitedChallenges;
-      case 'hosted':
-        return myHostedChallenges;
-      case 'completed':
-        return completedChallenges;
-      default:
-        return myInvitedChallenges;
+    if (screenMode === 'hosted') {
+      return hostedSubTab === 'active' ? activeHostedChallenges : expiredHostedChallenges;
     }
+    if (invitedSubTab === 'pending') return pendingInvited;
+    if (invitedSubTab === 'completed') return completedInvited;
+    return missedInvited;
   };
 
   const handlePlayChallenge = (challenge: TriviaChallengePayload) => {
@@ -156,12 +290,38 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
     setLeaderboardModalVisible(true);
   };
 
+  const handleDeleteChallenge = (challenge: TriviaChallengePayload) => {
+    openDeleteModal(challenge);
+  };
+
+  const handleShareResults = async (challenge: TriviaChallengePayload) => {
+    setSharingResultsId(challenge.challengeId);
+    try {
+      const updated = await shareChallengeResultsToGroup(challenge.challengeId);
+      if (updated) {
+        setChallenges(prev => prev.map(c => c.challengeId === challenge.challengeId ? updated : c));
+        if (selectedLeaderboardChallenge?.challengeId === challenge.challengeId) {
+          setSelectedLeaderboardChallenge(updated);
+        }
+        showToast('Top 3 Shared to Group Chat! 🏆');
+      } else {
+        showToast('Failed to Share Results');
+      }
+    } catch (err) {
+      console.error('Error sharing results:', err);
+      showToast('Failed to Share Results');
+    } finally {
+      setSharingResultsId(null);
+    }
+  };
+
   const handleOpenCreateModal = async () => {
     try {
-      const sets = await getAllCustomSets();
+      const sets = await getCustomSets();
       setCustomSets(sets);
       setSelectedSetForChallenge(sets.length > 0 ? sets[0] : null);
       setCreateModalVisible(true);
+      setSearchChatQuery('');
 
       // Load conversations
       const localConvs = localDatabase.getConversations() || [];
@@ -186,12 +346,38 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
 
   const handleSendChallenge = async (conv: any) => {
     if (!selectedSetForChallenge) return;
+    const memberCount = Number(conv.participants_count) || (Array.isArray(conv.participants) ? conv.participants.length : 0);
+    if (memberCount < 4) {
+      Alert.alert(
+        'Group Ineligible',
+        `This group currently has ${Math.max(0, memberCount - 1)} other members. A contest requires a minimum of 4 total members (at least 3 other participants).`,
+      );
+      return;
+    }
+
     setSendingChallengeId(conv.id);
     try {
-      const payload = createChallengePayload(selectedSetForChallenge, user, conv.id);
+      const eligible = Array.isArray(conv.participants)
+        ? conv.participants
+            .filter((p: any) => String(p.user?.id || p.id) !== String(user?.id))
+            .map((p: any) => ({
+              id: p.user?.id || p.id,
+              name: p.user?.name || p.user?.username || 'Member',
+              username: p.user?.username,
+            }))
+        : [];
+
+      const payload = createChallengePayload(
+        selectedSetForChallenge,
+        user,
+        conv.id,
+        selectedDurationHours,
+        conv.name || conv.title || 'Group Chat',
+        eligible,
+      );
       await sendChallengeToConversation(conv.id, payload);
       setCreateModalVisible(false);
-      showToast('Group Contest Sent!');
+      showToast(`Contest Hosted! (${selectedDurationHours}h window)`);
       loadChallenges(false);
     } catch (error) {
       console.error('Error sending challenge:', error);
@@ -201,12 +387,222 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
     }
   };
 
+  // ── Render Individual Card ──
   const renderChallengeCard = ({ item }: { item: TriviaChallengePayload }) => {
-    const expiry = getChallengeExpiryStatus(item.createdAt);
+    const expiry = getChallengeExpiryStatus(item.createdAt, item.durationHours, item.expiresAt);
     const top3 = item.leaderboard ? item.leaderboard.slice(0, 3) : [];
     const totalParticipants = item.leaderboard ? item.leaderboard.length : 0;
-    const userEntry = item.leaderboard ? item.leaderboard.find(e => String(e.userId) === String(user?.id)) : null;
+    const eligibleCount = item.eligibleMembers?.length || totalParticipants;
+    const allPlayed = eligibleCount > 0 && totalParticipants >= eligibleCount;
+    const isAnnounced = !!item.resultsAnnounced || (Date.now() - new Date(item.createdAt).getTime() >= 24 * 3600 * 1000);
+    const readyToShare = !item.resultsAnnounced && (allPlayed || expiry.isExpired);
+    const isSharing = sharingResultsId === item.challengeId;
 
+    // ── CASE A: HOSTED VIEW (Host cannot participate) ──
+    if (screenMode === 'hosted') {
+      return (
+        <View
+          style={[
+            styles.challengeCard,
+            {
+              backgroundColor: isDark ? '#1E293B' : '#FFFFFF',
+              borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            },
+          ]}
+        >
+          {/* Card Header: Status Badge + Expiry Pill (+ Trash Icon if expired) */}
+          <View style={styles.cardHeaderRow}>
+            <View
+              style={[
+                styles.tournamentBadge,
+                {
+                  backgroundColor: item.resultsAnnounced
+                    ? 'rgba(16, 185, 129, 0.15)'
+                    : readyToShare
+                    ? 'rgba(249, 115, 22, 0.15)'
+                    : expiry.isExpired
+                    ? 'rgba(239, 68, 68, 0.12)'
+                    : 'rgba(99, 102, 241, 0.15)',
+                },
+              ]}
+            >
+              <Icon
+                name={
+                  item.resultsAnnounced
+                    ? 'checkmark-circle'
+                    : readyToShare
+                    ? 'megaphone'
+                    : expiry.isExpired
+                    ? 'close-circle'
+                    : 'time-outline'
+                }
+                size={13}
+                color={
+                  item.resultsAnnounced
+                    ? '#10B981'
+                    : readyToShare
+                    ? '#F97316'
+                    : expiry.isExpired
+                    ? '#EF4444'
+                    : '#6366F1'
+                }
+                style={{ marginRight: 5 }}
+              />
+              <Text
+                style={[
+                  styles.tournamentBadgeText,
+                  {
+                    color: item.resultsAnnounced
+                      ? '#10B981'
+                      : readyToShare
+                      ? '#F97316'
+                      : expiry.isExpired
+                      ? '#EF4444'
+                      : '#6366F1',
+                  },
+                ]}
+              >
+                {item.resultsAnnounced
+                  ? 'RESULTS SHARED TO GROUP'
+                  : readyToShare
+                  ? 'READY TO SHARE'
+                  : expiry.isExpired
+                  ? 'EXPIRED'
+                  : 'IN PROGRESS'}
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View
+                style={[
+                  styles.expiryPill,
+                  { backgroundColor: expiry.isExpired ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
+                ]}
+              >
+                <Icon
+                  name={expiry.isExpired ? 'close-circle' : 'time-outline'}
+                  size={13}
+                  color={expiry.isExpired ? '#EF4444' : '#10B981'}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[styles.expiryPillText, { color: expiry.isExpired ? '#EF4444' : '#10B981' }]}>
+                  {expiry.remainingText}
+                </Text>
+              </View>
+
+              {/* Trash icon in header for expired hosted contests */}
+              {expiry.isExpired && (
+                <TouchableOpacity
+                  style={[
+                    styles.headerTrashBtn,
+                    { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.14)' : '#FEE2E2' },
+                  ]}
+                  onPress={() => handleDeleteChallenge(item)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Icon name="trash-outline" size={15} color="#EF4444" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {/* Title & Group */}
+          <Text style={[styles.quizTitle, { color: theme.textPrimary }]} numberOfLines={2}>
+            {item.title}
+          </Text>
+          <Text style={[styles.hostText, { color: theme.textSecondary }]}>
+            Target: <Text style={{ fontWeight: '700', color: isDark ? '#A5B4FC' : '#4F46E5' }}>{item.conversationName || 'Group Chat'}</Text>
+          </Text>
+
+          {/* Stats Row */}
+          <View style={[styles.statsRow, { backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC' }]}>
+            <View style={styles.statItem}>
+              <Icon name="people-outline" size={15} color="#6366F1" />
+              <Text style={[styles.statValue, { color: theme.textPrimary }]}>
+                {totalParticipants} <Text style={styles.statLabel}>Played ({eligibleCount} total)</Text>
+              </Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <Icon name="timer-outline" size={15} color="#F59E0B" />
+              <Text style={[styles.statValue, { color: theme.textPrimary }]}>
+                {item.durationHours || 4}h <Text style={styles.statLabel}>Window</Text>
+              </Text>
+            </View>
+          </View>
+
+          {/* Early Unlock / Status Indicator */}
+          {allPlayed && !item.resultsAnnounced && (
+            <View style={styles.earlyUnlockBanner}>
+              <Icon name="flash" size={14} color="#10B981" style={{ marginRight: 6 }} />
+              <Text style={styles.earlyUnlockText}>
+                All members have played! You can share the results now.
+              </Text>
+            </View>
+          )}
+
+          {/* Host Action Buttons: NO PLAY BUTTON */}
+          <View style={styles.cardActionsRow}>
+            {readyToShare && !item.resultsAnnounced ? (
+              <TouchableOpacity
+                style={styles.playBtn}
+                onPress={() => handleShareResults(item)}
+                disabled={isSharing}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={['#F97316', '#EA580C']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.playBtnGradient}
+                >
+                  {isSharing ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Icon name="share-social" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.playBtnText}>Share to Group</Text>
+                    </>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            ) : item.resultsAnnounced ? (
+              <View style={[styles.expiredBtn, { backgroundColor: isDark ? 'rgba(16,185,129,0.15)' : '#ECFDF5' }]}>
+                <Icon name="checkmark-done" size={15} color="#10B981" style={{ marginRight: 5 }} />
+                <Text style={[styles.expiredBtnText, { color: '#10B981' }]}>Shared to Chat</Text>
+              </View>
+            ) : expiry.isExpired ? (
+              <View style={styles.expiredBtn}>
+                <Text style={styles.expiredBtnText}>Contest Ended</Text>
+              </View>
+            ) : (
+              <View style={styles.expiredBtn}>
+                <Text style={styles.expiredBtnText}>Waiting for Players</Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.leaderboardBtn,
+                {
+                  backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9',
+                  borderColor: isDark ? 'rgba(255,255,255,0.1)' : '#CBD5E1',
+                },
+              ]}
+              onPress={() => handleOpenLeaderboard(item)}
+              activeOpacity={0.8}
+            >
+              <Icon name="bar-chart-outline" size={16} color={theme.textPrimary} style={{ marginRight: 4 }} />
+              <Text style={[styles.leaderboardBtnText, { color: theme.textPrimary }]}>
+                Standings
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
+    // ── CASE B: INVITED VIEW (Participants) ──
     return (
       <View
         style={[
@@ -222,40 +618,85 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
           <View
             style={[
               styles.tournamentBadge,
-              { backgroundColor: expiry.isExpired ? (isDark ? '#334155' : '#E2E8F0') : 'rgba(99, 102, 241, 0.15)' },
+              {
+                backgroundColor: invitedSubTab === 'completed'
+                  ? (isAnnounced ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)')
+                  : invitedSubTab === 'missed'
+                  ? 'rgba(239, 68, 68, 0.12)'
+                  : 'rgba(99, 102, 241, 0.15)',
+              },
             ]}
           >
             <Icon
-              name="trophy"
+              name={
+                invitedSubTab === 'completed'
+                  ? (isAnnounced ? 'trophy' : 'hourglass-outline')
+                  : invitedSubTab === 'missed'
+                  ? 'close-circle'
+                  : 'flash'
+              }
               size={13}
-              color={expiry.isExpired ? (isDark ? '#94A3B8' : '#64748B') : '#6366F1'}
+              color={
+                invitedSubTab === 'completed'
+                  ? (isAnnounced ? '#10B981' : '#F59E0B')
+                  : invitedSubTab === 'missed'
+                  ? '#EF4444'
+                  : '#6366F1'
+              }
               style={{ marginRight: 5 }}
             />
             <Text
               style={[
                 styles.tournamentBadgeText,
-                { color: expiry.isExpired ? (isDark ? '#94A3B8' : '#64748B') : '#6366F1' },
+                {
+                  color:
+                    invitedSubTab === 'completed'
+                      ? (isAnnounced ? '#10B981' : '#F59E0B')
+                      : invitedSubTab === 'missed'
+                      ? '#EF4444'
+                      : '#6366F1',
+                },
               ]}
             >
-              {expiry.isExpired ? 'CONTEST ENDED' : 'GROUP CONTEST'}
+              {invitedSubTab === 'completed'
+                ? (isAnnounced ? 'RESULTS ANNOUNCED' : 'AWAITING RESULTS')
+                : invitedSubTab === 'missed'
+                ? 'MISSED / EXPIRED'
+                : 'GROUP CONTEST INVITE'}
             </Text>
           </View>
 
-          <View
-            style={[
-              styles.expiryPill,
-              { backgroundColor: expiry.isExpired ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
-            ]}
-          >
-            <Icon
-              name={expiry.isExpired ? 'close-circle' : 'time-outline'}
-              size={13}
-              color={expiry.isExpired ? '#EF4444' : '#10B981'}
-              style={{ marginRight: 4 }}
-            />
-            <Text style={[styles.expiryPillText, { color: expiry.isExpired ? '#EF4444' : '#10B981' }]}>
-              {expiry.remainingText}
-            </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View
+              style={[
+                styles.expiryPill,
+                { backgroundColor: expiry.isExpired ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
+              ]}
+            >
+              <Icon
+                name={expiry.isExpired ? 'close-circle' : 'time-outline'}
+                size={13}
+                color={expiry.isExpired ? '#EF4444' : '#10B981'}
+                style={{ marginRight: 4 }}
+              />
+              <Text style={[styles.expiryPillText, { color: expiry.isExpired ? '#EF4444' : '#10B981' }]}>
+                {expiry.remainingText}
+              </Text>
+            </View>
+
+            {/* Trash icon in header for completed & missed invited contests */}
+            {(invitedSubTab === 'completed' || invitedSubTab === 'missed') && (
+              <TouchableOpacity
+                style={[
+                  styles.headerTrashBtn,
+                  { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.14)' : '#FEE2E2' },
+                ]}
+                onPress={() => handleDeleteChallenge(item)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Icon name="trash-outline" size={15} color="#EF4444" />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -264,10 +705,10 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
           {item.title}
         </Text>
         <Text style={[styles.hostText, { color: theme.textSecondary }]}>
-          Created by <Text style={{ fontWeight: '700', color: isDark ? '#A5B4FC' : '#4F46E5' }}>{item.creatorName}</Text>
+          Hosted by <Text style={{ fontWeight: '700', color: isDark ? '#A5B4FC' : '#4F46E5' }}>{item.creatorName}</Text>
         </Text>
 
-        {/* Dynamic Timer & Stats Pill */}
+        {/* Stats Row */}
         <View style={[styles.statsRow, { backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC' }]}>
           <View style={styles.statItem}>
             <Icon name="help-circle-outline" size={15} color="#6366F1" />
@@ -284,18 +725,31 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
           </View>
         </View>
 
-        {/* Top 3 Live Podium Preview */}
-        {totalParticipants > 0 ? (
-          <View style={styles.leaderboardBox}>
-            <View style={styles.lbHeaderRow}>
-              <Text style={[styles.lbHeaderTitle, { color: theme.textSecondary }]}>
-                🏆 TOP PLAYERS ({totalParticipants})
-              </Text>
-              <TouchableOpacity onPress={() => handleOpenLeaderboard(item)}>
-                <Text style={styles.lbViewAllLink}>View All Ranks</Text>
-              </TouchableOpacity>
-            </View>
+        {/* Competitive Exam Notice / Results Banner */}
+        {invitedSubTab === 'pending' && (
+          <View style={styles.examNoticeBanner}>
+            <Icon name="shield-checkmark" size={13} color="#6366F1" style={{ marginRight: 6 }} />
+            <Text style={styles.examNoticeText}>
+              Competitive Exam Mode: Answers and scores remain sealed until announced.
+            </Text>
+          </View>
+        )}
 
+        {invitedSubTab === 'completed' && !isAnnounced && (
+          <View style={[styles.examNoticeBanner, { backgroundColor: 'rgba(245,158,11,0.1)', borderColor: 'rgba(245,158,11,0.25)' }]}>
+            <Icon name="hourglass" size={13} color="#F59E0B" style={{ marginRight: 6 }} />
+            <Text style={[styles.examNoticeText, { color: '#D97706' }]}>
+              Your answers are submitted! Host will announce results within 24 hours.
+            </Text>
+          </View>
+        )}
+
+        {/* Top 3 Podium (Only visible if announced) */}
+        {isAnnounced && top3.length > 0 && (
+          <View style={styles.leaderboardBox}>
+            <Text style={[styles.lbHeaderTitle, { color: theme.textSecondary, marginBottom: 8 }]}>
+              🏆 TOP WINNERS
+            </Text>
             {top3.map((entry, idx) => {
               const medals = ['🥇', '🥈', '🥉'];
               const mins = Math.floor(entry.timeTakenSeconds / 60);
@@ -328,56 +782,47 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
               );
             })}
           </View>
-        ) : (
-          <View style={styles.noPlayersBox}>
-            <Text style={[styles.noPlayersText, { color: theme.textSecondary }]}>
-              🎯 No one has submitted a score yet. Be the first to play!
-            </Text>
-          </View>
         )}
 
         {/* Action Buttons */}
         <View style={styles.cardActionsRow}>
-          {!expiry.isExpired ? (
+          {invitedSubTab === 'pending' ? (
             <TouchableOpacity
               style={styles.playBtn}
               onPress={() => handlePlayChallenge(item)}
               activeOpacity={0.85}
             >
               <LinearGradient
-                colors={['#4F46E5', '#6366F1', '#7C3AED']}
+                colors={['#10B981', '#059669']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
                 style={styles.playBtnGradient}
               >
-                <Icon name={userEntry ? 'refresh' : 'flash'} size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.playBtnText}>
-                  {userEntry ? 'Play Again' : 'Join Contest'}
-                </Text>
+                <Icon name="play" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.playBtnText}>Participate</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          ) : isAnnounced ? (
+            <TouchableOpacity
+              style={styles.playBtn}
+              onPress={() => handleOpenLeaderboard(item)}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#4F46E5', '#6366F1']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.playBtnGradient}
+              >
+                <Icon name="trophy" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.playBtnText}>View Scoreboard & Rankings</Text>
               </LinearGradient>
             </TouchableOpacity>
           ) : (
             <View style={styles.expiredBtn}>
-              <Text style={styles.expiredBtnText}>Contest Ended</Text>
+              <Text style={styles.expiredBtnText}>Results Sealed</Text>
             </View>
           )}
-
-          <TouchableOpacity
-            style={[
-              styles.leaderboardBtn,
-              {
-                backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9',
-                borderColor: isDark ? 'rgba(255,255,255,0.1)' : '#CBD5E1',
-              },
-            ]}
-            onPress={() => handleOpenLeaderboard(item)}
-            activeOpacity={0.8}
-          >
-            <Icon name="bar-chart-outline" size={16} color={theme.textPrimary} style={{ marginRight: 4 }} />
-            <Text style={[styles.leaderboardBtnText, { color: theme.textPrimary }]}>
-              Ranks
-            </Text>
-          </TouchableOpacity>
         </View>
       </View>
     );
@@ -408,79 +853,118 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
       >
         <TouchableOpacity
           style={[styles.headerIconBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' }]}
-          onPress={() => navigation.goBack()}
+          onPress={() => handleGoBack()}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Icon name="arrow-back" size={20} color={theme.textPrimary} />
         </TouchableOpacity>
 
         <View style={styles.headerCenter}>
-          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Group Contests</Text>
+          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>
+            {screenMode === 'hosted' ? 'Hosted Contests' : 'Invited Contests'}
+          </Text>
           <Text style={[styles.headerSubtitle, { color: theme.textSecondary }]}>
-            Live Group & Friend Competitions
+            {screenMode === 'hosted'
+              ? 'Contests you created & live standings'
+              : 'Contests sent to you by friends & groups'}
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={[styles.createHeaderBtn, { backgroundColor: '#4F46E5' }]}
-          onPress={handleOpenCreateModal}
-          activeOpacity={0.85}
-        >
-          <Icon name="add" size={18} color="#FFFFFF" />
-          <Text style={styles.createHeaderBtnText}>New Contest</Text>
-        </TouchableOpacity>
+        {/* Spacer to keep title centered - NO host button in header */}
+        <View style={{ width: 38 }} />
       </View>
 
-      {/* Tab Selector */}
-      <View style={[styles.tabBar, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'my_invites' && styles.tabBtnActive]}
-          onPress={() => setActiveTab('my_invites')}
-        >
-          <Text
-            style={[
-              styles.tabBtnText,
-              { color: activeTab === 'my_invites' ? '#4F46E5' : theme.textSecondary },
-              activeTab === 'my_invites' && { fontWeight: '800' },
-            ]}
-          >
-            Invites ({myInvitedChallenges.length})
-          </Text>
-          {activeTab === 'my_invites' && <View style={styles.activeTabIndicator} />}
-        </TouchableOpacity>
+      {/* Sub Tabs for Hosted: Active / Expired (Evenly Spaced) */}
+      {screenMode === 'hosted' && (
+        <View style={[styles.subTabBar, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+          {(['active', 'expired'] as HostedSubTab[]).map(tabKey => {
+            const count =
+              tabKey === 'active'
+                ? activeHostedChallenges.length
+                : expiredHostedChallenges.length;
+            const label =
+              tabKey === 'active'
+                ? 'Active'
+                : 'Expired';
+            const isActive = hostedSubTab === tabKey;
 
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'hosted' && styles.tabBtnActive]}
-          onPress={() => setActiveTab('hosted')}
-        >
-          <Text
-            style={[
-              styles.tabBtnText,
-              { color: activeTab === 'hosted' ? '#4F46E5' : theme.textSecondary },
-              activeTab === 'hosted' && { fontWeight: '800' },
-            ]}
-          >
-            Hosted by Me ({myHostedChallenges.length})
-          </Text>
-          {activeTab === 'hosted' && <View style={styles.activeTabIndicator} />}
-        </TouchableOpacity>
+            return (
+              <TouchableOpacity
+                key={tabKey}
+                style={[
+                  styles.subTabBtn,
+                  isActive && {
+                    backgroundColor: isDark ? 'rgba(249, 115, 22, 0.18)' : '#FFF7ED',
+                    borderColor: '#F97316',
+                  },
+                ]}
+                onPress={() => setHostedSubTab(tabKey)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.subTabText,
+                    {
+                      color: isActive ? '#F97316' : theme.textSecondary,
+                      fontWeight: isActive ? '800' : '600',
+                    },
+                  ]}
+                >
+                  {label} ({count})
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
 
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'completed' && styles.tabBtnActive]}
-          onPress={() => setActiveTab('completed')}
-        >
-          <Text
-            style={[
-              styles.tabBtnText,
-              { color: activeTab === 'completed' ? '#4F46E5' : theme.textSecondary },
-              activeTab === 'completed' && { fontWeight: '800' },
-            ]}
-          >
-            Leaderboard ({completedChallenges.length})
-          </Text>
-          {activeTab === 'completed' && <View style={styles.activeTabIndicator} />}
-        </TouchableOpacity>
-      </View>
+      {/* Sub Tabs for Invited: Pending / Completed / Missed (Evenly Spaced) */}
+      {screenMode === 'invited' && (
+        <View style={[styles.subTabBar, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+          {(['pending', 'completed', 'missed'] as InvitedSubTab[]).map(tabKey => {
+            const count =
+              tabKey === 'pending'
+                ? pendingInvited.length
+                : tabKey === 'completed'
+                ? completedInvited.length
+                : missedInvited.length;
+            const label =
+              tabKey === 'pending'
+                ? 'Pending'
+                : tabKey === 'completed'
+                ? 'Completed'
+                : 'Missed';
+            const isActive = invitedSubTab === tabKey;
+
+            return (
+              <TouchableOpacity
+                key={tabKey}
+                style={[
+                  styles.subTabBtn,
+                  isActive && {
+                    backgroundColor: isDark ? 'rgba(16,185,129,0.18)' : '#ECFDF5',
+                    borderColor: '#10B981',
+                  },
+                ]}
+                onPress={() => setInvitedSubTab(tabKey)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.subTabText,
+                    {
+                      color: isActive ? '#10B981' : theme.textSecondary,
+                      fontWeight: isActive ? '800' : '600',
+                    },
+                  ]}
+                >
+                  {label} ({count})
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
 
       {/* Main List */}
       {loading ? (
@@ -508,44 +992,38 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <View style={[styles.emptyIconCircle, { backgroundColor: isDark ? '#1E293B' : '#EFF6FF' }]}>
-                <Icon name="trophy-outline" size={48} color="#4F46E5" />
+                <Icon
+                  name={screenMode === 'hosted' ? 'podium-outline' : 'trophy-outline'}
+                  size={46}
+                  color={screenMode === 'hosted' ? '#F97316' : '#10B981'}
+                />
               </View>
               <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>
-                {activeTab === 'my_invites'
+                {screenMode === 'hosted'
+                  ? (hostedSubTab === 'active' ? 'No Active Contests' : 'No Expired Contests')
+                  : invitedSubTab === 'pending'
                   ? 'No Pending Invites'
-                  : activeTab === 'hosted'
-                  ? 'No Contests Hosted Yet'
-                  : 'No Completed Contests'}
+                  : invitedSubTab === 'completed'
+                  ? 'No Completed Contests'
+                  : 'No Missed Contests'}
               </Text>
               <Text style={[styles.emptySubtitle, { color: theme.textSecondary }]}>
-                {activeTab === 'my_invites'
-                  ? 'You have played all received contests. Check back when friends invite you!'
-                  : activeTab === 'hosted'
-                  ? 'Launch your first group contest from any quiz set and invite your friends or study groups!'
-                  : 'Contests that pass the 24-hour mark will appear here with final rankings.'}
+                {screenMode === 'hosted'
+                  ? (hostedSubTab === 'active'
+                      ? 'You have no running contests right now. Go to Created Quizzes and host a contest!'
+                      : 'You have no expired contests.')
+                  : invitedSubTab === 'pending'
+                  ? 'When friends or group members host a contest, it will show up here.'
+                  : invitedSubTab === 'completed'
+                  ? 'Contests you finish playing will appear here awaiting results.'
+                  : "You haven't missed any contest deadlines."}
               </Text>
-
-              <TouchableOpacity
-                style={styles.emptyCreateBtn}
-                onPress={handleOpenCreateModal}
-                activeOpacity={0.85}
-              >
-                <LinearGradient
-                  colors={['#4F46E5', '#7C3AED']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.emptyCreateGradient}
-                >
-                  <Icon name="add-circle-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                  <Text style={styles.emptyCreateBtnText}>Create Group Contest</Text>
-                </LinearGradient>
-              </TouchableOpacity>
             </View>
           }
         />
       )}
 
-      {/* ── FULL LEADERBOARD MODAL ── */}
+      {/* ── LEADERBOARD / STANDINGS MODAL ── */}
       <Modal
         visible={leaderboardModalVisible}
         transparent
@@ -563,7 +1041,7 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Icon name="trophy" size={24} color="#F59E0B" />
                 <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
-                  Contest Leaderboard
+                  Contest Standings
                 </Text>
               </View>
               <TouchableOpacity
@@ -575,18 +1053,18 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
             </View>
 
             <Text style={[styles.modalSubTitle, { color: theme.textSecondary }]}>
-              {selectedLeaderboardChallenge?.title} • {selectedLeaderboardChallenge?.leaderboard?.length || 0} Participants
+              {selectedLeaderboardChallenge?.title} • {selectedLeaderboardChallenge?.leaderboard?.length || 0} Submissions
             </Text>
 
-            {(!selectedLeaderboardChallenge?.leaderboard || selectedLeaderboardChallenge.leaderboard.length === 0) ? (
-              <View style={styles.modalEmptyBox}>
-                <Text style={{ color: theme.textSecondary, fontSize: 14 }}>
-                  No one has completed this contest yet.
-                </Text>
-              </View>
-            ) : (
-              <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
-                {selectedLeaderboardChallenge.leaderboard.map((entry, idx) => {
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              {(!selectedLeaderboardChallenge?.leaderboard || selectedLeaderboardChallenge.leaderboard.length === 0) ? (
+                <View style={styles.modalEmptyBox}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 14 }}>
+                    No one has submitted answers yet.
+                  </Text>
+                </View>
+              ) : (
+                selectedLeaderboardChallenge.leaderboard.map((entry, idx) => {
                   const medals = ['🥇', '🥈', '🥉'];
                   const isTop3 = idx < 3;
                   const mins = Math.floor(entry.timeTakenSeconds / 60);
@@ -627,12 +1105,80 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
                       </View>
                     </View>
                   );
-                })}
-              </ScrollView>
-            )}
+                })
+              )}
+
+              {/* Unparticipated Members Listing (DNP) */}
+              {(() => {
+                if (!selectedLeaderboardChallenge) return null;
+                const playedIds = new Set(
+                  (selectedLeaderboardChallenge.leaderboard || []).map(e => String(e.userId))
+                );
+                const unplayed = (selectedLeaderboardChallenge.eligibleMembers || []).filter(
+                  m => !playedIds.has(String(m.id))
+                );
+                if (unplayed.length === 0) return null;
+
+                return (
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={[styles.lbHeaderTitle, { color: theme.textSecondary, marginBottom: 8, fontSize: 11 }]}>
+                      DID NOT PLAY ({unplayed.length})
+                    </Text>
+                    {unplayed.map((m, idx) => (
+                      <View
+                        key={idx}
+                        style={[
+                          styles.lbModalRow,
+                          {
+                            backgroundColor: isDark ? 'rgba(239,68,68,0.06)' : '#FEF2F2',
+                            borderColor: 'transparent',
+                            opacity: 0.8,
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.lbModalRank, { fontSize: 13, color: '#EF4444' }]}>-</Text>
+                        <View style={{ flex: 1, marginLeft: 8 }}>
+                          <Text style={[styles.lbModalName, { color: theme.textSecondary }]} numberOfLines={1}>
+                            {m.name || m.username || 'Member'}
+                          </Text>
+                          <Text style={[styles.lbModalSub, { color: '#EF4444' }]}>
+                            Did not participate
+                          </Text>
+                        </View>
+                        <View style={{ backgroundColor: 'rgba(239,68,68,0.12)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '800', color: '#EF4444' }}>DNP</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                );
+              })()}
+            </ScrollView>
+
+            {/* Share to Group button in modal for host if ready */}
+            {selectedLeaderboardChallenge &&
+              (String(selectedLeaderboardChallenge.creatorId) === String(user?.id) ||
+                String((selectedLeaderboardChallenge as any).createdBy?.id) === String(user?.id)) &&
+              !selectedLeaderboardChallenge.resultsAnnounced && (
+                <TouchableOpacity
+                  style={[styles.playBtn, { marginTop: 12 }]}
+                  onPress={() => handleShareResults(selectedLeaderboardChallenge)}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={['#F97316', '#EA580C']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.playBtnGradient}
+                  >
+                    <Icon name="share-social" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                    <Text style={styles.playBtnText}>Share Top 3 to Group Chat</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
 
             <TouchableOpacity
-              style={[styles.modalCloseBtn, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' }]}
+              style={[styles.modalCloseBtn, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0', marginTop: 10 }]}
               onPress={() => setLeaderboardModalVisible(false)}
             >
               <Text style={[styles.modalCloseBtnText, { color: theme.textPrimary }]}>Close</Text>
@@ -641,7 +1187,7 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
         </View>
       </Modal>
 
-      {/* ── CREATE CHALLENGE MODAL ── */}
+      {/* ── CREATE CHALLENGE MODAL (Host Contest) ── */}
       <Modal
         visible={createModalVisible}
         transparent
@@ -649,41 +1195,39 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
         onRequestClose={() => setCreateModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={[styles.createModalCard, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' },
+            ]}
+          >
             <View style={styles.modalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Icon name="flash" size={22} color="#4F46E5" />
+                <Icon name="megaphone" size={24} color="#F97316" />
                 <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
-                  Create Group Contest
+                  Host a Contest
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => setCreateModalVisible(false)}>
+              <TouchableOpacity
+                onPress={() => setCreateModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
                 <Icon name="close" size={24} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
 
-            <Text style={{ color: theme.textSecondary, fontSize: 13, marginBottom: 14 }}>
-              Select a quiz set and choose a friend or group to contest:
-            </Text>
-
             {/* Step 1: Select Quiz Set */}
             <Text style={[styles.createSectionTitle, { color: theme.textPrimary }]}>
-              1. Select Quiz Set ({customSets.length})
+              1. Select a Created Quiz
             </Text>
             {customSets.length === 0 ? (
-              <TouchableOpacity
-                style={styles.noSetsBox}
-                onPress={() => {
-                  setCreateModalVisible(false);
-                  navigation.navigate('CustomTriviaSets');
-                }}
-              >
-                <Text style={{ color: '#4F46E5', fontWeight: '700' }}>
-                  + Create or Import a Quiz Set in "My Quest"
+              <View style={styles.emptySetsNotice}>
+                <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
+                  No created quizzes found. Create a set first in "Created".
                 </Text>
-              </TouchableOpacity>
+              </View>
             ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.setPickerRow}>
                 {customSets.map(set => {
                   const isSelected = selectedSetForChallenge?.id === set.id;
                   return (
@@ -692,8 +1236,12 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
                       style={[
                         styles.setSelectChip,
                         {
-                          backgroundColor: isSelected ? '#4F46E5' : (isDark ? '#1E293B' : '#F1F5F9'),
-                          borderColor: isSelected ? '#4F46E5' : (isDark ? '#334155' : '#E2E8F0'),
+                          backgroundColor: isSelected
+                            ? '#F97316'
+                            : isDark
+                            ? 'rgba(255,255,255,0.06)'
+                            : '#F1F5F9',
+                          borderColor: isSelected ? '#F97316' : 'transparent',
                         },
                       ]}
                       onPress={() => setSelectedSetForChallenge(set)}
@@ -707,60 +1255,261 @@ export const TriviaChallengesScreen: React.FC<TriviaChallengesScreenProps> = ({ 
               </ScrollView>
             )}
 
-            {/* Step 2: Select Conversation to Send */}
-            <Text style={[styles.createSectionTitle, { color: theme.textPrimary }]}>
-              2. Send to Chat or Group
+            {/* Step 2: Duration Selector */}
+            <Text style={[styles.createSectionTitle, { color: theme.textPrimary, marginTop: 12 }]}>
+              2. Participation Duration (Minimum 4 Hours)
+            </Text>
+            <View style={styles.durationSelectorRow}>
+              {[4, 8, 12, 24].map(h => (
+                <TouchableOpacity
+                  key={h}
+                  onPress={() => setSelectedDurationHours(h)}
+                  style={[
+                    styles.durationOptionBtn,
+                    {
+                      backgroundColor: selectedDurationHours === h
+                        ? (isDark ? 'rgba(245,158,11,0.22)' : '#FEF3C7')
+                        : (isDark ? 'rgba(255,255,255,0.04)' : '#F1F5F9'),
+                      borderColor: selectedDurationHours === h
+                        ? '#F59E0B'
+                        : (isDark ? 'rgba(255,255,255,0.08)' : '#E2E8F0'),
+                    },
+                  ]}
+                  activeOpacity={0.8}
+                >
+                  <Icon
+                    name="timer-outline"
+                    size={13}
+                    color={selectedDurationHours === h ? '#D97706' : (isDark ? '#94A3B8' : '#64748B')}
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text
+                    style={[
+                      styles.durationOptionText,
+                      {
+                        color: selectedDurationHours === h
+                          ? (isDark ? '#FBBF24' : '#B45309')
+                          : (isDark ? '#94A3B8' : '#64748B'),
+                        fontWeight: selectedDurationHours === h ? '800' : '600',
+                      },
+                    ]}
+                  >
+                    {h}h
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Step 3: Select Eligible Group */}
+            <Text style={[styles.createSectionTitle, { color: theme.textPrimary, marginTop: 14 }]}>
+              3. Send to Group Chat (Minimum 4 Members)
             </Text>
             {loadingConversations ? (
-              <ActivityIndicator size="small" color="#4F46E5" style={{ marginVertical: 20 }} />
-            ) : conversations.length === 0 ? (
-              <Text style={{ color: theme.textSecondary, marginVertical: 14 }}>No active chats found.</Text>
-            ) : (
-              <ScrollView style={{ maxHeight: 220 }} showsVerticalScrollIndicator={false}>
-                {conversations.map(conv => {
-                  const name = conv.name || conv.title || conv.other_user?.name || conv.other_user?.username || conv.user?.name || 'Chat';
-                  const isSending = sendingChallengeId === conv.id;
+              <ActivityIndicator size="small" color="#F97316" style={{ marginVertical: 20 }} />
+            ) : (() => {
+              const groupList = conversations
+                .filter(c => c && (c.is_group || c.type === 'group'))
+                .filter(c => {
+                  if (!searchChatQuery.trim()) return true;
+                  const q = searchChatQuery.toLowerCase();
+                  const name = (c.name || c.title || '').toLowerCase();
+                  return name.includes(q);
+                });
 
-                  return (
-                    <TouchableOpacity
-                      key={conv.id}
-                      style={[
-                        styles.convRow,
-                        { borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#E2E8F0' },
-                      ]}
-                      onPress={() => handleSendChallenge(conv)}
-                      disabled={isSending || !selectedSetForChallenge}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.convName, { color: theme.textPrimary }]} numberOfLines={1}>
-                          {name}
-                        </Text>
-                        <Text style={{ fontSize: 11, color: theme.textSecondary }}>
-                          {conv.is_group ? '👥 Group Chat' : '👤 Direct Chat'}
-                        </Text>
-                      </View>
+              if (groupList.length === 0) {
+                return (
+                  <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 13, textAlign: 'center' }}>
+                      No group chats found with 4+ members.
+                    </Text>
+                  </View>
+                );
+              }
 
-                      {isSending ? (
-                        <ActivityIndicator size="small" color="#4F46E5" />
-                      ) : (
-                        <View style={styles.convSendBadge}>
-                          <Icon name="send" size={13} color="#4F46E5" style={{ marginRight: 4 }} />
-                          <Text style={styles.convSendText}>Send</Text>
+              return (
+                <ScrollView style={{ maxHeight: 220 }} showsVerticalScrollIndicator={false}>
+                  {groupList.map(conv => {
+                    const name = conv.name || conv.title || 'Group Chat';
+                    const memberCount = Number(conv.participants_count) || (Array.isArray(conv.participants) ? conv.participants.length : 0);
+                    const isEligible = memberCount >= 4;
+                    const otherMembers = Math.max(0, memberCount - 1);
+                    const isSending = sendingChallengeId === conv.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={conv.id}
+                        style={[
+                          styles.convRow,
+                          {
+                            borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#E2E8F0',
+                            opacity: isEligible ? 1 : 0.48,
+                          },
+                        ]}
+                        onPress={() => isEligible && handleSendChallenge(conv)}
+                        disabled={!isEligible || isSending || !selectedSetForChallenge}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.convName, { color: isEligible ? theme.textPrimary : theme.textSecondary }]} numberOfLines={1}>
+                            {name}
+                          </Text>
+                          {isEligible ? (
+                            <Text style={{ fontSize: 11, color: '#10B981', fontWeight: '600', marginTop: 2 }}>
+                              👥 {memberCount} members • Window: {selectedDurationHours}h
+                            </Text>
+                          ) : (
+                            <Text style={{ fontSize: 11, color: '#EF4444', fontWeight: '600', marginTop: 2 }}>
+                              ⚠️ Requires at least 3 other members to host a contest (currently {otherMembers} members)
+                            </Text>
+                          )}
                         </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
+
+                        {isSending ? (
+                          <ActivityIndicator size="small" color="#F97316" />
+                        ) : (
+                          <View
+                            style={[
+                              styles.convSendBadge,
+                              {
+                                backgroundColor: isEligible ? 'rgba(249,115,22,0.12)' : 'rgba(100,116,139,0.12)',
+                              },
+                            ]}
+                          >
+                            <Icon name="send" size={13} color={isEligible ? '#F97316' : '#94A3B8'} style={{ marginRight: 4 }} />
+                            <Text style={[styles.convSendText, { color: isEligible ? '#F97316' : '#94A3B8' }]}>
+                              Send
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              );
+            })()}
           </View>
+        </View>
+      </Modal>
+
+      {/* ── Buttery Smooth Delete Confirmation Modal ── */}
+      <Modal
+        visible={deleteModalVisible}
+        transparent
+        animationType="none"
+        onRequestClose={closeDeleteModal}
+      >
+        <View style={styles.deleteModalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={closeDeleteModal}
+          />
+          <Animated.View
+            style={[
+              styles.deleteModalCard,
+              {
+                backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
+                borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)',
+                opacity: deleteModalOpacity,
+                transform: [{ scale: deleteModalScale }],
+              },
+            ]}
+          >
+            {/* Trash Icon Circle with soft glow ring */}
+            <View
+              style={[
+                styles.deleteModalIconRing,
+                {
+                  backgroundColor: isDark ? 'rgba(239, 68, 68, 0.14)' : '#FEE2E2',
+                  borderColor: isDark ? 'rgba(239, 68, 68, 0.28)' : '#FECACA',
+                },
+              ]}
+            >
+              <Icon name="trash" size={28} color="#EF4444" />
+            </View>
+
+            {/* Modal Title */}
+            <Text style={[styles.deleteModalTitle, { color: theme.textPrimary }]}>
+              Delete Contest?
+            </Text>
+
+            {/* Contest Info Pill */}
+            {challengeToDelete && (
+              <View
+                style={[
+                  styles.deleteModalQuizPill,
+                  {
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#F8FAFC',
+                    borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#E2E8F0',
+                  },
+                ]}
+              >
+                <Icon name="trophy-outline" size={14} color="#F97316" style={{ marginRight: 6 }} />
+                <Text
+                  style={[styles.deleteModalQuizTitle, { color: theme.textPrimary }]}
+                  numberOfLines={1}
+                >
+                  {challengeToDelete.title}
+                </Text>
+              </View>
+            )}
+
+            {/* Description */}
+            <Text style={[styles.deleteModalSubtitle, { color: theme.textSecondary }]}>
+              {screenMode === 'hosted'
+                ? 'This will remove the contest from your hosted list. Participants will still keep their scores.'
+                : 'This will remove this contest from your history. This action cannot be undone.'}
+            </Text>
+
+            {/* Action Buttons: Cancel and Delete */}
+            <View style={styles.deleteModalActionsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.deleteModalCancelBtn,
+                  {
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#F1F5F9',
+                    borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : '#CBD5E1',
+                  },
+                ]}
+                onPress={closeDeleteModal}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.deleteModalCancelText, { color: theme.textPrimary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.deleteModalConfirmBtn}
+                onPress={confirmDeleteChallenge}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={['#EF4444', '#DC2626']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.deleteModalConfirmGradient}
+                >
+                  <Icon name="trash-outline" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.deleteModalConfirmText}>Delete</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
         </View>
       </Modal>
 
       {/* ── Center Animated Toast ── */}
       <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
         <View style={styles.toastOverlay} pointerEvents="none">
-          <Animated.View style={[styles.toastBox, { opacity: toastOpacity, backgroundColor: isDark ? '#1E293B' : '#0F172A' }]}>
+          <Animated.View
+            style={[
+              styles.toastBox,
+              {
+                opacity: toastOpacity,
+                backgroundColor: isDark ? '#1E293B' : '#0F172A',
+              },
+            ]}
+          >
             <Icon
               name={toastMessage.includes('Failed') ? 'close-circle' : 'checkmark-circle'}
               size={22}
@@ -788,83 +1537,101 @@ const styles = StyleSheet.create({
   headerIconBtn: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
   headerCenter: {
     flex: 1,
+    marginLeft: 12,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '800',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
     fontSize: 12,
-    fontWeight: '500',
+    marginTop: 1,
   },
   createHeaderBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 18,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 4,
   },
   createHeaderBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
-    marginLeft: 3,
   },
-  tabBar: {
+  topSegmentBar: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.06)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
   },
-  tabBtn: {
+  segmentBtn: {
     flex: 1,
-    paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
-    position: 'relative',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.2,
+    borderColor: 'transparent',
+    backgroundColor: 'rgba(0,0,0,0.03)',
   },
-  tabBtnActive: {},
-  tabBtnText: {
+  segmentBtnActive: {
+    elevation: 1,
+  },
+  segmentBtnText: {
     fontSize: 13,
-    fontWeight: '600',
   },
-  activeTabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    height: 3,
-    width: '60%',
-    backgroundColor: '#4F46E5',
-    borderRadius: 2,
+  subTabBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
+    width: '100%',
+  },
+  subTabBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.2,
+    borderColor: 'transparent',
+    backgroundColor: 'rgba(0,0,0,0.03)',
+  },
+  subTabText: {
+    fontSize: 12.5,
+    textAlign: 'center',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingTop: 60,
   },
   loadingText: {
     marginTop: 12,
     fontSize: 14,
-    fontWeight: '600',
   },
   listContent: {
     padding: 16,
+    gap: 14,
   },
   challengeCard: {
-    borderRadius: 20,
+    borderRadius: 18,
     padding: 16,
-    marginBottom: 16,
     borderWidth: 1,
-    elevation: 3,
+    elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
     shadowRadius: 6,
   },
   cardHeaderRow: {
@@ -876,33 +1643,35 @@ const styles = StyleSheet.create({
   tournamentBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 8,
   },
   tournamentBadgeText: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800',
     letterSpacing: 0.3,
   },
   expiryPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
+    borderRadius: 8,
   },
   expiryPillText: {
     fontSize: 11,
     fontWeight: '700',
   },
   quizTitle: {
-    fontSize: 17,
+    fontSize: 16.5,
     fontWeight: '800',
-    marginBottom: 2,
+    letterSpacing: -0.2,
+    lineHeight: 22,
+    marginBottom: 4,
   },
   hostText: {
-    fontSize: 12,
+    fontSize: 12.5,
     marginBottom: 12,
   },
   statsRow: {
@@ -913,43 +1682,67 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   statItem: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
   statValue: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   statLabel: {
-    fontSize: 11,
     fontWeight: '400',
-    color: '#64748B',
+    fontSize: 11.5,
   },
   statDivider: {
     width: 1,
-    height: 14,
+    height: 16,
     backgroundColor: 'rgba(0,0,0,0.1)',
-    marginHorizontal: 14,
+    marginHorizontal: 8,
+  },
+  earlyUnlockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16,185,129,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.25)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginBottom: 12,
+  },
+  earlyUnlockText: {
+    color: '#10B981',
+    fontSize: 11.5,
+    fontWeight: '700',
+    flex: 1,
+  },
+  examNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(99,102,241,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(99,102,241,0.2)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginBottom: 12,
+  },
+  examNoticeText: {
+    color: '#6366F1',
+    fontSize: 11.5,
+    fontWeight: '600',
+    flex: 1,
   },
   leaderboardBox: {
-    marginBottom: 14,
-  },
-  lbHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
+    paddingTop: 4,
   },
   lbHeaderTitle: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800',
     letterSpacing: 0.5,
-  },
-  lbViewAllLink: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#4F46E5',
   },
   lbRow: {
     flexDirection: 'row',
@@ -960,140 +1753,109 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0.5,
   },
   lbRank: {
-    fontSize: 14,
-    fontWeight: '800',
-    width: 26,
+    width: 24,
+    fontSize: 13,
+    fontWeight: '700',
   },
   lbName: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '600',
-    marginLeft: 4,
   },
   lbScore: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '800',
     marginRight: 6,
   },
   lbTime: {
     fontSize: 11,
   },
-  noPlayersBox: {
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  noPlayersText: {
-    fontSize: 12,
-    fontStyle: 'italic',
-    textAlign: 'center',
-  },
   cardActionsRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
   },
   playBtn: {
     flex: 1,
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: 'hidden',
+    elevation: 2,
   },
   playBtnGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 11,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
   },
   playBtnText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
   },
   expiredBtn: {
     flex: 1,
-    backgroundColor: '#64748B',
-    borderRadius: 14,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 11,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.05)',
   },
   expiredBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
+    color: '#94A3B8',
+    fontSize: 12.5,
     fontWeight: '700',
   },
   leaderboardBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     borderWidth: 1,
   },
   leaderboardBtnText: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   emptyContainer: {
     alignItems: 'center',
-    paddingVertical: 60,
+    paddingVertical: 50,
     paddingHorizontal: 24,
   },
   emptyIconCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
   },
   emptyTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
     marginBottom: 6,
     textAlign: 'center',
   },
   emptySubtitle: {
     fontSize: 13,
-    lineHeight: 18,
     textAlign: 'center',
-    marginBottom: 20,
-  },
-  emptyCreateBtn: {
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-  emptyCreateGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-  },
-  emptyCreateBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+    lineHeight: 18,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
   },
   modalCard: {
     width: '100%',
-    maxWidth: 380,
-    borderRadius: 24,
+    borderRadius: 22,
     padding: 20,
-    elevation: 16,
-  },
-  createModalCard: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 24,
-    padding: 20,
-    elevation: 16,
+    elevation: 10,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1102,7 +1864,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
   },
   modalSubTitle: {
@@ -1116,19 +1878,17 @@ const styles = StyleSheet.create({
   lbModalRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
+    padding: 10,
+    borderRadius: 10,
     marginBottom: 6,
+    borderWidth: 1,
   },
   lbModalRank: {
-    width: 30,
+    width: 28,
     fontWeight: '800',
-    textAlign: 'center',
   },
   lbModalName: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   lbModalSub: {
@@ -1136,87 +1896,217 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   lbModalScore: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
   },
   modalCloseBtn: {
-    marginTop: 14,
     paddingVertical: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     alignItems: 'center',
   },
   modalCloseBtnText: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   createSectionTitle: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '800',
+    letterSpacing: 0.4,
     marginBottom: 8,
   },
-  noSetsBox: {
-    padding: 12,
-    backgroundColor: 'rgba(79, 70, 229, 0.08)',
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 14,
+  emptySetsNotice: {
+    paddingVertical: 14,
+  },
+  setPickerRow: {
+    marginBottom: 10,
   },
   setSelectChip: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 14,
+    borderRadius: 10,
     borderWidth: 1,
     marginRight: 8,
   },
   setSelectChipText: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
+  },
+  durationSelectorRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  durationOptionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  durationOptionText: {
+    fontSize: 12,
   },
   convRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingVertical: 10,
-    borderBottomWidth: 0.5,
+    borderBottomWidth: 1,
   },
   convName: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   convSendBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(79, 70, 229, 0.1)',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 12,
+    borderRadius: 8,
   },
   convSendText: {
-    color: '#4F46E5',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   toastOverlay: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'transparent',
   },
   toastBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    elevation: 8,
   },
   toastText: {
-    fontSize: 15,
-    fontWeight: '600',
-    letterSpacing: 0.2,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  headerTrashBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 24,
+    paddingTop: 24,
+    paddingBottom: 20,
+    paddingHorizontal: 22,
+    alignItems: 'center',
+    borderWidth: 1,
+    elevation: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+  },
+  deleteModalIconRing: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  deleteModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  deleteModalQuizPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    maxWidth: '100%',
+    marginBottom: 10,
+  },
+  deleteModalQuizTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  deleteModalSubtitle: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    textAlign: 'center',
+    paddingHorizontal: 4,
+    marginBottom: 20,
+  },
+  deleteModalActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    width: '100%',
+  },
+  deleteModalCancelBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 13,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteModalCancelText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  deleteModalConfirmBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 13,
+    overflow: 'hidden',
+    elevation: 3,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  deleteModalConfirmGradient: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteModalConfirmText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  deleteContestBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  deleteContestBtnText: {
+    color: '#EF4444',
+    fontSize: 12.5,
+    fontWeight: '700',
   },
 });
 

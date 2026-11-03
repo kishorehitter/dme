@@ -40,3 +40,19 @@ class OneTimePreKey(models.Model):
 
     def __str__(self):
         return f"One-Time PreKey {self.key_id} for {self.user}"
+
+class E2EEBackup(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='e2ee_backup')
+    salt = models.CharField(max_length=64)
+    encrypted_backup_key_pin = models.TextField()
+    encrypted_backup_key_recovery = models.TextField()
+    encrypted_payload = models.TextField()
+    version = models.IntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'e2ee'
+
+    def __str__(self):
+        return f"E2EE Backup for {self.user} (v{self.version})"

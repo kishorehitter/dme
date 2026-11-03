@@ -8,6 +8,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
 
 export interface DecipherFormatItem {
     itag: number;
@@ -325,6 +326,7 @@ class YouTubeDecipherService {
     private poTokenPromises: Map<string, Promise<{ po_token: string; visitor_data: string }>> = new Map();
     private cachedIntegrityToken: string | null = null;
     private cachedIntegrityVisitorId: string | null = null;
+    private storyboardCache: Map<string, string> = new Map();
     public sessionVisitorId: string | null = null;
     public sessionVisitorData: string | null = null;
     public latestVisitorBoundToken: { token: string; visitorData: string; expiresAt: number } | null = null;
@@ -372,14 +374,63 @@ class YouTubeDecipherService {
         return this.isWorkerReadyFlag && this.workerSendFn !== null;
     }
 
+    public async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 4000): Promise<Response> {
+        const controller = new AbortController();
+        let timer: any = null;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+                try { controller.abort(); } catch (_) {}
+                reject(new Error(`Fetch timed out after ${timeoutMs}ms: ${url}`));
+            }, timeoutMs);
+        });
+        try {
+            const response = await Promise.race([
+                fetch(url, { ...options, signal: controller.signal }),
+                timeoutPromise,
+            ]);
+            return response;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    public async callWorkerWithTimeout(action: string, payload: any, defaultTimeoutMs: number = 3000): Promise<any> {
+        if (!this.workerSendFn) return null;
+        const isBg = AppState.currentState !== 'active' || Boolean((globalThis as any).isMusicRoomMinimized) || Boolean((globalThis as any).isSystemPipActive);
+        if (isBg) {
+            console.log(`⚡ [YouTubeDecipherService] Skipping worker ${action} in background/PiP (Chromium WebView suspended)`);
+            return null;
+        }
+        const effectiveTimeout = defaultTimeoutMs;
+        let timer: any;
+        try {
+            const timeoutPromise = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`Worker ${action} timed out after ${effectiveTimeout}ms`)), effectiveTimeout);
+            });
+            const res = await Promise.race([
+                this.workerSendFn(action, payload, effectiveTimeout),
+                timeoutPromise
+            ]);
+            return res;
+        } catch (err: any) {
+            console.warn(`⚠️ [YouTubeDecipherService] Worker ${action} unavailable/timed out (${effectiveTimeout}ms):`, err?.message || err);
+            return null;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
     private waitForWorker(timeoutMs: number = 10000): Promise<void> {
         if (this.isWorkerReady()) return Promise.resolve();
-        return new Promise((resolve, reject) => {
+        const isBg = AppState.currentState !== 'active' || Boolean((globalThis as any).isMusicRoomMinimized) || Boolean((globalThis as any).isSystemPipActive);
+        const effectiveTimeout = isBg ? 500 : timeoutMs;
+        return new Promise((resolve) => {
             const timer = setTimeout(() => {
                 const idx = this.readyListeners.indexOf(onReady);
                 if (idx !== -1) this.readyListeners.splice(idx, 1);
-                reject(new Error(`YouTubeDecipherService: Worker failed to become ready within ${timeoutMs}ms`));
-            }, timeoutMs);
+                console.warn(`[YouTubeDecipherService] Worker wait timed out after ${effectiveTimeout}ms — continuing`);
+                resolve();
+            }, effectiveTimeout);
 
             const onReady = () => {
                 clearTimeout(timer);
@@ -416,7 +467,7 @@ class YouTubeDecipherService {
 
         if (!targetUrl && videoId) {
             try {
-                const pageRes = await fetch(`https://m.youtube.com/watch?v=${videoId}`, {
+                const pageRes = await this.fetchWithTimeout(`https://m.youtube.com/watch?v=${videoId}`, {
                     headers: {
                         'User-Agent': YOUTUBE_MOBILE_USER_AGENT
                     }
@@ -442,7 +493,7 @@ class YouTubeDecipherService {
 
         try {
             console.log(`🤖 [YouTubeDecipherService] Downloading base.js from: ${targetUrl}`);
-            const res = await fetch(targetUrl, {
+            const res = await this.fetchWithTimeout(targetUrl, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
                 }
@@ -532,16 +583,19 @@ class YouTubeDecipherService {
                 } catch (_) {}
             }
 
-            console.log(`🤖 [YouTubeDecipherService] Requesting AST preprocessing for player: ${targetUrl}...`);
-            const t0 = Date.now();
-            const res = await this.workerSendFn!('preprocess', { playerUrl: targetUrl, code: baseJs }, 35000);
-            if (res && res.success) {
-                console.log(`✅ [YouTubeDecipherService] AST Preprocessing complete in ${Date.now() - t0}ms`);
-                this.isPreprocessedFlag = true;
-                this.currentPreprocessedPlayerUrl = targetUrl;
-                return true;
+            if (this.workerSendFn) {
+                console.log(`🤖 [YouTubeDecipherService] Requesting AST preprocessing for player: ${targetUrl}...`);
+                const t0 = Date.now();
+                const res = await this.callWorkerWithTimeout('preprocess', { playerUrl: targetUrl, code: baseJs }, 5000);
+                if (res && res.success) {
+                    console.log(`✅ [YouTubeDecipherService] AST Preprocessing complete in ${Date.now() - t0}ms`);
+                    this.isPreprocessedFlag = true;
+                    this.currentPreprocessedPlayerUrl = targetUrl;
+                    return true;
+                }
             }
-            throw new Error(res?.error || 'AST Preprocessing failed');
+            console.warn('⚠️ [YouTubeDecipherService] AST Preprocessing unavailable or timed out — continuing with Hermes JS deciphering');
+            return false;
         })().finally(() => {
             this.preprocessingPromise = null;
         });
@@ -569,20 +623,40 @@ class YouTubeDecipherService {
 
         console.log(`🤖 [YouTubeDecipherService] Deciphering batch of ${items.length} formats...`);
         const t0 = Date.now();
-        const res = await this.workerSendFn!('decipher', { items: payloadItems });
+        const res = await this.callWorkerWithTimeout('decipher', { items: payloadItems }, 3000);
 
         if (res && res.results && Array.isArray(res.results)) {
             console.log(`✅ [YouTubeDecipherService] Batch deciphered in ${Date.now() - t0}ms (${res.results.length} results)`);
             return res.results as DecipherResultItem[];
         }
 
-        throw new Error(res?.error || 'Batch decipher returned empty results');
+        console.warn('⚠️ [YouTubeDecipherService] Batch decipher unavailable or timed out, using Hermes-deciphered formats');
+        return [];
     }
 
     /**
      * Extracts YouTube video streaming data and deciphers all adaptive formats
      * inside the first-party WebView worker.
      */
+    public async detectLetterboxAspectRatio(videoId: string, storyboardSpec?: string): Promise<{ aspectRatio: number; verticalPercent: number } | null> {
+        if (!videoId) return null;
+        try {
+            const spec = storyboardSpec || this.storyboardCache.get(videoId);
+            const res = await this.callWorkerWithTimeout('detectAspectRatio', { videoId, storyboardSpec: spec }, 5000);
+            if (res && res.success && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
+                const vert = typeof res.verticalPercent === 'number' && !isNaN(res.verticalPercent) ? res.verticalPercent : 0.0;
+                console.log(`[YouTubeDecipherService] Detected Letterbox Aspect Ratio for ${videoId}: ${res.aspectRatio.toFixed(3)}, verticalPercent: ${(vert * 100).toFixed(1)}% (source: ${res.source || "worker"})`);
+                return {
+                    aspectRatio: res.aspectRatio,
+                    verticalPercent: vert,
+                };
+            }
+        } catch (e: any) {
+            console.warn(`[YouTubeDecipherService] Letterbox detection failed for ${videoId}:`, e?.message || e);
+        }
+        return null;
+    }
+
     public async extractVideoViaWorker(videoId: string): Promise<{
         formats: any[];
         duration: number;
@@ -722,10 +796,10 @@ class YouTubeDecipherService {
 
                 if (canFastMint) {
                     try {
-                        const fastMint = await this.workerSendFn!('obtainPoToken', {
+                        const fastMint = await this.callWorkerWithTimeout('obtainPoToken', {
                             integrityToken: this.cachedIntegrityToken,
                             identifier: targetIdentifier
-                        }, 3000);
+                        }, 1500);
                         if (fastMint && isAuthenticPoToken(fastMint.poToken)) {
                             const expiresAt = now + (5 * 60 * 60 * 1000);
                             if (visitorData) {
@@ -867,7 +941,7 @@ class YouTubeDecipherService {
                     // WebView worker fallback: executes with genuine YouTube browser origin
                     if (!attData && this.workerSendFn) {
                         try {
-                            const workerAtt = await this.workerSendFn('fetchAttGet', { body: attPayload });
+                            const workerAtt = await this.callWorkerWithTimeout('fetchAttGet', { body: attPayload }, 1500);
                             if (workerAtt && workerAtt.success && workerAtt.data) {
                                 attData = workerAtt.data;
                             }
@@ -922,7 +996,7 @@ class YouTubeDecipherService {
 
                 // 6. Run BotGuard inside WebView worker (exact Rave po_token.html behavior)
                 console.log('🤖 [PoToken] Executing BotGuard in background WebView worker...');
-                const bgRes = await this.workerSendFn!('runBotGuard', {
+                const bgRes = await this.callWorkerWithTimeout('runBotGuard', {
                     challengeData: {
                         interpreterJavascript,
                         globalName: challengeData.globalName,
@@ -969,7 +1043,7 @@ class YouTubeDecipherService {
 
                 if (!integrityToken && this.workerSendFn) {
                     try {
-                        const wGen = await this.workerSendFn('fetchGenerateIT', {
+                        const wGen = await this.callWorkerWithTimeout('fetchGenerateIT', {
                             body: [requestKey, bgRes.botguardResponse]
                         });
                         if (wGen && wGen.success && wGen.data) {
@@ -1005,7 +1079,7 @@ class YouTubeDecipherService {
                 const attestationVisitorId = this.extractVisitorId(resolvedVisitorData);
                 const attestationIdentifier = attestationVisitorId || videoId || '';
                 try {
-                    const mintRes = await this.workerSendFn!('obtainPoToken', {
+                    const mintRes = await this.callWorkerWithTimeout('obtainPoToken', {
                         integrityToken,
                         identifier: attestationIdentifier
                     });
@@ -1074,6 +1148,9 @@ class YouTubeDecipherService {
         channelTitle?: string;
         androidProgressiveUrl?: string;
         androidAdaptiveFormats?: any[];
+        hlsManifestUrl?: string;
+        dashManifestUrl?: string;
+        isLive?: boolean;
     }> {
         console.log(`🤖 [YouTubeDecipherService] Extracting video for: ${videoId}...`);
 
@@ -1086,12 +1163,15 @@ class YouTubeDecipherService {
         let nativeAuthor: string | undefined;
         let nativeDuration: number = 0;
         let innertubeVisitorData: string | undefined;
+        let hlsManifestUrl: string | undefined;
+        let dashManifestUrl: string | undefined;
+        let isLiveStream = false;
 
         try {
 
             // 1. Query IOS client for full DASH MP4 adaptive streams (144p to 1080p)
             try {
-                const iosRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+                const iosRes = await this.fetchWithTimeout('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1109,22 +1189,34 @@ class YouTubeDecipherService {
                                 deviceModel: 'iPhone16,2',
                                 userAgent: 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)',
                                 osName: 'iPhone OS',
-                                osVersion: '18.3.2',
-                                ...(this.latestVisitorBoundToken?.visitorData ? { visitorData: this.latestVisitorBoundToken.visitorData } : {})
+                                osVersion: '18.3.2'
                             }
                         }
                     })
-                });
+                }, 3500);
 
                 if (iosRes.ok) {
                     const data = await iosRes.json();
                     if (data?.responseContext?.visitorData) {
                         innertubeVisitorData = data.responseContext.visitorData;
                     }
+                    if (data?.storyboards?.playerStoryboardSpecRenderer?.spec) {
+                        this.storyboardCache.set(videoId, data.storyboards.playerStoryboardSpecRenderer.spec);
+                    }
                     if (data?.playabilityStatus?.status === 'OK') {
                         nativeTitle = data.videoDetails?.title;
                         nativeAuthor = data.videoDetails?.author;
                         nativeDuration = parseInt(data.videoDetails?.lengthSeconds || '0', 10);
+                        if (data.videoDetails?.isLive || data.videoDetails?.isLiveContent) {
+                            isLiveStream = true;
+                        }
+                        if (data?.streamingData?.hlsManifestUrl) {
+                            hlsManifestUrl = data.streamingData.hlsManifestUrl;
+                            isLiveStream = true;
+                        }
+                        if (data?.streamingData?.dashManifestUrl) {
+                            dashManifestUrl = data.streamingData.dashManifestUrl;
+                        }
 
                         const adaptive = (data?.streamingData?.adaptiveFormats || [])
                             .filter((f: any) => f.url && typeof f.url === 'string' && f.url.startsWith('http'))
@@ -1148,9 +1240,9 @@ class YouTubeDecipherService {
                 console.warn('⚠️ [YouTubeDecipherService] IOS InnerTube query warning:', iosErr?.message || iosErr);
             }
 
-            // 2. Query ANDROID client for guaranteed non-throttled itag 18 progressive stream
+            // 2. Query ANDROID client for guaranteed non-throttled itag 18 progressive stream & live HLS
             try {
-                const androidRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+                const androidRes = await this.fetchWithTimeout('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1168,12 +1260,11 @@ class YouTubeDecipherService {
                                 androidSdkVersion: 30,
                                 userAgent: 'com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip',
                                 osName: 'Android',
-                                osVersion: '11',
-                                ...(this.latestVisitorBoundToken?.visitorData ? { visitorData: this.latestVisitorBoundToken.visitorData } : {})
+                                osVersion: '11'
                             }
                         }
                     })
-                });
+                }, 3500);
 
                 if (androidRes.ok) {
                     const data = await androidRes.json();
@@ -1184,6 +1275,16 @@ class YouTubeDecipherService {
                         if (!nativeTitle) nativeTitle = data.videoDetails?.title;
                         if (!nativeAuthor) nativeAuthor = data.videoDetails?.author;
                         if (!nativeDuration) nativeDuration = parseInt(data.videoDetails?.lengthSeconds || '0', 10);
+                        if (data.videoDetails?.isLive || data.videoDetails?.isLiveContent) {
+                            isLiveStream = true;
+                        }
+                        if (data?.streamingData?.hlsManifestUrl) {
+                            hlsManifestUrl = data.streamingData.hlsManifestUrl;
+                            isLiveStream = true;
+                        }
+                        if (data?.streamingData?.dashManifestUrl && !dashManifestUrl) {
+                            dashManifestUrl = data.streamingData.dashManifestUrl;
+                        }
 
                         const formats = data?.streamingData?.formats || [];
                         const itag18 = formats.find((f: any) => f.itag === 18 && f.url);
@@ -1208,6 +1309,31 @@ class YouTubeDecipherService {
             console.warn('⚠️ [YouTubeDecipherService] Tier 1 Native InnerTube warning:', tier1Err?.message || tier1Err);
         }
 
+        // ── Fast Live Stream Path ──
+        if (hlsManifestUrl || isLiveStream) {
+            console.log(`🔴 [YouTubeDecipherService] Live stream detected for ${videoId} (HLS: ${Boolean(hlsManifestUrl)})`);
+            if (hlsManifestUrl) {
+                return {
+                    formats: [{
+                        itag: 96,
+                        url: hlsManifestUrl,
+                        mimeType: 'application/x-mpegURL',
+                        qualityLabel: 'Live Stream',
+                        height: 1080,
+                        width: 1920,
+                        hasAudio: true,
+                        isLive: true,
+                    }],
+                    duration: 0,
+                    title: nativeTitle,
+                    channelTitle: nativeAuthor,
+                    hlsManifestUrl,
+                    dashManifestUrl,
+                    isLive: true,
+                };
+            }
+        }
+
         // ── Tier 2 (Rave Architecture): MWEB watch page extraction + WebView AST/opcode VM decipher ──
         console.log(`🤖 [YouTubeDecipherService] Proceeding with Rave AST deciphering pipeline for: ${videoId}...`);
         let html: string | null = null;
@@ -1217,7 +1343,7 @@ class YouTubeDecipherService {
         // to our exact BotGuard session visitor identity (eliminating 403 on subsequent room creations).
         try {
             const cookieHeader = this.sessionVisitorId ? `VISITOR_INFO1_LIVE=${this.sessionVisitorId}` : '';
-            const mRes = await fetch(`https://m.youtube.com/watch?v=${videoId}&hl=en`, {
+            const mRes = await this.fetchWithTimeout(`https://m.youtube.com/watch?v=${videoId}&hl=en`, {
                 headers: {
                     'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
                     'Accept-Language': 'en-US,en;q=0.9',
@@ -1230,7 +1356,7 @@ class YouTubeDecipherService {
         if (!html) {
             try {
                 const cookieHeader = this.sessionVisitorId ? `VISITOR_INFO1_LIVE=${this.sessionVisitorId}` : '';
-                const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+                const res = await this.fetchWithTimeout(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                         'Accept-Language': 'en-US,en;q=0.9',
@@ -1303,7 +1429,7 @@ class YouTubeDecipherService {
 
         if (!streamingData?.adaptiveFormats || streamingData.adaptiveFormats.length === 0) {
             try {
-                const mwebRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+                const mwebRes = await this.fetchWithTimeout('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1331,6 +1457,28 @@ class YouTubeDecipherService {
                 });
                 if (mwebRes.ok) {
                     const mwebData = await mwebRes.json();
+                    if (mwebData?.streamingData?.hlsManifestUrl) {
+                        const mwebHls = mwebData.streamingData.hlsManifestUrl;
+                        console.log(`🔴 [YouTubeDecipherService] Acquired live stream HLS manifest from InnerTube MWEB`);
+                        return {
+                            formats: [{
+                                itag: 96,
+                                url: mwebHls,
+                                mimeType: 'application/x-mpegURL',
+                                qualityLabel: 'Live Stream',
+                                height: 1080,
+                                width: 1920,
+                                hasAudio: true,
+                                isLive: true,
+                            }],
+                            duration: 0,
+                            title: playerResponse?.videoDetails?.title || nativeTitle,
+                            channelTitle: playerResponse?.videoDetails?.author || nativeAuthor,
+                            hlsManifestUrl: mwebHls,
+                            dashManifestUrl: mwebData.streamingData.dashManifestUrl || dashManifestUrl,
+                            isLive: true,
+                        };
+                    }
                     if (mwebData?.streamingData?.adaptiveFormats && mwebData.streamingData.adaptiveFormats.length > 0) {
                         streamingData = mwebData.streamingData;
                         if (!playerResponse) playerResponse = mwebData;
@@ -1360,11 +1508,16 @@ class YouTubeDecipherService {
             console.log(`🌐 [YouTubeDecipherService] Populated ${allRawFormats.length} MWEB adaptive formats as primary DASH streams`);
         }
 
-        // ── Step 2: Emergency fallback to native adaptive formats only if MWEB did not supply them ──
+        // ── Step 2: Merge native adaptive formats (IOS InnerTube direct streams) ──
+        // If an MWEB format is cipher-only (no direct url), or if itag is missing from MWEB,
+        // merge the direct IOS format so we have guaranteed direct URLs with init/index ranges.
         if (nativeAdaptive && nativeAdaptive.length > 0) {
             for (const na of nativeAdaptive) {
-                if (!allRawFormats.some(f => f.itag === na.itag)) {
+                const existingIdx = allRawFormats.findIndex(f => f.itag === na.itag);
+                if (existingIdx === -1) {
                     allRawFormats.push(na);
+                } else if (!allRawFormats[existingIdx].url && na.url) {
+                    allRawFormats[existingIdx] = { ...allRawFormats[existingIdx], ...na };
                 }
             }
         }
@@ -1496,6 +1649,7 @@ class YouTubeDecipherService {
             }
         }
 
+
         let anyNTransformed = false;
         let decipherSuccess = false;
         if (itemsToDecipher.length > 0) {
@@ -1605,7 +1759,29 @@ class YouTubeDecipherService {
 
         console.log(`✅ [YouTubeDecipherService] MWEB extraction produced ${validFormats.length} formats (decipherSuccess: ${decipherSuccess})`);
 
-        const finalFormats = validFormats.length > 0 ? validFormats : (nativeAdaptive.length > 0 ? nativeAdaptive : []);
+        // Check if validFormats has actual adaptive video representations
+        const hasAdaptiveVideo = validFormats.some(
+            (f: any) => (f.mimeType?.startsWith('video/') || f.height) && !f.hasAudio
+        );
+
+        let finalFormats = validFormats;
+        if (!hasAdaptiveVideo && nativeAdaptive.length > 0) {
+            console.log(`⚡ [YouTubeDecipherService] MWEB cipher formats produced 0 direct video streams — restoring ${nativeAdaptive.length} IOS native adaptive formats`);
+            finalFormats = [...nativeAdaptive];
+            if (nativeProgUrl && !finalFormats.some(f => f.itag === 18)) {
+                finalFormats.push({
+                    itag: 18,
+                    url: nativeProgUrl,
+                    mimeType: 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+                    qualityLabel: '360p',
+                    height: 360,
+                    width: 640,
+                    hasAudio: true,
+                });
+            }
+        } else if (finalFormats.length === 0 && nativeAdaptive.length > 0) {
+            finalFormats = nativeAdaptive;
+        }
         console.log(`🎬 [YouTubeDecipherService] Final stream selection: ${finalFormats.length} formats (decipherSuccess: ${decipherSuccess}), progressive: ${Boolean(nativeProgUrl)}`);
         let finalProgUrl = nativeProgUrl;
         // Do NOT attach Web PO-token to ANDROID progressive URL (nativeProgUrl is c=ANDROID and plays cleanly without pot)
@@ -1640,6 +1816,9 @@ class YouTubeDecipherService {
         channelTitle?: string;
         androidProgressiveUrl?: string;
         androidAdaptiveFormats?: any[];
+        hlsManifestUrl?: string;
+        dashManifestUrl?: string;
+        isLive?: boolean;
     }> {
         if (this.extractionPromises.has(videoId)) {
             return this.extractionPromises.get(videoId)!;

@@ -10,10 +10,12 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.IBinder;
+import android.content.pm.ServiceInfo;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.graphics.Color;
+import android.os.PowerManager;
 import java.io.InputStream;
 import java.net.URL;
 import androidx.core.app.NotificationCompat;
@@ -29,14 +31,24 @@ public class MusicForegroundService extends Service {
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_ARTIST = "artist";
     public static final String EXTRA_IS_PLAYING = "isPlaying";
+    public static final String ACTION_UPDATE_POSITION = "ACTION_UPDATE_POSITION";
     public static final String EXTRA_IS_DJ = "isDJ";
 
     private MediaSessionCompat mediaSession;
+    private PowerManager.WakeLock wakeLock = null;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DME:MusicForegroundService");
+                wakeLock.setReferenceCounted(false);
+            }
+        } catch (Exception ignored) {}
 
         // Create MediaSession — this is what powers the
         // lockscreen overlay and Android media controls
@@ -67,6 +79,9 @@ public class MusicForegroundService extends Service {
         String action = intent.getAction();
 
         if (ACTION_STOP.equals(action)) {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                try { wakeLock.release(); } catch (Exception ignored) {}
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE);
             } else {
@@ -74,6 +89,12 @@ public class MusicForegroundService extends Service {
             }
             stopSelf();
             return START_NOT_STICKY;
+        }
+
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            try {
+                wakeLock.acquire(120 * 60 * 1000L); // 2 hours max
+            } catch (Exception ignored) {}
         }
 
         // Extract track info
@@ -85,6 +106,42 @@ public class MusicForegroundService extends Service {
 
         if (title == null) {
             return START_STICKY; // Guard against incomplete intents
+        }
+
+        // Handle position update (live seek bar) — no rebuild of full notification, just update MediaSession state
+        if (ACTION_UPDATE_POSITION.equals(action)) {
+            final long posMsU = intent.getLongExtra("position", 0);
+            final long durMsU = intent.getLongExtra("duration", 0);
+            final boolean isDJU = intent.getBooleanExtra("isDJ", false);
+            if (durMsU > 0) {
+                // Update metadata with real duration so the bar renders
+                MediaMetadataCompat.Builder mb = new MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title != null ? title : "")
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist != null ? artist : "")
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durMsU);
+                if (downloadedThumbnail != null) {
+                    mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, downloadedThumbnail);
+                    mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, downloadedThumbnail);
+                }
+                mediaSession.setMetadata(mb.build());
+                // Update position — ACTION_SEEK_TO intentionally NOT included so user can't seek from outside
+                long actions = isDJU ? (
+                    PlaybackStateCompat.ACTION_PLAY |
+                    PlaybackStateCompat.ACTION_PAUSE |
+                    PlaybackStateCompat.ACTION_PLAY_PAUSE |
+                    PlaybackStateCompat.ACTION_STOP
+                ) : 0;
+                final boolean isPlayingU = intent.getBooleanExtra(EXTRA_IS_PLAYING, true);
+                mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                    .setActions(actions)
+                    .setState(
+                        isPlayingU ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED,
+                        posMsU,
+                        isPlayingU ? 1.0f : 0.0f
+                    )
+                    .build());
+            }
+            return START_STICKY;
         }
 
         // Handle Play/Pause actions
@@ -108,7 +165,11 @@ public class MusicForegroundService extends Service {
 
             // Update the notification layout to show new icon and correct state
             Notification notification = buildNotification(title, artist, play, isDJ);
-            startForeground(1, notification);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(1, notification);
+            }
 
             MusicServiceModule.sendEvent(play ? "MEDIA_PLAY" : "MEDIA_PAUSE");
             return START_STICKY;
@@ -165,14 +226,20 @@ public class MusicForegroundService extends Service {
 
         // Build and show the notification immediately (falls back to app icon if thumbnail not downloaded yet)
         Notification notification = buildNotification(title, artist, isPlaying, isDJ);
-        startForeground(1, notification);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(1, notification);
+            }
 
         return START_STICKY;
     }
 
     private Notification buildNotification(String title, String artist, boolean isPlaying, boolean isDJ) {
-        Intent openAppIntent = getPackageManager()
-            .getLaunchIntentForPackage(getPackageName());
+        Intent openAppIntent = new Intent(this, MainActivity.class);
+        openAppIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        openAppIntent.setAction("OPEN_MUSIC_ROOM");
+        openAppIntent.putExtra("MAXIMIZE_MUSIC_ROOM", true);
         
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -180,7 +247,7 @@ public class MusicForegroundService extends Service {
         }
         
         PendingIntent openAppPending = PendingIntent.getActivity(
-            this, 0, openAppIntent, flags
+            this, 1001, openAppIntent, flags
         );
 
         // Load the full-color app icon as the LargeIcon or use downloaded thumbnail
@@ -198,7 +265,7 @@ public class MusicForegroundService extends Service {
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(artist)
-            .setSubText("DME") // Explicitly show App Name next to small icon
+            .setSubText("youtelite") // Explicitly show App Name next to small icon
             .setSmallIcon(R.drawable.ic_notification) // Silhouette icon for status bar
             .setContentIntent(openAppPending)
             .setOngoing(isPlaying)
@@ -268,6 +335,9 @@ public class MusicForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try { wakeLock.release(); } catch (Exception ignored) {}
+        }
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();

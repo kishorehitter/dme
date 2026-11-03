@@ -91,9 +91,7 @@ export class MediaCipher {
     if (this.memoryCache.has(cacheKey)) {
       return this.memoryCache.get(cacheKey)!;
     }
-    const path = this.getDecryptedCachePath(fileHash, extension);
-    const fileUri = `file://${path}`;
-    return fileUri;
+    return null;
   }
 
   /**

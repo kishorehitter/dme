@@ -44,7 +44,7 @@ export const CHAT_THEME_PRESETS: ChatTheme[] = [
       solidColor: 'transparent',
     },
     myBubble: {
-      solidColor: '#243B53', // Plain Matte Faded Navy Blue
+      solidColor: '#0284C7', // Musicroom Sky-600 Blue
       textColor: '#FFFFFF',
       timeColor: 'rgba(255, 255, 255, 0.75)',
     },
@@ -53,7 +53,7 @@ export const CHAT_THEME_PRESETS: ChatTheme[] = [
       textColor: '#111B21',
       timeColor: '#667781',
     },
-    accentColor: '#243B53',
+    accentColor: '#0284C7',
   },
   {
     id: 'instagram_sunset',

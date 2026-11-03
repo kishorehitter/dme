@@ -25,8 +25,10 @@ import {
 import Reanimated, {
   useSharedValue,
   useAnimatedStyle,
+  useDerivedValue,
   withTiming,
   Easing as ReanimatedEasing,
+  SharedValue,
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Ionicons';
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -46,6 +48,10 @@ interface Props {
   onSelectSticker: (sticker: Sticker, packId: string) => void;
   onClose: () => void;
   sheetHeight?: number;
+  sharedHeight?: SharedValue<number>;
+  isDeliberatelyOpen?: boolean;
+  isDeliberatelyOpenSV?: SharedValue<number>;
+  backgroundColor?: string;
 }
 
 // ─── Shared Lottie cache (exported for LottieStickerMessage) ──────────────────
@@ -138,12 +144,19 @@ const StickerPickerSheet: React.FC<Props> = ({
   onSelectSticker,
   onClose,
   sheetHeight = SHEET_HEIGHT,
+  sharedHeight,
+  isDeliberatelyOpen = true,
+  isDeliberatelyOpenSV,
+  backgroundColor,
 }) => {
   const { theme, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 16);
   const totalSheetHeight = sheetHeight + (insets.bottom > 0 ? insets.bottom : 0);
-  const styles = useMemo(() => dynamicStyles(theme, isDark, safeBottom, totalSheetHeight), [theme, isDark, safeBottom, totalSheetHeight]);
+  const styles = useMemo(
+    () => dynamicStyles(theme, isDark, safeBottom, totalSheetHeight, backgroundColor),
+    [theme, isDark, safeBottom, totalSheetHeight, backgroundColor],
+  );
 
   const [activePackId, setActivePackId] = useState<string>(stickerPacks[0]?.id ?? '');
   const flatListRef = useRef<FlatList>(null);
@@ -153,25 +166,47 @@ const StickerPickerSheet: React.FC<Props> = ({
   const inactiveColor = isDark ? '#9AA0A6' : '#5F6368';
 
   // ── Reanimated GPU slide in / out (Google Keyboard speed & smooth Material curve) ──
-  const translateY = useSharedValue(totalSheetHeight);
+  const internalTranslateY = useSharedValue(totalSheetHeight);
 
   useEffect(() => {
+    if (sharedHeight) return;
     if (visible) {
-      translateY.value = withTiming(0, {
+      internalTranslateY.value = withTiming(0, {
         duration: 250,
         easing: ReanimatedEasing.bezier(0.0, 0.0, 0.2, 1),
       });
     } else {
-      translateY.value = withTiming(totalSheetHeight, {
-        duration: 220,
-        easing: ReanimatedEasing.bezier(0.4, 0.0, 1, 1),
+      internalTranslateY.value = withTiming(totalSheetHeight, {
+        duration: 120,
+        easing: ReanimatedEasing.bezier(0.0, 0.0, 0.2, 1),
       });
     }
-  }, [visible, totalSheetHeight, translateY]);
+  }, [visible, totalSheetHeight, internalTranslateY, sharedHeight]);
+
+  const translateY = useDerivedValue(() => {
+    if (sharedHeight) {
+      const progress = Math.max(0, Math.min(1, sharedHeight.value / (sheetHeight || 286)));
+      return (1 - progress) * totalSheetHeight;
+    }
+    return internalTranslateY.value;
+  });
 
   const animatedSheetStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
   }));
+
+  // ── Content Opacity: Instant on Frame 0 when sticker modal is triggered, faded out when keyboard modal ──
+  const contentAnimatedStyle = useAnimatedStyle(() => {
+    'worklet';
+    if (isDeliberatelyOpenSV) {
+      return {
+        opacity: isDeliberatelyOpenSV.value,
+      };
+    }
+    return {
+      opacity: isDeliberatelyOpen ? 1 : 0,
+    };
+  });
 
   // ── Immediate 0ms send on tap (no blocking flash animation) ─────────────────
   const handleSelect = useCallback(
@@ -202,7 +237,7 @@ const StickerPickerSheet: React.FC<Props> = ({
   }, [stickerPacks]);
 
   const isProgrammaticScrollRef = useRef(false);
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSelectTab = useCallback(
     (packId: string) => {
@@ -258,67 +293,69 @@ const StickerPickerSheet: React.FC<Props> = ({
   return (
     <Reanimated.View
       style={[styles.sheet, animatedSheetStyle]}
-      pointerEvents={visible ? 'auto' : 'none'}
+      pointerEvents={visible && isDeliberatelyOpen ? 'auto' : 'none'}
     >
-      {/* 1. Category tabs row */}
-      <View style={styles.tabRow}>
-        <ScrollView
-          ref={tabScrollViewRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.categoryScroll}
-        >
-          {stickerPacks.map(pack => (
-            <TouchableOpacity
-              key={pack.id}
-              style={[styles.categoryTab, activePackId === pack.id && styles.categoryTabActive]}
-              onPress={() => handleSelectTab(pack.id)}
-              activeOpacity={0.7}
-            >
-              {PACK_ICONS[pack.id]?.isMci ? (
-                <MaterialCommunityIcon
-                  name={PACK_ICONS[pack.id]?.filled ?? 'hands-pray'}
-                  size={21}
-                  color={activePackId === pack.id ? activeColor : inactiveColor}
-                />
-              ) : (
-                <Icon
-                  name={
-                    activePackId === pack.id
-                      ? PACK_ICONS[pack.id]?.filled ?? 'apps'
-                      : PACK_ICONS[pack.id]?.outline ?? 'apps-outline'
-                  }
-                  size={20}
-                  color={activePackId === pack.id ? activeColor : inactiveColor}
-                />
-              )}
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      <Reanimated.View style={[{ flex: 1 }, contentAnimatedStyle]}>
+        {/* 1. Category tabs row */}
+        <View style={styles.tabRow}>
+          <ScrollView
+            ref={tabScrollViewRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryScroll}
+          >
+            {stickerPacks.map(pack => (
+              <TouchableOpacity
+                key={pack.id}
+                style={[styles.categoryTab, activePackId === pack.id && styles.categoryTabActive]}
+                onPress={() => handleSelectTab(pack.id)}
+                activeOpacity={0.7}
+              >
+                {PACK_ICONS[pack.id]?.isMci ? (
+                  <MaterialCommunityIcon
+                    name={PACK_ICONS[pack.id]?.filled ?? 'hands-pray'}
+                    size={21}
+                    color={activePackId === pack.id ? activeColor : inactiveColor}
+                  />
+                ) : (
+                  <Icon
+                    name={
+                      activePackId === pack.id
+                        ? PACK_ICONS[pack.id]?.filled ?? 'apps'
+                        : PACK_ICONS[pack.id]?.outline ?? 'apps-outline'
+                    }
+                    size={20}
+                    color={activePackId === pack.id ? activeColor : inactiveColor}
+                  />
+                )}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
-      {/* 2. Emoji-only grid — pure Text, no Lottie, no network calls */}
-      <View style={styles.gridContainer}>
-        <FlatList
-          ref={flatListRef}
-          data={listData}
-          renderItem={renderListItem}
-          keyExtractor={item => item.id}
-          getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[styles.grid, { paddingBottom: safeBottom + 8 }]}
-          initialNumToRender={6}
-          maxToRenderPerBatch={6}
-          windowSize={4}
-          removeClippedSubviews={Platform.OS === 'android'}
-          onScrollBeginDrag={() => { isProgrammaticScrollRef.current = false; }}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          onScrollToIndexFailed={info => {
-            flatListRef.current?.scrollToOffset({ offset: ROW_HEIGHT * info.index, animated: false });
-          }}
-        />
-      </View>
+        {/* 2. Emoji-only grid — pure Text, no Lottie, no network calls */}
+        <View style={styles.gridContainer}>
+          <FlatList
+            ref={flatListRef}
+            data={listData}
+            renderItem={renderListItem}
+            keyExtractor={item => item.id}
+            getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={[styles.grid, { paddingBottom: safeBottom + 8 }]}
+            initialNumToRender={6}
+            maxToRenderPerBatch={6}
+            windowSize={4}
+            removeClippedSubviews={false}
+            onScrollBeginDrag={() => { isProgrammaticScrollRef.current = false; }}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
+            onScrollToIndexFailed={info => {
+              flatListRef.current?.scrollToOffset({ offset: ROW_HEIGHT * info.index, animated: false });
+            }}
+          />
+        </View>
+      </Reanimated.View>
     </Reanimated.View>
   );
 };
@@ -329,10 +366,11 @@ const dynamicStyles = (
   isDark: boolean,
   safeBottom: number,
   baseHeight: number = SHEET_HEIGHT,
+  customBg?: string,
 ) => {
-  const gboardBg   = isDark ? '#202124' : '#F1F3F4';
+  const gboardBg   = customBg || (isDark ? '#202124' : '#ECEFF1');
   const borderClr  = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-  const activeTabClr = isDark ? '#FFFFFF' : '#000000';
+  const activeTabClr = isDark ? '#8AB4F8' : '#1A73E8';
 
   return StyleSheet.create({
     sheet: {

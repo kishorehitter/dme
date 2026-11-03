@@ -7,8 +7,8 @@ export interface Participant {
   user_id: number;
   name: string;
   is_dj: boolean;
-  avatar?: string;
-  avatar_sticker?: string;
+  avatar?: string | null;
+  avatar_sticker?: string | null;
 }
 
 export interface Song {
@@ -17,6 +17,7 @@ export interface Song {
   thumbnail: string;
   channelTitle: string;
   channelLogo?: string;
+  channelUrl?: string;
   addedBy: string;
   duration?: number;
   source?: 'youtube' | 'drive'; 
@@ -31,6 +32,7 @@ export interface QueueItem {
   addedById: number;
   addedByName: string;
   addedByAvatar?: string;
+  addedByAvatarSticker?: string;
   pinnedAt: number; // epoch seconds — global FIFO order across ALL users
 }
 
@@ -59,6 +61,7 @@ const normalizeQueueItem = (raw: any): QueueItem => {
       addedById: raw.added_by_id,
       addedByName: raw.added_by_name ?? 'Someone',
       addedByAvatar: raw.added_by_avatar,
+      addedByAvatarSticker: raw.added_by_avatar_sticker,
       pinnedAt: raw.pinned_at ?? 0,
     };
   }
@@ -115,7 +118,7 @@ export const useMusicRoom = (
 
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [joinSnapshot, setJoinSnapshot] = useState<{position: number, isPlaying: boolean, receivedAt: number} | null>(null);
+  const [joinSnapshot, setJoinSnapshot] = useState<{videoId?: string | null, position: number, isPlaying: boolean, receivedAt: number} | null>(null);
   const playerRef = useRef<any>(null);
 
   // Connect to music room
@@ -161,6 +164,7 @@ export const useMusicRoom = (
           
           // ✅ Save snapshot for the screen to consume on player ready
           setJoinSnapshot({
+            videoId: message.data.current_video?.videoId || null,
             position: message.data.position,
             isPlaying: message.data.is_playing,
             receivedAt: Date.now(), // ✅ timestamp for drift compensation
@@ -206,8 +210,9 @@ export const useMusicRoom = (
           }
 
           // Compensate network delay
-          const delay = host_timestamp ? (Date.now() - host_timestamp) / 1000 : 0;
-          const syncPos = position + Math.max(0, delay);
+          const rawDelay = host_timestamp ? (Date.now() - host_timestamp) / 1000 : 0;
+          const safeDelay = Math.min(Math.max(0, rawDelay), 0.12);
+          const syncPos = position + safeDelay;
 
           // We removed the old '!is_playing && is_dj_background' guard. Since the DJ's
           // app now safely prevents involuntary WebView background pauses at the source,
@@ -248,9 +253,6 @@ export const useMusicRoom = (
 
         case 'aux_passed':
           if (isPlayerReadyRef) isPlayerReadyRef.current = false;
-          if (playerRef?.current) {
-            try { playerRef.current.pauseVideo?.(); } catch (_) {}
-          }
           setRoomState(prev => ({
             ...prev,
             currentSong: message.data.next_song,
@@ -269,6 +271,18 @@ export const useMusicRoom = (
             ...prev,
             participants: updatedParticipants,
             isDJ: myParticipant?.is_dj ?? prev.isDJ
+          }));
+          break;
+
+        case 'dj_switched':
+          const newDjId = message.data.new_dj_id;
+          const isNowDJ = currentUserId === newDjId;
+          const updatedParts = message.data.participants;
+          setRoomState(prev => ({
+            ...prev,
+            isDJ: isNowDJ,
+            participants: updatedParts || prev.participants,
+            allowedSpeakers: message.data.allowed_speakers || prev.allowedSpeakers,
           }));
           break;
 
@@ -378,6 +392,10 @@ export const useMusicRoom = (
     musicWebSocketService.updateMicPermission(targetUserId, allowed);
   }, []);
 
+  const switchDJ = useCallback((targetUserId: number) => {
+    musicWebSocketService.switchDJ(targetUserId);
+  }, []);
+
   return {
     roomState,
     setRoomState,
@@ -388,6 +406,7 @@ export const useMusicRoom = (
     updateCurrentSongMetadata,
     updateRoomName,
     updateMicPermission,
+    switchDJ,
     loadSong,
     syncPlay,
     syncPause,

@@ -18,7 +18,8 @@ export type WebSocketMessage = {
     | 'message_delete'
     | 'message_request_status'
     | 'message_request_created'
-    | 'friend_request_update';
+    | 'friend_request_update'
+    | 'friend_request_updated';
   data: any;
 };
 
@@ -50,7 +51,7 @@ class WebSocketService {
         const token = await AsyncStorage.getItem('access_token');
         if (token) {
           try {
-            await api.get('/accounts/profile/');
+  
           } catch (err) {
             console.warn('WS pre-connect notifications token refresh failed/skipped:', err);
           }
@@ -118,9 +119,9 @@ class WebSocketService {
         this.currentConversationId = conversationId;
 
         try {
-          await api.get('/accounts/profile/');
+
         } catch (err) {
-          console.warn('WS pre-connect room token refresh failed/skipped:', err);
+
         }
 
         const url = await this.getWebSocketURL(conversationId);
@@ -163,18 +164,25 @@ class WebSocketService {
         };
 
         this.ws.onerror = error => {
-          console.error('WebSocket error:', error);
+          this.isConnected = false;
+          console.error(`WebSocket error for conversation ${conversationId} (readyState: ${this.ws?.readyState}):`, error);
         };
 
         this.ws.onclose = event => {
-          console.log('WebSocket closed:', event.code, event.reason);
           this.isConnected = false;
+          let diag = event.reason || '';
+          if (event.code === 4001) diag = 'Auth token expired or invalid (4001)';
+          else if (event.code === 4003) diag = 'User is not a participant in this conversation (4003)';
+          else if (event.code === 1006) diag = 'Connection dropped or server unreachable (1006)';
+          else if (event.code === 1011) diag = 'Server internal error (1011)';
+
+          console.log(`WebSocket closed for conversation ${conversationId}: code=${event.code}, reason="${diag}"`);
 
           if (!hasResolved && !hasRejected) {
             hasRejected = true;
             reject(
               new Error(
-                `WebSocket closed before connecting (code: ${event.code})`,
+                `WebSocket closed before connecting (code: ${event.code}, reason: ${diag})`,
               ),
             );
           } else if (this.currentConversationId === conversationId && !this.isLoggedOut) {
@@ -273,22 +281,34 @@ class WebSocketService {
     this.maxReconnectAttempts = 5;
   }
 
-  sendMessage(content: string, replyToId?: number, duration?: number) {
+  sendMessage(content: any, replyToId?: number, duration?: number) {
+    let actualContent = content;
+    let actualMessageType = 'text';
+    let actualReplyTo = replyToId;
+    let actualDuration = duration;
+
+    if (content && typeof content === 'object') {
+      actualContent = content.content;
+      actualMessageType = content.message_type || 'text';
+      if (content.reply_to_id) actualReplyTo = content.reply_to_id;
+      if (content.duration) actualDuration = content.duration;
+    }
+
     const message: any = {
       type: 'message',
-      content,
-      message_type: 'text',
+      content: actualContent,
+      message_type: actualMessageType,
     };
 
-    if (replyToId) {
-      message.reply_to = replyToId;
+    if (actualReplyTo) {
+      message.reply_to = actualReplyTo;
     }
 
-    if (duration) {
-      message.duration = duration;
+    if (actualDuration) {
+      message.duration = actualDuration;
     }
 
-    if (this.isConnected && this.ws) {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     } else {
       this.messageQueue.push(message);
@@ -296,10 +316,8 @@ class WebSocketService {
   }
 
   sendTyping(isTyping: boolean) {
-    if (this.lastTypingState === isTyping) return; // ← skip if unchanged
     this.lastTypingState = isTyping;
-
-    if (this.isConnected && this.ws) {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'typing', is_typing: isTyping }));
     }
   }
@@ -344,7 +362,7 @@ class WebSocketService {
   }
 
   getConnectionState(): boolean {
-    return this.isConnected;
+    return Boolean(this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN);
   }
 }
 

@@ -252,8 +252,6 @@ export const localDatabase = {
   saveConversations(convs: Conversation[]) {
     try {
       if (!convs || convs.length === 0) {
-        db.execute('DELETE FROM messages;');
-        db.execute('DELETE FROM conversations;');
         return;
       }
 
@@ -429,6 +427,23 @@ export const localDatabase = {
     }
   },
 
+  /**
+   * Synchronizes SQLite conversations is_locked column with the persistent locked IDs list.
+   */
+  syncLockedConversations(lockedIds: number[]) {
+    try {
+      if (!lockedIds || lockedIds.length === 0) {
+        db.execute('UPDATE conversations SET is_locked = 0;');
+        return;
+      }
+      const placeholders = lockedIds.map(() => '?').join(',');
+      db.execute(`UPDATE conversations SET is_locked = 1 WHERE id IN (${placeholders});`, lockedIds);
+      db.execute(`UPDATE conversations SET is_locked = 0 WHERE id NOT IN (${placeholders});`, lockedIds);
+    } catch (error) {
+      console.error('❌ Error syncing locked conversations in SQLite:', error);
+    }
+  },
+
   // ─── MESSAGES QUERY APIs ────────────────────────────────────────────────────
 
   /**
@@ -445,18 +460,98 @@ export const localDatabase = {
         );
       }
 
+      const serverId = toPrimitiveNullableNumber(msg.id);
+      let targetLocalId = toPrimitiveString(localId);
+
+      // Check if message already exists by server id or localId to prevent duplicate shadow rows
+      let existing: any = null;
+      if (serverId) {
+        existing = this.getMessageById(serverId);
+      }
+      if (!existing && targetLocalId) {
+        existing = this.getMessageById(targetLocalId);
+      }
+
+      if (existing?.local_id) {
+        targetLocalId = existing.local_id;
+      }
+
+      let contentToSave = toPrimitiveString(msg.content);
+      let mediaFileToSave = toPrimitiveString(msg.media_file);
+      let mediaE2eeToSave = toPrimitiveJsonString(msg.media_e2ee || existing?.media_e2ee);
+      let mediaFileLocalToSave = toPrimitiveString(msg.media_file_local || existing?.media_file_local);
+
+      if (existing) {
+        const existingIsCleanPlaintext =
+          existing.content &&
+          typeof existing.content === 'string' &&
+          !existing.content.includes('ciphertext') &&
+          !existing.content.includes('ratchetHeader') &&
+          !existing.content.includes('🔒') &&
+          !existing.content.includes('Unable to decrypt');
+
+        const msgIsCleanPlaintext =
+          contentToSave &&
+          typeof contentToSave === 'string' &&
+          !contentToSave.includes('ciphertext') &&
+          !contentToSave.includes('ratchetHeader') &&
+          !contentToSave.includes('🔒') &&
+          !contentToSave.includes('Unable to decrypt');
+
+        if (msgIsCleanPlaintext) {
+          // Keep fresh clean plaintext
+        } else if (existingIsCleanPlaintext) {
+          contentToSave = existing.content;
+        }
+
+        const isRemoteUrl = (u: any) =>
+          typeof u === 'string' &&
+          (u.startsWith('http://') || u.startsWith('https://') || u.includes('cloudinary'));
+
+        if (isRemoteUrl(msg.media_file)) {
+          mediaFileToSave = msg.media_file;
+        } else if (isRemoteUrl(existing.media_file)) {
+          mediaFileToSave = existing.media_file;
+        } else if (msg.media_file) {
+          mediaFileToSave = msg.media_file;
+        } else if (existing.media_file) {
+          mediaFileToSave = existing.media_file;
+        }
+
+        if (!mediaFileLocalToSave) {
+          if (existing.media_file_local) {
+            mediaFileLocalToSave = existing.media_file_local;
+          } else if (typeof existing.media_file === 'string' && (existing.media_file.startsWith('file://') || existing.media_file.startsWith('/'))) {
+            mediaFileLocalToSave = existing.media_file;
+          } else if (typeof msg.media_file === 'string' && (msg.media_file.startsWith('file://') || msg.media_file.startsWith('/'))) {
+            mediaFileLocalToSave = msg.media_file;
+          }
+        }
+      }
+
+      let messageTypeToSave = toPrimitiveString(msg.message_type || 'text');
+      if (existing && messageTypeToSave === 'image' &&
+          (existing.message_type === 'sticker' || existing.message_type === 'gif')) {
+        messageTypeToSave = existing.message_type;
+      }
+      const e2eeMeta = msg.media_e2ee || (existing?.media_e2ee);
+      if (messageTypeToSave === 'image' && e2eeMeta) {
+        if (e2eeMeta.is_gif) messageTypeToSave = 'gif';
+        else if (e2eeMeta.is_sticker) messageTypeToSave = 'sticker';
+      }
+
       db.execute(
         `INSERT OR REPLACE INTO messages (
           local_id, id, conversation_id, user, content, message_type, media_file, created_at, reactions, reply_to, status, is_deleted, edited_at, sender_id, sender, media_group_id, media_e2ee, media_file_local, delivered_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         [
-          toPrimitiveString(localId),
-          toPrimitiveNullableNumber(msg.id),
+          targetLocalId,
+          serverId,
           conversationId,
           toPrimitiveString(msg.sender?.display_name || msg.sender?.email || msg.user),
-          toPrimitiveString(msg.content),
-          toPrimitiveString(msg.message_type || 'text'),
-          toPrimitiveString(msg.media_file),
+          contentToSave,
+          messageTypeToSave,
+          mediaFileToSave,
           toPrimitiveString(msg.created_at),
           toPrimitiveJsonString(msg.reactions),
           toPrimitiveJsonString(msg.reply_to),
@@ -466,9 +561,9 @@ export const localDatabase = {
           toPrimitiveNullableNumber(msg.sender?.id || msg.sender_id || (msg.user_id ? Number(msg.user_id) : null)),
           toPrimitiveJsonString(msg.sender),
           toPrimitiveString(msg.media_group_id),
-          toPrimitiveJsonString(msg.media_e2ee),
-          toPrimitiveString(msg.media_file_local),
-          toPrimitiveString(msg.delivered_at),
+          mediaE2eeToSave,
+          mediaFileLocalToSave,
+          toPrimitiveString(msg.delivered_at || existing?.delivered_at),
         ]
       );
     } catch (error) {
@@ -493,9 +588,10 @@ export const localDatabase = {
       );
 
       for (const msg of msgs) {
-        // Find existing message by server id to preserve local plaintext & file URI
-        const existing = this.getMessageById(msg.id);
-        const localId = toPrimitiveString(msg.local_id || existing?.local_id || msg.id?.toString());
+        // Find existing message by server id or local_id to preserve local plaintext & file URI
+        const serverId = toPrimitiveNullableNumber(msg.id);
+        const existing = serverId ? this.getMessageById(serverId) : (msg.local_id ? this.getMessageById(msg.local_id) : null);
+        const localId = toPrimitiveString(existing?.local_id || msg.local_id || msg.id?.toString());
         if (!localId) continue;
 
         let contentToSave = toPrimitiveString(msg.content);
@@ -504,22 +600,51 @@ export const localDatabase = {
         let mediaFileLocalToSave = toPrimitiveString(msg.media_file_local || existing?.media_file_local);
 
         if (existing) {
-          // Preserve decrypted plaintext content if available
-          if (
+          // Preserve decrypted plaintext content if available, but never preserve placeholder failure strings
+          const existingIsCleanPlaintext =
             existing.content &&
             typeof existing.content === 'string' &&
             !existing.content.includes('ciphertext') &&
-            !existing.content.includes('ratchetHeader')
-          ) {
+            !existing.content.includes('ratchetHeader') &&
+            !existing.content.includes('🔒') &&
+            !existing.content.includes('Unable to decrypt');
+
+          const msgIsCleanPlaintext =
+            contentToSave &&
+            typeof contentToSave === 'string' &&
+            !contentToSave.includes('ciphertext') &&
+            !contentToSave.includes('ratchetHeader') &&
+            !contentToSave.includes('🔒') &&
+            !contentToSave.includes('Unable to decrypt');
+
+          if (msgIsCleanPlaintext) {
+            // Keep msg's fresh clean plaintext
+          } else if (existingIsCleanPlaintext) {
+            // Restore from existing clean plaintext
             contentToSave = existing.content;
           }
-          // Preserve local media file path if available
-          if (
-            existing.media_file &&
-            typeof existing.media_file === 'string' &&
-            (existing.media_file.startsWith('file://') || existing.media_file.startsWith('/'))
-          ) {
+          const isRemoteUrl = (u: any) =>
+            typeof u === 'string' &&
+            (u.startsWith('http://') || u.startsWith('https://') || u.includes('cloudinary'));
+
+          if (isRemoteUrl(msg.media_file)) {
+            mediaFileToSave = msg.media_file;
+          } else if (isRemoteUrl(existing.media_file)) {
             mediaFileToSave = existing.media_file;
+          } else if (msg.media_file) {
+            mediaFileToSave = msg.media_file;
+          } else if (existing.media_file) {
+            mediaFileToSave = existing.media_file;
+          }
+
+          if (!mediaFileLocalToSave) {
+            if (existing.media_file_local) {
+              mediaFileLocalToSave = existing.media_file_local;
+            } else if (typeof existing.media_file === 'string' && (existing.media_file.startsWith('file://') || existing.media_file.startsWith('/'))) {
+              mediaFileLocalToSave = existing.media_file;
+            } else if (typeof msg.media_file === 'string' && (msg.media_file.startsWith('file://') || msg.media_file.startsWith('/'))) {
+              mediaFileLocalToSave = msg.media_file;
+            }
           }
         }
         // Preserve more specific message_type (sticker/gif) over server's generic 'image'
@@ -542,7 +667,7 @@ export const localDatabase = {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
             [
               localId,
-              toPrimitiveNullableNumber(msg.id),
+              serverId,
               convId,
               toPrimitiveString(msg.sender?.display_name || msg.sender?.email || msg.user),
               contentToSave,
@@ -597,7 +722,7 @@ export const localDatabase = {
           if (row.content.includes('ratchetHeader') && row.content.includes('ciphertext')) {
             return false;
           }
-          if (row.content.includes('Unable to decrypt')) {
+          if (row.content.includes('Unable to decrypt') || row.content.includes('🔒') || row.content.includes('Encrypted message')) {
             return false;
           }
         }
@@ -939,6 +1064,142 @@ export const localDatabase = {
       console.log(`🧹 Cleared messages for conversation ${convId}`);
     } catch (error) {
       console.error(`❌ Failed to clear messages for conversation ${conversationId}:`, error);
+    }
+  },
+
+  /**
+   * Deletes cached messages older than a given message ID (used when chat was cleared on server before beforeId).
+   */
+  deleteMessagesBefore(conversationId: number | string, beforeId: number) {
+    try {
+      const convId = Number(conversationId);
+      db.execute('DELETE FROM messages WHERE conversation_id = ? AND id < ?;', [convId, beforeId]);
+      console.log(`🧹 Deleted older cleared messages for conv ${convId} before ${beforeId}`);
+    } catch (error) {
+      console.error(`❌ Failed to delete older messages for conv ${conversationId}:`, error);
+    }
+  },
+
+  /**
+   * Exports all conversations and messages from local SQLite storage.
+   */
+  exportAllData(): { conversations: any[]; messages: any[] } {
+    try {
+      const convRes = db.execute('SELECT * FROM conversations;');
+      const msgRes = db.execute('SELECT * FROM messages;');
+      const conversations = (convRes as any)?.results || (convRes as any)?.rows?._array || [];
+      const messages = (msgRes as any)?.results || (msgRes as any)?.rows?._array || [];
+      return {
+        conversations: Array.isArray(conversations) ? conversations : [],
+        messages: Array.isArray(messages) ? messages : []
+      };
+    } catch (e) {
+      console.warn('Failed to export local database:', e);
+      return { conversations: [], messages: [] };
+    }
+  },
+
+  /**
+   * Imports conversations and messages into local SQLite storage.
+   */
+  importAllData(data: { conversations?: any[]; messages?: any[] }) {
+    if (!data) return;
+    try {
+      let convCount = 0;
+      let msgCount = 0;
+      let msgFailed = 0;
+
+      if (Array.isArray(data.conversations) && data.conversations.length > 0) {
+        for (const row of data.conversations) {
+          try {
+            db.execute(
+              `INSERT OR REPLACE INTO conversations (
+                id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id, is_locked
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+              [
+                row.id,
+                row.name || 'Chat',
+                row.is_group ? 1 : 0,
+                row.profile_picture || null,
+                row.last_message_content || null,
+                row.last_message_timestamp || null,
+                row.unread_count || 0,
+                row.updated_at || null,
+                row.other_user || null,
+                row.last_message_status || 'sent',
+                row.last_message_sender_id || null,
+                row.is_locked ? 1 : 0,
+              ]
+            );
+            convCount++;
+          } catch (e: any) {
+            console.warn('[LocalDatabase] importAllData conversation failed:', e?.message, row?.id);
+          }
+        }
+      }
+
+      if (Array.isArray(data.messages) && data.messages.length > 0) {
+        for (const row of data.messages) {
+          const localId = String(row.local_id || row.id || '');
+          if (!localId) continue;
+
+          let senderJson = null;
+          if (row.sender) {
+            senderJson = typeof row.sender === 'string' ? row.sender : JSON.stringify(row.sender);
+          } else if (row.sender_name || row.sender_email || row.sender_id) {
+            senderJson = JSON.stringify({
+              id: row.sender_id ? Number(row.sender_id) : 0,
+              display_name: row.sender_name || row.user || 'Unknown',
+              email: row.sender_email || '',
+              profile_picture: row.sender_profile_picture || null,
+            });
+          }
+
+          const status = row.status || (row.is_read ? 'read' : 'sent');
+          const userVal = row.user || row.sender_name || row.sender_email || null;
+          const reactionsVal = row.reactions ? (typeof row.reactions === 'string' ? row.reactions : JSON.stringify(row.reactions)) : null;
+          const replyToVal = row.reply_to ? (typeof row.reply_to === 'string' ? row.reply_to : JSON.stringify(row.reply_to)) : null;
+          const mediaE2eeVal = row.media_e2ee ? (typeof row.media_e2ee === 'string' ? row.media_e2ee : JSON.stringify(row.media_e2ee)) : null;
+
+          try {
+            db.execute(
+              `INSERT OR REPLACE INTO messages (
+                local_id, id, conversation_id, user, content, message_type, media_file,
+                created_at, reactions, reply_to, status, is_deleted, edited_at,
+                sender_id, sender, media_group_id, media_e2ee, media_file_local, delivered_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+              [
+                localId,
+                row.id !== undefined && row.id !== null ? Number(row.id) : null,
+                row.conversation_id !== undefined && row.conversation_id !== null ? Number(row.conversation_id) : null,
+                userVal,
+                row.content !== undefined && row.content !== null ? String(row.content) : null,
+                row.message_type || 'text',
+                row.media_file || null,
+                row.created_at ? String(row.created_at) : null,
+                reactionsVal,
+                replyToVal,
+                status,
+                row.is_deleted ? 1 : 0,
+                row.edited_at || null,
+                row.sender_id !== undefined && row.sender_id !== null ? Number(row.sender_id) : null,
+                senderJson,
+                row.media_group_id || null,
+                mediaE2eeVal,
+                row.media_file_local || null,
+                row.delivered_at || null,
+              ]
+            );
+            msgCount++;
+          } catch (e: any) {
+            msgFailed++;
+            console.warn('[LocalDatabase] importAllData message row failed:', e?.message, 'id:', row?.id, 'local_id:', localId);
+          }
+        }
+      }
+      console.log(`✅ [LocalDatabase] Successfully imported backup: ${convCount} conversations, ${msgCount} messages (${msgFailed} failed).`);
+    } catch (e) {
+      console.error('[LocalDatabase] Failed to import local database backup:', e);
     }
   },
 

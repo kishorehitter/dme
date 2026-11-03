@@ -21,6 +21,7 @@ import {
   Alert,
   InteractionManager,
   Platform,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -213,11 +214,22 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
       loadData();
     }, 100);
 
+    const onBackPress = () => {
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+      } else {
+        navigation.navigate('TriviaHub');
+      }
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+
     return () => {
       interactionPromise.cancel();
       clearTimeout(timer);
+      sub.remove();
     };
-  }, [loadData]);
+  }, [loadData, navigation]);
 
   const handleClearScores = () => {
     Alert.alert(
@@ -274,12 +286,18 @@ export const TriviaScoreboardScreen: React.FC<any> = ({ navigation }) => {
           },
         ]}
       >
-        <TouchableOpacity style={sb.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
+        <TouchableOpacity style={sb.backBtn} onPress={() => {
+          if (navigation.canGoBack()) {
+            navigation.goBack();
+          } else {
+            navigation.navigate('TriviaHub');
+          }
+        }} activeOpacity={0.8}>
           <Icon name="arrow-back" size={22} color="#fff" />
         </TouchableOpacity>
 
         <View style={sb.headerCenter}>
-          <Text style={sb.headerTitle}>📊 Progress</Text>
+          <Text style={sb.headerTitle}>📊 Progress Board</Text>
           <Text style={sb.headerSub}>Track your mastery across all sets</Text>
         </View>
 

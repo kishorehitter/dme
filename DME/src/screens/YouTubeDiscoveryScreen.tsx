@@ -26,6 +26,7 @@ import { useTheme } from '../context/ThemeContext';
 
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
 import DiscoveryFeedService from '../services/DiscoveryFeedService';
+import FastImage from 'react-native-fast-image';
 
 const { width } = Dimensions.get('window');
 
@@ -51,29 +52,12 @@ export const YOUTUBE_CATEGORIES = [
   { id: 'lofi', label: '🎧 Lo-Fi', query: 'lo-fi beats' },
 ];
 
-// Helper to check network connectivity
-const checkNetwork = async (): Promise<boolean> => {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-    // Note: 'cache' option is not supported in React Native fetch — omit it
-    const response = await fetch('https://clients3.google.com/generate_204', {
-      method: 'GET',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    return response.ok || response.status === 204;
-  } catch (e) {
-    return false;
-  }
-};
-
 const OfflineErrorView = ({
   onRetry,
   isRetrying,
   isDark = true,
-  title = 'No Internet Connection',
-  message = 'YouTube Discovery requires an active internet connection to load videos, search, and access your media.',
+  title = 'Unable to Load Content',
+  message = 'Something went wrong while loading. Please tap Try Again to reload.',
 }: {
   onRetry: () => void;
   isRetrying?: boolean;
@@ -87,40 +71,11 @@ const OfflineErrorView = ({
       borderColor: isDark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.08)',
     }]}>
       <View style={styles.offlineIconContainer}>
-        <Icon name="cloud-offline-outline" size={48} color="#fd0000" />
+        <Icon name="alert-circle-outline" size={44} color="#fd0000" />
       </View>
 
       <Text style={[styles.offlineTitle, { color: isDark ? '#fff' : '#111111' }]}>{title}</Text>
       <Text style={[styles.offlineMessage, { color: isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.55)' }]}>{message}</Text>
-
-      <View style={[styles.troubleshootBox, {
-        backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)',
-      }]}>
-        <Text style={[styles.troubleshootHeader, { color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.45)' }]}>
-          Troubleshooting Steps:
-        </Text>
-
-        <View style={styles.troubleshootItem}>
-          <Icon name="wifi-outline" size={18} color={isDark ? '#888' : '#555'} style={styles.troubleshootIcon} />
-          <Text style={[styles.troubleshootText, { color: isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.6)' }]}>
-            Check your Wi-Fi or cellular data connection.
-          </Text>
-        </View>
-
-        <View style={styles.troubleshootItem}>
-          <Icon name="airplane-outline" size={18} color={isDark ? '#888' : '#555'} style={styles.troubleshootIcon} />
-          <Text style={[styles.troubleshootText, { color: isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.6)' }]}>
-            Ensure Airplane mode is turned off.
-          </Text>
-        </View>
-
-        <View style={styles.troubleshootItem}>
-          <Icon name="refresh-circle-outline" size={18} color={isDark ? '#888' : '#555'} style={styles.troubleshootIcon} />
-          <Text style={[styles.troubleshootText, { color: isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.6)' }]}>
-            Tap "Try Again" below once reconnected to network.
-          </Text>
-        </View>
-      </View>
 
       <TouchableOpacity
         style={styles.retryBtnWrapper}
@@ -164,7 +119,7 @@ const DiscoBallLoadingView = ({ isDark = true, bgColor }: { isDark?: boolean; bg
 
 const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
-  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo } = route.params || {};
+  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo, initialUrl } = route.params || {};
   const isFlow2 = !!roomCode;
 
   // Only show splash when opened from Discovery button; skip completely when searching from Music Room
@@ -200,10 +155,19 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const pendingDriveVideoRef = useRef<any>(initialPendingVideo || null);
   const insets = useSafeAreaInsets();
 
-  const [activeTab, setActiveTab]       = useState<TabType>(requireDriveAuth ? 'drive' : 'youtube');
+  const [activeTab, setActiveTab]       = useState<TabType>(initialUrl ? 'youtube' : (requireDriveAuth ? 'drive' : 'youtube'));
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
+
+  useEffect(() => {
+    if (initialUrl) {
+      setActiveTab('youtube');
+      youtubeWebViewRef.current?.injectJavaScript(
+        `if (window.location.href !== "${initialUrl}") { window.location.href = "${initialUrl}"; } true;`
+      );
+    }
+  }, [initialUrl]);
 
   // Bottom tab bar
   const TABS: TabType[] = ['youtube', 'drive', 'likes', 'history'];
@@ -265,8 +229,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [historyQuery, setHistoryQuery] = useState('');
   const [likesQuery, setLikesQuery]     = useState('');
 
-  // Offline & error state management
-  const [isOffline, setIsOffline]       = useState(false);
+  // Error state management
   const [isRetrying, setIsRetrying]     = useState(false);
   const [ytError, setYtError]           = useState(false);
   const [driveError, setDriveError]     = useState(false);
@@ -303,15 +266,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     };
   }, []);
 
-  const loadInitialData = async () => {
-    setIsRetrying(true);
-    const online = await checkNetwork();
-    if (!online) {
-      setIsOffline(true);
-      setIsRetrying(false);
-      return;
-    }
-    setIsOffline(false);
+  const loadInitialData = () => {
     setYtError(false);
     setDriveError(false);
     setLikesError(false);
@@ -319,7 +274,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
     loadHistory();
     loadLikes();
-    setIsRetrying(false);
   };
 
   useEffect(() => {
@@ -333,21 +287,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }, [isDark])
   );
 
-  const handleRetry = async () => {
+  const handleRetry = () => {
     setIsRetrying(true);
-    const online = await checkNetwork();
-    if (!online) {
-      Toast.show({
-        type: 'error',
-        text1: 'No Internet Connection',
-        text2: 'Please connect to Wi-Fi or mobile data and try again.',
-      });
-      setIsOffline(true);
-      setIsRetrying(false);
-      return;
-    }
-
-    setIsOffline(false);
     setYtError(false);
     setDriveError(false);
     setLikesError(false);
@@ -361,7 +302,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
     loadHistory();
     loadLikes();
-    setIsRetrying(false);
+    setTimeout(() => {
+      setIsRetrying(false);
+    }, 600);
   };
 
   const loadHistory = async () => {
@@ -371,10 +314,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       setHistoryError(false);
     } catch (e) {
       console.error('History load failed', e);
-      const online = await checkNetwork();
-      if (!online) {
-        setHistoryError(true);
-      }
+      setHistoryError(true);
     }
   };
 
@@ -385,10 +325,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       setLikesError(false);
     } catch (e) {
       console.error('Likes load failed', e);
-      const online = await checkNetwork();
-      if (!online) {
-        setLikesError(true);
-      }
+      setLikesError(true);
     }
   };
 
@@ -562,11 +499,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const initThumbnail = selectedSource === 'drive'
-      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`
-      : (selectedItem?.thumbnail || `https://img.youtube.com/vi/${selectedVideoId}/hqdefault.jpg`);
+      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
+      : (selectedItem?.thumbnail
+          ? selectedItem.thumbnail.replace(/\/(hqdefault|mqdefault|sddefault|default|hq720)\.(jpg|webp)/, '/maxresdefault.jpg').replace('http://', 'https://')
+          : `https://i.ytimg.com/vi/${selectedVideoId}/maxresdefault.jpg`);
 
     if (initThumbnail) {
-      Image.prefetch(initThumbnail).catch(() => {});
+      FastImage.preload([{ uri: initThumbnail, priority: FastImage.priority.high }]);
     }
 
     DeviceEventEmitter.emit('open_music_room', {
@@ -593,8 +532,53 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
     const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
     const initThumbnail = selectedSource === 'drive'
-      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w400`
-      : selectedItem?.thumbnail;
+      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
+      : (selectedItem?.thumbnail
+          ? selectedItem.thumbnail.replace(/\/(hqdefault|mqdefault|sddefault|default|hq720)\.(jpg|webp)/, '/maxresdefault.jpg').replace('http://', 'https://')
+          : `https://i.ytimg.com/vi/${selectedVideoId}/maxresdefault.jpg`);
+
+    if (initThumbnail) {
+      FastImage.preload([{ uri: initThumbnail, priority: FastImage.priority.high }]);
+    }
+
+    setShowOverlay(false);
+    Toast.show({
+      type: 'success',
+      text1: 'Added to Queue',
+      text2: finalTitle || 'Video queued',
+      visibilityTime: 2000,
+    });
+
+    DeviceEventEmitter.emit('VIDEO_SELECTED', {
+      roomCode,
+      videoId: selectedVideoId,
+      source:  selectedSource,
+      title: finalTitle,
+      thumbnail: initThumbnail,
+      channelTitle: selectedItem?.channelTitle,
+      isQueueOnly: true,
+    });
+
+    setTimeout(() => {
+      isNavigating.current = false;
+    }, 400);
+  };
+
+  const handlePlayNowInFlow2 = async () => {
+    if (!selectedVideoId) return;
+    if (isNavigating.current) return;
+    isNavigating.current = true;
+
+    const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
+    const initThumbnail = selectedSource === 'drive'
+      ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
+      : (selectedItem?.thumbnail
+          ? selectedItem.thumbnail.replace(/\/(hqdefault|mqdefault|sddefault|default|hq720)\.(jpg|webp)/, '/maxresdefault.jpg').replace('http://', 'https://')
+          : `https://i.ytimg.com/vi/${selectedVideoId}/maxresdefault.jpg`);
+
+    if (initThumbnail) {
+      FastImage.preload([{ uri: initThumbnail, priority: FastImage.priority.high }]);
+    }
 
     if (typeof navigation?.setOptions === 'function') {
       navigation.setOptions({ animation: 'none' });
@@ -608,6 +592,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         source:  selectedSource,
         title: finalTitle,
         thumbnail: initThumbnail,
+        channelTitle: selectedItem?.channelTitle,
+        isQueueOnly: false,
       });
     }, 200);
   };
@@ -740,30 +726,26 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
           {/* YouTube Tab — Mobile YouTube Interface (Rave Architecture) */}
           {activeTab === 'youtube' && (
-            isOffline || ytError ? (
+            ytError ? (
               <OfflineErrorView
                 onRetry={handleRetry}
                 isRetrying={isRetrying}
                 isDark={isDark}
                 title="Unable to Load YouTube"
-                message="YouTube requires an active internet connection to browse and select videos."
+                message="Could not connect to YouTube. Tap Try Again to reload."
               />
             ) : (
               <WebView
                 ref={youtubeWebViewRef}
-                source={{ uri: 'https://m.youtube.com' }}
+                source={{ uri: initialUrl || 'https://m.youtube.com' }}
                 onLoadEnd={dismissSplash}
-                onError={() => {
-                  dismissSplash();
-                  setYtError(true);
-                }}
                 renderError={() => (
                   <OfflineErrorView
                     onRetry={handleRetry}
                     isRetrying={isRetrying}
                     isDark={isDark}
                     title="Unable to Load YouTube"
-                    message="Could not connect to YouTube. Please check your internet connection and try again."
+                    message="Could not connect to YouTube. Tap Try Again to reload."
                   />
                 )}
                 setSupportMultipleWindows={false}
@@ -907,23 +889,19 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
         {/* Drive Tab */}
         {activeTab === 'drive' && (
-          isOffline || driveError ? (
+          driveError ? (
             <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
               title="Unable to Load Google Drive"
-              message="Google Drive requires an active internet connection to browse and select files." />
+              message="Could not connect to Google Drive. Tap Try Again to reload." />
           ) : (
             <WebView
               ref={driveWebViewRef}
               source={{ uri: 'https://drive.google.com' }}
               onLoadEnd={dismissSplash}
-              onError={() => {
-                dismissSplash();
-                setDriveError(true);
-              }}
               renderError={() => (
                 <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
                   title="Unable to Load Google Drive"
-                  message="Could not connect to Google Drive. Please check your internet connection and try again." />
+                  message="Could not connect to Google Drive. Tap Try Again to reload." />
               )}
               setSupportMultipleWindows={false}
               onOpenWindow={(event) => {
@@ -993,7 +971,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
         {/* Likes Tab */}
         {activeTab === 'likes' && (
-          isOffline || likesError ? (
+          likesError ? (
             <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
               title="Unable to Load Likes"
               message="Connect to the internet to view and sync your liked videos." />
@@ -1029,7 +1007,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
         {/* History Tab */}
         {activeTab === 'history' && (
-          isOffline || historyError ? (
+          historyError ? (
             <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
               title="Unable to Load Watch History"
               message="Connect to the internet to view and sync your watch history." />
@@ -1128,18 +1106,31 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               </>
             )}
 
-            {/* Flow 2 — add to queue */}
+            {/* Flow 2 — add to queue / play now */}
             {isFlow2 && (
-              <TouchableOpacity style={styles.overlayActionBtn} onPress={handleAddToQueue}>
-                <LinearGradient
-                  colors={['#1a6ef5', '#0d4ec7']}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={styles.overlayActionBtnGrad}
-                >
-                  <Icon name="add-circle" size={18} color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={styles.overlayActionBtnText}>Add to Queue</Text>
-                </LinearGradient>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 4 }}>
+                <TouchableOpacity style={[styles.overlayActionBtn, { flex: 1 }]} onPress={handleAddToQueue}>
+                  <LinearGradient
+                    colors={['#1a6ef5', '#0d4ec7']}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                    style={styles.overlayActionBtnGrad}
+                  >
+                    <Icon name="add-circle" size={17} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={styles.overlayActionBtnText}>Add to Queue</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={[styles.overlayActionBtn, { flex: 1 }]} onPress={handlePlayNowInFlow2}>
+                  <LinearGradient
+                    colors={['#b10000', '#FF007F']}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                    style={styles.overlayActionBtnGrad}
+                  >
+                    <Icon name="play" size={17} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={styles.overlayActionBtnText}>Play Now</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
             )}
 
           </View>

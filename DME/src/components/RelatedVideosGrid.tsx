@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList, Animated } from 'react-native';
-import { Song, QueueItem } from '../hooks/useMusicRoom';
+import { Song, QueueItem, Participant } from '../hooks/useMusicRoom';
+import AvatarWithFallback from '../components/AvatarWithFallback';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const { width } = Dimensions.get('window');
@@ -18,6 +19,9 @@ interface Props {
   suggestedVideos: Song[];
 
   myUserId: number;
+  myAvatar?: string | null;
+  myAvatarSticker?: string | null;
+  participants: Participant[];
 
   onPinVideo: (song: Song) => void;
   onUnpinVideo: (videoId: string) => void;
@@ -31,6 +35,9 @@ const RelatedVideosGrid: React.FC<Props> = ({
   queueItems,
   suggestedVideos,
   myUserId,
+  myAvatar,
+  myAvatarSticker,
+  participants,
   onPinVideo,
   onUnpinVideo,
   currentSong,
@@ -45,17 +52,32 @@ const RelatedVideosGrid: React.FC<Props> = ({
     | { kind: 'queued'; item: QueueItem }
     | { kind: 'suggested'; song: Song };
 
+  const PAGE_CARD_SLOTS = 4;
+  const MIN_SETS = 4; // Always maintain at least 4 complete sets (16 cards)
+  const MIN_CARDS = MIN_SETS * PAGE_CARD_SLOTS;
+
+  const currentCount = currentSong ? 1 : 0;
+  const queueCount = queueItems.length;
+  const occupiedCount = currentCount + queueCount;
+
+  // Calculate target total so that every set has exactly 4 cards
+  const targetTotal = Math.max(MIN_CARDS, Math.ceil(occupiedCount / PAGE_CARD_SLOTS) * PAGE_CARD_SLOTS);
+  const neededSuggestions = Math.max(0, targetTotal - occupiedCount);
+
   const cards: Card[] = [];
   if (currentSong) {
     cards.push({ kind: 'current', song: currentSong });
   }
   cards.push(...queueItems.map((item): Card => ({ kind: 'queued', item })));
-  cards.push(...suggestedVideos.map((song): Card => ({ kind: 'suggested', song })));
+  cards.push(...suggestedVideos.slice(0, neededSuggestions).map((song): Card => ({ kind: 'suggested', song })));
 
-  const PAGE_CARD_SLOTS = 4;
+  // Trim to exact multiple of PAGE_CARD_SLOTS to guarantee zero dangling/orphan slots
+  const fullSetsCardsCount = Math.floor(cards.length / PAGE_CARD_SLOTS) * PAGE_CARD_SLOTS;
+  const finalCards = fullSetsCardsCount > 0 ? cards.slice(0, fullSetsCardsCount) : cards;
+
   const pages: Card[][] = [];
-  for (let i = 0; i < cards.length; i += PAGE_CARD_SLOTS) {
-    pages.push(cards.slice(i, i + PAGE_CARD_SLOTS));
+  for (let i = 0; i < finalCards.length; i += PAGE_CARD_SLOTS) {
+    pages.push(finalCards.slice(i, i + PAGE_CARD_SLOTS));
   }
   if (pages.length === 0) pages.push([]);
 
@@ -79,25 +101,40 @@ const RelatedVideosGrid: React.FC<Props> = ({
 
     if (card.kind === 'queued') {
       const { item } = card;
+      const isMine = item.addedById === myUserId;
+      const pinner = participants.find(participant => participant.user_id === item.addedById);
+      const hasCurrentUserAvatar = isMine && (myAvatar !== undefined || myAvatarSticker !== undefined);
+      const avatarSticker = hasCurrentUserAvatar
+        ? myAvatarSticker
+        : pinner
+          ? pinner.avatar_sticker !== undefined
+            ? pinner.avatar_sticker
+            : item.addedByAvatarSticker
+          : item.addedByAvatarSticker;
+      const avatarUri = hasCurrentUserAvatar
+        ? myAvatar
+        : pinner
+          ? pinner.avatar !== undefined
+            ? pinner.avatar
+            : item.addedByAvatar
+          : item.addedByAvatar;
+
       return (
         <View key={key} style={styles.videoItem}>
           <Image source={{ uri: item.song.thumbnail }} style={styles.thumbnail} />
           {/* Pinner avatar badge — small rounded circle, top-left */}
           <View style={styles.avatarBadge}>
-            {item.addedByAvatar ? (
-              <Image source={{ uri: item.addedByAvatar }} style={styles.avatarBadgeImg} />
-            ) : (
-              <View style={[styles.avatarBadgeImg, styles.avatarBadgeFallback]}>
-                <Text style={styles.avatarBadgeFallbackText}>
-                  {(item.addedByName || '?').charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
+            <AvatarWithFallback
+              uri={avatarSticker ? undefined : avatarUri}
+              displayName={item.addedByName}
+              sticker={avatarSticker}
+              style={styles.avatarBadgeImage}
+            />
           </View>
           {/* Cancel — only meaningful for MY OWN pins; server enforces
               this anyway, but hiding it for others' pins avoids a
               confusing no-op tap. */}
-          {item.addedById === myUserId && (
+          {isMine && (
             <TouchableOpacity
               style={styles.cancelBadge}
               onPress={() => onUnpinVideo(item.song.videoId)}
@@ -143,13 +180,22 @@ const RelatedVideosGrid: React.FC<Props> = ({
           { useNativeDriver: false }
         ) : undefined}
         scrollEventThrottle={16}
-        renderItem={({ item: pageCards, index: pageIndex }) => (
-          <View style={styles.page}>
-            <View style={styles.grid}>
-              {pageCards.map((card, i) => renderCard(card, `${pageIndex}-${i}`))}
+        renderItem={({ item: pageCards, index: pageIndex }) => {
+          const col1 = pageCards.slice(0, 2);
+          const col2 = pageCards.slice(2, 4);
+          return (
+            <View style={styles.page}>
+              <View style={styles.grid}>
+                <View style={styles.column}>
+                  {col1.map((card, i) => renderCard(card, `${pageIndex}-c1-${i}`))}
+                </View>
+                <View style={styles.column}>
+                  {col2.map((card, i) => renderCard(card, `${pageIndex}-c2-${i}`))}
+                </View>
+              </View>
             </View>
-          </View>
-        )}
+          );
+        }}
       />
     </View>
   );
@@ -158,7 +204,8 @@ const RelatedVideosGrid: React.FC<Props> = ({
 const styles = StyleSheet.create({
   container: { padding: 0 },
   page: { width: width },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start', gap: 0 },
+  grid: { flexDirection: 'row', width: width },
+  column: { width: ITEM_WIDTH, flexDirection: 'column' },
   videoItem: { width: ITEM_WIDTH, height: ITEM_WIDTH * 0.5625, position: 'relative', overflow: 'hidden' },
   thumbnail: { width: '100%', height: '100%' },
   titleOverlay: {
@@ -178,16 +225,15 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 4,
     left: 4,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    zIndex: 2,
+  },
+  avatarBadgeImage: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     borderWidth: 1.5,
     borderColor: '#fff',
-    overflow: 'hidden',
   },
-  avatarBadgeImg: { width: '100%', height: '100%' },
-  avatarBadgeFallback: { backgroundColor: '#4597f5f6', justifyContent: 'center', alignItems: 'center' },
-  avatarBadgeFallbackText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   cancelBadge: {
     position: 'absolute',
     top: 4,

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+import { websocketService, WebSocketMessage } from '../../services/websocket';
 import {
   View,
   Text,
@@ -351,6 +352,26 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   }, [isAdding, isInvitingToCall, loadFriends, loadFriendRequests, loadAddModeUsers, navigation]);
 
   useEffect(() => {
+    const handleRemoteUpdate = () => {
+      loadFriends();
+      loadFriendRequests();
+    };
+
+    const sub = DeviceEventEmitter.addListener('friend_request_updated', handleRemoteUpdate);
+    const unsubWs = websocketService.onMessage((msg: WebSocketMessage) => {
+      if (msg.type === 'friend_request_update' || msg.type === 'friend_request_updated') {
+        handleRemoteUpdate();
+      }
+    });
+
+    return () => {
+      sub.remove();
+      unsubWs();
+    };
+  }, [loadFriends, loadFriendRequests]);
+
+
+  useEffect(() => {
     const tabParam = route?.params?.initialTab || route?.params?.tab;
     if (tabParam && (tabParam === 'approve' || tabParam === 'requests' || tabParam === 'friends')) {
       setActiveTab(tabParam as HubTab);
@@ -433,6 +454,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
       await chatAPI.sendFriendRequest(userId);
       setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'sent_pending' } : u));
       showToast('Friend Request Sent');
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'sent' });
       // Reload sent requests and switch to Sent tab
       await loadFriendRequests();
       // Small delay so user sees the toast first, then switch tab
@@ -456,6 +478,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     // Update UI optimistically regardless
     setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
     showToast('Friend Request Cancelled');
+    DeviceEventEmitter.emit('friend_request_updated', { action: 'cancelled' });
   };
 
   const handleAcceptFriendRequest = async (requestId: number) => {
@@ -464,6 +487,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
       showToast('Friend Request Accepted');
       // Notify ChatListScreen to refresh conversations + friends list.
       DeviceEventEmitter.emit('friend_request_accepted');
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'accepted' });
       await loadFriendRequests();
       await loadFriends();
     } catch {
@@ -475,6 +499,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     try {
       await chatAPI.rejectFriendRequest(requestId);
       showToast('Request Declined');
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'rejected' });
       await loadFriendRequests();
     } catch {
       Alert.alert('Error', 'Failed to decline friend request');
@@ -485,6 +510,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     try {
       await chatAPI.cancelFriendRequest(requestId);
       showToast('Request Cancelled');
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'cancelled' });
       await loadFriendRequests();
     } catch {
       Alert.alert('Error', 'Failed to cancel friend request');
@@ -505,6 +531,7 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     const req = friendRequests.find((r: any) => r.sender?.id === userId || r.from_user?.id === userId);
     if (req) await handleRejectFriendRequest(req.id);
     else showToast('Request Declined');
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'rejected' });
     setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
   };
 
@@ -833,6 +860,8 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
         </View>
       ) : (
         <FlatList
+          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator={false}
           data={displayData}
           keyExtractor={(item, i) => (item?.id ?? i).toString()}
           renderItem={

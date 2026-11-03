@@ -36,7 +36,9 @@ class SpeechRecognitionModule(private val reactContext: ReactApplicationContext)
     fun startListening(language: String?, promise: Promise) {
         UiThreadUtil.runOnUiThread {
             try {
-                if (!SpeechRecognizer.isRecognitionAvailable(reactContext)) {
+                val context = reactContext.currentActivity ?: reactContext
+                val available = SpeechRecognizer.isRecognitionAvailable(context) || SpeechRecognizer.isRecognitionAvailable(reactContext)
+                if (!available) {
                     promise.reject("E_NOT_AVAILABLE", "Speech recognition is not available on this device")
                     return@runOnUiThread
                 }
@@ -47,7 +49,7 @@ class SpeechRecognitionModule(private val reactContext: ReactApplicationContext)
                 } catch (e: Exception) {}
                 speechRecognizer = null
 
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(reactContext).apply {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
                     setRecognitionListener(object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
                             sendEvent("onSpeechReady", null)
@@ -116,6 +118,11 @@ class SpeechRecognitionModule(private val reactContext: ReactApplicationContext)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    // Extend silence-detection timeout to 5 seconds
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+                    // Ensure minimum listening time so short words/numbers are captured
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
                     if (!language.isNullOrEmpty()) {
                         putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
                     }

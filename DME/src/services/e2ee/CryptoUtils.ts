@@ -3,6 +3,7 @@ import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256, sha512 } from '@noble/hashes/sha2.js';
+import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { encode, decode } from 'base64-arraybuffer';
 
@@ -16,7 +17,7 @@ declare const global: any;
 /** Generate cryptographically secure random bytes */
 export function generateRandomBytes(length: number): Uint8Array {
     const bytes = new Uint8Array(length);
-    const g = typeof global !== 'undefined' ? global : (typeof window !== 'undefined' ? (window as any) : {});
+    const g: any = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : {});
     if (g.crypto && typeof g.crypto.getRandomValues === 'function') {
         return g.crypto.getRandomValues(bytes);
     }
@@ -121,7 +122,8 @@ export function uint8ArrayToBase64(arr: Uint8Array): string {
 
 /** Convert Base64 string to Uint8Array */
 export function base64ToUint8Array(str: string): Uint8Array {
-    return new Uint8Array(decode(str));
+    const clean = (str || '').replace(/[^A-Za-z0-9+/=]/g, '');
+    return new Uint8Array(decode(clean));
 }
 
 /** Convert UTF-8 string to Uint8Array */
@@ -150,4 +152,24 @@ export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
         offset += arr.length;
     }
     return result;
+}
+
+/** Convert Uint8Array to Hex string */
+export function bytesToHex(bytes: Uint8Array): string {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Convert Hex string to Uint8Array */
+export function hexToBytes(hex: string): Uint8Array {
+    const cleanHex = hex.replace(/[^0-9a-fA-F]/g, '');
+    const bytes = new Uint8Array(cleanHex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(cleanHex.substr(i * 2, 2), 16);
+    }
+    return bytes;
+}
+
+/** Derive a 256-bit AES key from a password / PIN using PBKDF2 */
+export function deriveKeyFromPassword(password: string, salt: Uint8Array, iterations = 10000, keyLength = 32): Uint8Array {
+    return pbkdf2(sha256, utf8ToBytes(password), salt, { c: iterations, dkLen: keyLength });
 }

@@ -14,6 +14,7 @@ import {
   Platform,
   NativeModules,
   Animated,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -88,6 +89,7 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
   const [conversations, setConversations] = useState<any[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [searchChatQuery, setSearchChatQuery] = useState('');
+  const [selectedDurationHours, setSelectedDurationHours] = useState<number>(4);
   const [sendingChallengeId, setSendingChallengeId] = useState<number | null>(null);
 
   // ── Center-screen custom fade toast (Friend Request Style) ──
@@ -146,15 +148,41 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
 
   const handleSendChallenge = async (conv: any) => {
     if (!selectedSetForChallenge) return;
+    const memberCount = Number(conv.participants_count) || (Array.isArray(conv.participants) ? conv.participants.length : 0);
+    if (memberCount < 4) {
+      Alert.alert(
+        'Group Ineligible',
+        `This group currently has ${Math.max(0, memberCount - 1)} other members. A contest requires a minimum of 4 total members (at least 3 other participants).`,
+      );
+      return;
+    }
+
     setSendingChallengeId(conv.id);
     try {
-      const payload = createChallengePayload(selectedSetForChallenge, user, conv.id);
+      const eligible = Array.isArray(conv.participants)
+        ? conv.participants
+            .filter((p: any) => String(p.user?.id || p.id) !== String(user?.id))
+            .map((p: any) => ({
+              id: p.user?.id || p.id,
+              name: p.user?.name || p.user?.username || 'Member',
+              username: p.user?.username,
+            }))
+        : [];
+
+      const payload = createChallengePayload(
+        selectedSetForChallenge,
+        user,
+        conv.id,
+        selectedDurationHours,
+        conv.name || conv.title || 'Group Chat',
+        eligible,
+      );
       await sendChallengeToConversation(conv.id, payload);
       setChallengeModalVisible(false);
-      showToast('24h Challenge Sent');
+      showToast(`Contest Hosted (${selectedDurationHours}h window)`);
     } catch (error) {
       console.error('Error sending challenge:', error);
-      showToast('Failed to Send Challenge');
+      showToast('Failed to Send Contest');
     } finally {
       setSendingChallengeId(null);
     }
@@ -176,7 +204,50 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
           NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
         }
       } catch (_) {}
-    }, [theme.background, isDark])
+
+      const onBackPress = () => {
+        if (challengeModalVisible) {
+          setChallengeModalVisible(false);
+          return true;
+        }
+        if (deleteModalVisible) {
+          setDeleteModalVisible(false);
+          return true;
+        }
+        if (savedSuccessModalVisible) {
+          setSavedSuccessModalVisible(false);
+          return true;
+        }
+        if (previewVisible) {
+          setPreviewVisible(false);
+          return true;
+        }
+        if (manualCreatorVisible) {
+          setManualCreatorVisible(false);
+          return true;
+        }
+        if (helpVisible) {
+          setHelpVisible(false);
+          return true;
+        }
+
+        const state = navigation.getState?.();
+        const routes = state?.routes || [];
+        const prevRoute = routes.length >= 2 ? routes[routes.length - 2] : null;
+
+        if (prevRoute && prevRoute.name === 'TriviaSolo') {
+          navigation.navigate('TriviaHub');
+        } else if (navigation.canGoBack()) {
+          navigation.goBack();
+        } else {
+          navigation.navigate('TriviaHub');
+        }
+        return true;
+      };
+
+      const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => backSub.remove();
+    }, [theme.background, isDark, challengeModalVisible, deleteModalVisible, savedSuccessModalVisible, previewVisible, manualCreatorVisible, helpVisible, navigation])
   );
 
   const loadSets = async () => {
@@ -443,12 +514,12 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
               onPress={() => handleEditSet(item)}
               disabled={editingLoadingId === item.id}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={[styles.cardActionIconBtn, { backgroundColor: isDark ? 'rgba(56,189,248,0.15)' : '#EFF6FF' }]}
+              style={[styles.cardActionIconBtn, { backgroundColor: isDark ? 'rgba(148,163,184,0.15)' : '#F1F5F9' }]}
             >
               {editingLoadingId === item.id ? (
-                <ActivityIndicator size="small" color={isDark ? '#38BDF8' : '#0F62FE'} />
+                <ActivityIndicator size="small" color={isDark ? '#94A3B8' : '#64748B'} />
               ) : (
-                <Icon name="pencil" size={16} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                <Icon name="create-outline" size={17} color={isDark ? '#94A3B8' : '#64748B'} />
               )}
             </TouchableOpacity>
             <TouchableOpacity
@@ -467,14 +538,14 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
 
         <View style={styles.cardButtonsRow}>
           <TouchableOpacity style={styles.playButtonHalf} onPress={() => handlePlaySet(item)} activeOpacity={0.85}>
-            <LinearGradient colors={['#10B981', '#059669']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.playGradient}>
-              <Icon name="play" size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
-              <Text style={styles.playButtonText}>Practice</Text>
+            <LinearGradient colors={['#FACC15', '#EAB308']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.playGradient}>
+              <Icon name="play" size={16} color="#1E293B" style={{ marginRight: 4 }} />
+              <Text style={[styles.playButtonText, { color: '#1E293B', fontWeight: '800' }]}>Practice</Text>
             </LinearGradient>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.challengeButtonHalf} onPress={() => handleOpenChallengeModal(item)} activeOpacity={0.85}>
-            <LinearGradient colors={['#4F46E5', '#7C3AED']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.playGradient}>
+            <LinearGradient colors={['#F97316', '#EA580C']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.playGradient}>
               <Icon name="trophy" size={15} color="#FFFFFF" style={{ marginRight: 4 }} />
               <Text style={styles.playButtonText}>Host</Text>
             </LinearGradient>
@@ -501,11 +572,23 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
           },
         ]}
       >
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => {
+          const state = navigation.getState?.();
+          const routes = state?.routes || [];
+          const prevRoute = routes.length >= 2 ? routes[routes.length - 2] : null;
+
+          if (prevRoute && prevRoute.name === 'TriviaSolo') {
+            navigation.navigate('TriviaHub');
+          } else if (navigation.canGoBack()) {
+            navigation.goBack();
+          } else {
+            navigation.navigate('TriviaHub');
+          }
+        }}>
           <Icon name="arrow-back" size={24} color={theme.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerTitleRow}>
-          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>My Sets</Text>
+          <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Contest List</Text>
           {sets.length > 0 && (
             <View style={[styles.headerCountBadge, { backgroundColor: isDark ? 'rgba(56,189,248,0.18)' : '#DBEAFE' }]}>
               <Text style={[styles.headerCountText, { color: isDark ? '#38BDF8' : '#1D4ED8' }]}>{sets.length}</Text>
@@ -513,13 +596,7 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
           )}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <TouchableOpacity
-            style={[styles.helpButton, { marginRight: 0 }]}
-            onPress={() => navigation.navigate('TriviaChallenges')}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Icon name="trophy-outline" size={22} color="#8B5CF6" />
-          </TouchableOpacity>
+          
           <TouchableOpacity style={styles.helpButton} onPress={() => setHelpVisible(true)}>
             <Icon name="help-circle-outline" size={24} color={isDark ? '#38BDF8' : '#0F62FE'} />
           </TouchableOpacity>
@@ -536,9 +613,9 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
           <View style={[styles.emptyIconCircle, { backgroundColor: isDark ? 'rgba(56,189,248,0.12)' : '#EFF6FF' }]}>
             <Icon name="library-outline" size={54} color={isDark ? '#38BDF8' : '#0F62FE'} />
           </View>
-          <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>No Created Sets Yet</Text>
+          <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>No Contests Created Yet</Text>
           <Text style={[styles.emptySubtitle, { color: theme.textSecondary }]}>
-            Create your first quiz using AI PDF converter, TXT/CSV import, or manual builder!
+            Create your first contest using AI PDF converter, TXT/CSV import, or manual builder!
           </Text>
           <TouchableOpacity
             style={styles.emptyCreateBtn}
@@ -546,13 +623,13 @@ export const CustomTriviaSetsScreen: React.FC<CustomTriviaSetsScreenProps> = ({ 
             activeOpacity={0.85}
           >
             <LinearGradient
-              colors={['#0F62FE', '#0052CC']}
+              colors={isDark ? ['#0284C7', '#0369A1'] : ['#2563EB', '#1D4ED8']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={styles.emptyCreateBtnGradient}
             >
               <Icon name="add-circle" size={20} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.emptyCreateBtnText}>Create Quiz Set</Text>
+              <Text style={styles.emptyCreateBtnText}>Create Contest</Text>
             </LinearGradient>
           </TouchableOpacity>
         </View>
@@ -1211,61 +1288,151 @@ d) Rome`}</Text>
               ) : null}
             </View>
 
-            {/* Conversations List */}
-            <Text style={[styles.challengeSectionTitle, { color: theme.textSecondary }]}>SELECT A CHAT OR GROUP</Text>
+            {/* ── Duration Picker ── */}
+            <View style={{ marginBottom: 14 }}>
+              <Text style={[styles.challengeSectionTitle, { color: theme.textSecondary, marginBottom: 6 }]}>
+                CONTEST PARTICIPATION TIME (MINIMUM 4 HOURS)
+              </Text>
+              <View style={styles.durationSelectorRow}>
+                {[4, 8, 12, 24].map(h => (
+                  <TouchableOpacity
+                    key={h}
+                    onPress={() => setSelectedDurationHours(h)}
+                    style={[
+                      styles.durationOptionBtn,
+                      {
+                        backgroundColor: selectedDurationHours === h
+                          ? (isDark ? 'rgba(245,158,11,0.22)' : '#FEF3C7')
+                          : (isDark ? 'rgba(255,255,255,0.04)' : '#F1F5F9'),
+                        borderColor: selectedDurationHours === h
+                          ? '#F59E0B'
+                          : (isDark ? 'rgba(255,255,255,0.08)' : '#E2E8F0'),
+                      },
+                    ]}
+                    activeOpacity={0.8}
+                  >
+                    <Icon
+                      name="timer-outline"
+                      size={13}
+                      color={selectedDurationHours === h ? '#D97706' : (isDark ? '#94A3B8' : '#64748B')}
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text
+                      style={[
+                        styles.durationOptionText,
+                        {
+                          color: selectedDurationHours === h
+                            ? (isDark ? '#FBBF24' : '#B45309')
+                            : (isDark ? '#94A3B8' : '#64748B'),
+                          fontWeight: selectedDurationHours === h ? '800' : '600',
+                        },
+                      ]}
+                    >
+                      {h}h
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* Conversations List - ONLY GROUPS WITH >= 4 MEMBERS */}
+            <Text style={[styles.challengeSectionTitle, { color: theme.textSecondary }]}>
+              SELECT A GROUP CHAT (MIN 4 MEMBERS)
+            </Text>
 
             {loadingConversations ? (
               <View style={{ paddingVertical: 40, alignItems: 'center' }}>
-                <ActivityIndicator size="small" color="#4F46E5" />
-                <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 8 }}>Loading chats...</Text>
+                <ActivityIndicator size="small" color="#F97316" />
+                <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 8 }}>Loading groups...</Text>
               </View>
-            ) : (
-              <ScrollView style={styles.challengeChatList} showsVerticalScrollIndicator={false}>
-                {(Array.isArray(conversations) ? conversations : [])
-                  .filter(c => {
-                    if (!c) return false;
-                    if (!searchChatQuery.trim()) return true;
-                    const query = searchChatQuery.toLowerCase();
-                    const name = (c.name || c.title || c.user?.name || c.user?.username || c.other_user?.name || c.other_user?.username || '').toLowerCase();
-                    return name.includes(query);
-                  })
-                  .map(conv => {
-                    const isGroup = conv.is_group || conv.type === 'group';
-                    const convName = conv.name || conv.title || conv.other_user?.name || conv.other_user?.username || conv.user?.name || conv.user?.username || (isGroup ? 'Group Chat' : 'Friend');
+            ) : (() => {
+              const groupList = (Array.isArray(conversations) ? conversations : [])
+                .filter(c => c && (c.is_group || c.type === 'group'))
+                .filter(c => {
+                  if (!searchChatQuery.trim()) return true;
+                  const query = searchChatQuery.toLowerCase();
+                  const name = (c.name || c.title || '').toLowerCase();
+                  return name.includes(query);
+                });
+
+              if (groupList.length === 0) {
+                return (
+                  <View style={{ paddingVertical: 24, paddingHorizontal: 12, alignItems: 'center' }}>
+                    <Icon name="people-outline" size={32} color={isDark ? '#64748B' : '#94A3B8'} style={{ marginBottom: 6 }} />
+                    <Text style={{ color: theme.textSecondary, fontSize: 13, textAlign: 'center', fontWeight: '600' }}>
+                      No group chats found.
+                    </Text>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11, textAlign: 'center', marginTop: 4, opacity: 0.8 }}>
+                      Contests require a group with at least 4 members.
+                    </Text>
+                  </View>
+                );
+              }
+
+              return (
+                <ScrollView style={styles.challengeChatList} showsVerticalScrollIndicator={false}>
+                  {groupList.map(conv => {
+                    const convName = conv.name || conv.title || 'Group Chat';
+                    const memberCount = Number(conv.participants_count) || (Array.isArray(conv.participants) ? conv.participants.length : 0);
+                    const isEligible = memberCount >= 4;
+                    const otherMembersCount = Math.max(0, memberCount - 1);
                     const isSending = sendingChallengeId === conv.id;
 
                     return (
                       <TouchableOpacity
                         key={conv.id}
-                        style={[styles.challengeChatRow, { borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9' }]}
-                        onPress={() => handleSendChallenge(conv)}
-                        disabled={!!sendingChallengeId}
-                        activeOpacity={0.7}
+                        style={[
+                          styles.challengeChatRow,
+                          {
+                            borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9',
+                            opacity: isEligible ? 1 : 0.48,
+                          },
+                        ]}
+                        onPress={() => isEligible && handleSendChallenge(conv)}
+                        disabled={!isEligible || !!sendingChallengeId}
+                        activeOpacity={isEligible ? 0.7 : 1}
                       >
-                        <View style={[styles.challengeAvatarBox, { backgroundColor: isGroup ? '#F59E0B' : '#4F46E5' }]}>
-                          <Icon name={isGroup ? 'people' : 'person'} size={18} color="#FFFFFF" />
+                        <View style={[styles.challengeAvatarBox, { backgroundColor: isEligible ? '#F97316' : '#64748B' }]}>
+                          <Icon name="people" size={18} color="#FFFFFF" />
                         </View>
                         <View style={{ flex: 1, marginLeft: 12 }}>
-                          <Text style={[styles.challengeChatName, { color: theme.textPrimary }]} numberOfLines={1}>
+                          <Text style={[styles.challengeChatName, { color: isEligible ? theme.textPrimary : theme.textSecondary }]} numberOfLines={1}>
                             {convName}
                           </Text>
-                          <Text style={[styles.challengeChatType, { color: theme.textSecondary }]}>
-                            {isGroup ? '👥 Group Chat' : '👤 Direct Message'}
-                          </Text>
+                          {isEligible ? (
+                            <Text style={[styles.challengeChatType, { color: '#10B981', fontWeight: '600' }]}>
+                              👥 {memberCount} members • Contest Window: {selectedDurationHours}h
+                            </Text>
+                          ) : (
+                            <Text style={[styles.challengeChatType, { color: '#EF4444', fontWeight: '600' }]}>
+                              ⚠️ Requires at least 3 other members to host a contest (currently {otherMembersCount} members)
+                            </Text>
+                          )}
                         </View>
                         {isSending ? (
-                          <ActivityIndicator size="small" color="#4F46E5" />
+                          <ActivityIndicator size="small" color="#F97316" />
                         ) : (
-                          <View style={styles.challengeSendBadge}>
-                            <Icon name="send" size={14} color="#4F46E5" />
-                            <Text style={styles.challengeSendText}>Send</Text>
+                          <View style={[
+                            styles.challengeSendBadge,
+                            {
+                              backgroundColor: isEligible ? 'rgba(249,115,22,0.12)' : 'rgba(100,116,139,0.12)',
+                            },
+                          ]}>
+                            <Icon name="send" size={14} color={isEligible ? '#F97316' : '#94A3B8'} />
+                            <Text style={[
+                              styles.challengeSendText,
+                              { color: isEligible ? '#F97316' : '#94A3B8' },
+                            ]}>
+                              Send
+                            </Text>
                           </View>
                         )}
                       </TouchableOpacity>
                     );
                   })}
-              </ScrollView>
-            )}
+                </ScrollView>
+              );
+            })()}
           </View>
         </View>
       </Modal>
@@ -1572,7 +1739,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginTop: 6,
     elevation: 3,
-    shadowColor: '#10B981',
+    shadowColor: '#EAB308',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -1599,7 +1766,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     elevation: 3,
-    shadowColor: '#10B981',
+    shadowColor: '#EAB308',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -1609,7 +1776,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     elevation: 3,
-    shadowColor: '#4F46E5',
+    shadowColor: '#EA580C',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
@@ -1693,8 +1860,24 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 8,
   },
+  durationSelectorRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  durationOptionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  durationOptionText: {
+    fontSize: 12,
+  },
   challengeChatList: {
-    maxHeight: 220,
+    maxHeight: 260,
   },
   challengeChatRow: {
     flexDirection: 'row',
@@ -2207,7 +2390,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: 'hidden',
     elevation: 4,
-    shadowColor: '#10B981',
+    shadowColor: '#EAB308',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 6,

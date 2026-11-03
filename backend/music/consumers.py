@@ -41,6 +41,7 @@ class MusicConsumer(AsyncWebsocketConsumer):
 
         # Add participant
         music_rooms[self.room_code]['participants'][self.user.id] = {
+            'id': self.user.id,
             'user_id': self.user.id,
             'name': self.user.computed_display_name, # ✅ Use better name
             'avatar': self.user.clean_profile_picture_url, # ✅ Add avatar
@@ -171,11 +172,18 @@ class MusicConsumer(AsyncWebsocketConsumer):
             return
 
         participant = room['participants'].get(self.user.id, {})
+        latest_avatar = await self.get_user_avatar_data(self.user.id)
+        participant = {
+            **participant,
+            **latest_avatar,
+        }
+        room['participants'][self.user.id] = participant
         item = {
             'song': song,
             'added_by_id': self.user.id,
-            'added_by_name': participant.get('name') or self.user.computed_display_name,
+            'added_by_name': participant.get('name') or latest_avatar['name'],
             'added_by_avatar': participant.get('avatar'),
+            'added_by_avatar_sticker': participant.get('avatar_sticker'),
             'pinned_at': time.time(),
         }
 
@@ -188,6 +196,10 @@ class MusicConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'queue_update', 'queue': room['queue']}
+        )
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'participant_update', 'participants': list(room['participants'].values())}
         )
 
     async def receive(self, text_data):
@@ -307,6 +319,9 @@ class MusicConsumer(AsyncWebsocketConsumer):
                     'type': 'chat_message',
                     'id': str(uuid.uuid4()),
                     'user': self.user.display_name or self.user.email,
+                    'user_id': self.user.id,
+                    'avatar': self.user.clean_profile_picture_url,
+                    'avatar_sticker': self.user.avatar_sticker,
                     'text': data.get('text', ''),
                     'reply_to': data.get('reply_to'),
                     'media_url': data.get('media_url'),
@@ -383,6 +398,55 @@ class MusicConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+        elif msg_type == 'switch_dj' and is_dj:
+            raw_target = data.get('target_user_id')
+            try:
+                target_user_id = int(raw_target)
+            except (TypeError, ValueError):
+                target_user_id = None
+
+            if target_user_id and target_user_id in room['participants'] and target_user_id != self.user.id:
+                old_host_id = room['host_id']
+                room['host_id'] = target_user_id
+
+                if old_host_id in room['participants']:
+                    room['participants'][old_host_id]['is_dj'] = False
+                room['participants'][target_user_id]['is_dj'] = True
+
+                # Ensure new DJ has mic permission
+                allowed_speakers = list(room.get('allowed_speakers', []))
+                if target_user_id not in allowed_speakers:
+                    allowed_speakers.append(target_user_id)
+                room['allowed_speakers'] = allowed_speakers
+
+                new_dj_name = room['participants'][target_user_id].get('name') or 'Someone'
+                old_dj_name = room['participants'].get(old_host_id, {}).get('name') or self.user.computed_display_name
+
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'dj_switched',
+                        'new_dj_id': target_user_id,
+                        'old_dj_id': old_host_id,
+                        'new_dj_name': new_dj_name,
+                        'old_dj_name': old_dj_name,
+                        'participants': list(room['participants'].values()),
+                        'allowed_speakers': room['allowed_speakers']
+                    }
+                )
+
+                # Announce in room chat
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'chat_message',
+                        'id': str(uuid.uuid4()),
+                        'user': 'System',
+                        'text': f"👑 {old_dj_name} made {new_dj_name} the Leader!",
+                        'message_type': 'system'
+                    }
+                )
+
         # ── WebRTC Signaling Relay (stateless — server only forwards to target) ──
         elif msg_type in ('webrtc_offer', 'webrtc_answer', 'webrtc_ice', 'webrtc_request_offer'):
             target_user_id = data.get('to_user_id')
@@ -430,6 +494,20 @@ class MusicConsumer(AsyncWebsocketConsumer):
             }
         }))
 
+    async def dj_switched(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'dj_switched',
+            'data': {
+                'new_dj_id': event['new_dj_id'],
+                'old_dj_id': event['old_dj_id'],
+                'new_dj_name': event.get('new_dj_name', ''),
+                'old_dj_name': event.get('old_dj_name', ''),
+                'participants': event['participants'],
+                'allowed_speakers': event['allowed_speakers'],
+                'is_dj': self.user.id == event['new_dj_id']
+            }
+        }))
+
     async def dj_background(self, event):
         await self.send(text_data=json.dumps({
             'type': 'dj_background',
@@ -452,6 +530,9 @@ class MusicConsumer(AsyncWebsocketConsumer):
             'data': {
                 'id': event.get('id'),
                 'user': event['user'],
+                'user_id': event.get('user_id'),
+                'avatar': event.get('avatar'),
+                'avatar_sticker': event.get('avatar_sticker'),
                 'text': event['text'],
                 'reply_to': event.get('reply_to'),
                 'media_url': event.get('media_url'),
@@ -535,3 +616,14 @@ class MusicConsumer(AsyncWebsocketConsumer):
             return User.objects.get(id=user_id)
         except User.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def get_user_avatar_data(self, user_id):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.get(id=user_id)
+        return {
+            'name': user.computed_display_name,
+            'avatar': user.clean_profile_picture_url,
+            'avatar_sticker': user.avatar_sticker,
+        }

@@ -10,11 +10,13 @@ import {
   isNoSavedCredentialFoundResponse, isCancelledResponse,
   isErrorWithCode,
 } from 'react-native-nitro-google-signin';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { pinNavBarColor } from '../utils/navBarPin';
+import LegalModal, { LegalTabType } from '../components/LegalModal';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -43,6 +45,13 @@ const GoogleLoginScreen = () => {
   const { theme, isDark } = useTheme();
   const [isOpeningGoogle, setIsOpeningGoogle] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [legalModalVisible, setLegalModalVisible] = useState(false);
+  const [legalModalTab, setLegalModalTab] = useState<LegalTabType>('privacy');
+
+  const openLegalModal = (tab: LegalTabType) => {
+    setLegalModalTab(tab);
+    setLegalModalVisible(true);
+  };
 
   // Animations
   const earthGlowPulse = useRef(new Animated.Value(0.75)).current;
@@ -185,8 +194,12 @@ const GoogleLoginScreen = () => {
     try {
       await GoogleOneTapSignIn.checkPlayServices();
 
-      // Open the compact half-screen bottom sheet with scrollable account picker
-      let response = await GoogleOneTapSignIn.createAccount();
+      // Open the full extended Sign-in with Google account picker modal (explicit flow)
+      let response = await GoogleOneTapSignIn.presentExplicitSignIn();
+
+      if (isNoSavedCredentialFoundResponse(response)) {
+        response = await GoogleOneTapSignIn.createAccount();
+      }
 
       if (isCancelledResponse(response)) {
         console.log('[Google Login] User cancelled sign-in');
@@ -201,8 +214,16 @@ const GoogleLoginScreen = () => {
       }
 
       if (isSuccessResponse(response)) {
-        const { idToken } = response.data;
+        const { idToken, user: googleUser } = response.data;
         if (!idToken) throw new Error('No ID token received from Google');
+
+        if (googleUser?.photo) {
+          try {
+            await AsyncStorage.setItem('pending_google_photo', googleUser.photo);
+          } catch (e) {
+            console.error('[Google Login] Error caching Google photo:', e);
+          }
+        }
 
         setLoading(true);
         setIsOpeningGoogle(false);
@@ -334,7 +355,7 @@ const GoogleLoginScreen = () => {
       {/* ── Deep Cosmos Background (Dark top & bottom, light sky blue in center) ── */}
       <View style={StyleSheet.absoluteFillObject}>
         <LinearGradient
-          colors={['#020408', '#050E1E', '#0B2548', '#050E1E', '#020408']}
+          colors={['#020408', '#152e59', '#4382DF', '#4382DF', '#4382DF']}
           locations={[0, 0.25, 0.50, 0.75, 1]}
           style={StyleSheet.absoluteFillObject}
           start={{ x: 0.5, y: 0 }}
@@ -342,13 +363,6 @@ const GoogleLoginScreen = () => {
         />
       </View>
 
-      {/* ── Center Ambient Sky Blue Aura ── */}
-      <View style={styles.centerAuraContainer} pointerEvents="none">
-        <LinearGradient
-          colors={['rgba(56, 189, 248, 0.25)', 'rgba(14, 165, 233, 0.12)', 'transparent']}
-          style={styles.centerAura}
-        />
-      </View>
 
       {/* ── Minimal Galaxy Sky & Starfield ── */}
       <View style={styles.skyContainer} pointerEvents="none">
@@ -423,10 +437,10 @@ const GoogleLoginScreen = () => {
         {/* Curved Planet Limb Body */}
         <LinearGradient
           colors={[
-            'rgba(30, 64, 175, 0.42)',
-            'rgba(14, 30, 60, 0.75)',
-            '#060B18',
-            '#030509',
+            '#2196F3',
+            '#90CAF9',
+            '#E3F2FD',
+            '#ffffff',
           ]}
           style={styles.earthBodyGradient}
           start={{ x: 0.5, y: 0 }}
@@ -437,8 +451,16 @@ const GoogleLoginScreen = () => {
       {/* ── Centered Screen Content ── */}
       <View style={styles.content}>
         <View style={styles.centerContainer}>
-          {/* App Logo */}
+          {/* App Logo Framed by Bright White Moon Disc */}
           <View style={styles.logoWrapper}>
+            <View style={styles.moonDisc} pointerEvents="none">
+              <LinearGradient
+                colors={['#FFFFFF', '#F8FAFC', '#EEF2F6']}
+                style={styles.moonGradient}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+              />
+            </View>
             <Image
               source={require('../assets/logo.png')}
               style={styles.logoImage}
@@ -447,10 +469,19 @@ const GoogleLoginScreen = () => {
           </View>
 
           {/* App Title */}
-          <Text style={styles.appName}>Yesenta</Text>
-          <Text style={styles.tagline}>
+          <View
+            accessible={true}
+            accessibilityRole="header"
+            accessibilityLabel="YOUTELITE"
+            style={styles.brandTitleContainer}
+          >
+            <Text style={styles.brandTitleText}>YOUT</Text>
+            <Text style={[styles.brandTitleText, styles.brandLetterE]}>E</Text>
+            <Text style={styles.brandTitleText}>LITE</Text>
+          </View>
+          {/* <Text style={styles.tagline}>
             Moments made better together.
-          </Text>
+          </Text> */}
 
           {/* ── Glowing Google Button with Wave Loading ── */}
           <Animated.View
@@ -526,7 +557,7 @@ const GoogleLoginScreen = () => {
                   {/* Button Text with 3-dot Loading Wave Animation */}
                   {isOpeningGoogle ? (
                     <View style={styles.buttonTextRow}>
-                      <Text style={styles.googleButtonText}>Connecting with Google</Text>
+                      <Text style={styles.googleButtonText}>Connecting</Text>
                       <View style={styles.dotsContainer}>
                         <Animated.View
                           style={[
@@ -568,8 +599,19 @@ const GoogleLoginScreen = () => {
           {/* Terms and Privacy Footer */}
           <Text style={styles.footer}>
             By continuing, you agree to our{' '}
-            <Text style={styles.footerLink}>Terms of Service</Text> and{' '}
-            <Text style={styles.footerLink}>Privacy Policy</Text>
+            <Text
+              style={styles.footerLink}
+              onPress={() => openLegalModal('terms')}
+            >
+              Terms of Service
+            </Text>
+            {' '}and{' '}
+            <Text
+              style={styles.footerLink}
+              onPress={() => openLegalModal('privacy')}
+            >
+              Privacy Policy
+            </Text>
           </Text>
         </View>
       </View>
@@ -577,10 +619,17 @@ const GoogleLoginScreen = () => {
       {/* Full Screen Loading Indicator for Server Sync */}
       {loading && (
         <View style={styles.fullScreenLoader} pointerEvents="auto">
-          <ActivityIndicator color="#FFFFFF" size="large" />
+          <ActivityIndicator color="#000000" size="large" />
           <Text style={styles.loaderText}>Signing in...</Text>
         </View>
       )}
+
+      {/* In-App Terms & Privacy Policy Viewer Modal */}
+      <LegalModal
+        visible={legalModalVisible}
+        initialTab={legalModalTab}
+        onClose={() => setLegalModalVisible(false)}
+      />
     </View>
   );
 };
@@ -588,27 +637,11 @@ const GoogleLoginScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#050811',
+    backgroundColor: '#ffffff',
   },
   skyContainer: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
-  },
-  centerAuraContainer: {
-    position: 'absolute',
-    top: SCREEN_HEIGHT * 0.22,
-    left: (SCREEN_WIDTH - 300) / 2,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  centerAura: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 150,
   },
   starDot: {
     position: 'absolute',
@@ -687,13 +720,34 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   logoWrapper: {
+    width: 144,
+    height: 144,
     marginBottom: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  moonDisc: {
+    position: 'absolute',
+    width: 144,
+    height: 144,
+    borderRadius: 72,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.95,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  moonGradient: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 72,
+  },
   logoImage: {
-    width: 120,
-    height: 120,
+    width: 128,
+    height: 128,
   },
   appName: {
     fontSize: 44,
@@ -702,6 +756,23 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
     marginTop: 4,
     marginBottom: 8,
+  },
+  brandTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  brandTitleText: {
+    fontFamily: 'ClashDisplay-Bold',
+    fontSize: 34,
+    color: '#FFFFFF',
+    letterSpacing: 1.8,
+    includeFontPadding: false,
+  },
+  brandLetterE: {
+    marginHorizontal: 1.8,
   },
   tagline: {
     fontSize: 15,
@@ -728,7 +799,7 @@ const styles = StyleSheet.create({
   },
   buttonGradientBorder: {
     padding: 1.8,
-    borderRadius: 16,
+    borderRadius: 35,
   },
   buttonInner: {
     flexDirection: 'row',
@@ -737,7 +808,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     paddingVertical: 16,
     paddingHorizontal: 24,
-    borderRadius: 14.5,
+    borderRadius: 30,
     overflow: 'hidden',
   },
   waveShimmerOverlay: {
@@ -750,15 +821,16 @@ const styles = StyleSheet.create({
   dotsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 3,
+    marginLeft: 6,
+    marginTop:4,
     gap: 3.5,
     height: 18,
     justifyContent: 'center',
   },
   loadingDot: {
-    width: 3.5,
-    height: 3.5,
-    borderRadius: 2,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#0F172A',
   },
   googleIcon: {
@@ -774,26 +846,29 @@ const styles = StyleSheet.create({
   },
   footer: {
     fontSize: 12,
-    color: '#64748B',
+    color: 'rgba(255, 255, 255, 0.82)',
     textAlign: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 24,
     lineHeight: 18,
+    marginTop: 8,
     marginBottom: 8,
+    maxWidth: 320,
   },
   footerLink: {
-    color: '#94A3B8',
+    color: '#FFFFFF',
+    fontWeight: '700',
     textDecorationLine: 'underline',
   },
   fullScreenLoader: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#050811',
+    backgroundColor: '#ffffff',
     zIndex: 999,
     elevation: 999,
   },
   loaderText: {
-    color: '#E0F2FE',
+    color: '#000000',
     fontSize: 15,
     fontWeight: '600',
     marginTop: 14,

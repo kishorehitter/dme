@@ -12,6 +12,7 @@ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 
 import com.facebook.react.modules.network.OkHttpClientFactory
 import com.facebook.react.modules.network.OkHttpClientProvider
+import com.DME.shaders.DualSurfacePlayerPackage
 import okhttp3.OkHttpClient
 
 class MainApplication : Application(), ReactApplication {
@@ -32,6 +33,8 @@ class MainApplication : Application(), ReactApplication {
           add(MusicServicePackage())
           add(NavBarPackage())   // ✅ new
           add(SpeechRecognitionPackage())
+          add(PipPackage())
+          add(DualSurfacePlayerPackage())
         },
     )
   }

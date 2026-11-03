@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import IdentityKey, SignedPreKey, OneTimePreKey
+from .models import IdentityKey, SignedPreKey, OneTimePreKey, E2EEBackup
 
 class IdentityKeySerializer(serializers.ModelSerializer):
     class Meta:
@@ -28,3 +28,16 @@ class PreKeyBundleResponseSerializer(serializers.Serializer):
     identity_key = serializers.CharField()
     signed_prekey = SignedPreKeySerializer()
     one_time_prekey = OneTimePreKeySerializer(allow_null=True)
+
+class E2EEBackupSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = E2EEBackup
+        fields = [
+            'salt',
+            'encrypted_backup_key_pin',
+            'encrypted_backup_key_recovery',
+            'encrypted_payload',
+            'version',
+            'updated_at',
+        ]
+        read_only_fields = ['updated_at']

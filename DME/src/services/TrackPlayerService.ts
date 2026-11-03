@@ -204,6 +204,14 @@ const tryInnerTubeExtraction = async (videoId: string): Promise<{ url?: string; 
                 continue;
             }
 
+            if (streamingData.hlsManifestUrl) {
+                console.log(`🎵 [InnerTube - ${client.name}] Live stream HLS audio acquired`);
+                return {
+                    url: streamingData.hlsManifestUrl,
+                    duration: 0,
+                };
+            }
+
             const adaptiveFormats: any[] = streamingData.adaptiveFormats || [];
             const muxedFormats: any[] = streamingData.formats || [];
 
@@ -385,30 +393,38 @@ export function buildDashMpdXml(
         const initR = formatRange(f.initRange);
         const indexR = formatRange(f.indexRange);
         const isRealUrl = Boolean(f.url && typeof f.url === 'string' && f.url.startsWith('http') && !f.url.includes('[object Object]'));
-        const isMp4 = Boolean(!f.mimeType || f.mimeType.startsWith('video/mp4') || f.mimeType.includes('avc1'));
-        // Support full HD (1080p) and QHD (1440p) representations in DASH manifest
-        const isMaxResolution = (f.height || 0) <= 1440;
-        return Boolean(initR && indexR && isRealUrl && isMp4 && isMaxResolution);
+        const isSupportedCodec = Boolean(
+            !f.mimeType ||
+            f.mimeType.startsWith('video/mp4') ||
+            f.mimeType.includes('avc1') ||
+            f.mimeType.includes('av01') ||
+            f.mimeType.includes('vp9') ||
+            f.mimeType.includes('vp09')
+        );
+        // Support full HD (1080p), QHD (1440p), and 4K UHD (2160p) representations in DASH manifest
+        const isMaxResolution = (f.height || 0) <= 2160;
+        return Boolean(initR && indexR && isRealUrl && isSupportedCodec && isMaxResolution);
     });
     if (validVideoStreams.length === 0) {
         return null;
     }
     const durationStr = `PT${Math.max(1, durationSeconds || 0).toFixed(1)}S`;
 
-    // Sort by height descending: 1440p, 1080p, 720p, 480p, 360p, 240p, 144p
+    // Sort by height descending: 2160p, 1440p, 1080p, 720p, 480p, 360p, 240p, 144p
     validVideoStreams.sort((a, b) => (b.height || 0) - (a.height || 0));
 
     const videoReps = validVideoStreams.map((f, idx) => {
         const height = f.height || 360;
         const width = f.width || Math.round(height * (16 / 9));
-        const bitrate = f.bitrate || (height >= 1080 ? 4500000 : height >= 720 ? 2500000 : 1000000);
-        const codecs = f.mimeType?.match(/codecs="?([^";,]+)"?/)?.[1] || 'avc1.4d401f';
+        const bitrate = f.bitrate || (height >= 2160 ? 15000000 : height >= 1440 ? 8000000 : height >= 1080 ? 4500000 : height >= 720 ? 2500000 : 1000000);
+        const codecs = f.mimeType?.match(/codecs="?([^";]+)"?/)?.[1] || (height >= 2160 ? 'av01.0.13M.08' : 'avc1.4d401f');
+        const repMime = f.mimeType?.split(';')[0]?.trim() || 'video/mp4';
         const initRange = formatRange(f.initRange);
         const indexRange = formatRange(f.indexRange);
         const safeUrl = (f.url || '').replace(/&/g, '&amp;');
         const fps = (f as any).fps || 30;
 
-        return `      <Representation id="video_${height}p_${idx}" width="${width}" height="${height}" maxPlayoutRate="1" frameRate="${fps}" bandwidth="${bitrate}" codecs="${codecs}">
+        return `      <Representation id="video_${height}p_${idx}" mimeType="${repMime}" width="${width}" height="${height}" maxPlayoutRate="1" frameRate="${fps}" bandwidth="${bitrate}" codecs="${codecs}">
         <BaseURL>${safeUrl}</BaseURL>
         <SegmentBase indexRange="${indexRange}">
           <Initialization range="${initRange}" />
@@ -446,10 +462,13 @@ export function buildDashMpdXml(
 
     console.log(`[MPD] Building DASH manifest: ${validVideoStreams.length} video representations (max ${validVideoStreams[0]?.height}p), audio: ${audioAdaptationSet ? 'included (ExoPlayer unified A/V)' : 'none'}`);
 
+    const allMp4 = validVideoStreams.every(f => !f.mimeType || f.mimeType.startsWith('video/mp4'));
+    const adaptationMimeAttr = allMp4 ? ' mimeType="video/mp4"' : '';
+
     return `<?xml version="1.0" encoding="utf-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:full:2011" minBufferTime="PT1.5S" type="static" mediaPresentationDuration="${durationStr}">
   <Period>
-    <AdaptationSet id="0" contentType="video" mimeType="video/mp4" subsegmentAlignment="true" startWithSAP="1" scanType="progressive">
+    <AdaptationSet id="0" contentType="video"${adaptationMimeAttr} subsegmentAlignment="true" startWithSAP="1" scanType="progressive">
 ${videoReps}
     </AdaptationSet>${audioAdaptationSet}
   </Period>
@@ -526,6 +545,31 @@ const tryInvidiousVideoStreams = async (instance: string, videoId: string): Prom
         timeout: 4000,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
+    if (res.data?.hlsUrl) {
+        const liveStream: ExtractedVideoStream = {
+            url: res.data.hlsUrl,
+            height: 1080,
+            width: 1920,
+            quality: 'Live Stream',
+            qualityKey: 'auto',
+            has_audio: true,
+            streamType: 'm3u8' as const,
+            mimeType: 'application/x-mpegURL',
+            audio_url: null,
+        };
+        return {
+            url: res.data.hlsUrl,
+            quality: 'Live Stream',
+            duration: 0,
+            title: res.data?.title,
+            channelTitle: res.data?.author,
+            streamType: 'm3u8',
+            streams: [liveStream],
+            audioUrl: null,
+            dashUrl: null,
+        };
+    }
+
     const adaptiveFormats: any[] = res.data?.adaptiveFormats || [];
     const formatStreams: any[] = res.data?.formatStreams || [];
     const allFormats = [...adaptiveFormats, ...formatStreams];
@@ -589,10 +633,35 @@ const tryInvidiousVideoStreams = async (instance: string, videoId: string): Prom
     };
 };
 
+// In-memory stream cache for instant (0ms) continuous queue transitions
+const extractedVideoCache = new Map<string, { result: ExtractedVideoResult; timestamp: number }>();
+const VIDEO_CACHE_TTL = 20 * 60 * 1000; // 20 minutes
+
+export const clearVideoStreamCache = (videoId?: string) => {
+    if (videoId) {
+        extractedVideoCache.delete(videoId);
+    } else {
+        extractedVideoCache.clear();
+    }
+};
+
+const cacheAndReturnVideo = (videoId: string, res: ExtractedVideoResult): ExtractedVideoResult => {
+    extractedVideoCache.set(videoId, { result: res, timestamp: Date.now() });
+    return res;
+};
+
 // Client-side progressive video extractor (with both audio and video muxed)
 export const extractVideoStreamUrlClientSide = async (
-    videoId: string
+    videoId: string,
+    bypassCache: boolean = false
 ): Promise<ExtractedVideoResult> => {
+    if (!bypassCache) {
+        const cached = extractedVideoCache.get(videoId);
+        if (cached && (Date.now() - cached.timestamp < VIDEO_CACHE_TTL)) {
+            console.log(`⚡ [DirectExtract] Cache HIT for video: ${videoId} (DASH: ${Boolean(cached.result.dashUrl)})`);
+            return cached.result;
+        }
+    }
     // ── STEP 0: Direct mobile watch-page extraction (Rave architecture) ──
     // Fetches m.youtube.com which delivers ALL adaptive formats (144p→4K) with
     // signatureCipher, initRange, and indexRange — essential for building a valid
@@ -607,6 +676,36 @@ export const extractVideoStreamUrlClientSide = async (
         // Use extractVideo (not extractVideoDirect) so the in-flight deduplication map
         // prevents two parallel callers from firing duplicate watch-page + ANDROID API fetches.
         const workerResult = await YouTubeDecipherService.extractVideo(videoId);
+        if (workerResult && (workerResult.hlsManifestUrl || workerResult.isLive || (workerResult.formats && workerResult.formats.some((f: any) => f.isLive)))) {
+            const hlsUrl = workerResult.hlsManifestUrl || workerResult.formats?.find((f: any) => f.isLive || f.itag === 96)?.url;
+            if (hlsUrl) {
+                console.log(`🔴 [DirectExtract] Live stream HLS acquired for ${videoId}`);
+                const liveStream: ExtractedVideoStream = {
+                    url: hlsUrl,
+                    height: 1080,
+                    width: 1920,
+                    quality: 'Live Stream',
+                    qualityKey: 'auto',
+                    has_audio: true,
+                    streamType: 'm3u8',
+                    mimeType: 'application/x-mpegURL',
+                    audio_url: null,
+                    bitrate: 5000000,
+                };
+                return cacheAndReturnVideo(videoId, {
+                    url: hlsUrl,
+                    quality: 'Live Stream',
+                    duration: 0,
+                    title: workerResult.title,
+                    channelTitle: workerResult.channelTitle,
+                    streamType: 'm3u8',
+                    streams: [liveStream],
+                    audioUrl: null,
+                    dashUrl: null,
+                    fallbackProgressiveUrl: hlsUrl,
+                });
+            }
+        }
         if (workerResult && workerResult.formats && workerResult.formats.length > 0) {
             const duration = workerResult.duration || 0;
             const allFmts = workerResult.formats;
@@ -654,26 +753,64 @@ export const extractVideoStreamUrlClientSide = async (
                 const dashHeightMap = new Map<number, ExtractedVideoStream>();
                 let progressiveMuxed: ExtractedVideoStream | null = null;
 
+                const getStreamScore = (fmt: ExtractedVideoStream): number => {
+                    const mime = fmt.mimeType || '';
+                    const isMp4 = mime.startsWith('video/mp4');
+                    const isAvc = mime.includes('avc1');
+                    const isAv1 = mime.includes('av01');
+                    const isVp = mime.includes('vp9') || mime.includes('vp09');
+                    const isHdr = mime.includes('.10.') || ((fmt as any).qualityLabel && (fmt as any).qualityLabel.includes('HDR'));
+
+                    let codecRank = 0;
+                    if (isMp4 && isAvc) {
+                        codecRank = 40; // Universally hardware-accelerated for <=1080p
+                    } else if (isMp4 && isAv1) {
+                        codecRank = 30; // AV1 in MP4 container for 1440p & 2160p
+                    } else if (isMp4) {
+                        codecRank = 20;
+                    } else if (isVp) {
+                        codecRank = 10; // VP9 WebM
+                    }
+
+                    const hdrPenalty = isHdr ? -2 : 0;
+                    return (codecRank + hdrPenalty) * 100000000 + (fmt.bitrate || 0);
+                };
+
                 streamObjects.forEach(s => {
                     if (s.has_audio && !progressiveMuxed) {
                         progressiveMuxed = s;
                     }
 
-                    // For DASH: must have valid initRange and indexRange and be MP4 H.264
+                    // For DASH: must have valid initRange and indexRange
                     const hasRanges = Boolean(s.initRange && s.indexRange);
-                    if (hasRanges && (s.height || 0) <= 1440) {
-                        const isMp4 = !s.mimeType || s.mimeType.startsWith('video/mp4') || s.mimeType.includes('avc1');
-                        if (isMp4) {
-                            const existing = dashHeightMap.get(s.height);
-                            const isAvc = Boolean(s.mimeType?.includes('avc1'));
-                            const existIsAvc = Boolean(existing?.mimeType?.includes('avc1'));
-                            if (!existing) {
-                                dashHeightMap.set(s.height, s);
-                            } else if (isAvc && !existIsAvc) {
-                                dashHeightMap.set(s.height, s);
-                            } else if ((isAvc === existIsAvc) && (s.bitrate || 0) > (existing.bitrate || 0)) {
-                                dashHeightMap.set(s.height, s);
-                            }
+                    if (!hasRanges) return;
+
+                    const isSupported = Boolean(
+                        !s.mimeType ||
+                        s.mimeType.startsWith('video/mp4') ||
+                        s.mimeType.includes('avc1') ||
+                        s.mimeType.includes('av01') ||
+                        s.mimeType.includes('vp9') ||
+                        s.mimeType.includes('vp09')
+                    );
+                    if (!isSupported) return;
+
+                    // Support up to 2160p (4K UHD) representations in DASH
+                    let effH = s.height || 0;
+                    if (effH > 2160) {
+                        // 8K streams (4320p): map to 2160p tier so 4K option is populated if 2160p wasn't directly provided
+                        effH = 2160;
+                    }
+
+                    if (effH > 0 && effH <= 2160) {
+                        const existing = dashHeightMap.get(effH);
+                        if (!existing || getStreamScore(s) > getStreamScore(existing)) {
+                            dashHeightMap.set(effH, {
+                                ...s,
+                                height: effH,
+                                quality: effH === 2160 ? '2160p' : s.quality,
+                                qualityKey: effH === 2160 ? 'hd2160' : s.qualityKey,
+                            });
                         }
                     }
                 });
@@ -718,21 +855,56 @@ export const extractVideoStreamUrlClientSide = async (
                     }
                 }
 
-                const bestStream = uniqueStreams[0];
-                const progUrl = (progressiveMuxed as ExtractedVideoStream | null)?.url || null;
-                return {
-                    url: dashMpdUri || progUrl || bestStream.url,
-                    quality: bestStream.quality,
+                const progUrl = (progressiveMuxed as ExtractedVideoStream | null)?.url || workerResult.androidProgressiveUrl || null;
+                const finalStreams = [...uniqueStreams];
+                if (progUrl && !finalStreams.some(s => s.has_audio)) {
+                    finalStreams.push({
+                        url: progUrl,
+                        height: 360,
+                        width: 640,
+                        quality: '360p',
+                        qualityKey: '360p',
+                        has_audio: true,
+                        streamType: 'mp4',
+                    } as any);
+                }
+                const bestStream = finalStreams[0];
+                return cacheAndReturnVideo(videoId, {
+                    url: dashMpdUri || progUrl || bestStream?.url,
+                    quality: dashMpdUri ? (bestStream?.quality || 'auto') : (progUrl ? '360p' : (bestStream?.quality || 'auto')),
                     duration,
                     title: workerResult.title,
                     channelTitle: workerResult.channelTitle,
                     streamType: dashMpdUri ? 'mpd' : 'mp4',
-                    streams: uniqueStreams,
+                    streams: finalStreams,
                     audioUrl: bestAudio?.url || null,
                     dashUrl: dashMpdUri,
                     fallbackProgressiveUrl: workerResult.androidProgressiveUrl || progUrl,
-                };
+                });
             }
+        }
+        if (workerResult && workerResult.androidProgressiveUrl && (!workerResult.formats || workerResult.formats.length === 0)) {
+            console.log('🤖 [DirectExtract] Using direct Android progressive stream fallback');
+            return cacheAndReturnVideo(videoId, {
+                url: workerResult.androidProgressiveUrl,
+                quality: '360p',
+                duration: workerResult.duration || 0,
+                title: workerResult.title,
+                channelTitle: workerResult.channelTitle,
+                streamType: 'mp4',
+                streams: [{
+                    url: workerResult.androidProgressiveUrl,
+                    height: 360,
+                    width: 640,
+                    quality: '360p',
+                    qualityKey: '360p',
+                    has_audio: true,
+                    streamType: 'mp4',
+                } as any],
+                audioUrl: null,
+                dashUrl: null,
+                fallbackProgressiveUrl: workerResult.androidProgressiveUrl,
+            });
         }
     } catch (workerErr: any) {
         console.warn('⚠️ [DirectExtract] extractVideoDirect failed, proceeding to InnerTube:', workerErr?.message || workerErr);
@@ -871,6 +1043,34 @@ export const extractVideoStreamUrlClientSide = async (
                 console.log(`📡 [InnerTube - ${client.name}] Playability: ${playability}, streamingData: ${Boolean(playerResponse.streamingData)}, adaptive: ${playerResponse.streamingData?.adaptiveFormats?.length || 0}`);
                 const streamingData = playerResponse.streamingData;
                 if (streamingData) {
+                    if (streamingData.hlsManifestUrl) {
+                        console.log(`🔴 [InnerTube - ${client.name}] Live stream HLS manifest acquired for ${videoId}`);
+                        const liveStream: ExtractedVideoStream = {
+                            url: streamingData.hlsManifestUrl,
+                            height: 1080,
+                            width: 1920,
+                            quality: 'Live Stream',
+                            qualityKey: 'auto',
+                            has_audio: true,
+                            streamType: 'm3u8',
+                            mimeType: 'application/x-mpegURL',
+                            audio_url: null,
+                            bitrate: 5000000,
+                        };
+                        return cacheAndReturnVideo(videoId, {
+                            url: streamingData.hlsManifestUrl,
+                            quality: 'Live Stream',
+                            duration: 0,
+                            title: playerResponse.videoDetails?.title,
+                            channelTitle: playerResponse.videoDetails?.author,
+                            streamType: 'm3u8',
+                            streams: [liveStream],
+                            audioUrl: null,
+                            dashUrl: null,
+                            fallbackProgressiveUrl: streamingData.hlsManifestUrl,
+                        });
+                    }
+
                     const duration = parseInt(playerResponse.videoDetails?.lengthSeconds || '0', 10);
                     const adaptiveFormats: any[] = streamingData.adaptiveFormats || [];
                     const muxedFormats: any[] = streamingData.formats || [];
@@ -1032,7 +1232,7 @@ export const extractVideoStreamUrlClientSide = async (
 
                         console.log(`✅ [InnerTube Video - ${client.name}] Found ${uniqueStreams.length} qualities (Max: ${bestStream.height}p, DASH: ${Boolean(dashMpdUri)}, hasAudio: ${Boolean(dashMpdUri || streamWithAudio)})`);
                         if (bestStream.height >= 720 && (dashMpdUri || streamWithAudio)) {
-                            return itResult;
+                            return cacheAndReturnVideo(videoId, itResult);
                         }
                         innerTubeFallback = itResult;
                     }
@@ -1070,21 +1270,21 @@ export const extractVideoStreamUrlClientSide = async (
                 }
             });
             const mergedStreams = Array.from(mergedMap.values()).sort((a, b) => b.height - a.height);
-            return {
+            return cacheAndReturnVideo(videoId, {
                 url: mergedStreams[0].url,
                 quality: mergedStreams[0].quality,
                 duration: publicResult.duration || innerTubeFallback.duration || 0,
                 streamType: 'mp4',
                 streams: mergedStreams,
-            };
+            });
         }
 
-        return publicResult;
+        return cacheAndReturnVideo(videoId, publicResult);
     } catch (e: any) {
         // If public extractors failed but InnerTube had a working stream (e.g. 360p), use InnerTube!
         if (innerTubeFallback && innerTubeFallback.url) {
             console.log(`ℹ️ [Client-Side Extraction] Using InnerTube fallback (${innerTubeFallback.quality})`);
-            return innerTubeFallback;
+            return cacheAndReturnVideo(videoId, innerTubeFallback);
         }
         console.warn('❌ [Client-Side Extraction] All video extractors failed:', e?.message || e);
         throw new Error('All video stream extraction methods failed');

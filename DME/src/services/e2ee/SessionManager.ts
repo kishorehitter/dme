@@ -172,16 +172,7 @@ export class SessionManager {
                     state = await initFromEnvelope();
                 }
                 if (!state) {
-                    // Attempt fallback auto-session creation
-                    try {
-                        console.log(`[E2EE] No session for sender ${sid}, trying auto-handshake recovery...`);
-                        state = await this.getOrCreateSession(sid);
-                    } catch (hsErr) {
-                        // Handshake recovery not possible without bundle
-                    }
-                }
-                if (!state) {
-                    throw new Error("No session found and message is not initial");
+                    throw new Error(`No active session found for sender ${sid} and message lacks ephemeral key`);
                 }
             }
 
@@ -212,8 +203,8 @@ export class SessionManager {
                         console.warn('[E2EE] Re-init recovery failed:', retryErr);
                     }
                 }
-                // Clear the desynchronized session so the next new handshake starts clean
-                await this.deleteSession(sid);
+                // Do not delete the active user session here! Wiping the session causes all future and subsequent messages to fail.
+                console.warn(`[E2EE] Message decryption failed for sender ${sid}`);
                 throw decryptErr;
             }
         } catch (e) {
@@ -251,5 +242,44 @@ export class SessionManager {
         const sessionStr = await AsyncStorage.getItem(key);
         if (!sessionStr) return null;
         return DoubleRatchet.deserializeState(sessionStr);
+    }
+
+    /** Export all active sessions for current user */
+    static async exportAllSessions(): Promise<{ [userId: string]: string }> {
+        try {
+            const myId = await getActiveUserId();
+            const prefix = `dme_session_${myId}_`;
+            const allKeys = await AsyncStorage.getAllKeys();
+            const sessionKeys = allKeys.filter(k => k.startsWith(prefix));
+            const pairs = await AsyncStorage.multiGet(sessionKeys);
+            const sessions: { [userId: string]: string } = {};
+            for (const [key, val] of pairs) {
+                if (val) {
+                    const otherUid = key.replace(prefix, '');
+                    sessions[otherUid] = val;
+                }
+            }
+            return sessions;
+        } catch {
+            return {};
+        }
+    }
+
+    /** Import sessions for current user */
+    static async importAllSessions(sessions: { [userId: string]: string }): Promise<void> {
+        if (!sessions) return;
+        try {
+            const myId = await getActiveUserId();
+            const prefix = `dme_session_${myId}_`;
+            const entries: [string, string][] = Object.entries(sessions).map(([otherUid, val]) => [
+                `${prefix}${otherUid}`,
+                val
+            ]);
+            if (entries.length > 0) {
+                await AsyncStorage.multiSet(entries);
+            }
+        } catch (e) {
+            console.warn('Failed to import sessions:', e);
+        }
     }
 }

@@ -28,7 +28,6 @@ import {
   StyleSheet,
   Dimensions,
   ActivityIndicator,
-  StatusBar,
   Platform,
   Alert,
   Animated,
@@ -256,23 +255,29 @@ export const CustomGalleryPicker: React.FC<Props> = ({
 
   const skipRestoreRef = useRef(false);
 
+  const isClosingRef = useRef(false);
+
   const handleClosePress = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    Keyboard.dismiss();
 
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: SHEET_HEIGHT,
-        duration: 120,
+        duration: 160,
         useNativeDriver: true,
       }),
       Animated.timing(backdropOpacity, {
         toValue: 0,
-        duration: 100,
+        duration: 140,
         useNativeDriver: true,
       })
     ]).start(() => {
+      isClosingRef.current = false;
       onClose();
     });
-  }, [onClose, translateY, backdropOpacity, restoreNavBarColor]);
+  }, [onClose, translateY, backdropOpacity]);
 
   useEffect(() => {
     Animated.timing(sendBarAnim, {
@@ -282,11 +287,13 @@ export const CustomGalleryPicker: React.FC<Props> = ({
     }).start();
   }, [selectedCount, sendBarAnim]);
 
-
-
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      isClosingRef.current = false;
+      return;
+    }
     let active = true;
+    isClosingRef.current = false;
 
     // Reset tab to photos immediately when opening to avoid stale state from previous opens
     setActiveTab('photos');
@@ -327,8 +334,7 @@ export const CustomGalleryPicker: React.FC<Props> = ({
       setSelected({});
       // Do NOT reset activeTab here to prevent visual layout jump/flicker while closing the modal
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, loadAlbums, resetAndLoad]);
+  }, [visible]);
 
   const loadAlbums = useCallback(async () => {
     try {
@@ -630,10 +636,9 @@ export const CustomGalleryPicker: React.FC<Props> = ({
       visible={visible}
       transparent={true}
       animationType="none"
-      statusBarTranslucent
+      statusBarTranslucent={true}
       onRequestClose={handleClosePress}
     >
-      <StatusBar backgroundColor="transparent" barStyle={isDark ? "light-content" : "dark-content"} translucent />
       <View style={styles.modalOverlay}>
         {/* Backdrop click to dismiss */}
         <TouchableOpacity

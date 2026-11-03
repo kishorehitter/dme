@@ -13,10 +13,12 @@ import {
   Platform,
   NativeModules,
   Keyboard,
+  KeyboardAvoidingView,
   PermissionsAndroid,
   DeviceEventEmitter,
   Animated,
   Easing,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -84,7 +86,15 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-  const [setName, setSetName] = useState('');
+  const [setName, setSetName] = useState(route?.params?.prefillTitle || '');
+
+  // Title edit modal
+  const [titleEditModalVisible, setTitleEditModalVisible] = useState(false);
+  const [titleEditDraft, setTitleEditDraft] = useState('');
+  const TITLE_MAX_LENGTH = 50;
+  // Format guidance modal
+  const [guidanceModalVisible, setGuidanceModalVisible] = useState(false);
+  const [guidanceTab, setGuidanceTab] = useState<CreationMode>('pdf');
   const [successQuestions, setSuccessQuestions] = useState<Question[] | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[] | null>(null);
   const [genericError, setGenericError] = useState<string | null>(null);
@@ -93,9 +103,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   const [savedSetData, setSavedSetData] = useState<any | null>(null);
 
   // Manual In-App Builder state
-  const [manualQuestions, setManualQuestions] = useState<Question[]>([
-    { text: '', choices: ['', '', '', ''], correctIndex: 0 },
-  ]);
+  const [manualQuestions, setManualQuestions] = useState<Question[]>([]);
 
   const resetState = () => {
     setSuccessQuestions(null);
@@ -112,12 +120,9 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   };
 
   const handleRemoveManualQuestion = (index: number) => {
-    if (manualQuestions.length <= 1) {
-      Alert.alert('Cannot Remove', 'Your quiz must have at least 1 question.');
-      return;
-    }
     const updated = manualQuestions.filter((_, i) => i !== index);
     setManualQuestions(updated);
+    manualQuestionsRef.current = updated;
   };
 
   const handleUpdateManualQuestionText = (index: number, text: string) => {
@@ -131,6 +136,12 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
     const choices = [...updated[qIndex].choices];
     choices[cIndex] = text;
     updated[qIndex].choices = choices;
+    setManualQuestions(updated);
+  };
+
+  const handleSetManualCorrect = (qIndex: number, cIndex: number) => {
+    const updated = [...manualQuestions];
+    updated[qIndex].correctIndex = cIndex;
     setManualQuestions(updated);
   };
 
@@ -173,8 +184,45 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   const setNameRef = useRef(setName);
   setNameRef.current = setName;
 
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (voiceModalVisible) {
+          setVoiceModalVisible(false);
+          return true;
+        }
+        if (guidanceModalVisible) {
+          setGuidanceModalVisible(false);
+          return true;
+        }
+        if (titleEditModalVisible) {
+          setTitleEditModalVisible(false);
+          return true;
+        }
+        if (savedSuccessModalVisible) {
+          setSavedSuccessModalVisible(false);
+          return true;
+        }
+        if (navigation.canGoBack()) {
+          navigation.goBack();
+        } else {
+          navigation.navigate('TriviaHub');
+        }
+        return true;
+      };
+
+      const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => backSub.remove();
+    }, [voiceModalVisible, guidanceModalVisible, titleEditModalVisible, savedSuccessModalVisible, navigation])
+  );
+
   useEffect(() => {
+    const subReady = DeviceEventEmitter.addListener('onSpeechReady', () => {
+      console.log('Speech recognition ready');
+      setIsVoiceListening(true);
+    });
     const subStart = DeviceEventEmitter.addListener('onSpeechStart', () => {
+      console.log('Speech recognition started');
       setIsVoiceListening(true);
     });
     const subPartial = DeviceEventEmitter.addListener('onSpeechPartialResults', (e: { text?: string }) => {
@@ -188,14 +236,23 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
       }
       setIsVoiceListening(false);
     });
-    const subError = DeviceEventEmitter.addListener('onSpeechError', () => {
+    const subError = DeviceEventEmitter.addListener('onSpeechError', (e: { code?: number; message?: string }) => {
+      console.log('onSpeechError:', e);
       setIsVoiceListening(false);
+      if (e?.code === 9) {
+        Alert.alert(
+          'Microphone Permission Required',
+          'Please grant microphone permission to use voice dictation. You can also type directly in the text field.'
+        );
+      }
     });
     const subEnd = DeviceEventEmitter.addListener('onSpeechEnd', () => {
+      console.log('Speech recognition ended');
       setIsVoiceListening(false);
     });
 
     return () => {
+      subReady.remove();
       subStart.remove();
       subPartial.remove();
       subResults.remove();
@@ -231,14 +288,14 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   }, [voiceModalVisible, isVoiceListening]);
 
   const getVoiceTargetTitle = () => {
-    if (!voiceTarget) return 'Voice Input';
-    if (voiceTarget === 'title') return '📝 Quiz Title';
-    if (voiceTarget.type === 'question') return `❓ Question ${voiceTarget.qIndex + 1}`;
+    if (!voiceTarget) return 'Question Builder';
+    if (voiceTarget === 'title') return 'Quiz Title';
+    if (voiceTarget.type === 'question') return `Question ${voiceTarget.qIndex + 1}`;
     if (voiceTarget.type === 'choice') {
       const letters = ['A', 'B', 'C', 'D'];
-      return `🔘 Q${voiceTarget.qIndex + 1} • Option ${letters[voiceTarget.cIndex]} (${voiceTarget.cIndex + 1}/4)`;
+      return `Question ${voiceTarget.qIndex + 1} • Option ${letters[voiceTarget.cIndex]} (${voiceTarget.cIndex + 1}/4)`;
     }
-    return 'Voice Input';
+    return 'Question Builder';
   };
 
   const getNextVoiceTarget = (currentTarget: VoiceTarget): { nextTarget: VoiceTarget; needNewQuestion: boolean } => {
@@ -255,7 +312,6 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
           needNewQuestion: false,
         };
       } else {
-        // Finished Option D! Check if next question exists or if we should add one
         const nextQIndex = currentTarget.qIndex + 1;
         const needNew = nextQIndex >= manualQuestionsRef.current.length;
         return {
@@ -267,37 +323,162 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
     return { nextTarget: { type: 'question', qIndex: 0 }, needNewQuestion: false };
   };
 
+  const findResumeTarget = (questions: Question[]): { target: VoiceTarget; needNewQuestion: boolean } => {
+    if (!questions || questions.length === 0) {
+      return { target: { type: 'question', qIndex: 0 }, needNewQuestion: true };
+    }
+    for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+      const q = questions[qIdx];
+      if (!q.text || !q.text.trim()) {
+        return { target: { type: 'question', qIndex: qIdx }, needNewQuestion: false };
+      }
+      for (let cIdx = 0; cIdx < 4; cIdx++) {
+        if (!q.choices?.[cIdx] || !q.choices[cIdx].trim()) {
+          return { target: { type: 'choice', qIndex: qIdx, cIndex: cIdx }, needNewQuestion: false };
+        }
+      }
+    }
+    return { target: { type: 'question', qIndex: questions.length }, needNewQuestion: true };
+  };
+
+  const pruneTrailingEmptyQuestions = (list: Question[]): Question[] => {
+    const updated = [...list];
+    while (
+      updated.length > 0 &&
+      !updated[updated.length - 1].text?.trim() &&
+      (!updated[updated.length - 1].choices || updated[updated.length - 1].choices.every(c => !c || !c.trim()))
+    ) {
+      updated.pop();
+    }
+    return updated;
+  };
+
+  const ensureAudioPermission = async (): Promise<boolean> => {
+    if (Platform.OS !== 'android') return true;
+    try {
+      const hasPerm = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+      if (hasPerm) return true;
+      const res = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, {
+        title: 'Microphone Permission',
+        message: 'Speech recognition requires microphone access to dictate quiz questions.',
+        buttonPositive: 'Allow',
+        buttonNegative: 'Cancel',
+      });
+      return res === PermissionsAndroid.RESULTS.GRANTED;
+    } catch (e) {
+      console.log('Permission check error:', e);
+      return false;
+    }
+  };
+
+  const startSpeechListening = async () => {
+    if (Platform.OS !== 'android') return;
+    try {
+      const granted = await ensureAudioPermission();
+      if (!granted) {
+        setIsVoiceListening(false);
+        Alert.alert(
+          'Microphone Permission Required',
+          'Please grant microphone permission to use voice dictation. You can also type directly in the text field.'
+        );
+        return;
+      }
+      setIsVoiceListening(true);
+      if (NativeModules.SpeechRecognition?.startListening) {
+        await NativeModules.SpeechRecognition.startListening(null);
+      }
+    } catch (err: any) {
+      console.log('Speech recognition start error:', err);
+      setIsVoiceListening(false);
+      Alert.alert(
+        'Speech Recognition Unavailable',
+        err?.message || 'Could not start speech recognition. Please ensure Google Speech Services are enabled.'
+      );
+    }
+  };
+
+  const stopSpeechListening = async () => {
+    setIsVoiceListening(false);
+    try {
+      if (Platform.OS === 'android' && NativeModules.SpeechRecognition?.stopListening) {
+        await NativeModules.SpeechRecognition.stopListening();
+      }
+    } catch (e) {}
+  };
+
+  const handleToggleMic = async () => {
+    if (isVoiceListening) {
+      await stopSpeechListening();
+    } else {
+      await startSpeechListening();
+    }
+  };
+
   const advanceToTarget = async (target: VoiceTarget, needNewQuestion: boolean) => {
+    let currentList = manualQuestionsRef.current;
     if (needNewQuestion) {
       const newQuestionItem: Question = { text: '', choices: ['', '', '', ''], correctIndex: 0 };
-      const updatedList = [...manualQuestionsRef.current, newQuestionItem];
-      setManualQuestions(updatedList);
-      manualQuestionsRef.current = updatedList;
+      currentList = [...currentList, newQuestionItem];
+      setManualQuestions(currentList);
+      manualQuestionsRef.current = currentList;
     }
 
     setVoiceTarget(target);
-    setVoiceLiveText('');
-    setIsVoiceListening(true);
+
+    let initialText = '';
+    if (target === 'title') {
+      initialText = setNameRef.current || '';
+    } else if (target.type === 'question') {
+      initialText = currentList[target.qIndex]?.text || '';
+    } else if (target.type === 'choice') {
+      initialText = currentList[target.qIndex]?.choices?.[target.cIndex] || '';
+    }
+    setVoiceLiveText(initialText);
     setVoiceModalVisible(true);
 
-    // Scroll to the targeted field smoothly
     if (target === 'title') {
       scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-    } else if (target.type === 'question') {
-      handleQuestionFocus(target.qIndex);
-    } else if (target.type === 'choice') {
-      handleChoiceFocus(target.qIndex, target.cIndex);
     }
 
-    setTimeout(async () => {
+    if (Platform.OS === 'android') {
       try {
-        if (Platform.OS === 'android' && NativeModules.SpeechRecognition?.startListening) {
-          await NativeModules.SpeechRecognition.startListening(null);
+        const hasPerm = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+        if (hasPerm) {
+          setIsVoiceListening(true);
+          setTimeout(async () => {
+            try {
+              if (NativeModules.SpeechRecognition?.startListening) {
+                await NativeModules.SpeechRecognition.startListening(null);
+              }
+            } catch (err) {
+              console.log('Speech recognition start error in wizard:', err);
+              setIsVoiceListening(false);
+            }
+          }, 350);
+        } else {
+          setIsVoiceListening(false);
         }
-      } catch (err) {
-        console.log('Error restarting speech recognition in auto flow:', err);
+      } catch (e) {
+        setIsVoiceListening(false);
       }
-    }, 250);
+    }
+  };
+
+  const handleStartManualWizard = async () => {
+    await ensureAudioPermission();
+    const resume = findResumeTarget(manualQuestionsRef.current);
+    advanceToTarget(resume.target, resume.needNewQuestion);
+  };
+
+  const handleContinueManualWizard = async () => {
+    await ensureAudioPermission();
+    const resume = findResumeTarget(manualQuestionsRef.current);
+    advanceToTarget(resume.target, resume.needNewQuestion);
+  };
+
+  const handleEditManualQuestion = async (qIndex: number) => {
+    await ensureAudioPermission();
+    advanceToTarget({ type: 'question', qIndex }, false);
   };
 
   const handleStartAutoVoiceFlow = async () => {
@@ -312,7 +493,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
             buttonNegative: 'Cancel',
           });
           if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            Alert.alert('Permission Denied', 'Microphone permission is required for Auto Voice Flow.');
+            Alert.alert('Permission Denied', 'Microphone permission is required for Voice Typing.');
             return;
           }
         }
@@ -320,10 +501,10 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
 
       setIsAutoVoiceActive(true);
       isAutoVoiceActiveRef.current = true;
-      const startTarget: VoiceTarget = !setNameRef.current.trim() ? 'title' : { type: 'question', qIndex: 0 };
-      advanceToTarget(startTarget, false);
+      const resume = findResumeTarget(manualQuestionsRef.current);
+      advanceToTarget(resume.target, resume.needNewQuestion);
     } catch (e: any) {
-      console.log('Error starting auto voice flow:', e);
+      console.log('Error starting Voice Typing:', e);
       setIsAutoVoiceActive(false);
       isAutoVoiceActiveRef.current = false;
     }
@@ -338,29 +519,14 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
       }
     } catch (e) {}
 
+    const pruned = pruneTrailingEmptyQuestions(manualQuestionsRef.current);
+    setManualQuestions(pruned);
+    manualQuestionsRef.current = pruned;
+
     setVoiceModalVisible(false);
     setIsVoiceListening(false);
     setVoiceTarget(null);
     setVoiceLiveText('');
-  };
-
-  const handleSkipVoiceField = async () => {
-    const target = voiceTargetRef.current;
-    try {
-      if (Platform.OS === 'android' && NativeModules.SpeechRecognition?.stopListening) {
-        await NativeModules.SpeechRecognition.stopListening();
-      }
-    } catch (e) {}
-
-    if (isAutoVoiceActiveRef.current && target) {
-      const { nextTarget, needNewQuestion } = getNextVoiceTarget(target);
-      advanceToTarget(nextTarget, needNewQuestion);
-    } else {
-      setVoiceModalVisible(false);
-      setIsVoiceListening(false);
-      setVoiceTarget(null);
-      setVoiceLiveText('');
-    }
   };
 
   const handleSpeechInput = async (target: VoiceTarget) => {
@@ -382,16 +548,9 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
 
         setIsAutoVoiceActive(false);
         isAutoVoiceActiveRef.current = false;
-        setVoiceTarget(target);
-        setVoiceLiveText('');
-        setIsVoiceListening(true);
-        setVoiceModalVisible(true);
-
-        if (NativeModules.SpeechRecognition?.startListening) {
-          await NativeModules.SpeechRecognition.startListening(null);
-        }
+        advanceToTarget(target, false);
       } else {
-        Alert.alert('Voice Input', 'Speech recognition is available on Android.');
+        advanceToTarget(target, false);
       }
     } catch (err: any) {
       console.log('Speech recognition start error:', err);
@@ -399,18 +558,17 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
     }
   };
 
-  const handleFinishVoiceInput = async (textOverride?: string) => {
+  const handleFinishVoiceInput = async (textOverride?: string, andClose?: boolean) => {
     const text = (textOverride !== undefined ? textOverride : voiceLiveTextRef.current).trim();
     const target = voiceTargetRef.current;
 
-    if (text && target) {
+    if (target) {
       if (target === 'title') {
-        setSetName(prev => (prev ? `${prev} ${text}` : text));
+        if (text) setSetName(text);
       } else if (target.type === 'question') {
         const updated = [...manualQuestionsRef.current];
         if (updated[target.qIndex]) {
-          const current = updated[target.qIndex].text;
-          updated[target.qIndex].text = current ? `${current} ${text}` : text;
+          updated[target.qIndex].text = text;
           setManualQuestions(updated);
           manualQuestionsRef.current = updated;
         }
@@ -418,8 +576,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
         const updated = [...manualQuestionsRef.current];
         if (updated[target.qIndex]) {
           const choices = [...updated[target.qIndex].choices];
-          const current = choices[target.cIndex];
-          choices[target.cIndex] = current ? `${current} ${text}` : text;
+          choices[target.cIndex] = text;
           updated[target.qIndex].choices = choices;
           setManualQuestions(updated);
           manualQuestionsRef.current = updated;
@@ -433,7 +590,18 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
       }
     } catch (e) {}
 
-    if (isAutoVoiceActiveRef.current && target) {
+    if (andClose) {
+      const pruned = pruneTrailingEmptyQuestions(manualQuestionsRef.current);
+      setManualQuestions(pruned);
+      manualQuestionsRef.current = pruned;
+      setVoiceModalVisible(false);
+      setIsVoiceListening(false);
+      setVoiceTarget(null);
+      setVoiceLiveText('');
+      return;
+    }
+
+    if (target) {
       const { nextTarget, needNewQuestion } = getNextVoiceTarget(target);
       advanceToTarget(nextTarget, needNewQuestion);
     } else {
@@ -445,14 +613,43 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
   };
 
   const handleCancelVoiceInput = async () => {
-    setIsAutoVoiceActive(false);
-    isAutoVoiceActiveRef.current = false;
+    const text = voiceLiveTextRef.current.trim();
+    const target = voiceTargetRef.current;
+
+    if (text && target) {
+      if (target === 'title') {
+        setSetName(text);
+      } else if (target.type === 'question') {
+        const updated = [...manualQuestionsRef.current];
+        if (updated[target.qIndex]) {
+          updated[target.qIndex].text = text;
+          setManualQuestions(updated);
+          manualQuestionsRef.current = updated;
+        }
+      } else if (target.type === 'choice') {
+        const updated = [...manualQuestionsRef.current];
+        if (updated[target.qIndex]) {
+          const choices = [...updated[target.qIndex].choices];
+          choices[target.cIndex] = text;
+          updated[target.qIndex].choices = choices;
+          setManualQuestions(updated);
+          manualQuestionsRef.current = updated;
+        }
+      }
+    }
+
     try {
       if (Platform.OS === 'android' && NativeModules.SpeechRecognition?.cancelListening) {
         await NativeModules.SpeechRecognition.cancelListening();
       }
     } catch (e) {}
 
+    const pruned = pruneTrailingEmptyQuestions(manualQuestionsRef.current);
+    setManualQuestions(pruned);
+    manualQuestionsRef.current = pruned;
+
+    setIsAutoVoiceActive(false);
+    isAutoVoiceActiveRef.current = false;
     setVoiceModalVisible(false);
     setIsVoiceListening(false);
     setVoiceTarget(null);
@@ -468,11 +665,16 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
       return;
     }
 
+    if (manualQuestions.length === 0) {
+      Alert.alert('No Questions', 'Please create at least 1 question before saving.');
+      return;
+    }
+
     const invalid = manualQuestions.some(
       q => !q.text.trim() || q.choices.some(c => !c.trim())
     );
     if (invalid) {
-      Alert.alert('Incomplete Form', 'Please ensure all questions and 4 options are filled in.');
+      Alert.alert('Incomplete Questions', 'Please ensure all questions and 4 options are filled in.');
       return;
     }
 
@@ -532,9 +734,9 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
 
       if (result.errors && result.errors.length > 0) {
         const formattedIssues: ValidationIssue[] = result.errors.map(e => ({
-          questionNumber: e.questionNumber || 'File',
+          questionNumber: (e as any).questionNumber || (e.line ? `Line ${e.line}` : 'File'),
           reason: e.message,
-          snippet: e.snippet,
+          snippet: (e as any).snippet,
         }));
         setIssues(formattedIssues);
         setGenericError('Some questions in your file could not be parsed.');
@@ -701,19 +903,35 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
       >
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => navigation.goBack()}
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.navigate('TriviaHub');
+            }
+          }}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Icon name="arrow-back" size={24} color={theme.textPrimary} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Create Quiz & Contest</Text>
-        <View style={{ width: 40 }} />
+        <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Create Contest</Text>
+        <TouchableOpacity
+          style={styles.headerInfoBtn}
+          onPress={() => {
+            setGuidanceTab(activeMode);
+            setGuidanceModalVisible(true);
+          }}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          activeOpacity={0.7}
+        >
+          <Icon name="information-circle-outline" size={24} color={theme.textPrimary} />
+        </TouchableOpacity>
       </View>
 
-      {/* ── 3-Way Mode Switcher (PDF / TXT-CSV / Manual) ── */}
+      {/* â”€â”€ 3-Way Mode Switcher (PDF / TXT-CSV / Manual) â”€â”€ */}
       <View style={[styles.modeTabBar, { backgroundColor: isDark ? '#071527' : '#F1F5F9' }]}>
         <TouchableOpacity
-          style={[styles.modeTabBtn, activeMode === 'pdf' && styles.modeTabBtnActive]}
+          style={[styles.modeTabBtn, activeMode === 'pdf' && [styles.modeTabBtnActive, { backgroundColor: isDark ? '#3D4A5C' : '#64748B' }]]}
           onPress={() => {
             setActiveMode('pdf');
             resetState();
@@ -737,7 +955,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.modeTabBtn, activeMode === 'txt_csv' && styles.modeTabBtnActive]}
+          style={[styles.modeTabBtn, activeMode === 'txt_csv' && [styles.modeTabBtnActive, { backgroundColor: isDark ? '#3D4A5C' : '#64748B' }]]}
           onPress={() => {
             setActiveMode('txt_csv');
             resetState();
@@ -761,7 +979,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.modeTabBtn, activeMode === 'manual' && styles.modeTabBtnActive]}
+          style={[styles.modeTabBtn, activeMode === 'manual' && [styles.modeTabBtnActive, { backgroundColor: isDark ? '#3D4A5C' : '#64748B' }]]}
           onPress={() => {
             setActiveMode('manual');
             resetState();
@@ -798,104 +1016,32 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Highlighted Custom Quiz Title Card */}
-        <View
-          style={[
-            styles.highlightedTitleCard,
-            {
-              backgroundColor: isDark ? '#081C38' : '#EFF6FF',
-              borderColor: isDark ? '#0284C7' : '#3B82F6',
-            },
-          ]}
-        >
-          {/* Header Row with Badge */}
-          <View style={styles.titleCardHeaderRow}>
-            <View style={styles.titleCardLeft}>
-              <View style={[styles.titleIconBadge, { backgroundColor: isDark ? '#0284C7' : '#2563EB' }]}>
-                <Icon name="bookmark" size={18} color="#FFF" />
-              </View>
-              <View>
-                <Text style={[styles.titleCardHeading, { color: theme.textPrimary }]}>Quiz Title</Text>
-                <Text style={[styles.titleCardSub, { color: isDark ? '#93C5FD' : '#2563EB' }]}>
-                  Give your quiz a custom name
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.titleStatusBadge, { backgroundColor: isDark ? 'rgba(56,189,248,0.2)' : '#DBEAFE' }]}>
-              <Text style={[styles.titleStatusBadgeText, { color: isDark ? '#38BDF8' : '#1D4ED8' }]}>
-                {setName.trim() ? '✓ Named' : (activeMode === 'manual' ? 'Required' : 'Optional')}
+        {/* ── Quiz Title Section (below tabs, above content) ── */}
+        {(!successQuestions || successQuestions.length === 0) && (
+          <View style={styles.quizTitleContainer}>
+            <Text style={[styles.titleKeyLabel, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+              Title
+            </Text>
+            <View style={styles.quizTitleRow}>
+              <Text style={[styles.quizTitleStripText, { color: theme.textPrimary }]} numberOfLines={1} ellipsizeMode="tail">
+                {setName.trim() || 'Untitled Contest'}
               </Text>
-            </View>
-          </View>
-
-          {/* Highlighted Input Box */}
-          <View
-            style={[
-              styles.highlightedInputWrapper,
-              {
-                backgroundColor: isDark ? '#041024' : '#FFFFFF',
-                borderColor: setName.trim()
-                  ? (isDark ? '#38BDF8' : '#2563EB')
-                  : (isDark ? 'rgba(56,189,248,0.3)' : '#BFDBFE'),
-              },
-            ]}
-          >
-            <Icon
-              name="pencil-outline"
-              size={18}
-              color={setName.trim() ? (isDark ? '#38BDF8' : '#2563EB') : (isDark ? '#64748B' : '#94A3B8')}
-              style={{ marginRight: 8 }}
-            />
-            <TextInput
-              style={[styles.highlightedInput, { color: theme.textPrimary }]}
-              value={setName}
-              onChangeText={setSetName}
-              placeholder="e.g. Science Chapter 1 Test"
-              placeholderTextColor={isDark ? '#64748B' : '#94A3B8'}
-            />
-            <TouchableOpacity
-              onPress={() => handleSpeechInput('title')}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{ paddingHorizontal: 6 }}
-            >
-              <Icon name="mic" size={19} color={isDark ? '#38BDF8' : '#2563EB'} />
-            </TouchableOpacity>
-            {setName.trim().length > 0 && (
-              <TouchableOpacity onPress={() => setSetName('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Icon name="close-circle" size={18} color={isDark ? '#64748B' : '#94A3B8'} />
+              <TouchableOpacity
+                onPress={() => { setTitleEditDraft(setName); setTitleEditModalVisible(true); }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={styles.quizTitleEditBtn}
+                activeOpacity={0.7}
+              >
+                <Icon name="create-outline" size={22} color={isDark ? '#94A3B8' : '#475569'} />
               </TouchableOpacity>
-            )}
-          </View>
-
-          <Text style={[styles.titleCardFooterHint, { color: isDark ? '#94A3B8' : '#64748B' }]}>
-            {activeMode === 'manual'
-              ? '💡 Required title for this in-app quiz set.'
-              : '💡 Leave blank to auto-use your file name.'}
-          </Text>
-        </View>
-
-        {/* ── MODE 1: PDF CONVERTER ── */}
-        {activeMode === 'pdf' && (
-          <>
-            {/* Format Guidelines Card */}
-            <View style={[styles.card, { backgroundColor: isDark ? '#0B1B2D' : '#F8FAFC', borderColor: theme.border }]}>
-              <View style={styles.cardTitleRow}>
-                <Icon name="document-text-outline" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
-                <Text style={[styles.cardHeading, { color: theme.textPrimary }]}>Expected PDF Format</Text>
-              </View>
-              <Text style={[styles.cardDescription, { color: theme.textSecondary }]}>
-                Upload a text-based PDF where each question is numbered, followed by 4 choices (A–D), and a{' '}
-                <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>*</Text> directly before the correct option letter.
-              </Text>
-
-              <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
-                <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
-                  {`1. What is the capital of France?\nA. London\n*B. Paris\nC. Rome\nD. Berlin`}
-                </Text>
-              </View>
             </View>
+          </View>
+        )}
 
-            {/* Upload PDF Action Card */}
+        {/* â”€â”€ MODE 1: PDF CONVERTER â”€â”€ */}
+        {activeMode === 'pdf' && (!successQuestions || successQuestions.length === 0) && (
+          <>
+            {/* Upload PDF Action Card â€” FIRST */}
             <TouchableOpacity
               style={[styles.uploadBox, { borderColor: isDark ? 'rgba(56,189,248,0.4)' : 'rgba(15,98,254,0.3)', backgroundColor: isDark ? '#071527' : '#F0F6FF' }]}
               onPress={handlePickAndConvertPdf}
@@ -922,30 +1068,30 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                 </View>
               )}
             </TouchableOpacity>
-          </>
-        )}
 
-        {/* ── MODE 2: TXT / CSV IMPORTER ── */}
-        {activeMode === 'txt_csv' && (
-          <>
-            {/* Format Guidelines Card */}
+            {/* Format Guidelines Card â€” below upload */}
             <View style={[styles.card, { backgroundColor: isDark ? '#0B1B2D' : '#F8FAFC', borderColor: theme.border }]}>
               <View style={styles.cardTitleRow}>
-                <Icon name="document-outline" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
-                <Text style={[styles.cardHeading, { color: theme.textPrimary }]}>Expected TXT / CSV Format</Text>
+                <Icon name="document-text-outline" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                <Text style={[styles.cardHeading, { color: theme.textPrimary }]}>Expected PDF Format</Text>
               </View>
               <Text style={[styles.cardDescription, { color: theme.textSecondary }]}>
-                Upload a <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>.txt</Text> or <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>.csv</Text> file. For TXT, mark the correct answer with an asterisk (*). For CSV, provide columns: Question, Choice A, Choice B, Choice C, Choice D, Correct Answer (1-4 or A-D).
+                Upload a text-based PDF where each question is numbered, followed by 4 choices (Aâ€“D), and a{' '}
+                <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>*</Text> directly before the correct option letter.
               </Text>
-
               <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
                 <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
-                  {`1. Which planet is closest to the Sun?\n*A. Mercury\nB. Venus\nC. Earth\nD. Mars`}
+                  {`1. What is the capital of France?\nA. London\n*B. Paris\nC. Rome\nD. Berlin`}
                 </Text>
               </View>
             </View>
+          </>
+        )}
 
-            {/* Upload TXT / CSV Action Card */}
+        {/* â”€â”€ MODE 2: TXT / CSV IMPORTER â”€â”€ */}
+        {activeMode === 'txt_csv' && (!successQuestions || successQuestions.length === 0) && (
+          <>
+            {/* Upload TXT / CSV Action Card â€” FIRST */}
             <TouchableOpacity
               style={[styles.uploadBox, { borderColor: isDark ? 'rgba(56,189,248,0.4)' : 'rgba(15,98,254,0.3)', backgroundColor: isDark ? '#071527' : '#F0F6FF' }]}
               onPress={handlePickAndParseTxtCsv}
@@ -971,221 +1117,212 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                 </View>
               )}
             </TouchableOpacity>
+
+            {/* Format Guidelines Card â€” below upload */}
+            <View style={[styles.card, { backgroundColor: isDark ? '#0B1B2D' : '#F8FAFC', borderColor: theme.border }]}>
+              <View style={styles.cardTitleRow}>
+                <Icon name="document-outline" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                <Text style={[styles.cardHeading, { color: theme.textPrimary }]}>Expected TXT / CSV Format</Text>
+              </View>
+              <Text style={[styles.cardDescription, { color: theme.textSecondary }]}>
+                Upload a <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>.txt</Text> or <Text style={{ fontWeight: 'bold', color: isDark ? '#38BDF8' : '#0F62FE' }}>.csv</Text> file. For TXT, mark the correct answer with an asterisk (*). For CSV, provide columns: Question, Choice A, Choice B, Choice C, Choice D, Correct Answer (1-4 or A-D).
+              </Text>
+              <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
+                <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
+                  {`1. Which planet is closest to the Sun?\n*A. Mercury\nB. Venus\nC. Earth\nD. Mars`}
+                </Text>
+              </View>
+            </View>
           </>
         )}
 
         {/* ── MODE 3: MANUAL IN-APP BUILDER ── */}
         {activeMode === 'manual' && (
           <View style={{ gap: 14 }}>
-            {/* Global Auto Voice Flow Banner Card */}
-            <TouchableOpacity
-              style={[
-                styles.autoVoiceCard,
-                isAutoVoiceActive
-                  ? {
-                      backgroundColor: isDark ? '#06283D' : '#EFF6FF',
-                      borderColor: isDark ? '#38BDF8' : '#2563EB',
-                    }
-                  : {
-                      backgroundColor: isDark ? '#0B1B2D' : '#F8FAFC',
-                      borderColor: isDark ? 'rgba(56,189,248,0.3)' : 'rgba(37,99,235,0.25)',
-                    },
-              ]}
-              onPress={isAutoVoiceActive ? handleStopAutoVoiceFlow : handleStartAutoVoiceFlow}
-              activeOpacity={0.85}
-            >
-              <View style={styles.autoVoiceCardContent}>
-                <View
-                  style={[
-                    styles.autoVoiceIconCircle,
-                    {
-                      backgroundColor: isAutoVoiceActive
-                        ? (isDark ? '#0284C7' : '#2563EB')
-                        : (isDark ? 'rgba(56,189,248,0.15)' : '#EFF6FF'),
-                    },
-                  ]}
-                >
-                  <Icon
-                    name={isAutoVoiceActive ? 'mic' : 'mic-outline'}
-                    size={20}
-                    color={isAutoVoiceActive ? '#FFFFFF' : (isDark ? '#38BDF8' : '#2563EB')}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={[styles.autoVoiceTitle, { color: theme.textPrimary }]}>
-                      {isAutoVoiceActive ? 'Auto Voice Flow Active' : 'Auto Voice Flow'}
+            {/* EMPTY STATE: Guidance + Start Creating Button */}
+            {manualQuestions.length === 0 && (
+              <>
+                <View style={[styles.card, { backgroundColor: isDark ? '#0B1B2D' : '#F8FAFC', borderColor: theme.border }]}>
+                  <View style={styles.cardTitleRow}>
+                    <Icon name="sparkles" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                    <Text style={[styles.cardHeading, { color: theme.textPrimary }]}>Manual Quiz Creation</Text>
+                  </View>
+                  <Text style={[styles.cardDescription, { color: theme.textSecondary }]}>
+                    Build your quiz step-by-step with voice dictation or typing. Each question has 4 options with one correct answer designated.
+                  </Text>
+                  <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
+                    <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
+                      {`1. Question Prompt\n*A. Option A (Correct)\nB. Option B\nC. Option C\nD. Option D`}
                     </Text>
-                    {isAutoVoiceActive && (
-                      <View style={styles.autoVoiceLiveBadge}>
-                        <Text style={styles.autoVoiceLiveText}>ACTIVE</Text>
-                      </View>
-                    )}
                   </View>
-                  <Text style={[styles.autoVoiceSub, { color: isDark ? '#94A3B8' : '#64748B' }]}>
-                    {isAutoVoiceActive
-                      ? 'Dictating hands-free step-by-step. Tap to pause.'
-                      : 'Hands-free: Title → Questions → 4 Choices continuously.'}
-                  </Text>
                 </View>
-                <View
-                  style={[
-                    styles.autoVoiceActionBtn,
-                    {
-                      backgroundColor: isAutoVoiceActive
-                        ? '#EF4444'
-                        : (isDark ? '#0284C7' : '#2563EB'),
-                    },
-                  ]}
+
+                {/* Big Start Creating Button */}
+                <TouchableOpacity
+                  style={styles.startManualBtn}
+                  onPress={handleStartManualWizard}
+                  activeOpacity={0.85}
                 >
-                  <Text style={styles.autoVoiceActionBtnText}>
-                    {isAutoVoiceActive ? 'Stop' : 'Start Flow'}
-                  </Text>
-                </View>
-              </View>
-            </TouchableOpacity>
+                  <LinearGradient
+                    colors={isDark ? ['#0284C7', '#0369A1'] : ['#2563EB', '#1D4ED8']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.startManualGradient}
+                  >
+                    <Icon name="create" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={styles.startManualText}>Start Creating</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </>
+            )}
 
-            {manualQuestions.map((q, qIndex) => (
-              <View
-                key={qIndex}
-                style={[
-                  styles.manualQuestionCard,
-                  {
-                    backgroundColor: isDark ? '#0B1B2D' : '#FFFFFF',
-                    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)',
-                  },
-                ]}
-              >
-                <View style={styles.manualCardHeader}>
-                  <View style={[styles.manualQBadge, { backgroundColor: isDark ? '#0284C7' : '#2563EB' }]}>
-                    <Text style={styles.manualQBadgeText}>Q{qIndex + 1}</Text>
+            {/* ACTIVE STATE: Guidance is HIDDEN, questions list shown with edit & continue */}
+            {manualQuestions.length > 0 && (() => {
+              const hasIncomplete = manualQuestions.some(
+                q => !q.text.trim() || q.choices.some(c => !c.trim())
+              );
+              return (
+                <>
+                  <View style={styles.manualHeaderRow}>
+                    <Text style={[styles.previewHeading, { color: theme.textPrimary, marginBottom: 0 }]}>
+                      Questions Created ({manualQuestions.length})
+                    </Text>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => handleRemoveManualQuestion(qIndex)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Icon name="trash-outline" size={18} color="#EF4444" />
-                  </TouchableOpacity>
-                </View>
 
-                <View style={styles.manualQuestionInputContainer}>
-                  <TextInput
-                    style={[
-                      styles.manualQuestionInput,
-                      {
-                        backgroundColor: isDark ? '#071527' : '#F8FAFC',
-                        color: theme.textPrimary,
-                        borderColor: theme.border,
-                      },
-                    ]}
-                    placeholder={`Enter question ${qIndex + 1}...`}
-                    placeholderTextColor={isDark ? '#64748B' : '#94A3B8'}
-                    value={q.text}
-                    onChangeText={(txt) => handleUpdateManualQuestionText(qIndex, txt)}
-                    onFocus={() => handleQuestionFocus(qIndex)}
-                    multiline
-                  />
-                  <TouchableOpacity
-                    style={styles.questionMicInsideBtn}
-                    onPress={() => handleSpeechInput({ type: 'question', qIndex })}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Icon name="mic" size={17} color={isDark ? '#38BDF8' : '#2563EB'} />
-                  </TouchableOpacity>
-                </View>
-
-                <Text style={[styles.manualChoiceLabel, { color: theme.textSecondary }]}>
-                  Options (Tap circle to set correct answer):
-                </Text>
-
-                {q.choices.map((choice, cIndex) => {
-                  const isCorrect = q.correctIndex === cIndex;
-                  const optLetters = ['A', 'B', 'C', 'D'];
-                  return (
-                    <View key={cIndex} style={styles.manualChoiceRow}>
-                      <TouchableOpacity
+                  {/* Questions List */}
+                  {manualQuestions.map((q, qIndex) => {
+                    const isComplete = q.text.trim() && q.choices.every(c => c && c.trim());
+                    return (
+                      <View
+                        key={qIndex}
                         style={[
-                          styles.manualRadioCircle,
+                          styles.previewCard,
                           {
-                            borderColor: isCorrect ? '#10B981' : (isDark ? '#64748B' : '#94A3B8'),
-                            backgroundColor: isCorrect ? '#10B981' : 'transparent',
+                            backgroundColor: isDark ? '#071527' : '#FFFFFF',
+                            borderColor: theme.border,
                           },
                         ]}
-                        onPress={() => handleSetManualCorrect(qIndex, cIndex)}
                       >
-                        {isCorrect ? (
-                          <Icon name="checkmark" size={12} color="#FFF" />
-                        ) : (
-                          <Text style={{ fontSize: 10, fontWeight: '700', color: isDark ? '#94A3B8' : '#64748B' }}>
-                            {optLetters[cIndex]}
+                        {/* Card Header Row: Badge, Status, Edit & Trash Buttons */}
+                        <View style={styles.manualCardHeader}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View style={[styles.manualQBadge, { backgroundColor: isDark ? '#0284C7' : '#2563EB' }]}>
+                              <Text style={styles.manualQBadgeText}>Q{qIndex + 1}</Text>
+                            </View>
+                            {!isComplete && (
+                              <View style={styles.incompleteBadge}>
+                                <Text style={styles.incompleteBadgeText}>Incomplete</Text>
+                              </View>
+                            )}
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                            <TouchableOpacity
+                              onPress={() => handleEditManualQuestion(qIndex)}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              activeOpacity={0.7}
+                            >
+                              <Icon name="create-outline" size={22} color={isDark ? '#94A3B8' : '#475569'} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPress={() => handleRemoveManualQuestion(qIndex)}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              activeOpacity={0.7}
+                            >
+                              <Icon name="trash-outline" size={18} color="#EF4444" />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+
+                        {/* Question Text with Hanging Indent */}
+                        <View style={styles.previewQuestionRow}>
+                          <Text style={[styles.previewQuestionNum, { color: theme.textPrimary }]}>
+                            {qIndex + 1}.
                           </Text>
-                        )}
-                      </TouchableOpacity>
+                          <Text style={[styles.previewQuestionText, { color: theme.textPrimary }]}>
+                            {q.text.trim() || '(No question text entered yet)'}
+                          </Text>
+                        </View>
 
-                      <View style={styles.manualChoiceInputContainer}>
-                        <TextInput
-                          style={[
-                            styles.manualChoiceInput,
-                            {
-                              backgroundColor: isDark ? '#071527' : '#F8FAFC',
-                              color: theme.textPrimary,
-                              borderColor: isCorrect ? '#10B981' : theme.border,
-                            },
-                          ]}
-                          placeholder={`Option ${optLetters[cIndex]}`}
-                          placeholderTextColor={isDark ? '#64748B' : '#94A3B8'}
-                          value={choice}
-                          onChangeText={(txt) => handleUpdateManualChoice(qIndex, cIndex, txt)}
-                          onFocus={() => handleChoiceFocus(qIndex, cIndex)}
-                        />
-                        <TouchableOpacity
-                          style={styles.choiceMicInsideBtn}
-                          onPress={() => handleSpeechInput({ type: 'choice', qIndex, cIndex })}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        >
-                          <Icon name="mic-outline" size={17} color={isDark ? '#38BDF8' : '#2563EB'} />
-                        </TouchableOpacity>
+                        {/* Choices List with Hanging Indent */}
+                        <View style={styles.choicesList}>
+                          {q.choices.map((choice, cIndex) => {
+                            const isCorrect = cIndex === q.correctIndex;
+                            const letter = String.fromCharCode(65 + cIndex);
+                            return (
+                              <View
+                                key={cIndex}
+                                style={[
+                                  styles.choiceItem,
+                                  isCorrect && {
+                                    backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : '#DCFCE7',
+                                    borderColor: isDark ? '#22C55E' : '#86EFAC',
+                                  },
+                                ]}
+                              >
+                                <Text style={[styles.choiceLetter, { color: isCorrect ? '#22C55E' : theme.textSecondary }]}>
+                                  {letter}.
+                                </Text>
+                                <Text style={[styles.choiceText, { color: isCorrect ? (isDark ? '#4ADE80' : '#166534') : theme.textSecondary }]}>
+                                  {choice.trim() || `(Option ${letter} empty)`}
+                                </Text>
+                                {isCorrect && (
+                                  <Icon name="checkmark" size={16} color="#22C55E" style={{ marginLeft: 'auto', marginTop: 1 }} />
+                                )}
+                              </View>
+                            );
+                          })}
+                        </View>
                       </View>
-                    </View>
-                  );
-                })}
-              </View>
-            ))}
+                    );
+                  })}
 
-            {/* Add Question Button */}
-            <TouchableOpacity
-              style={[styles.addQuestionBtn, { borderColor: isDark ? '#0284C7' : '#3B82F6' }]}
-              onPress={handleAddManualQuestion}
-            >
-              <Icon name="add" size={20} color={isDark ? '#38BDF8' : '#2563EB'} style={{ marginRight: 6 }} />
-              <Text style={[styles.addQuestionBtnText, { color: isDark ? '#38BDF8' : '#2563EB' }]}>
-                Add Another Question
-              </Text>
-            </TouchableOpacity>
+                  {/* Action Buttons: Continue Creating + Save Quiz Set */}
+                  <View style={{ gap: 10, marginTop: 4, marginBottom: 20 }}>
+                    {/* Continue Creating Button */}
+                    <TouchableOpacity
+                      style={[
+                        styles.continueCreatingBtn,
+                        {
+                          borderColor: isDark ? '#0284C7' : '#3B82F6',
+                          backgroundColor: isDark ? 'rgba(2,132,199,0.1)' : 'rgba(59,130,246,0.06)',
+                        },
+                      ]}
+                      onPress={handleContinueManualWizard}
+                      activeOpacity={0.85}
+                    >
+                      <Icon name="add-circle-outline" size={20} color={isDark ? '#38BDF8' : '#2563EB'} style={{ marginRight: 6 }} />
+                      <Text style={[styles.continueCreatingBtnText, { color: isDark ? '#38BDF8' : '#2563EB' }]}>
+                        {hasIncomplete ? 'Continue Creating' : `+ Add Question ${manualQuestions.length + 1}`}
+                      </Text>
+                    </TouchableOpacity>
 
-            {/* Save Manual Quiz Button */}
-            <TouchableOpacity
-              style={styles.saveManualBtn}
-              onPress={handleSaveManualSet}
-              disabled={saving}
-              activeOpacity={0.85}
-            >
-              <LinearGradient
-                colors={['#0F62FE', '#0052CC']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.saveManualGradient}
-              >
-                {saving ? (
-                  <ActivityIndicator size="small" color="#FFF" />
-                ) : (
-                  <>
-                    <Icon name="save-outline" size={18} color="#FFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.saveManualText}>Save Quiz Set ({manualQuestions.length} Qs)</Text>
-                  </>
-                )}
-              </LinearGradient>
-            </TouchableOpacity>
+                    {/* Save Quiz Set Button */}
+                    <TouchableOpacity
+                      style={styles.saveManualBtn}
+                      onPress={handleSaveManualSet}
+                      disabled={saving}
+                      activeOpacity={0.85}
+                    >
+                      <LinearGradient
+                        colors={['#10B981', '#059669']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.saveManualGradient}
+                      >
+                        {saving ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <>
+                            <Icon name="bookmark" size={18} color="#FFF" style={{ marginRight: 6 }} />
+                            <Text style={styles.saveManualText}>Save Quiz Set ({manualQuestions.length} Qs)</Text>
+                          </>
+                        )}
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              );
+            })()}
           </View>
         )}
 
@@ -1203,7 +1340,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
             <View style={styles.issuesHeader}>
               <Icon name="warning" size={20} color="#F59E0B" style={{ marginRight: 8 }} />
               <Text style={styles.issuesTitle}>
-                {issues.length} Issue{issues.length > 1 ? 's' : ''} Found — Fix and Re-upload
+                {issues.length} Issue{issues.length > 1 ? 's' : ''} Found â€” Fix and Re-upload
               </Text>
             </View>
             <Text style={[styles.issuesSub, { color: theme.textSecondary }]}>
@@ -1250,60 +1387,52 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                   All questions, choices, and answer keys are fully verified.
                 </Text>
               </View>
+              <TouchableOpacity
+                onPress={resetState}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: isDark ? 'rgba(34,197,94,0.2)' : '#BBF7D0',
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  marginLeft: 8,
+                }}
+              >
+                <Icon name="refresh" size={14} color={isDark ? '#4ADE80' : '#166534'} style={{ marginRight: 4 }} />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: isDark ? '#4ADE80' : '#166534' }}>
+                  Change
+                </Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Highlighted Editable Quiz Title */}
-            <View
-              style={[
-                styles.highlightedTitleCard,
-                {
-                  backgroundColor: isDark ? '#081C38' : '#EFF6FF',
-                  borderColor: isDark ? '#0284C7' : '#3B82F6',
-                  marginBottom: 18,
-                },
-              ]}
-            >
-              <View style={styles.titleCardHeaderRow}>
-                <View style={styles.titleCardLeft}>
-                  <View style={[styles.titleIconBadge, { backgroundColor: isDark ? '#0284C7' : '#2563EB' }]}>
-                    <Icon name="bookmark" size={18} color="#FFF" />
-                  </View>
-                  <View>
-                    <Text style={[styles.titleCardHeading, { color: theme.textPrimary }]}>Quiz Set Name</Text>
-                    <Text style={[styles.titleCardSub, { color: isDark ? '#93C5FD' : '#2563EB' }]}>
-                      Review or edit title before saving
-                    </Text>
-                  </View>
-                </View>
-                <View style={[styles.titleStatusBadge, { backgroundColor: isDark ? 'rgba(34,197,94,0.2)' : '#DCFCE7' }]}>
-                  <Text style={[styles.titleStatusBadgeText, { color: isDark ? '#4ADE80' : '#166534' }]}>
-                    Ready
-                  </Text>
-                </View>
-              </View>
-
-              <View
-                style={[
-                  styles.highlightedInputWrapper,
-                  {
-                    backgroundColor: isDark ? '#041024' : '#FFFFFF',
-                    borderColor: isDark ? '#38BDF8' : '#2563EB',
-                  },
-                ]}
-              >
-                <Icon name="pencil" size={18} color={isDark ? '#38BDF8' : '#2563EB'} style={{ marginRight: 8 }} />
-                <TextInput
-                  style={[styles.highlightedInput, { color: theme.textPrimary }]}
-                  value={setName}
-                  onChangeText={setSetName}
-                  placeholder="Enter a name for this quiz set"
-                  placeholderTextColor={isDark ? '#64748B' : '#94A3B8'}
-                />
-                {setName.trim().length > 0 && (
-                  <TouchableOpacity onPress={() => setSetName('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Icon name="close-circle" size={18} color={isDark ? '#64748B' : '#94A3B8'} />
-                  </TouchableOpacity>
-                )}
+            {/* Converted Quiz Title — clean layout with 'Title' key above, no background/border */}
+            <View style={styles.successTitleContainer}>
+              <Text style={[styles.titleKeyLabel, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+                Title
+              </Text>
+              <View style={styles.successTitleRow}>
+                <Text
+                  style={[
+                    styles.successTitleText,
+                    { color: theme.textPrimary },
+                  ]}
+                  numberOfLines={2}
+                >
+                  {setName.trim() || 'Untitled Contest'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setTitleEditDraft(setName);
+                    setTitleEditModalVisible(true);
+                  }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={styles.successTitleEditBtn}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="create-outline" size={24} color={isDark ? '#94A3B8' : '#475569'} />
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -1311,9 +1440,14 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
             <Text style={[styles.previewHeading, { color: theme.textPrimary }]}>Questions Preview</Text>
             {successQuestions.map((q, qIndex) => (
               <View key={qIndex} style={[styles.previewCard, { backgroundColor: isDark ? '#071527' : '#FFFFFF', borderColor: theme.border }]}>
-                <Text style={[styles.previewQuestionText, { color: theme.textPrimary }]}>
-                  {qIndex + 1}. {q.text}
-                </Text>
+                <View style={styles.previewQuestionRow}>
+                  <Text style={[styles.previewQuestionNum, { color: theme.textPrimary }]}>
+                    {qIndex + 1}.
+                  </Text>
+                  <Text style={[styles.previewQuestionText, { color: theme.textPrimary }]}>
+                    {q.text}
+                  </Text>
+                </View>
                 <View style={styles.choicesList}>
                   {q.choices.map((choice, cIndex) => {
                     const isCorrect = cIndex === q.correctIndex;
@@ -1335,7 +1469,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                         <Text style={[styles.choiceText, { color: isCorrect ? (isDark ? '#4ADE80' : '#166534') : theme.textSecondary }]}>
                           {choice}
                         </Text>
-                        {isCorrect && <Icon name="checkmark" size={16} color="#22C55E" style={{ marginLeft: 'auto' }} />}
+                        {isCorrect && <Icon name="checkmark" size={16} color="#22C55E" style={{ marginLeft: 'auto', marginTop: 1 }} />}
                       </View>
                     );
                   })}
@@ -1346,29 +1480,14 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
             {/* Action Buttons */}
             <View style={styles.actionButtonsRow}>
               <TouchableOpacity
-                style={[styles.saveButton, styles.primaryPlayBtn]}
-                onPress={() => handleSaveAndPlay(true)}
-                disabled={saving}
-              >
-                <LinearGradient
-                  colors={['#10B981', '#059669']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.gradientBtnInner}
-                >
-                  <Icon name="play" size={20} color="#FFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.actionBtnText}>Save & Play Now</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.saveButton, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' }]}
+                style={[styles.saveButton, { backgroundColor: '#10B981', flex: 1 }]}
                 onPress={() => handleSaveAndPlay(false)}
                 disabled={saving}
+                activeOpacity={0.85}
               >
                 <View style={styles.gradientBtnInner}>
-                  <Icon name="bookmark-outline" size={20} color={theme.textPrimary} style={{ marginRight: 8 }} />
-                  <Text style={[styles.actionBtnText, { color: theme.textPrimary }]}>Save to Sets</Text>
+                  <Icon name="bookmark" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                  <Text style={[styles.actionBtnText, { color: '#FFFFFF' }]}>Save to Sets</Text>
                 </View>
               </TouchableOpacity>
             </View>
@@ -1403,10 +1522,10 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
 
             {/* Title & Subtitle */}
             <Text style={[styles.successModalTitle, { color: theme.textPrimary }]}>
-              PDF Quiz Saved! 🎉
+              Contest Saved! 🎉
             </Text>
             <Text style={[styles.successModalSubText, { color: theme.textSecondary }]}>
-              Your questions have been converted and saved to your Custom Quizzes.
+              Your contest has been saved to Contest List. Tap View to practice or host it.
             </Text>
 
             {/* Quiz Info Pill Card */}
@@ -1428,7 +1547,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                     {savedSetData.name}
                   </Text>
                   <Text style={[styles.savedSetDetails, { color: theme.textSecondary }]}>
-                    {savedSetData.questionCount} Questions • Ready to Play
+                    {savedSetData.questionCount} Questions • Saved to Contest List
                   </Text>
                 </View>
               </View>
@@ -1436,33 +1555,7 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
 
             {/* Action Buttons Stack */}
             <View style={styles.successBtnStack}>
-              {/* Play Now Button */}
-              <TouchableOpacity
-                style={styles.successPlayBtn}
-                onPress={() => {
-                  setSavedSuccessModalVisible(false);
-                  if (savedSetData) {
-                    navigation.navigate('TriviaSolo', {
-                      customQuestions: savedSetData.questions,
-                      customSetName: savedSetData.name,
-                      customCategoryId: 'custom',
-                    });
-                  }
-                }}
-                activeOpacity={0.85}
-              >
-                <LinearGradient
-                  colors={['#10B981', '#059669']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.successPlayGradient}
-                >
-                  <Icon name="play" size={20} color="#FFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.successPlayBtnText}>Play Quiz Now</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-
-              {/* View Sets Button */}
+              {/* View Contest List Button — only action */}
               <TouchableOpacity
                 style={[
                   styles.successCloseBtn,
@@ -1476,8 +1569,9 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
                 }}
                 activeOpacity={0.8}
               >
+                <Icon name="library-outline" size={18} color={theme.textPrimary} style={{ marginRight: 8 }} />
                 <Text style={[styles.successCloseBtnText, { color: theme.textPrimary }]}>
-                  View All Quizzes
+                  View Contest List
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1485,14 +1579,18 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
         </View>
       </Modal>
 
-      {/* ── COMPACT VOICE INPUT MODAL (No Google branding, small & clean) ── */}
+      {/* â”€â”€ COMPACT VOICE INPUT MODAL (No Google branding, small & clean) â”€â”€ */}
       <Modal
         visible={voiceModalVisible}
         transparent={true}
         animationType="fade"
         onRequestClose={handleCancelVoiceInput}
       >
-        <View style={styles.voiceModalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.voiceModalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : -80}
+        >
           <View
             style={[
               styles.voiceModalBox,
@@ -1502,24 +1600,11 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
               },
             ]}
           >
-            {/* Header */}
+            {/* Header — title + close only */}
             <View style={styles.voiceModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 }}>
-                <View
-                  style={[
-                    styles.voiceStatusDot,
-                    { backgroundColor: isVoiceListening ? '#10B981' : '#F59E0B' },
-                  ]}
-                />
-                <Text style={[styles.voiceModalTitle, { color: theme.textPrimary }]} numberOfLines={1}>
-                  {getVoiceTargetTitle()}
-                </Text>
-                {isAutoVoiceActive && (
-                  <View style={styles.voiceAutoBadge}>
-                    <Text style={styles.voiceAutoBadgeText}>⚡ AUTO</Text>
-                  </View>
-                )}
-              </View>
+              <Text style={[styles.voiceModalTitle, { color: theme.textPrimary, flex: 1 }]} numberOfLines={1}>
+                {getVoiceTargetTitle()}
+              </Text>
               <TouchableOpacity
                 onPress={isAutoVoiceActive ? handleStopAutoVoiceFlow : handleCancelVoiceInput}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -1529,108 +1614,487 @@ export const QuizPdfUploadScreen: React.FC<QuizPdfUploadScreenProps> = ({ naviga
               </TouchableOpacity>
             </View>
 
-            {/* Pulsing Mic Circle */}
+            {/* Question preview + Option Checklist when filling choices */}
+            {voiceTarget && typeof voiceTarget === 'object' && voiceTarget.type === 'choice' && (() => {
+              const q = manualQuestions[voiceTarget.qIndex];
+              const labels = ['A', 'B', 'C', 'D'];
+              const isLastOption = voiceTarget.cIndex === 3;
+              return (
+                <View style={styles.voiceChoiceStrip}>
+                  {/* Question text preview */}
+                  {q?.text ? (
+                    <Text
+                      style={[styles.voiceQuestionPreview, { color: isDark ? '#BAE6FD' : '#1E40AF' }]}
+                      numberOfLines={2}
+                    >
+                      {q.text}
+                    </Text>
+                  ) : null}
+                  {/* Option rows */}
+                  {labels.map((label, idx) => {
+                    const isFilled = idx < voiceTarget.cIndex;
+                    const isActive = idx === voiceTarget.cIndex;
+                    const text = q?.choices?.[idx] || '';
+                    const isCorrectAnswer = q?.correctIndex === idx;
+                    return (
+                      <TouchableOpacity
+                        key={label}
+                        style={[
+                          styles.voiceChoiceRow,
+                          isActive && { backgroundColor: isDark ? '#1E3A5F' : '#EFF6FF' },
+                        ]}
+                        activeOpacity={0.7}
+                        onPress={() => {
+                          handleSetManualCorrect(voiceTarget.qIndex, idx);
+                        }}
+                      >
+                        <View
+                          style={[
+                            styles.voiceChoiceCheck,
+                            isFilled && {
+                              backgroundColor: isCorrectAnswer ? '#10B981' : (isDark ? '#334155' : '#CBD5E1'),
+                              borderColor: isCorrectAnswer ? '#10B981' : (isDark ? '#475569' : '#94A3B8'),
+                            },
+                            isActive && { borderColor: '#16A34A', backgroundColor: isDark ? '#14532D' : '#DCFCE7' },
+                          ]}
+                        >
+                          {isFilled ? (
+                            <Icon
+                              name={isCorrectAnswer ? 'checkmark-circle' : 'ellipse-outline'}
+                              size={10}
+                              color={isCorrectAnswer ? '#FFF' : (isDark ? '#64748B' : '#94A3B8')}
+                            />
+                          ) : isActive ? (
+                            <Icon name="mic" size={10} color="#16A34A" />
+                          ) : null}
+                        </View>
+                        <Text
+                          style={[
+                            styles.voiceChoiceLabel,
+                            { color: isDark ? '#94A3B8' : '#64748B', fontWeight: isActive ? '700' : '400' },
+                            isFilled && { opacity: isCorrectAnswer ? 1 : 0.55 },
+                            isActive && { color: isDark ? '#BAE6FD' : '#1D4ED8' },
+                            isCorrectAnswer && { color: isDark ? '#4ADE80' : '#166534', fontWeight: '700' },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          <Text style={{ fontWeight: '700' }}>{label}. </Text>
+                          {isFilled ? text : (isActive ? (voiceLiveText || '...') : '')}
+                        </Text>
+                        {isFilled && isCorrectAnswer && (
+                          <Text style={{ fontSize: 9, color: '#10B981', fontWeight: '800', marginLeft: 4 }}>✓</Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              );
+            })()}
+
+            {/* Pulsing Mic Circle — tap to mute or restart listening */}
             <View style={styles.voiceMicCenterRow}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={handleToggleMic}
+              >
               <Animated.View
                 style={[
                   styles.voicePulseRing,
                   {
                     transform: [{ scale: voicePulseAnim }],
-                    backgroundColor: isDark ? 'rgba(56,189,248,0.15)' : 'rgba(15,98,254,0.12)',
+                    backgroundColor: isVoiceListening
+                      ? (isDark ? 'rgba(56,189,248,0.15)' : 'rgba(15,98,254,0.12)')
+                      : (isDark ? 'rgba(100,116,139,0.15)' : 'rgba(100,116,139,0.10)'),
                   },
                 ]}
               >
-                <View style={[styles.voiceMicCircle, { backgroundColor: isDark ? '#0284C7' : '#0F62FE' }]}>
-                  <Icon name="mic" size={24} color="#FFFFFF" />
+                <View
+                  style={[
+                    styles.voiceMicCircle,
+                    {
+                      backgroundColor: isVoiceListening
+                        ? (isDark ? '#0284C7' : '#0F62FE')
+                        : (isDark ? '#334155' : '#94A3B8'),
+                    },
+                  ]}
+                >
+                  <Icon name={isVoiceListening ? 'mic' : 'mic-off'} size={24} color="#FFFFFF" />
                 </View>
               </Animated.View>
+              </TouchableOpacity>
             </View>
 
-            {/* Live Transcript / Prompt */}
-            <View
+            {/* Dynamic status note below mic */}
+            <Text style={[styles.voiceMicNote, { color: isVoiceListening ? '#10B981' : (isDark ? '#64748B' : '#94A3B8') }]}>
+              {isVoiceListening
+                ? '🎤 Listening... speak clearly'
+                : voiceLiveText.trim()
+                  ? '✏️ Tap to edit, or tap mic to speak'
+                  : '🔇 Mic paused — tap mic to speak, or type below'}
+            </Text>
+
+            {/* Editable transcript — voice auto-types here, user can also type/edit */}
+            <TextInput
               style={[
-                styles.voiceTextBox,
+                styles.voiceTextInput,
                 {
                   backgroundColor: isDark ? '#071527' : '#F8FAFC',
-                  borderColor: isDark ? '#1E293B' : '#E2E8F0',
+                  borderColor: isVoiceListening
+                    ? (isDark ? '#0284C7' : '#0F62FE')
+                    : (isDark ? '#1E293B' : '#E2E8F0'),
+                  color: theme.textPrimary,
                 },
               ]}
-            >
-              <Text
-                style={[
-                  styles.voiceTextContent,
-                  {
-                    color: voiceLiveText ? theme.textPrimary : (isDark ? '#64748B' : '#94A3B8'),
-                    fontStyle: voiceLiveText ? 'normal' : 'italic',
-                  },
-                ]}
-                numberOfLines={3}
-              >
-                {voiceLiveText || (isVoiceListening ? (isAutoVoiceActive ? 'Listening... speak then tap Next' : 'Speak now, audio will transcribe here...') : (isAutoVoiceActive ? 'Tap Next to advance' : 'Tap Done to insert'))}
-              </Text>
-            </View>
+              value={voiceLiveText}
+              onChangeText={setVoiceLiveText}
+              placeholder={isVoiceListening ? 'Transcribing...' : 'Speak or type here...'}
+              placeholderTextColor={isDark ? '#334155' : '#CBD5E1'}
+              multiline
+              scrollEnabled={false}
+              returnKeyType="default"
+              blurOnSubmit={false}
+              autoCorrect={false}
+              autoCapitalize="sentences"
+            />
 
             {/* Action Buttons */}
             <View style={styles.voiceActionRow}>
+              {voiceTarget && typeof voiceTarget === 'object' && voiceTarget.type === 'choice' && voiceTarget.cIndex === 3 ? (
+                <>
+                  {/* Option D: Save & Close Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.voiceCancelBtn,
+                      {
+                        backgroundColor: isDark ? '#14532D' : '#DCFCE7',
+                        borderColor: isDark ? '#22C55E' : '#86EFAC',
+                        borderWidth: 1,
+                      },
+                      !voiceLiveText.trim() && { opacity: 0.5 },
+                    ]}
+                    onPress={() => handleFinishVoiceInput(undefined, true)}
+                    disabled={!voiceLiveText.trim()}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.voiceCancelText, { color: isDark ? '#4ADE80' : '#166534' }]}>
+                      Save & Close
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Option D: + Next Question Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.voiceDoneBtn,
+                      !voiceLiveText.trim() && { opacity: 0.5 },
+                    ]}
+                    onPress={() => handleFinishVoiceInput(undefined, false)}
+                    disabled={!voiceLiveText.trim()}
+                    activeOpacity={0.85}
+                  >
+                    <LinearGradient
+                      colors={['#16A34A', '#15803D']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.voiceDoneGradient}
+                    >
+                      <Icon name="add-circle-outline" size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
+                      <Text style={styles.voiceDoneText}>+ Next Question</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {/* Standard Close / Cancel Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.voiceCancelBtn,
+                      {
+                        backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                      },
+                    ]}
+                    onPress={handleCancelVoiceInput}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.voiceCancelText, { color: theme.textSecondary }]}>
+                      Close
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Standard Next Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.voiceDoneBtn,
+                      !voiceLiveText.trim() && { opacity: 0.5 },
+                    ]}
+                    onPress={() => handleFinishVoiceInput(undefined, false)}
+                    disabled={!voiceLiveText.trim()}
+                    activeOpacity={0.85}
+                  >
+                    <LinearGradient
+                      colors={['#16A34A', '#15803D']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.voiceDoneGradient}
+                    >
+                      <Text style={styles.voiceDoneText}>
+                        {(() => {
+                          if (!voiceTarget || typeof voiceTarget !== 'object') return 'Next';
+                          if (voiceTarget.type === 'question') return 'Next: Option A';
+                          if (voiceTarget.type === 'choice') {
+                            if (voiceTarget.cIndex === 0) return 'Next: Option B';
+                            if (voiceTarget.cIndex === 1) return 'Next: Option C';
+                            if (voiceTarget.cIndex === 2) return 'Next: Option D';
+                          }
+                          return 'Next';
+                        })()}
+                      </Text>
+                      <Icon name="arrow-forward" size={16} color="#FFFFFF" style={{ marginLeft: 4 }} />
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* â”€â”€ Title Edit Modal â”€â”€ */}
+      <Modal
+        visible={titleEditModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTitleEditModalVisible(false)}
+      >
+        <View style={styles.titleEditOverlay}>
+          <View style={[styles.titleEditCard, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+            {/* Header */}
+            <View style={styles.titleEditHeader}>
+              <Text style={[styles.titleEditHeading, { color: theme.textPrimary }]}>Edit Contest Title</Text>
+              <TouchableOpacity
+                onPress={() => setTitleEditModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={[styles.titleEditCloseBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' }]}
+              >
+                <Icon name="close" size={18} color={theme.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Input */}
+            <View style={[
+              styles.titleEditInputRow,
+              {
+                backgroundColor: isDark ? '#1E293B' : '#F8FAFC',
+                borderColor: titleEditDraft.trim()
+                  ? (isDark ? '#94A3B8' : '#475569')
+                  : (isDark ? 'rgba(148,163,184,0.25)' : '#E2E8F0'),
+              },
+            ]}>
+              <Icon name="create" size={18} color={isDark ? '#94A3B8' : '#475569'} style={{ marginRight: 8 }} />
+              <TextInput
+                style={[styles.titleEditInput, { color: theme.textPrimary }]}
+                value={titleEditDraft}
+                onChangeText={(t) => setTitleEditDraft(t.slice(0, TITLE_MAX_LENGTH))}
+                placeholder="e.g. Science Chapter 1 Test"
+                placeholderTextColor={isDark ? '#475569' : '#94A3B8'}
+                autoFocus
+                maxLength={TITLE_MAX_LENGTH}
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (titleEditDraft.trim()) {
+                    setSetName(titleEditDraft.trim());
+                    setTitleEditModalVisible(false);
+                  }
+                }}
+              />
+              <Text style={{ fontSize: 11, color: isDark ? '#475569' : '#94A3B8', marginLeft: 4 }}>
+                {titleEditDraft.length}/{TITLE_MAX_LENGTH}
+              </Text>
+            </View>
+
+            {/* Save button */}
+            <TouchableOpacity
+              style={[styles.titleEditSaveBtn, { opacity: titleEditDraft.trim() ? 1 : 0.4 }]}
+              disabled={!titleEditDraft.trim()}
+              activeOpacity={0.85}
+              onPress={() => {
+                setSetName(titleEditDraft.trim());
+                setTitleEditModalVisible(false);
+              }}
+            >
+              <LinearGradient
+                colors={['#10B981', '#059669']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.titleEditSaveGradient}
+              >
+                <Icon name="checkmark" size={17} color="#FFFFFF" style={{ marginRight: 7 }} />
+                <Text style={styles.titleEditSaveText}>Save Title</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Format Guidance Modal ── */}
+      <Modal
+        visible={guidanceModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGuidanceModalVisible(false)}
+      >
+        <View style={styles.guidanceModalOverlay}>
+          <View style={[styles.guidanceModalCard, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+            {/* Modal Header */}
+            <View style={styles.guidanceModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                <View style={[styles.guidanceIconCircle, { backgroundColor: isDark ? 'rgba(56,189,248,0.15)' : 'rgba(15,98,254,0.1)' }]}>
+                  <Icon name="information-circle" size={20} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                </View>
+                <Text style={[styles.guidanceModalHeading, { color: theme.textPrimary }]}>
+                  Format Guidance
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setGuidanceModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={[styles.guidanceCloseBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' }]}
+              >
+                <Icon name="close" size={18} color={theme.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Mode Switcher Tabs inside Modal */}
+            <View style={[styles.guidanceTabBar, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
               <TouchableOpacity
                 style={[
-                  styles.voiceCancelBtn,
-                  {
-                    backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                  styles.guidanceTabBtn,
+                  guidanceTab === 'pdf' && {
+                    backgroundColor: isDark ? '#0284C7' : '#0F62FE',
                   },
                 ]}
-                onPress={isAutoVoiceActive ? handleStopAutoVoiceFlow : handleCancelVoiceInput}
-                activeOpacity={0.7}
+                onPress={() => setGuidanceTab('pdf')}
               >
-                <Text style={[styles.voiceCancelText, { color: isAutoVoiceActive ? '#EF4444' : theme.textSecondary }]}>
-                  {isAutoVoiceActive ? 'Stop Flow' : 'Cancel'}
+                <Text
+                  style={[
+                    styles.guidanceTabText,
+                    { color: guidanceTab === 'pdf' ? '#FFFFFF' : (isDark ? '#94A3B8' : '#64748B') },
+                  ]}
+                >
+                  PDF (AI)
                 </Text>
               </TouchableOpacity>
 
-              {isAutoVoiceActive && (
-                <TouchableOpacity
+              <TouchableOpacity
+                style={[
+                  styles.guidanceTabBtn,
+                  guidanceTab === 'txt_csv' && {
+                    backgroundColor: isDark ? '#0284C7' : '#0F62FE',
+                  },
+                ]}
+                onPress={() => setGuidanceTab('txt_csv')}
+              >
+                <Text
                   style={[
-                    styles.voiceSkipBtn,
-                    {
-                      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
-                    },
+                    styles.guidanceTabText,
+                    { color: guidanceTab === 'txt_csv' ? '#FFFFFF' : (isDark ? '#94A3B8' : '#64748B') },
                   ]}
-                  onPress={handleSkipVoiceField}
-                  activeOpacity={0.7}
                 >
-                  <Text style={[styles.voiceSkipText, { color: isDark ? '#38BDF8' : '#2563EB' }]}>
-                    Skip ⏭
-                  </Text>
-                </TouchableOpacity>
-              )}
+                  TXT / CSV
+                </Text>
+              </TouchableOpacity>
 
               <TouchableOpacity
                 style={[
-                  styles.voiceDoneBtn,
-                  !voiceLiveText.trim() && { opacity: 0.5 },
+                  styles.guidanceTabBtn,
+                  guidanceTab === 'manual' && {
+                    backgroundColor: isDark ? '#0284C7' : '#0F62FE',
+                  },
                 ]}
-                onPress={() => handleFinishVoiceInput()}
-                disabled={!voiceLiveText.trim()}
-                activeOpacity={0.85}
+                onPress={() => setGuidanceTab('manual')}
               >
-                <LinearGradient
-                  colors={['#0F62FE', '#0052CC']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.voiceDoneGradient}
+                <Text
+                  style={[
+                    styles.guidanceTabText,
+                    { color: guidanceTab === 'manual' ? '#FFFFFF' : (isDark ? '#94A3B8' : '#64748B') },
+                  ]}
                 >
-                  <Icon
-                    name={isAutoVoiceActive ? 'arrow-forward' : 'checkmark'}
-                    size={16}
-                    color="#FFFFFF"
-                    style={{ marginRight: 4 }}
-                  />
-                  <Text style={styles.voiceDoneText}>
-                    {isAutoVoiceActive ? 'Next' : 'Done'}
-                  </Text>
-                </LinearGradient>
+                  Manual
+                </Text>
               </TouchableOpacity>
             </View>
+
+            {/* Tab Specific Content */}
+            <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+              {guidanceTab === 'pdf' && (
+                <View style={{ gap: 10 }}>
+                  <Text style={[styles.guidanceDescription, { color: theme.textSecondary }]}>
+                    Upload a text-based PDF where each question is numbered, followed by 4 choices (A–D), and a * directly before the correct option letter.
+                  </Text>
+                  <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0', marginVertical: 4 }]}>
+                    <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
+                      {`1. What is the capital of France?\nA. London\n*B. Paris\nC. Rome\nD. Berlin`}
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 11, color: isDark ? '#94A3B8' : '#64748B' }}>
+                    • Supports text-based .pdf files up to 10MB{'\n'}
+                    • Scanned image PDFs are not supported
+                  </Text>
+                </View>
+              )}
+
+              {guidanceTab === 'txt_csv' && (
+                <View style={{ gap: 10 }}>
+                  <Text style={[styles.guidanceDescription, { color: theme.textSecondary }]}>
+                    Upload a .txt or .csv file formatted as follows:
+                  </Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary, marginTop: 4 }}>
+                    TXT Format:
+                  </Text>
+                  <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
+                    <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
+                      {`1. Which planet is closest to the Sun?\n*A. Mercury\nB. Venus\nC. Earth\nD. Mars`}
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: theme.textPrimary, marginTop: 4 }}>
+                    CSV Column Headers:
+                  </Text>
+                  <View style={[styles.codeBox, { backgroundColor: isDark ? '#050F1E' : '#E2E8F0' }]}>
+                    <Text style={[styles.codeText, { color: isDark ? '#93C5FD' : '#1E293B' }]}>
+                      {`Question, Choice A, Choice B, Choice C, Choice D, Correct Answer (1-4 or A-D)`}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {guidanceTab === 'manual' && (
+                <View style={{ gap: 8 }}>
+                  <Text style={[styles.guidanceDescription, { color: theme.textSecondary }]}>
+                    Build custom quiz sets question by question:
+                  </Text>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                    • Type your question or use Voice Typing.
+                  </Text>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                    • Enter all 4 options (A, B, C, D).
+                  </Text>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                    • Tap the radio circle next to an option to set it as correct answer (turns green).
+                  </Text>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                    • Tap "+ Add Question" to add more questions, then tap "Save Quiz Set".
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Got It Button */}
+            <TouchableOpacity
+              style={[styles.guidanceGotItBtn, { backgroundColor: isDark ? '#0284C7' : '#0F62FE' }]}
+              onPress={() => setGuidanceModalVisible(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.guidanceGotItText}>Got it</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1649,7 +2113,34 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   backButton: { width: 40, height: 40, justifyContent: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '700' },
+  headerTitle: { fontSize: 17, fontWeight: '700', flex: 1, textAlign: 'center' },
+  // Quiz title strip (shown below mode tabs, above content)
+  titleKeyLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  quizTitleContainer: {
+    paddingHorizontal: 4,
+    marginBottom: 14,
+  },
+  quizTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  quizTitleStripText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  quizTitleEditBtn: {
+    marginLeft: 10,
+    padding: 4,
+  },
   content: { padding: 16 },
 
   modeTabBar: {
@@ -1669,7 +2160,7 @@ const styles = StyleSheet.create({
     borderRadius: 11,
   },
   modeTabBtnActive: {
-    backgroundColor: '#0F62FE',
+    backgroundColor: '#64748B',
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -1838,27 +2329,30 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
   },
-  voiceTextBox: {
-    minHeight: 46,
-    maxHeight: 75,
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    justifyContent: 'center',
-    marginVertical: 8,
-  },
-  voiceTextContent: {
-    fontSize: 13,
-    lineHeight: 18,
+  voiceMicNote: {
+    fontSize: 11,
     textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 6,
+    fontStyle: 'italic',
+  },
+  voiceTextInput: {
+    minHeight: 52,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 10,
+    textAlignVertical: 'top',
   },
   voiceActionRow: {
     flexDirection: 'row',
     gap: 10,
     marginTop: 4,
   },
-  // Auto Voice Flow Banner Styles
+  // Voice Typing Banner Styles
   autoVoiceCard: {
     borderRadius: 14,
     padding: 12,
@@ -1925,16 +2419,42 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
   },
-  voiceSkipBtn: {
-    flex: 0.9,
-    paddingVertical: 9,
+
+  voiceQuestionPreview: {
+    fontSize: 12,
+    fontWeight: '600',
+    fontStyle: 'italic',
+    paddingHorizontal: 6,
+    paddingBottom: 6,
+    lineHeight: 17,
+  },
+  voiceChoiceStrip: {
+    marginHorizontal: 4,
+    marginBottom: 8,
     borderRadius: 10,
+    overflow: 'hidden',
+    gap: 2,
+  },
+  voiceChoiceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 8,
+  },
+  voiceChoiceCheck: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#64748B',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  voiceSkipText: {
-    fontSize: 12.5,
-    fontWeight: '700',
+  voiceChoiceLabel: {
+    flex: 1,
+    fontSize: 12,
   },
   voiceCancelBtn: {
     flex: 1,
@@ -1993,76 +2513,80 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 14,
   },
+  startManualBtn: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: '#0F62FE',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    marginTop: 6,
+    marginBottom: 20,
+  },
+  startManualGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+  },
+  startManualText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  continueCreatingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  continueCreatingBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  manualHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  incompleteBadge: {
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  incompleteBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
   saveManualText: {
     color: '#FFF',
     fontSize: 15,
     fontWeight: '800',
   },
-  highlightedTitleCard: {
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1.5,
-    marginBottom: 16,
-    elevation: 3,
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
+  successTitleContainer: {
+    paddingHorizontal: 2,
+    marginBottom: 18,
   },
-  titleCardHeaderRow: {
+  successTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
   },
-  titleCardLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+  successTitleText: {
     flex: 1,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
-  titleIconBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  titleCardHeading: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  titleCardSub: {
-    fontSize: 12,
-    marginTop: 1,
-  },
-  titleStatusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  titleStatusBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  highlightedInputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: 6,
-  },
-  highlightedInput: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    paddingVertical: 8,
-  },
-  titleCardFooterHint: {
-    fontSize: 11,
-    marginTop: 4,
+  successTitleEditBtn: {
+    marginLeft: 10,
+    padding: 4,
   },
   cardTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 },
   cardHeading: { fontSize: 15, fontWeight: '700' },
@@ -2171,19 +2695,35 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 12,
   },
-  previewQuestionText: { fontSize: 14, fontWeight: '700', marginBottom: 10 },
+  previewQuestionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  previewQuestionNum: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginRight: 6,
+    lineHeight: 20,
+  },
+  previewQuestionText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
   choicesList: { gap: 6 },
   choiceItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: 'transparent',
   },
-  choiceLetter: { fontWeight: '700', marginRight: 6, fontSize: 13 },
-  choiceText: { fontSize: 13, flex: 1 },
+  choiceLetter: { fontWeight: '700', marginRight: 8, fontSize: 13, lineHeight: 18 },
+  choiceText: { fontSize: 13, flex: 1, lineHeight: 18 },
 
   actionButtonsRow: { gap: 10, marginTop: 16 },
   saveButton: {
@@ -2301,13 +2841,163 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   successCloseBtn: {
-    paddingVertical: 13,
+    paddingVertical: 14,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
   },
   successCloseBtnText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  // â”€â”€ Title Edit Modal â”€â”€
+  titleEditOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  titleEditCard: {
+    width: '100%',
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  titleEditHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  titleEditHeading: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  titleEditCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  titleEditInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 16,
+  },
+  titleEditInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    padding: 0,
+  },
+  titleEditSaveBtn: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  titleEditSaveGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+  },
+  titleEditSaveText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  headerInfoBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  guidanceModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  guidanceModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  guidanceModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  guidanceIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  guidanceModalHeading: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  guidanceCloseBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  guidanceTabBar: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 14,
+  },
+  guidanceTabBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guidanceTabText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  guidanceDescription: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  guidanceGotItBtn: {
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+  },
+  guidanceGotItText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
 });

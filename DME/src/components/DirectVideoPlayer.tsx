@@ -1,5 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useRef, useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, AppState, NativeModules, Platform, Dimensions } from 'react-native';
+import DualSurfacePlayer, { DualSurfacePlayerRef } from './DualSurfacePlayer';
 import Video, {
   VideoRef,
   SelectedVideoTrackType,
@@ -15,10 +16,12 @@ export interface DirectVideoPlayerRef {
   getDuration: () => Promise<number>;
   playVideo: () => void;
   pauseVideo: () => void;
+  stopVideo?: () => void;
   setVolume: (volume: number) => void;
   getVolume: () => Promise<number>;
   setRealDuration?: (duration: number) => void;
   setPlaybackQuality?: (quality: string) => void;
+  setPlaybackRate?: (rate: number) => void;
   fastForwardAd?: () => void;
 }
 
@@ -35,6 +38,7 @@ export interface StreamInfo {
 }
 
 interface Props {
+  videoId?: string;
   videoUri: string;
   audioUri?: string | null;
   streamType?: 'mpd' | 'mp4' | 'm3u8';
@@ -56,11 +60,25 @@ interface Props {
   onQualitiesAvailable?: (qualities: string[]) => void;
   onQualityFallback?: (quality: string) => void;
   isFullscreen?: boolean;
+  resizeMode?: 'contain' | 'cover';
+  headers?: Record<string, string>;
   style?: any;
+  bleedEnabled?: boolean;
+  bleedDarkness?: number;
+  bbdCropPercent?: number;
+  blurSigma?: number;
+  contentRect?: { x: number; y: number; width: number; height: number };
 }
+
+const getVideoIdFromUri = (uri: string | null | undefined): string | null => {
+  if (!uri) return null;
+  const match = uri.match(/dash_([a-zA-Z0-9_-]+?)(?:_\d+)?\.mpd/);
+  return match ? match[1] : null;
+};
 
 const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) => {
   const {
+    videoId,
     videoUri,
     fallbackUri,
     streamType = 'mpd',
@@ -80,10 +98,19 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     onQualitiesAvailable,
     onQualityFallback,
     isFullscreen = false,
+    resizeMode,
+    headers,
     style,
+    bleedEnabled = false,
+    bleedDarkness = 0.55,
+    bbdCropPercent = 0.0,
+    blurSigma = 48.0,
+    contentRect,
   } = props;
 
   const videoRef = useRef<VideoRef>(null);
+  const dualSurfaceRef = useRef<DualSurfacePlayerRef>(null);
+  const useDualSurface = Platform.OS === 'android';
   const positionRef = useRef(initialPosition || 0);
   const durationRef = useRef(0);
   const isReadyRef = useRef(false);
@@ -98,15 +125,41 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     type: SelectedVideoTrackType.AUTO,
   });
 
+  const isMpdInitial = videoUri ? (
+    streamType === 'mpd' ||
+    videoUri.startsWith('data:application/dash+xml') ||
+    videoUri.includes('<MPD') ||
+    videoUri.includes('<?xml') ||
+    videoUri.endsWith('.mpd')
+  ) : false;
+
   const [playableSource, setPlayableSource] = useState<{
     uri: string;
     type?: string;
     headers?: Record<string, string>;
     startPosition?: number;
-  } | null>(null);
+  } | null>(() => videoUri ? ({
+    uri: videoUri,
+    type: isMpdInitial ? 'mpd' : (streamType || 'mp4'),
+    headers: headers,
+    startPosition: (initialPosition && initialPosition > 0) ? initialPosition : 0,
+  }) : null);
   const [playerKey, setPlayerKey] = useState(0);
   const recoveryAttemptsRef = useRef(0);
   const lastRecoveryTimeRef = useRef(0);
+  const hasReportedReadyRef = useRef(false);
+
+  const markReadyToDisplay = useCallback(() => {
+    if (!hasReportedReadyRef.current) {
+      hasReportedReadyRef.current = true;
+      setIsBuffering(false);
+      onReady?.();
+    }
+  }, [onReady]);
+
+  const handleReadyForDisplay = useCallback(() => {
+    markReadyToDisplay();
+  }, [markReadyToDisplay]);
   // When true, handleLoad will NOT re-apply the last quality — avoids re-triggering
   // the same quality that caused the recovery in the first place.
   const isRecoveringRef = useRef(false);
@@ -116,6 +169,13 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
 
   useEffect(() => {
     setIsPaused(!play);
+    try {
+      if (play) {
+        (videoRef.current as any)?.resume?.();
+      } else {
+        (videoRef.current as any)?.pause?.();
+      }
+    } catch (_) {}
   }, [play]);
 
   useEffect(() => {
@@ -125,6 +185,24 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
   // Track initialPosition only for the very first load of a new videoUri
   const initialPositionAppliedRef = useRef(false);
   const lastVideoUriRef = useRef<string | null>(null);
+  const lastLoadedTrackIdRef = useRef<string | undefined>(videoId);
+
+  useEffect(() => {
+    if (videoId && lastLoadedTrackIdRef.current && lastLoadedTrackIdRef.current !== videoId) {
+      setPlayableSource(null);
+      if (dualSurfaceRef.current) {
+        try {
+          dualSurfaceRef.current.pauseVideo?.();
+          dualSurfaceRef.current.stopVideo?.();
+        } catch (_) {}
+      }
+      hasReportedReadyRef.current = false;
+      isReadyRef.current = false;
+      setIsBuffering(true);
+      positionRef.current = 0;
+      durationRef.current = 0;
+    }
+  }, [videoId]);
 
   // Resolve source: videoUri is already a file:// path (dash_<videoId>_<ts>.mpd) written by TrackPlayerService.
   // No MPD rewriting needed here — just set the source directly.
@@ -137,12 +215,23 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       recoveryAttemptsRef.current = 0;
       initialPositionAppliedRef.current = false;
       lastVideoUriRef.current = null;
+      lastLoadedTrackIdRef.current = undefined;
       return;
     }
 
     const prevUri = lastVideoUriRef.current;
     const isNewUri = prevUri !== videoUri;
     lastVideoUriRef.current = videoUri;
+
+    const prevUriTrackId = getVideoIdFromUri(prevUri);
+    const curUriTrackId = getVideoIdFromUri(videoUri);
+    const prevTrackId = lastLoadedTrackIdRef.current || prevUriTrackId;
+    const curTrackId = videoId || curUriTrackId;
+
+    const isDifferentVideo = Boolean(
+      (prevTrackId && curTrackId && prevTrackId !== curTrackId) ||
+      (prevUriTrackId && curUriTrackId && prevUriTrackId !== curUriTrackId)
+    );
 
     const isMpd =
       streamType === 'mpd' ||
@@ -151,39 +240,76 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       videoUri.includes('<?xml') ||
       videoUri.endsWith('.mpd');
 
+    const isM3u8 =
+      streamType === 'm3u8' ||
+      videoUri.endsWith('.m3u8') ||
+      videoUri.includes('m3u8') ||
+      videoUri.includes('hls_variant') ||
+      videoUri.includes('hls');
+
     if (isNewUri) {
-      // Rave rescrape detection: if previous URI was also a DASH MPD (not null/mp4),
-      // this is a re-extraction of the SAME video with fresh CDN URLs — preserve position.
-      // Otherwise it's a genuinely new video — reset to initialPosition.
+      lastLoadedTrackIdRef.current = curTrackId || undefined;
+
       const prevIsMpd = prevUri
         ? (prevUri.endsWith('.mpd') || prevUri.startsWith('data:application/dash+xml') || prevUri.includes('<MPD'))
         : false;
-      const isRescrape = prevIsMpd && isMpd;
+
+      // Rescrape ONLY when:
+      // 1. Same video (NOT different video)
+      // 2. Both previous and current URIs are DASH MPDs
+      // 3. We are in an active in-stream error recovery state (isRecoveringRef.current === true)
+      // Natural queue advancement or track changes are NEVER a rescrape!
+      const isRescrape = !isDifferentVideo && prevIsMpd && isMpd && isRecoveringRef.current && Boolean(curTrackId && prevTrackId && curTrackId === prevTrackId);
 
       if (isRescrape) {
-        // Rave rescrape: preserve current playback position so ExoPlayer resumes seamlessly
-        console.log(`🔄 [DirectVideoPlayer] DASH rescrape detected — preserving pos ${positionRef.current.toFixed(1)}s`);
-        // positionRef.current is already at current position — don't overwrite it
+        // Rave rescrape: preserve current playback position so ExoPlayer resumes seamlessly on 403 recovery
+        console.log(`🔄 [DirectVideoPlayer] DASH rescrape for recovery detected for ${curTrackId} — preserving pos ${positionRef.current.toFixed(1)}s`);
         isRecoveringRef.current = false;
         recoveryAttemptsRef.current = 0;
         blockedQualityHeightsRef.current.clear();
+        if (play) {
+          setIsPaused(false);
+        }
       } else {
-        // New video: reset to initialPosition
-        positionRef.current = (initialPosition && initialPosition > 0) ? initialPosition : 0;
+        // Genuinely new video (e.g. next in queue)
+        console.log(`🎬 [DirectVideoPlayer] New video track: ${curTrackId || videoUri.slice(-25)} (prev: ${prevTrackId || 'none'}) — starting from 0s`);
+        hasReportedReadyRef.current = false;
+        isReadyRef.current = false;
+        positionRef.current = 0;
         durationRef.current = 0;
         isRecoveringRef.current = false;
         recoveryAttemptsRef.current = 0;
-        initialPositionAppliedRef.current = false;
+        // Only allow initialPosition on the very first track load (e.g. joining an ongoing room).
+        // For queue tracks (prevUri exists) or live streams (isM3u8), mark as already applied so next song ALWAYS starts at 0s!
+        initialPositionAppliedRef.current = (prevUri || isM3u8) ? true : false;
         blockedQualityHeightsRef.current.clear();
+        if (play) {
+          setIsPaused(false);
+          try {
+            (videoRef.current as any)?.resume?.();
+          } catch (_) {}
+        }
       }
     }
 
-    setPlayableSource({
+    const nextSource = {
       uri: videoUri,
-      type: isMpd ? 'mpd' : (streamType || 'mp4'),
-      startPosition: isNewUri ? positionRef.current : undefined,
-    });
-  }, [videoUri, streamType]);
+      type: isMpd ? 'mpd' : (isM3u8 ? 'm3u8' : (streamType || 'mp4')),
+      headers: headers,
+      requestHeaders: headers ? Object.entries(headers).map(([key, value]) => ({ key, value })) : [],
+      startPosition: (isNewUri && !isM3u8) ? positionRef.current : undefined,
+    };
+
+    setPlayableSource(nextSource);
+
+    // Directly command ExoPlayer to load the new source immediately.
+    // When the phone screen is locked or app is in background, React Native pauses
+    // JSX prop commits (<Video source={...} />). Calling the NativeModule directly
+    // bypasses the paused React UI queue and immediately starts the next track!
+    try {
+      NativeModules.VideoManager?.setSourceDirect?.(nextSource);
+    } catch (_) {}
+  }, [videoUri, streamType, headers]);
 
 
   // Mirror selectedVideoTrack into a ref so applyQuality can read the current value
@@ -232,9 +358,14 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       if (!q || q === 'auto') {
         setSelectedVideoTrackSafe({ type: SelectedVideoTrackType.AUTO });
         onExactResolutionRef.current?.('Auto');
+        if (useDualSurface) {
+          dualSurfaceRef.current?.setPlaybackQuality?.('auto');
+        }
         return;
       }
       const qMap: Record<string, number> = {
+        hd2160: 2160,
+        highres: 2160,
         hd1440: 1440,
         hd1080: 1080,
         hd720: 720,
@@ -243,9 +374,9 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
         small: 240,
         tiny: 144,
       };
-      // Support full resolutions up to 1440p / 1080p (Rave architecture with native OkHttp headers)
+      // Support full resolutions up to 2160p / 1440p / 1080p (Rave architecture with native OkHttp headers)
       const rawHeight = qMap[q] || parseInt(q.replace(/\D/g, ''), 10);
-      const requestedHeight = Math.min(1440, rawHeight || 0);
+      const requestedHeight = Math.min(2160, rawHeight || 0);
       if (requestedHeight > 0) {
         let bestTrackHeight = requestedHeight;
         const tracks = tracksRef.current;
@@ -254,7 +385,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           if (exact) {
             bestTrackHeight = exact.height;
           } else {
-            const sorted = [...tracks].filter((t: any) => t.height && t.height <= 1440).sort((a: any, b: any) => b.height - a.height);
+            const sorted = [...tracks].filter((t: any) => t.height && t.height <= 2160).sort((a: any, b: any) => b.height - a.height);
             const closest = sorted.find((t: any) => t.height <= requestedHeight) || sorted[sorted.length - 1];
             if (closest) bestTrackHeight = closest.height;
           }
@@ -278,9 +409,12 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           value: bestTrackHeight,
         });
         onExactResolutionRef.current?.(`${bestTrackHeight}p`);
+        if (useDualSurface) {
+          dualSurfaceRef.current?.setPlaybackQuality?.(q);
+        }
       }
     }, 800);
-  }, [setSelectedVideoTrackSafe]); // ← stable dependency array, zero loops
+  }, [setSelectedVideoTrackSafe, useDualSurface]); // ← stable dependency array, zero loops
 
   useEffect(() => {
     if (quality) {
@@ -295,8 +429,26 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     isReadyRef.current = true;
     durationRef.current = data.duration || 0;
     setIsBuffering(false);
+    if (play) {
+      setIsPaused(false);
+      try {
+        (videoRef.current as any)?.resume?.();
+      } catch (_) {}
+    }
     onLoad?.(data.duration || 0);
-    onReady?.();
+
+    if (!hasReportedReadyRef.current) {
+      if (AppState.currentState !== 'active') {
+        // In background / screen locked: no display surface exists so onReadyForDisplay
+        // never fires, and Android OS throttles/freezes JS setTimeout timers.
+        // We MUST mark ready immediately so playback starts uninterrupted!
+        markReadyToDisplay();
+      } else {
+        setTimeout(() => {
+          markReadyToDisplay();
+        }, 1500);
+      }
+    }
 
     if (data.naturalSize?.width && data.naturalSize?.height) {
       const ar = data.naturalSize.width / data.naturalSize.height;
@@ -338,9 +490,13 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     // Clear recovery flag AFTER seek — this unblocks handleProgress tracking.
     isRecoveringRef.current = false;
     recoveryAttemptsRef.current = 0;
-  }, [initialPosition, onLoad, onReady, onAspectRatio, onQualitiesAvailable, quality, applyQuality]);
+  }, [initialPosition, onLoad, onReady, onAspectRatio, onQualitiesAvailable, quality, applyQuality, play]);
 
   const handleProgress = useCallback((data: OnProgressData) => {
+    if (!isReadyRef.current) return;
+    if (!hasReportedReadyRef.current && data.currentTime > 0) {
+      markReadyToDisplay();
+    }
     // During recovery the newly-mounted ExoPlayer fires progress=0 before the seek
     // completes. Updating positionRef here would overwrite the captured recovery
     // position and cause the fallback to seek back to 0 on the next error.
@@ -349,12 +505,29 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     }
     durationRef.current = data.seekableDuration || durationRef.current;
     onProgress?.(data.currentTime, durationRef.current);
-  }, [onProgress]);
+  }, [onProgress, markReadyToDisplay]);
 
   const handleBuffer = useCallback((data: OnBufferData) => {
     setIsBuffering(data.isBuffering);
     onStateChange?.(data.isBuffering ? 'buffering' : (play ? 'playing' : 'paused'));
   }, [play, onStateChange]);
+
+  const handleBandwidthUpdate = useCallback((data: any) => {
+    if (data?.height && selectedVideoTrackRef.current.type === SelectedVideoTrackType.AUTO) {
+      const h = Math.round(data.height);
+      onExactResolutionRef.current?.(`${h}p`);
+    }
+  }, []);
+
+  const handleEnd = useCallback(() => {
+    // Only report ended if the player actually completed loading and playing
+    if (!isReadyRef.current) {
+      console.log('🛡️ [DirectVideoPlayer] Suppressing ghost onEnd before player is ready');
+      return;
+    }
+    onStateChange?.('ended');
+    onEnd?.();
+  }, [onStateChange, onEnd]);
 
 
   const handleError = useCallback((err: any) => {
@@ -422,20 +595,62 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
   useImperativeHandle(ref, () => ({
     seekTo: (seconds: number, _allowSeekAhead?: boolean) => {
       positionRef.current = seconds;
-      videoRef.current?.seek(seconds);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.seekTo(seconds);
+      } else {
+        videoRef.current?.seek(seconds);
+      }
     },
-    getCurrentTime: async () => positionRef.current,
-    getDuration: async () => durationRef.current,
+    getCurrentTime: async () => {
+      if (useDualSurface && dualSurfaceRef.current) {
+        return await dualSurfaceRef.current.getCurrentTime();
+      }
+      return positionRef.current;
+    },
+    getDuration: async () => {
+      if (useDualSurface && dualSurfaceRef.current) {
+        return await dualSurfaceRef.current.getDuration();
+      }
+      return durationRef.current;
+    },
     playVideo: () => {
       setIsPaused(false);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.playVideo();
+      } else {
+        try {
+          (videoRef.current as any)?.resume?.();
+        } catch (_) {}
+      }
     },
     pauseVideo: () => {
       setIsPaused(true);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.pauseVideo();
+      } else {
+        try {
+          (videoRef.current as any)?.pause?.();
+        } catch (_) {}
+      }
+    },
+    stopVideo: () => {
+      setIsPaused(true);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.stopVideo?.();
+      } else {
+        try {
+          (videoRef.current as any)?.pause?.();
+        } catch (_) {}
+      }
     },
     setVolume: (vol: number) => {
       const v = Math.max(0, Math.min(1, vol));
       setCurrentVol(v);
-      videoRef.current?.setVolume(v);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.setVolume(v);
+      } else {
+        videoRef.current?.setVolume(v);
+      }
     },
     getVolume: async () => currentVol,
     setRealDuration: (d: number) => {
@@ -443,44 +658,103 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     },
     setPlaybackQuality: (q: string) => {
       applyQuality(q);
+      if (useDualSurface) {
+        dualSurfaceRef.current?.setPlaybackQuality?.(q);
+      }
+    },
+    setPlaybackRate: (rate: number) => {
+      if (useDualSurface) {
+        dualSurfaceRef.current?.setPlaybackRate?.(rate);
+      }
     },
     fastForwardAd: () => {},
   }));
 
-  if (!playableSource) {
-    return <View style={[styles.container, style]} />;
+  if (!playableSource && !useDualSurface) {
+    return <View style={[styles.container, isFullscreen && { backgroundColor: '#000' }, style]} />;
   }
 
   return (
-    <View style={[styles.container, style]}>
-      <Video
-        key={`exo_${playerKey}`}
-        ref={videoRef}
-        source={playableSource}
-        selectedVideoTrack={selectedVideoTrack}
-        bufferConfig={{
-          minBufferMs: 5000,
-          maxBufferMs: 20000,
-          bufferForPlaybackMs: 1000,
-          bufferForPlaybackAfterRebufferMs: 2000,
-          backBufferDurationMs: 5000,
-        }}
-        paused={isPaused}
-        muted={muted}
-        volume={currentVol}
-        playInBackground={true}
-        playWhenInactive={true}
-        preventsDisplaySleepDuringVideoPlayback={true}
-        resizeMode={isFullscreen ? 'cover' : 'contain'}
-        style={styles.video}
-        progressUpdateInterval={250}
-        onLoad={handleLoad}
-        onProgress={handleProgress}
-        onBuffer={handleBuffer}
-        onEnd={onEnd}
-        onError={handleError}
-      />
-      {isBuffering && (
+    <View style={[styles.container, isFullscreen && { backgroundColor: '#000' }, style]}>
+      {useDualSurface ? (
+        <DualSurfacePlayer
+          ref={dualSurfaceRef}
+          videoId={videoId}
+          videoUri={playableSource?.uri || ''}
+          headers={playableSource?.headers}
+          play={Boolean(playableSource && !isPaused)}
+          quality={quality}
+          muted={muted}
+          volume={currentVol}
+          initialPosition={playableSource?.startPosition || 0}
+          bleedEnabled={bleedEnabled}
+          bleedDarkness={bleedDarkness}
+          bbdCropPercent={bbdCropPercent}
+          blurSigma={blurSigma}
+          contentRect={contentRect}
+          style={styles.video}
+          onReady={(dur) => {
+            if (!playableSource?.uri) return;
+            isReadyRef.current = true;
+            durationRef.current = dur;
+            setIsBuffering(false);
+            markReadyToDisplay();
+            onLoad?.(dur);
+          }}
+          onProgress={(currentTime, dur) => {
+            if (!playableSource?.uri) return;
+            isReadyRef.current = true;
+            positionRef.current = currentTime;
+            if (dur > 0) durationRef.current = dur;
+            if (!hasReportedReadyRef.current && currentTime > 0) {
+              markReadyToDisplay();
+            }
+            onProgress?.(currentTime, dur);
+          }}
+          onBuffer={(buf) => {
+            setIsBuffering(buf);
+          }}
+          onEnd={handleEnd}
+          onError={handleError}
+          onAspectRatio={(ar) => {
+            onAspectRatio?.(ar);
+          }}
+          onExactResolution={onExactResolution}
+          onQualitiesAvailable={onQualitiesAvailable}
+        />
+      ) : playableSource ? (
+        <Video
+          key={`exo_${playerKey}`}
+          ref={videoRef}
+          source={playableSource}
+          selectedVideoTrack={selectedVideoTrack}
+          viewType={1}
+          bufferConfig={{
+            minBufferMs: 5000,
+            maxBufferMs: 20000,
+            bufferForPlaybackMs: 1000,
+            bufferForPlaybackAfterRebufferMs: 2000,
+            backBufferDurationMs: 5000,
+          }}
+          paused={isPaused}
+          muted={muted}
+          volume={currentVol}
+          playInBackground={true}
+          playWhenInactive={true}
+          preventsDisplaySleepDuringVideoPlayback={true}
+          resizeMode={resizeMode || 'contain'}
+          style={styles.video}
+          progressUpdateInterval={250}
+          onLoad={handleLoad}
+          onProgress={handleProgress}
+          onBuffer={handleBuffer}
+          onBandwidthUpdate={handleBandwidthUpdate}
+          onReadyForDisplay={handleReadyForDisplay}
+          onEnd={handleEnd}
+          onError={handleError}
+        />
+      ) : null}
+      {isBuffering && !bleedEnabled && !contentRect && (
         <View style={styles.loaderOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#ffffff" />
         </View>
@@ -496,8 +770,8 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#000',
-    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    overflow: 'visible',
     justifyContent: 'center',
     alignItems: 'center',
   },

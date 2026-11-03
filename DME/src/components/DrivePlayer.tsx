@@ -24,10 +24,11 @@ interface Props {
   onStreamResolved?: (cdnUrl: string, cdnHeaders: Record<string, string>) => void;
   onAspectRatio?: (aspectRatio: number) => void;
   isFullscreen?: boolean;
+  resizeMode?: 'contain' | 'cover';
 }
 
 const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
-  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, onAspectRatio, isFullscreen = false } = props;
+  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, onAspectRatio, isFullscreen = false, resizeMode = 'contain' } = props;
   const webViewRef = useRef<WebView>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -38,7 +39,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
   };
 
   if (!fileId) {
-    return <View style={styles.container} />;
+    return <View style={[styles.container, isFullscreen && { backgroundColor: '#000' }]} />;
   }
 
   const initialUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
@@ -50,7 +51,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:100%; height:100%; background:#000; overflow:hidden; }
+  html, body { width:100%; height:100%; background: transparent; overflow:hidden; }
   #bg-canvas {
     position: absolute;
     top: -15%;
@@ -58,7 +59,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
     width: 130%;
     height: 130%;
     object-fit: cover;
-    background: #000;
+    background: transparent;
     filter: blur(40px) brightness(0.60) saturate(1.5);
     opacity: 0.85;
     z-index: 1;
@@ -70,7 +71,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
     left: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: ${resizeMode === 'cover' ? 'cover' : 'contain'};
     background: transparent;
     z-index: 2;
   }
@@ -211,13 +212,28 @@ function attachEvents() {
 
 function syncFullscreenState() {
   if (!v) return;
-  if (window.isFullscreen) {
-    v.style.objectFit = 'contain';
-  } else {
-    v.style.objectFit = 'contain';
-  }
 }
 window.syncFullscreenState = syncFullscreenState;
+
+function handleCmd(e) {
+  try {
+    var data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+    if (!data) return;
+    if (data.action === 'play') {
+      if (v) v.play().catch(function(){});
+    } else if (data.action === 'pause') {
+      if (v) v.pause();
+    } else if (data.action === 'mute') {
+      if (v) v.muted = true;
+    } else if (data.action === 'unmute') {
+      if (v) v.muted = false;
+    } else if (data.action === 'resizeMode') {
+      if (v) v.style.objectFit = data.mode === 'cover' ? 'cover' : 'contain';
+    }
+  } catch(err) {}
+}
+window.addEventListener('message', handleCmd);
+document.addEventListener('message', handleCmd);
 
 attachEvents();
 </script>
@@ -236,20 +252,58 @@ attachEvents();
       });
       const htmlText = await res.text();
 
-      // Check for confirm token
-      const match = htmlText.match(/href="(\/uc\?export=download[^"]+confirm=([^"&]+)[^"]*)"/) ||
-                    htmlText.match(/confirm=([0-9A-Za-z_-]+)/);
-
       let finalDownloadUrl = '';
-      if (match) {
-        const confirmToken = match[2] || match[1];
-        finalDownloadUrl = `https://drive.google.com/uc?export=download&confirm=${confirmToken}&id=${fileId}`;
-        console.log('✅ [DRIVE BYPASS] Extracted confirm token:', confirmToken);
-      } else {
-        // Look for direct download link or form action
-        const formMatch = htmlText.match(/action="([^"]+)"/);
-        if (formMatch && formMatch[1].includes('drive.google.com')) {
-          finalDownloadUrl = formMatch[1].replace(/&amp;/g, '&');
+
+      // Strategy 1: Parse <form id="download-form" action="..." method="get">
+      const formMatch = htmlText.match(/<form[^>]+action="([^"]+)"[^>]*>/i);
+      if (formMatch && formMatch[1]) {
+        let action = formMatch[1].replace(/&amp;/g, '&');
+        if (!action.startsWith('http')) {
+          action = 'https://drive.usercontent.google.com' + (action.startsWith('/') ? action : '/' + action);
+        }
+        const urlObj = new URL(action);
+        const inputRegex = /<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"[^>]*>/gi;
+        const inputRegexRev = /<input[^>]+value="([^"]*)"[^>]+name="([^"]+)"[^>]*>/gi;
+        let m: RegExpExecArray | null;
+        while ((m = inputRegex.exec(htmlText)) !== null) {
+          urlObj.searchParams.set(m[1], m[2]);
+        }
+        while ((m = inputRegexRev.exec(htmlText)) !== null) {
+          urlObj.searchParams.set(m[2], m[1]);
+        }
+        if (!urlObj.searchParams.has('id')) urlObj.searchParams.set('id', fileId);
+        if (!urlObj.searchParams.has('export')) urlObj.searchParams.set('export', 'download');
+        finalDownloadUrl = urlObj.toString();
+        console.log('✅ [DRIVE BYPASS] Extracted form URL:', finalDownloadUrl);
+      }
+
+      // Strategy 2: Check for direct download link element or regex confirm token
+      if (!finalDownloadUrl) {
+        const linkMatch =
+          htmlText.match(/id="uc-download-link"[^>]+href="([^"]+)"/i) ||
+          htmlText.match(/href="([^"]+)"[^>]+id="uc-download-link"/i) ||
+          htmlText.match(/href="(\/uc\?export=download[^"]+confirm=[^"]*)"/i) ||
+          htmlText.match(/href="(https:\/\/drive\.usercontent\.google\.com\/download[^"]*)"/i);
+
+        if (linkMatch && linkMatch[1]) {
+          let downloadLink = linkMatch[1].replace(/&amp;/g, '&');
+          if (!downloadLink.startsWith('http')) {
+            downloadLink = 'https://drive.google.com' + (downloadLink.startsWith('/') ? downloadLink : '/' + downloadLink);
+          }
+          finalDownloadUrl = downloadLink;
+          console.log('✅ [DRIVE BYPASS] Extracted link match URL:', finalDownloadUrl);
+        }
+      }
+
+      // Strategy 3: Regex confirm & uuid token
+      if (!finalDownloadUrl) {
+        const confirmMatch = htmlText.match(/confirm=([0-9A-Za-z_-]+)/);
+        const uuidMatch = htmlText.match(/uuid=([0-9A-Za-z_-]+)/);
+        if (confirmMatch && confirmMatch[1]) {
+          const confirmToken = confirmMatch[1];
+          const uuidToken = uuidMatch ? uuidMatch[1] : '';
+          finalDownloadUrl = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=${confirmToken}${uuidToken ? '&uuid=' + uuidToken : ''}`;
+          console.log('✅ [DRIVE BYPASS] Extracted confirm token URL:', finalDownloadUrl);
         }
       }
 
@@ -327,21 +381,31 @@ attachEvents();
 
   React.useEffect(() => {
     if (!isReadyRef.current) return;
-    inject(
-      `window.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({action:'${play ? 'play' : 'pause'}'})}));`
-    );
+    if (play) {
+      inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.play().catch(function(){}); })()`);
+    } else {
+      inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.pause(); })()`);
+    }
   }, [play]);
 
   React.useEffect(() => {
     if (!isReadyRef.current) return;
-    inject(
-      `window.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({action:'${muted ? 'mute' : 'unmute'}'})}));`
-    );
+    if (muted) {
+      inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.muted = true; })()`);
+    } else {
+      inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.muted = false; })()`);
+    }
   }, [muted]);
 
   React.useEffect(() => {
     inject(`window.isFullscreen = ${isFullscreen ? 'true' : 'false'}; if (window.syncFullscreenState) window.syncFullscreenState();`);
   }, [isFullscreen]);
+
+  React.useEffect(() => {
+    if (!isReadyRef.current) return;
+    const mode = resizeMode === 'cover' ? 'cover' : 'contain';
+    inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.style.objectFit = '${mode}'; })()`);
+  }, [resizeMode]);
 
   React.useEffect(() => {
     return () => {
@@ -366,7 +430,7 @@ attachEvents();
     },
     getCurrentTime:   async () => positionRef.current,
     getDuration:      async () => durationRef.current,
-    playVideo:        () => inject(`(function(){ var v=document.getElementById('dmevideo'); if(v) v.play(); })()`),
+    playVideo:        () => inject(`(function(){ var v=document.getElementById('dmevideo'); if(v) v.play().catch(function(){}); })()`),
     pauseVideo:       () => inject(`(function(){ var v=document.getElementById('dmevideo'); if(v) v.pause(); })()`),
     setVolume:        (_v) => {},
     getVolume:        async () => 100,
@@ -374,7 +438,7 @@ attachEvents();
   }));
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, isFullscreen && { backgroundColor: '#000' }]}>
       <WebView
         ref={webViewRef}
         source={{
@@ -388,7 +452,7 @@ attachEvents();
         scalesPageToFit={false}
         scrollEnabled={false}
         bounces={false}
-        style={styles.webview}
+        style={[styles.webview, isFullscreen && { backgroundColor: '#000' }]}
         userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         injectedJavaScriptBeforeContentLoaded={`
           (function() {
@@ -420,12 +484,12 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
     overflow: 'hidden',
   },
   webview: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
   },
 });
 

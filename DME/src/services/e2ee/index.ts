@@ -5,3 +5,4 @@ export * from './DoubleRatchet';
 export * from './SessionManager';
 export * from './MessageCipher';
 export * from './MediaCipher';
+export * from './BackupManager';

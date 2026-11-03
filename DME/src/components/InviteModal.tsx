@@ -177,79 +177,13 @@ const InviteModal: React.FC<InviteModalProps> = ({
       <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Room & Invites</Text>
+          <Text style={styles.title}>Invite Friends</Text>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Icon name="close" size={24} color={theme.icon} />
           </TouchableOpacity>
         </View>
 
-        {/* ── TOP: Room Participants Horizontal Scroll with Integrated Mic Badges ── */}
-        {participants.length > 0 && (
-          <View style={styles.participantsSection}>
-            <View style={styles.participantsHeaderRow}>
-              <Text style={styles.sectionSubtitle}>
-                In Room ({participants.length})
-              </Text>
-              <View style={styles.speakerCountPill}>
-                <Icon name="mic" size={11} color="#10B981" />
-                <Text style={styles.speakerCountText}>
-                  {Math.min(4, Math.max(1, allowedSpeakers.length))}/4 Speakers
-                </Text>
-              </View>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.participantsScroll}
-            >
-              {participants.map((p) => {
-                const isAllowed = p.is_dj || allowedSpeakers.includes(p.user_id);
-                return (
-                  <TouchableOpacity
-                    key={p.user_id}
-                    style={styles.participantItem}
-                    onPress={() => handleToggleSpeaker(p)}
-                    activeOpacity={0.75}
-                  >
-                    <View style={styles.avatarWrapper}>
-                      <AvatarWithFallback
-                        uri={p.avatar}
-                        displayName={p.name}
-                        sticker={p.avatar_sticker}
-                        style={[
-                          styles.participantAvatar,
-                          isAllowed && styles.participantAvatarAllowed
-                        ]}
-                      />
-                      {p.is_dj && (
-                        <View style={styles.djBadge}>
-                          <Icon name="star" size={8} color="#FFD700" />
-                        </View>
-                      )}
-                      {/* Integrated Mic Toggle Badge on Avatar */}
-                      <View style={[
-                        styles.micBadgeOverlay,
-                        isAllowed ? styles.micBadgeOverlayActive : styles.micBadgeOverlayMuted
-                      ]}>
-                        <Icon
-                          name={isAllowed ? 'mic' : 'mic-off'}
-                          size={9}
-                          color={isAllowed ? '#fff' : 'rgba(255,255,255,0.45)'}
-                        />
-                      </View>
-                    </View>
-                    <Text style={styles.participantName} numberOfLines={1}>
-                      {p.name}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* ── BOTTOM: Invite Friends Section ── */}
+        {/* ── Invite Friends Section ── */}
         <View style={styles.searchBar}>
           <Icon name="search" size={18} color={theme.icon} />
           <TextInput

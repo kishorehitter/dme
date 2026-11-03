@@ -162,15 +162,8 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
 
     @ReactMethod
     public void setFitsSystemWindows(final boolean fits) {
-        final Activity activity = getCurrentActivity();
-        if (activity == null) return;
-        UiThreadUtil.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                // Permanently lock decor fits system windows to false (edge-to-edge)
-                WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), false);
-            }
-        });
+        // No-op: Edge-to-edge is already permanently configured at startup.
+        // Re-dispatching decor fits system windows on the fly breaks keyboard animation synchronization.
     }
 
     /**
@@ -226,7 +219,6 @@ public class SystemBarModule extends ReactContextBaseJavaModule implements Lifec
             @Override
             public void run() {
                 Window window = activity.getWindow();
-                WindowCompat.setDecorFitsSystemWindows(window, false);
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 try {
                     if ("#00000000".equals(colorHex) || "#01000000".equals(colorHex) || "transparent".equalsIgnoreCase(colorHex)) {

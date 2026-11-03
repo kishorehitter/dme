@@ -287,7 +287,7 @@ class MessageSerializer(serializers.ModelSerializer):
             validated_data['media_file'] = file_obj
         
         # Handle reply_to
-        reply_to_id = request.data.get('reply_to') if request else None
+        reply_to_id = (request.data.get('reply_to') or request.data.get('reply_to_id')) if request else None
         if reply_to_id:
             try:
                 validated_data['reply_to'] = Message.objects.get(id=reply_to_id)
@@ -482,14 +482,36 @@ class ConversationListSerializer(serializers.ModelSerializer):
     profile_picture = serializers.SerializerMethodField()
     message_request_status = serializers.SerializerMethodField()
     message_request_sender_id = serializers.SerializerMethodField()
+    participants_count = serializers.SerializerMethodField()
+    participants = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = (
             'id', 'name', 'description', 'is_group', 'profile_picture', 'updated_at',
             'other_user', 'last_message', 'unread_count',
-            'message_request_status', 'message_request_sender_id'
+            'message_request_status', 'message_request_sender_id',
+            'participants_count', 'participants'
         )
+
+    def get_participants_count(self, obj):
+        return obj.participants.count()
+
+    def get_participants(self, obj):
+        if not obj.is_group:
+            return []
+        return [
+            {
+                'id': p.id,
+                'user': {
+                    'id': p.user.id,
+                    'name': p.user.first_name or p.user.username,
+                    'username': p.user.username,
+                },
+                'is_admin': p.is_admin,
+            }
+            for p in obj.participants.all()
+        ]
 
     def get_message_request_status(self, obj):
         if obj.is_group:

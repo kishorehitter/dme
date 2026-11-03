@@ -33,6 +33,8 @@ import {
   ScrollView,
   StatusBar,
   LayoutChangeEvent,
+  LayoutAnimation,
+  Easing as RNEasing,
 } from 'react-native';
 
 const SafeText = (props: any) => {
@@ -43,6 +45,61 @@ const SafeText = (props: any) => {
   return <RNText {...props}>{children}</RNText>;
 };
 const Text = SafeText;
+
+// ── WhatsApp / Instagram style smooth mounting & slide-up entrance for newly sent bubbles ──
+const AnimatedMessageBubble = React.memo(({
+  isNew,
+  children,
+  style,
+}: {
+  isNew: boolean;
+  children: React.ReactNode;
+  style?: any;
+}) => {
+  const anim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+
+  useEffect(() => {
+    if (isNew) {
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 180,
+        easing: RNEasing.out(RNEasing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  }, []);
+
+  if (!isNew) {
+    return <View style={style}>{children}</View>;
+  }
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [20, 0],
+              }),
+            },
+            {
+              scale: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.95, 1],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+});
 import RNFetchBlob from 'rn-fetch-blob';
 import FileViewer from 'react-native-file-viewer';
 import { check, request, PERMISSIONS, RESULTS, openSettings } from 'react-native-permissions';
@@ -54,8 +111,8 @@ import Toast from 'react-native-toast-message';
 import { chatAPI } from '../../services/api';
 import localDatabase from '../../services/LocalDatabase';
 import { websocketService, WebSocketMessage } from '../../services/websocket';
-import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, withSpring, Easing } from 'react-native-reanimated';
-import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Reanimated, { useSharedValue, useAnimatedStyle, useDerivedValue, withTiming, withSpring, Easing } from 'react-native-reanimated';
+import { useGenericKeyboardHandler, KeyboardController, AndroidSoftInputModes } from 'react-native-keyboard-controller';
 import { spacing, borderRadius, fontSize, colors } from '../../utils/theme';
 import { Message } from '../../types';
 import { pinNavBarColor } from '../../utils/navBarPin';
@@ -68,7 +125,7 @@ import AudioPlayer from '../../components/AudioPlayer';
 import { pick, types, errorCodes } from '@react-native-documents/picker';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import fcmService from '../../services/fcm';
-import { MessageCipher, MediaCipher, MediaE2EEMetadata } from '../../services/e2ee';
+import { MessageCipher, MediaCipher, MediaE2EEMetadata, BackupManager } from '../../services/e2ee';
 import notifee from '@notifee/react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { StatusService } from '../../services/StatusService';
@@ -89,7 +146,7 @@ import { MediaGroupListModal } from '../../components/MediaGroupListModal';
 import { CustomGalleryPicker } from '../../components/CustomGalleryPicker';
 import StickerPickerSheet from '../../components/StickerPickerSheet';
 import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../../components/DoubleTapHeartOverlay';
-import LottieStickerMessage from '../../components/LottieStickerMessage';
+import LottieStickerMessage, { getEmojiFromUrl } from '../../components/LottieStickerMessage';
 import LottieView from 'lottie-react-native';
 import { BUILT_IN_STICKER_PACKS, Sticker } from '../../stickers/stickerPacks';
 import {
@@ -180,6 +237,7 @@ const NEW_CHAT_STICKERS = [
 ];
 
 const FRESH_CHAT_STICKERS = NEW_CHAT_STICKERS;
+const STICKER_DRAWER_HEIGHT = 286;
 
 
 
@@ -237,36 +295,94 @@ interface OtherUser {
   avatar_sticker: string | null;
   status: string;
   last_seen: string;
+  last_seen_privacy?: string;
 }
+
+const isEncryptedCiphertext = (text?: string | null): boolean => {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim();
+  return (
+    (t.startsWith('{') && (t.includes('"ciphertext"') || t.includes('"senderIdentityKey"') || t.includes('"senderIdentity"'))) ||
+    t.includes('senderIdentityKey') ||
+    t.startsWith('🔒')
+  );
+};
+
+const isStickerContent = (type?: string | null, content?: string | null): boolean => {
+  if (type === 'sticker' || type === 'lottie_sticker') return true;
+  if (!content || typeof content !== 'string') return false;
+  const c = content.toLowerCase();
+  return (
+    c.includes('fonts.gstatic.com') ||
+    c.includes('notoemoji') ||
+    c.includes('gboard_sticker') ||
+    c.includes('inputcontent') ||
+    c.includes('/stickers/') ||
+    c.endsWith('.tgs') ||
+    (c.includes('lottie') && c.endsWith('.json'))
+  );
+};
 
 const getMessagePreviewText = (message: Message | null | undefined, messagesList?: Message[]) => {
   if (!message) return '';
-  let msgType = message.message_type;
-  let msgContent = message.content;
 
   // Handle synthetic media_group
   if ((message as any).type === 'media_group' || (message as any).messages) {
     const messages = (message as any).messages || [];
     const hasVideo = messages.some((m: any) => m.message_type === 'video');
-    return hasVideo ? 'Video' : 'Image';
+    return hasVideo ? '📹 Video' : '📷 Photo';
   }
 
-  if (!msgType && messagesList) {
-    const fullMsg = messagesList.find(m => m.id === message.id);
+  let msgType = message.message_type;
+  let msgContent = message.content;
+
+  // 1. Try finding full message in current in-memory messagesList
+  if (message.id && messagesList && messagesList.length > 0) {
+    const fullMsg = messagesList.find(m => String(m.id) === String(message.id));
     if (fullMsg) {
-      msgType = fullMsg.message_type;
-      msgContent = fullMsg.content;
+      if (fullMsg.message_type) msgType = fullMsg.message_type;
+      if (fullMsg.content && !isEncryptedCiphertext(fullMsg.content)) {
+        msgContent = fullMsg.content;
+      }
     }
   }
+
+  // 2. Try finding full message in SQLite local database
+  if (message.id && (!msgContent || isEncryptedCiphertext(msgContent))) {
+    try {
+      const local = localDatabase.getMessageById(message.id);
+      if (local) {
+        if (local.message_type) msgType = local.message_type;
+        if (local.content && !isEncryptedCiphertext(local.content)) {
+          msgContent = local.content;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Sticker check (Noto emoji Lottie, GBoard stickers, sticker packs)
+  if (isStickerContent(msgType, msgContent)) {
+    const emoji = (msgContent && typeof msgContent === 'string') ? getEmojiFromUrl(msgContent) : '';
+    return emoji ? `🎭 Sticker ${emoji}` : '🎭 Sticker';
+  }
+
+  // 4. Ciphertext guard: never show raw JSON / senderIdentityKey in preview
+  if (isEncryptedCiphertext(msgContent)) {
+    return '🔒 Encrypted message';
+  }
+
+  // 5. Normal media and text types
   switch (msgType) {
     case 'image':
-      return 'Image';
+      return msgContent && msgContent.trim() && !isEncryptedCiphertext(msgContent) ? msgContent : '📷 Photo';
     case 'video':
-      return 'Video';
+      return msgContent && msgContent.trim() && !isEncryptedCiphertext(msgContent) ? msgContent : '📹 Video';
     case 'audio':
-      return 'Audio';
-    case 'document':
-      return 'Document';
+      return '🎵 Voice message';
+    case 'document': {
+      const fileName = (msgContent || (message as any).media_file || '').split('/').pop() || 'Document';
+      return `📄 ${fileName}`;
+    }
     case 'text':
     default:
       return msgContent || '';
@@ -284,12 +400,22 @@ const getReplyMediaUrl = (reply: Message, messagesList?: Message[]) => {
   }
 
   let mediaFile = reply.media_file || (reply as any).media_url;
-  if (!mediaFile && messagesList) {
-    const fullMsg = messagesList.find(m => m.id === reply.id);
+  if (!mediaFile && messagesList && reply.id) {
+    const fullMsg = messagesList.find(m => String(m.id) === String(reply.id));
     if (fullMsg) {
       mediaFile = fullMsg.media_file || (fullMsg as any).media_url;
     }
   }
+
+  if (!mediaFile && reply.id) {
+    try {
+      const local = localDatabase.getMessageById(reply.id);
+      if (local) {
+        mediaFile = local.media_file_local || local.media_file || local.media_url;
+      }
+    } catch (_) {}
+  }
+
   return mediaFile ? resolveImageUrl(mediaFile) : null;
 };
 
@@ -300,18 +426,44 @@ const getReplyMessageType = (reply: Message, messagesList?: Message[]) => {
   }
 
   let type = reply.message_type;
-  if (!type && messagesList) {
-    const fullMsg = messagesList.find(m => m.id === reply.id);
+  let content = reply.content;
+
+  if (messagesList && reply.id) {
+    const fullMsg = messagesList.find(m => String(m.id) === String(reply.id));
     if (fullMsg) {
-      type = fullMsg.message_type;
+      if (fullMsg.message_type) type = fullMsg.message_type;
+      if (fullMsg.content) content = fullMsg.content;
     }
   }
+
+  if ((!type || type === 'text') && reply.id) {
+    try {
+      const local = localDatabase.getMessageById(reply.id);
+      if (local) {
+        if (local.message_type) type = local.message_type;
+        if (local.content) content = local.content;
+      }
+    } catch (_) {}
+  }
+
+  if (isStickerContent(type, content)) {
+    return type === 'lottie_sticker' || (content && (content.includes('gstatic.com') || content.endsWith('.json')))
+      ? 'lottie_sticker'
+      : 'sticker';
+  }
+
   return type;
 };
 
 const renderReplyThumbnail = (reply: Message, messagesList?: Message[], themePrimary: string = '#0084FF') => {
   const replyType = getReplyMessageType(reply, messagesList);
   const mediaUrl = getReplyMediaUrl(reply, messagesList);
+  let content = reply.content;
+
+  if (messagesList && reply.id) {
+    const fullMsg = messagesList.find(m => String(m.id) === String(reply.id));
+    if (fullMsg?.content) content = fullMsg.content;
+  }
 
   if (replyType === 'image' && mediaUrl) {
     return (
@@ -333,7 +485,7 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[], themePri
 
   if (replyType === 'document') {
     let iconName = 'document-text-outline';
-    const fileName = (mediaUrl || reply.content || '').split('/').pop() || 'Document';
+    const fileName = (mediaUrl || content || '').split('/').pop() || 'Document';
     const fileExt = fileName.split('.').pop()?.toLowerCase();
     if (fileExt === 'pdf') iconName = 'document-outline';
     else if (['doc', 'docx'].includes(fileExt || '')) iconName = 'document-attach-outline';
@@ -343,6 +495,50 @@ const renderReplyThumbnail = (reply: Message, messagesList?: Message[], themePri
     return (
       <View style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.1)', justifyContent: 'center', alignItems: 'center', borderRadius: 4 }}>
         <Icon name={iconName} size={18} color={themePrimary} />
+      </View>
+    );
+  }
+
+  if (replyType === 'lottie_sticker') {
+    const lottieUrl = content || mediaUrl;
+    if (lottieUrl && (lottieUrl.endsWith('.json') || lottieUrl.includes('gstatic.com'))) {
+      return (
+        <View style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}>
+          <LottieStickerMessage
+            url={lottieUrl}
+            size={36}
+            autoPlay={false}
+          />
+        </View>
+      );
+    }
+  }
+
+  if (replyType === 'sticker') {
+    const stickerUrl = mediaUrl || content;
+    if (stickerUrl && (stickerUrl.startsWith('http') || stickerUrl.startsWith('content://') || stickerUrl.startsWith('file://'))) {
+      if (stickerUrl.endsWith('.json') || stickerUrl.includes('gstatic.com')) {
+        return (
+          <View style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}>
+            <LottieStickerMessage
+              url={stickerUrl}
+              size={36}
+              autoPlay={false}
+            />
+          </View>
+        );
+      }
+      return (
+        <Image
+          source={{ uri: resolveImageUrl(stickerUrl) || stickerUrl }}
+          style={{ width: '100%', height: '100%', borderRadius: 4 }}
+          resizeMode="contain"
+        />
+      );
+    }
+    return (
+      <View style={{ width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.06)', justifyContent: 'center', alignItems: 'center', borderRadius: 4 }}>
+        <Icon name="happy-outline" size={20} color={themePrimary} />
       </View>
     );
   }
@@ -728,6 +924,8 @@ const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingV
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 90 };
 
 const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
+  const _renderT0 = performance.now();
+  console.log('⏱️ [ChatRoom] >>> COMPONENT BODY START: ' + _renderT0.toFixed(2) + 'ms');
   const { theme, isDark } = useTheme();
   const s = React.useMemo(() => dynamicStyles(theme), [theme]);
 
@@ -741,24 +939,27 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   useEffect(() => {
     let active = true;
-    InteractionManager.runAfterInteractions(() => {
+    const timer = setTimeout(() => {
       if (!active) return;
       ChatThemeService.getChatTheme(conversationId).then(t => {
         if (t && active) setChatTheme(t);
       }).catch(() => {});
-    });
-    return () => { active = false; };
+    }, 280);
+    return () => { active = false; clearTimeout(timer); };
   }, [conversationId]);
 
   useFocusEffect(
     useCallback(() => {
       if ((global as any).activeMusicRoomCode) return;
       const isCustomTheme = Boolean(chatTheme?.id && chatTheme.id !== 'default');
-      pinNavBarColor('#00000000', isCustomTheme ? true : isDark);
+      const lightIcons = isCustomTheme ? true : isDark;
+      StatusBar.setTranslucent(true);
+      StatusBar.setBarStyle(lightIcons ? 'light-content' : 'dark-content');
+      StatusBar.setBackgroundColor('transparent');
+      pinNavBarColor('#00000000', lightIcons);
       if (Platform.OS === 'android' && NativeModules.SystemBar) {
-        NativeModules.SystemBar.setFitsSystemWindows(false);
-        NativeModules.SystemBar.setStatusBarColor('#00000000', isCustomTheme ? false : !isDark);
-        NativeModules.SystemBar.setNavigationBarColor('#00000000', isCustomTheme ? true : isDark);
+        NativeModules.SystemBar.setStatusBarColor('#00000000', lightIcons);
+        NativeModules.SystemBar.setNavigationBarColor('#00000000', lightIcons);
       }
     }, [isDark, chatTheme?.id])
   );
@@ -766,12 +967,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   // Dismiss notifications for this conversation on mount and when conversationId changes
   useEffect(() => {
-    fcmService.setActiveConversation(String(conversationId));
-
+    // Defer setting active conversation until after slide animation completes (280ms)
+    // so the JS thread is not blocked during the transition.
     let isSubscribed = true;
-    const task = InteractionManager.runAfterInteractions(async () => {
+    const timer = setTimeout(async () => {
+      if (!isSubscribed) return;
+      fcmService.setActiveConversation(String(conversationId));
       try {
-        if (!isSubscribed) return;
         const notifications = await notifee.getDisplayedNotifications();
         for (const notification of notifications) {
           if (
@@ -784,15 +986,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       } catch (err) {
         console.error('Error dismissing notifications:', err);
       }
-    });
+    }, 280);
 
     return () => {
       isSubscribed = false;
-      task?.cancel?.();
+      clearTimeout(timer);
       fcmService.setActiveConversation(null);
     };
   }, [conversationId]);
-
   // Initial cached messages from SQLite (queried once with LIMIT 20 for instant 0ms mount)
   const initialCached = React.useMemo(() => {
     if (route.params?.cleared || route.params?.deleted) return [];
@@ -827,7 +1028,21 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
-  const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
+  const [replyToMessage, _setReplyToMessage] = useState<Message | null>(null);
+  const replyToMessageRef = useRef<Message | null>(null);
+
+  const setReplyToMessage = useCallback((msg: Message | null | ((prev: Message | null) => Message | null)) => {
+    if (typeof msg === 'function') {
+      _setReplyToMessage(prev => {
+        const next = msg(prev);
+        replyToMessageRef.current = next;
+        return next;
+      });
+    } else {
+      replyToMessageRef.current = msg;
+      _setReplyToMessage(msg);
+    }
+  }, []);
   const [otherUser, setOtherUser] = useState<OtherUser | null>(route.params?.otherUser || null);
   const [friendStatus, setFriendStatus] = useState<string>(() => {
     if (route.params?.isGroup) return 'friends';
@@ -841,8 +1056,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   useEffect(() => {
     if (isGroup || !otherUser?.id) return;
     let active = true;
-    let task: any = null;
-    task = InteractionManager.runAfterInteractions(() => {
+    const timer = setTimeout(() => {
       StatusService.getStatuses()
         .then((statuses: any[]) => {
           if (!active) return;
@@ -854,10 +1068,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           setHeaderStatuses(userStatuses);
         })
         .catch(() => {/* silent */});
-    });
+    }, 1500);
     return () => {
       active = false;
-      task?.cancel?.();
+      clearTimeout(timer);
     };
   }, [isGroup, otherUser?.id]);
 
@@ -890,11 +1104,11 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     if (isGroup) return;
     const targetId = otherUser?.id || route.params?.otherUser?.id;
     if (targetId) {
-      const task = InteractionManager.runAfterInteractions(() => {
+      const timer = setTimeout(() => {
         fetchDynamicFriendStatus(Number(targetId));
-      });
+      }, 1500);
       return () => {
-        task?.cancel?.();
+        clearTimeout(timer);
       };
     }
   }, [isGroup, otherUser?.id, route.params?.otherUser?.id, fetchDynamicFriendStatus]);
@@ -947,6 +1161,11 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const [selectedGroupMessages, setSelectedGroupMessages] = useState<Message[]>([]);
   const [highlightMessageId, setHighlightMessageId] = useState<number | null>(null); // Message to highlight
   const [searchMode, setSearchMode] = useState(false);
+  const searchModeRef = useRef(searchMode);
+  useEffect(() => {
+    searchModeRef.current = searchMode;
+  }, [searchMode]);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState<number[]>([]); // Indices of matches
   const [currentResultIndex, setCurrentResultIndex] = useState(-1);
@@ -958,41 +1177,161 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const doubleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const safeBottomPadding = insets.bottom + spacing.md;
-  const { height: keyboardHeight, progress } = useReanimatedKeyboardAnimation();
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      const timer = setTimeout(() => {
+        KeyboardController.setInputMode(AndroidSoftInputModes.SOFT_INPUT_ADJUST_NOTHING);
+      }, 280);
+      return () => { clearTimeout(timer); };
+    }
+  }, []);
+
+  const kbHeight = useSharedValue(0);
+  const kbProgress = useSharedValue(0);
   const stickerSpacerHeight = useSharedValue(0);
+  const settledKeyboardHeight = useSharedValue(STICKER_DRAWER_HEIGHT);
+  const isStickerPickerDeliberatelyOpenSV = useSharedValue(0);
+  const isKeyboardClosingSV = useSharedValue(0);
+  const [isStickerPickerDeliberatelyOpen, setIsStickerPickerDeliberatelyOpen] = useState(false);
+  const [canRenderStickerPicker, setCanRenderStickerPicker] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setCanRenderStickerPicker(true);
+    }, 280);
+    return () => { clearTimeout(timer); };
+  }, []);
+  const bottomInsetSV = useSharedValue(insets.bottom);
+  useEffect(() => {
+    bottomInsetSV.value = insets.bottom;
+  }, [insets.bottom]);
+
+  useGenericKeyboardHandler({
+    onStart: (e) => {
+      'worklet';
+      if (e.height > 0) {
+        isKeyboardClosingSV.value = 0;
+        stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+      } else if (e.height === 0) {
+        if (isStickerPickerDeliberatelyOpenSV.value === 0) {
+          isKeyboardClosingSV.value = 1;
+          stickerSpacerHeight.value = 0;
+          kbHeight.value = 0;
+        } else {
+          isKeyboardClosingSV.value = 0;
+          stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+        }
+      }
+    },
+    onMove: (e) => {
+      'worklet';
+      if (isKeyboardClosingSV.value === 1 && isStickerPickerDeliberatelyOpenSV.value === 0) {
+        stickerSpacerHeight.value = 0;
+        kbHeight.value = 0;
+      } else {
+        kbHeight.value = e.height;
+        kbProgress.value = e.progress;
+      }
+    },
+    onInteractive: (e) => {
+      'worklet';
+      if (isKeyboardClosingSV.value === 1 && isStickerPickerDeliberatelyOpenSV.value === 0) {
+        stickerSpacerHeight.value = 0;
+        kbHeight.value = 0;
+      } else {
+        kbHeight.value = e.height;
+        kbProgress.value = e.progress;
+      }
+    },
+    onEnd: (e) => {
+      'worklet';
+      if (e.height === 0) {
+        if (isStickerPickerDeliberatelyOpenSV.value === 0) {
+          isKeyboardClosingSV.value = 0;
+          stickerSpacerHeight.value = 0;
+          kbHeight.value = 0;
+        } else {
+          isKeyboardClosingSV.value = 0;
+          stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+          kbHeight.value = 0;
+        }
+      } else if (e.height > 150) {
+        settledKeyboardHeight.value = Math.max(STICKER_DRAWER_HEIGHT, e.height - (bottomInsetSV?.value || 0));
+      }
+    },
+  }, []);
+  const kbLift = useDerivedValue(() => {
+    if (Platform.OS !== 'android') return 0;
+    const rawH = kbHeight.value;
+    return Math.max(0, rawH - bottomInsetSV.value);
+  });
+
+  const finalLift = useDerivedValue(() => {
+    return Math.max(kbLift.value, stickerSpacerHeight.value);
+  });
 
   // Lifts the entire content area (messages + input bar) up together with the keyboard or sticker drawer.
   // Messages and input always move as one unit — no layout recalculation, just a GPU transform.
   // kbHeight from KeyboardProvider includes the nav bar area, so subtract insets.bottom
   // to avoid double-counting with the container's paddingBottom.
   const contentLiftStyle = useAnimatedStyle(() => {
-    const kbHeight = Math.abs(keyboardHeight.value);
-    const lift = kbHeight > 0 ? Math.max(0, kbHeight - insets.bottom) : 0;
-    const finalLift = Math.max(lift, stickerSpacerHeight.value);
+
+
+
     return {
-      transform: [{ translateY: -finalLift }],
+      transform: [{ translateY: -finalLift.value }],
     };
   });
 
   const stickerPickerVisibleRef = useRef(false);
   stickerPickerVisibleRef.current = stickerPickerVisible;
 
+  const isKeyboardOpeningRef = useRef(false);
+  const isStickerPickerDeliberatelyOpenRef = useRef(false);
+
   useEffect(() => {
-    if (stickerPickerVisible) {
-      Keyboard.dismiss();
-      stickerSpacerHeight.value = withTiming(286, {
-        duration: 250,
-        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      if (!isFocusedRef.current) return;
+      isKeyboardOpeningRef.current = false;
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      if (!isFocusedRef.current) return;
+      isKeyboardOpeningRef.current = false;
+      if (!isStickerPickerDeliberatelyOpenRef.current) {
+        stickerSpacerHeight.value = 0;
+        kbHeight.value = 0;
+        handleCloseStickerPickerStable();
+        setIsStickerPickerDeliberatelyOpen(false);
+        isStickerPickerDeliberatelyOpenSV.value = 0;
+      }
+      if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
+      lastTypingState.current = false;
+      if (websocketService.getConnectionState()) {
+        websocketService.sendTyping(false);
+      }
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [stickerSpacerHeight]); /*
+
+
+  useEffect(() => {
+
+
+
+
+
       });
     } else {
-      stickerSpacerHeight.value = withTiming(0, {
-        duration: 220,
-        easing: Easing.bezier(0.4, 0.0, 1, 1),
+
+
+
       });
     }
-  }, [stickerPickerVisible, stickerSpacerHeight]);
 
-  const isFocusedRef = useRef(true);
+
+  */ const isFocusedRef = useRef(true);
   const isNavigatingBack = useRef(false);
 
   const handleGoBack = useCallback(() => {
@@ -1010,12 +1349,28 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   useEffect(() => {
     const onBackPress = () => {
       if (!isFocusedRef.current) return false;
+      if (searchModeRef.current) {
+        setSearchMode(false);
+        setSearchText('');
+        setSearchResults([]);
+        setCurrentResultIndex(-1);
+        setHighlightMessageId(null);
+        return true;
+      }
       if (selectedMessageIdsRef.current.length > 0) {
         setSelectedMessageIds([]);
         return true;
       }
-      if (stickerPickerVisibleRef.current) {
-        setStickerPickerVisible(false);
+      if (isStickerPickerDeliberatelyOpenRef.current || stickerPickerVisibleRef.current) {
+        handleCloseStickerPickerStable();
+        return true;
+      }
+      if (kbHeight.value > 0) {
+        Keyboard.dismiss();
+        return true;
+      }
+      if (false) {
+        handleCloseStickerPickerStable();
         return true;
       }
       handleGoBack();
@@ -1078,16 +1433,24 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       console.log('Chat cleared - skipping message load');
     }
 
-    // Defer all network calls and websocket connection until AFTER the slide-in animation completes.
+    // Defer all network calls and websocket connection until AFTER the slide-in animation completes (280ms).
     // The SQLite cache (initialCached) already displayed instantly — network sync
     // is a background refresh that should not compete with the screen transition.
-    InteractionManager.runAfterInteractions(() => {
+    const networkSyncTimer = setTimeout(() => {
       connectWebSocket();
       loadConversationDetails();
       if (!isCleared) {
         loadMessages();
       }
-    });
+      // Silently pre-check mic permission so first hold-to-record is instant
+      if (Platform.OS === 'android') {
+        check(PERMISSIONS.ANDROID.RECORD_AUDIO).then(status => {
+          if (status === RESULTS.DENIED) {
+            request(PERMISSIONS.ANDROID.RECORD_AUDIO).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }, 1500);
 
     // Scroll to specific message if ID provided
     const scrollToId = route.params?.scrollToMessageId;
@@ -1142,6 +1505,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     });
 
     return () => {
+      clearTimeout(networkSyncTimer);
       websocketService.disconnectRoom();
       if (focusSub) focusSub();
       if (blurSub) blurSub();
@@ -1546,7 +1910,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             );
             if (idx >= 0) {
               const next = [...arr];
-              next[idx] = { ...arr[idx], id: wsMsg.data.id, delivered_at: wsMsg.data.delivered_at, status: 'sent' };
+              next[idx] = { 
+                ...arr[idx], 
+                id: wsMsg.data.id, 
+                delivered_at: wsMsg.data.delivered_at, 
+                status: 'sent',
+                reply_to: (wsMsg.data.reply_to && arr[idx].reply_to && arr[idx].reply_to.content && !isEncryptedCiphertext(arr[idx].reply_to.content)) ? { ...wsMsg.data.reply_to, content: arr[idx].reply_to.content, message_type: arr[idx].reply_to.message_type || wsMsg.data.reply_to.message_type } : (wsMsg.data.reply_to || arr[idx].reply_to),
+              };
               return next;
             }
             return arr;
@@ -1559,6 +1929,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
         // Recipient side: Decrypt through MessageCipher (Double Ratchet + Media E2EE parser)
         const processedMsg = await MessageCipher.processIncomingMessage(currentUser?.id || 0, wsMsg.data);
+
+        // Clear typing indicator for sender
+        if (wsMsg.data.sender?.id !== currentUser?.id) {
+          const sName = wsMsg.data.sender?.display_name || wsMsg.data.sender?.username || '';
+          setTypingUsers(prev => (Array.isArray(prev) ? prev.filter(u => u !== sName) : []));
+        }
 
         // Sync incoming trivia challenges or score submissions
         if (wsMsg.data?.content && (isTriviaChallengeMessage(wsMsg.data) || isScoreSubmissionMessage(wsMsg.data))) {
@@ -1582,6 +1958,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         if (chatIsActiveRef.current) {
           setTimeout(() => markAsRead(), 100);
         }
+
+        // Notify ChatListScreen to update last message in real-time (receiver side)
+        DeviceEventEmitter.emit('chat_list_update', {
+          conversationId: Number(conversationId),
+          last_message: nm,
+        });
+
         break;
       }
       case 'typing':
@@ -1796,8 +2179,8 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     const localId = `txt_${Date.now()}_${uniqueCounter}`;
     const tempId = Date.now() + uniqueCounter + 1000000000;
 
-    const currentReply = replyToMessage;
-    if (replyToMessage) {
+    const currentReply = replyToMessageRef.current || replyToMessage;
+    if (currentReply) {
       setReplyToMessage(null);
     }
 
@@ -1823,13 +2206,23 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       status: 'sending',
     };
 
+    (optimisticMsg as any)._isNew = true;
+
     // 1. Synchronously render in UI (0ms instant!)
+    // Outgoing bubble will mount and slide up smoothly via AnimatedMessageBubble (IG / WhatsApp style)
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+
+    // Instantly update ChatListScreen last message preview without any API call
+    DeviceEventEmitter.emit('chat_list_update', {
+      conversationId: Number(conversationId),
+      last_message: optimisticMsg,
+    });
+
     if (currentScrollOffset.current > 10) {
-      requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
     }
     const uiRenderTime = (performance.now() - t0).toFixed(2);
-    console.log(`🚀 [PERF: SEND] Optimistic message rendered on UI in: ${uiRenderTime}ms`);
+    console.log(`[PERF: SEND] Optimistic message rendered on UI in: ${uiRenderTime}ms`);
 
     // 2. Persist to offline SQLite & Background E2EE encryption (deferred via setTimeout so UI thread never hitches)
     setTimeout(async () => {
@@ -1858,6 +2251,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         message_type: 'text',
       };
       if (currentReply) {
+        payload.reply_to = currentReply.id;
         payload.reply_to_id = currentReply.id;
       }
 
@@ -1995,30 +2389,158 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const typingIndicatorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lastTypingState = useRef<boolean | null>(null);
+  const lastTypingTime = useRef<number>(0);
   const inputTextRef = useRef('');
 
   const handleTyping = useCallback((text: string) => {
     inputTextRef.current = text;
 
-    const isTyping = text.length > 0;
-    if (lastTypingState.current === isTyping) return;
-
-    if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
-
-    if (isTyping) {
-      typingIndicatorTimeout.current = setTimeout(() => {
+    if (text.length > 0) {
+      const now = Date.now();
+      // Send typing indicator immediately on first keystroke, refresh every 2000ms
+      if (!lastTypingState.current || now - lastTypingTime.current > 2000) {
+        lastTypingState.current = true;
+        lastTypingTime.current = now;
         if (websocketService.getConnectionState()) {
           websocketService.sendTyping(true);
-          lastTypingState.current = true;
         }
-      }, 400);
+      }
+
+      // Auto-stop typing after 3s of idle
+      if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
+      typingIndicatorTimeout.current = setTimeout(() => {
+        lastTypingState.current = false;
+        if (websocketService.getConnectionState()) {
+          websocketService.sendTyping(false);
+        }
+      }, 3000);
     } else {
+      if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
       lastTypingState.current = false;
       if (websocketService.getConnectionState()) {
         websocketService.sendTyping(false);
       }
     }
   }, []);
+
+  const handleClearChat = async () => {
+    Alert.alert(
+      'Clear Chat',
+      'This will clear all messages from this conversation on your device only. The other person will still see all messages.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              localDatabase.clearConversationMessages(conversationId);
+              setMessages([]);
+              BackupManager.autoBackup().catch(err => console.warn('[ChatRoomScreen] autoBackup after clear failed:', err));
+              const token = await AsyncStorage.getItem('access_token');
+              await fetch(getApiUrl(`chat/conversations/${conversationId}/clear/`), {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              Toast.show({
+                type: 'success',
+                text1: 'Chat cleared',
+                position: 'bottom',
+              });
+            } catch (error) {
+              console.error('Error clearing chat:', error);
+              Toast.show({
+                type: 'error',
+                text1: 'Failed to clear chat',
+                position: 'bottom',
+              });
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleBlockUser = async () => {
+    const targetUser = otherUser || (conversation?.other_user as any) || (route.params?.otherUser as any);
+    if (!targetUser?.id) return;
+
+    const action = isUserBlocked ? 'Unblock' : 'Block';
+    Alert.alert(
+      `${action} User`,
+      `Are you sure you want to ${action.toLowerCase()} ${chatTitle}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: action,
+          style: isUserBlocked ? 'default' : 'destructive',
+          onPress: async () => {
+            try {
+              const token = await AsyncStorage.getItem('access_token');
+              const response = await fetch(
+                getApiUrl(`accounts/users/${targetUser.id}/block/`),
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ blocked: !isUserBlocked }),
+                },
+              );
+
+              if (response.ok || response.status === 200) {
+                const nextBlocked = !isUserBlocked;
+                setIsUserBlocked(nextBlocked);
+                try {
+                  const key = `settings_blocked_users_${currentUser?.id || 'default'}`;
+                  const stored = await AsyncStorage.getItem(key);
+                  const list = stored ? JSON.parse(stored) : [];
+                  if (nextBlocked) {
+                    const name = targetUser.display_name || targetUser.username || targetUser.email || 'User';
+                    if (!list.some((u: any) => u.id === targetUser.id.toString())) {
+                      list.push({ id: targetUser.id.toString(), name });
+                    }
+                  } else {
+                    const filtered = list.filter((u: any) => u.id !== targetUser.id.toString());
+                    await AsyncStorage.setItem(key, JSON.stringify(filtered));
+                  }
+                  if (nextBlocked) {
+                    await AsyncStorage.setItem(key, JSON.stringify(list));
+                  }
+                } catch (e) {
+                  console.warn('Failed to sync blocked list in ChatRoomScreen', e);
+                }
+
+                Toast.show({
+                  type: 'success',
+                  text1: nextBlocked ? 'User blocked' : 'User unblocked',
+                  position: 'bottom',
+                });
+              } else {
+                const errorData = await response.json().catch(() => ({}));
+                Toast.show({
+                  type: 'error',
+                  text1: errorData.error || `Failed to ${action.toLowerCase()} user`,
+                  position: 'bottom',
+                });
+              }
+            } catch (error) {
+              console.error('Block/unblock error:', error);
+              Toast.show({
+                type: 'error',
+                text1: `Failed to ${action.toLowerCase()} user`,
+                position: 'bottom',
+              });
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const handleAttachmentStable = useCallback(() => {
     setAttachmentMenuVisible(true);
@@ -2032,8 +2554,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     setStickerPreview(val);
   }, []);
 
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  });
+
   const sendMessageStable = useCallback((content?: string, sendStartTime?: number) => {
-    sendMessage(content, sendStartTime);
+    sendMessageRef.current(content, sendStartTime);
   }, []);
 
   const handleRegisterClearStable = useCallback((fn: any) => {
@@ -2041,10 +2568,45 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   }, []);
 
   const handleOpenStickerPickerStable = useCallback(() => {
+    isStickerPickerDeliberatelyOpenRef.current = true;
+    isStickerPickerDeliberatelyOpenSV.value = 1;
+    setIsStickerPickerDeliberatelyOpen(true);
+    stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+    setStickerPickerVisible(true);
+    clearInputRef.current?.blur?.();
+    Keyboard.dismiss();
+  }, [stickerSpacerHeight]);
+
+  const handleCloseStickerPickerStable = useCallback(() => {
+    isStickerPickerDeliberatelyOpenRef.current = false;
+    isStickerPickerDeliberatelyOpenSV.value = 0;
+    setIsStickerPickerDeliberatelyOpen(false);
+    stickerSpacerHeight.value = 0;
+    setStickerPickerVisible(false);
+  }, [stickerSpacerHeight]);
+
+  const handleInputFocusStable = useCallback(() => {
+    isKeyboardOpeningRef.current = true;
+    const wasStickerOpen = isStickerPickerDeliberatelyOpenRef.current;
+    isStickerPickerDeliberatelyOpenRef.current = false;
+    setIsStickerPickerDeliberatelyOpen(false);
+    if (wasStickerOpen) {
+      isStickerPickerDeliberatelyOpenSV.value = withTiming(0, {
+        duration: 100,
+        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
+      });
+    } else {
+      isStickerPickerDeliberatelyOpenSV.value = 0;
+    }
+    stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+    setStickerPickerVisible(true);
+  }, [stickerSpacerHeight]);
+
+  /*
     setStickerPickerVisible(true);
   }, []);
 
-  const handleCloseStickerPickerStable = useCallback(() => {
+  const _old_close = useCallback(() => {
     setStickerPickerVisible(false);
   }, []);
 
@@ -2052,11 +2614,15 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     setStickerPickerVisible(false);
   }, []);
 
-  // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
+  */  // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
   const sendLottieSticker = useCallback(async (sticker: Sticker) => {
     uniqueCounter++;
     const localId = `lsticker_${Date.now()}_${uniqueCounter}`;
     const tempId = Date.now() + uniqueCounter + 2000000000;
+    const currentReply = replyToMessageRef.current;
+    if (currentReply) {
+      setReplyToMessage(null);
+    }
     const optimisticMsg: any = {
       id: tempId,
       local_id: localId,
@@ -2075,21 +2641,26 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       delivered_at: null,
       created_at: new Date().toISOString(),
       reactions: {},
-      reply_to: null,
+      reply_to: currentReply,
       status: 'sending',
     };
     isNearBottomRef.current = true;
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
+    DeviceEventEmitter.emit('chat_list_update', { conversationId: Number(conversationId), last_message: optimisticMsg });
     requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
     try {
       const token = await AsyncStorage.getItem('access_token');
-      const body = {
+      const body: any = {
         content: sticker.url,
         message_type: 'lottie_sticker',
       };
+      if (currentReply) {
+        body.reply_to = currentReply.id;
+        body.reply_to_id = currentReply.id;
+      }
       const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
         method: 'POST',
         headers: {
@@ -2223,6 +2794,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     uniqueCounter++;
     const localId = `doc_${Date.now()}_${uniqueCounter}_${Math.random().toString(36).substr(2, 5)}`;
     const tempId = Date.now() + uniqueCounter + 1000000000;
+    const currentReply = replyToMessageRef.current;
+    if (currentReply) {
+      setReplyToMessage(null);
+    }
     const optimisticMsg: any = {
       id: tempId,
       local_id: localId,
@@ -2233,7 +2808,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       media_file: doc.uri, // Use local URI temporarily
       media_file_local: doc.uri,
       is_read: false, delivered_at: null, created_at: new Date().toISOString(),
-      reactions: {}, reply_to: null, status: 'sending',
+      reactions: {}, reply_to: currentReply, status: 'sending',
     };
     isNearBottomRef.current = true;
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
@@ -2309,6 +2884,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
       fd.append('content', payloadContent);
       fd.append('message_type', 'document');
+      if (currentReply) {
+        fd.append('reply_to', String(currentReply.id));
+        fd.append('reply_to_id', String(currentReply.id));
+      }
       fd.append('media_file', { uri: uploadUri, type: uploadType, name: uploadName } as any);
       
       const res = await fetch(`${BASE_URL}/api/chat/conversations/${conversationId}/messages/`, {
@@ -2380,6 +2959,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     uniqueCounter++;
     const localId = `img_${Date.now()}_${uniqueCounter}_${Math.random().toString(36).substr(2, 5)}`;
     const tempId = Date.now() + uniqueCounter + 1000000000;
+    const currentReply = replyToMessageRef.current;
+    if (currentReply) {
+      setReplyToMessage(null);
+    }
     const optimisticMsg: any = {
       id: tempId,
       local_id: localId,
@@ -2393,7 +2976,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       width: initialWidth,
       height: initialHeight,
       is_read: false, delivered_at: null, created_at: new Date().toISOString(),
-      reactions: {}, reply_to: null, status: 'sending',
+      reactions: {}, reply_to: currentReply, status: 'sending',
     };
     if (asset.uri && initialWidth && initialHeight) {
       imageDimensionsCache.set(asset.uri, { width: initialWidth, height: initialHeight });
@@ -2402,6 +2985,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     localDatabase.saveMessage(optimisticMsg, localId, 'sending');
     setMessages(prev => [optimisticMsg, ...(Array.isArray(prev) ? prev : [])]);
     requestAnimationFrame(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }));
+    DeviceEventEmitter.emit('chat_list_update', { conversationId: Number(conversationId), last_message: optimisticMsg });
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
 
     const controller = new AbortController();
@@ -2478,6 +3062,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       fd.append('message_type', isVideo ? 'video' : 'image');
       if (mediaGroupId) {
         fd.append('media_group_id', mediaGroupId);
+      }
+      if (currentReply) {
+        fd.append('reply_to', String(currentReply.id));
+        fd.append('reply_to_id', String(currentReply.id));
       }
       fd.append('media_file', { uri: uploadUri, type: uploadType, name: uploadName } as any);
 
@@ -2883,10 +3471,10 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   const fmtMsgTime = (d: string) =>
     new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const fmtLastSeen = (d: string | null | undefined) => {
-    if (!d) return '';
+    if (!d) return 'Online';
 
     const lastSeenTime = new Date(d).getTime();
-    if (isNaN(lastSeenTime) || lastSeenTime <= 0) return '';
+    if (isNaN(lastSeenTime) || lastSeenTime <= 0) return 'Online';
 
     const now = Date.now();
     const diffMs = now - lastSeenTime;
@@ -2897,7 +3485,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     // If within 2 minutes, show "Online"
     if (diffMin < 2 && diffMin >= -1) return 'Online';
     // If less than 60 minutes, show minutes
-    if (diffMin >= 2 && diffMin < 60) return `${Math.floor(diffMin)}m ago`;
+    if (diffMin >= 2 && diffMin < 60) return `Active ${Math.floor(diffMin)}m ago`;
     // If today (less than 24 hours), show time
     if (diffHours < 24) {
       const lastSeenDate = new Date(lastSeenTime);
@@ -2905,7 +3493,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       const minutes = lastSeenDate.getMinutes();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 || 12;
-      return `today at ${displayHour}:${minutes
+      return `Active today at ${displayHour}:${minutes
         .toString()
         .padStart(2, '0')} ${ampm}`;
     }
@@ -2916,18 +3504,16 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       const minutes = lastSeenDate.getMinutes();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 || 12;
-      return `yesterday at ${displayHour}:${minutes
+      return `Active yesterday at ${displayHour}:${minutes
         .toString()
         .padStart(2, '0')} ${ampm}`;
     }
-    // Otherwise show date with time
+    // Otherwise show date
     const lastSeenDate = new Date(lastSeenTime);
-    return lastSeenDate.toLocaleDateString([], {
+    return `Active ${lastSeenDate.toLocaleDateString([], {
       month: 'short',
       day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    })}`;
   };
 
   const jumpToMessage = (id: number) => {
@@ -3139,24 +3725,31 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     if (!text.trim()) {
       setSearchResults([]);
       setCurrentResultIndex(-1);
+      setHighlightMessageId(null);
       return;
     }
 
     const term = text.toLowerCase();
     const matches: number[] = [];
-    messages.forEach((m, index) => {
-      if (m.content?.toLowerCase().includes(term)) {
+    groupedMessages.forEach((m, index) => {
+      const content = m.content || '';
+      if (content.toLowerCase().includes(term)) {
         matches.push(index);
+      } else if ((m as any).type === 'media_group' && Array.isArray((m as any).messages)) {
+        const hasChildMatch = (m as any).messages.some((child: any) => child.content?.toLowerCase().includes(term));
+        if (hasChildMatch) {
+          matches.push(index);
+        }
       }
     });
 
     setSearchResults(matches);
     if (matches.length > 0) {
       setCurrentResultIndex(0);
-      // Optional: auto-scroll to the first match
       jumpToSearchIndex(matches[0]);
     } else {
       setCurrentResultIndex(-1);
+      setHighlightMessageId(null);
     }
   };
 
@@ -3167,8 +3760,8 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         animated: true,
         viewPosition: 0.5,
       });
-      // Optionally highlight the message ID
-      setHighlightMessageId(messages[index].id);
+      // Highlight the matching message ID
+      setHighlightMessageId(groupedMessages[index]?.id || null);
     } catch (err) {
       console.warn('jumpToSearchIndex failed:', err);
     }
@@ -3190,35 +3783,95 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   const renderSearchBar = () => {
     if (!searchMode) return null;
+    const isCustomTheme = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+    const headerBg = isCustomTheme
+      ? (isDark ? 'rgba(15, 23, 42, 0.96)' : 'rgba(255, 255, 255, 0.96)')
+      : (isDark ? 'rgba(15, 23, 42, 0.96)' : 'rgba(255, 255, 255, 0.96)');
+    const textColor = isDark ? '#FFFFFF' : '#111827';
+    const subColor = isDark ? '#94A3B8' : '#64748B';
+    const borderColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)';
+
     return (
-      <View style={s.searchBar}>
-        <TouchableOpacity onPress={() => { setSearchMode(false); setSearchText(''); setSearchResults([]); setCurrentResultIndex(-1); }}>
-          <Icon name="arrow-back" size={24} color="#666" />
+      <View
+        style={[
+          s.searchBar,
+          {
+            paddingTop: insets.top,
+            height: 60 + insets.top,
+            backgroundColor: headerBg,
+            borderBottomColor: borderColor,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          onPress={() => {
+            setSearchMode(false);
+            setSearchText('');
+            setSearchResults([]);
+            setCurrentResultIndex(-1);
+            setHighlightMessageId(null);
+          }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          style={{ padding: 6, marginRight: 2 }}
+          activeOpacity={0.7}
+        >
+          <Icon name="arrow-back" size={24} color={textColor} />
         </TouchableOpacity>
         <TextInput
-          style={s.searchInput}
+          style={[
+            s.searchInput,
+            {
+              color: textColor,
+              paddingVertical: 0,
+              fontSize: 16,
+              marginLeft: 6,
+              flex: 1,
+            },
+          ]}
           placeholder="Search messages..."
+          placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.4)'}
           value={searchText}
           onChangeText={handleSearchTextChange}
           autoFocus
+          returnKeyType="search"
         />
         {searchResults.length > 0 && (
           <View style={s.searchNav}>
-            <Text style={s.searchCount}>
+            <Text style={[s.searchCount, { color: subColor }]}>
               {`${currentResultIndex + 1} of ${searchResults.length}`}
             </Text>
-            <TouchableOpacity onPress={goToPrevResult} style={s.searchNavButton}>
-              <Icon name="chevron-up" size={24} color={theme.primary} />
+            <TouchableOpacity
+              onPress={goToPrevResult}
+              style={s.searchNavButton}
+              hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+              activeOpacity={0.7}
+            >
+              <Icon name="chevron-up" size={22} color={theme.primary} />
             </TouchableOpacity>
-            <TouchableOpacity onPress={goToNextResult} style={s.searchNavButton}>
-              <Icon name="chevron-down" size={24} color={theme.primary} />
+            <TouchableOpacity
+              onPress={goToNextResult}
+              style={s.searchNavButton}
+              hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+              activeOpacity={0.7}
+            >
+              <Icon name="chevron-down" size={22} color={theme.primary} />
             </TouchableOpacity>
           </View>
         )}
-        {searchText.length > 0 && !searchResults.length && (
-            <TouchableOpacity onPress={() => {setSearchText(''); setSearchResults([]); setCurrentResultIndex(-1);}}>
-                <Icon name="close-circle" size={20} color="#999" />
-            </TouchableOpacity>
+        {searchText.length > 0 && (
+          <TouchableOpacity
+            onPress={() => {
+              setSearchText('');
+              setSearchResults([]);
+              setCurrentResultIndex(-1);
+              setHighlightMessageId(null);
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{ padding: 6, marginLeft: 2 }}
+            activeOpacity={0.7}
+          >
+            <Icon name="close-circle" size={20} color={subColor} />
+          </TouchableOpacity>
         )}
       </View>
     );
@@ -3635,6 +4288,55 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     return result.reverse();
   }, [messages]);
 
+  const renderHighlightedText = (
+    rawText: string,
+    query: string,
+    isEmoji: boolean,
+    baseTextStyle: any,
+    isCurrentMatch: boolean = false
+  ) => {
+    if (!rawText) return null;
+    const text = String(rawText);
+
+    const trimmed = query?.trim();
+    if (!searchMode || !trimmed || isEmoji) {
+      return <Text style={baseTextStyle}>{text}</Text>;
+    }
+
+    const lowerText = text.toLowerCase();
+    const lowerQuery = trimmed.toLowerCase();
+    if (!lowerText.includes(lowerQuery)) {
+      return <Text style={baseTextStyle}>{text}</Text>;
+    }
+
+    // Escape regex characters
+    const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+    const parts = text.split(regex);
+
+    return (
+      <Text style={baseTextStyle}>
+        {parts.map((part, index) => {
+          if (part.toLowerCase() === lowerQuery) {
+            return (
+              <Text
+                key={index}
+                style={{
+                  backgroundColor: isCurrentMatch ? '#FFB800' : '#FFE600',
+                  color: '#000000',
+                  fontWeight: '700',
+                }}
+              >
+                {part}
+              </Text>
+            );
+          }
+          return part;
+        })}
+      </Text>
+    );
+  };
+
   // ── RENDER MESSAGE ───────────────────────────────
   const renderMessage = useCallback(({ item, index }: { item: any; index: number }) => {
     const isMe = item.sender.id === currentUser?.id;
@@ -3945,7 +4647,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           : (isCustom ? (chatTheme?.theirBubble?.textColor || theme.textPrimary) : (isDark ? '#FFFFFF' : '#111B21'));
         const docGradient = isMe ? (chatTheme?.myBubble?.gradient || null) : null;
         const docBgColor = isMe
-          ? (docGradient ? 'transparent' : (chatTheme?.myBubble?.solidColor || theme.myMessage))
+          ? (docGradient ? 'transparent' : (isCustom ? (chatTheme?.myBubble?.solidColor || '#0284C7') : '#0284C7'))
           : (isCustom ? (chatTheme?.theirBubble?.backgroundColor || (isDark ? '#1E293B' : '#EAECEF')) : (isDark ? '#1E293B' : '#EAECEF'));
 
         return (
@@ -3955,9 +4657,9 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               {
                 alignSelf: isMe ? 'flex-end' : 'flex-start',
                 backgroundColor: docBgColor,
-                borderTopRightRadius: isMe ? 4 : borderRadius.lg,
-                borderTopLeftRadius: !isMe ? 4 : borderRadius.lg,
-                borderRadius: borderRadius.lg,
+                borderTopRightRadius: isMe ? 4 : 18,
+                borderTopLeftRadius: !isMe ? 4 : 18,
+                borderRadius: 18,
                 overflow: 'hidden',
                 ...(!isMe && !isDark && !isCustom ? {
                   borderWidth: StyleSheet.hairlineWidth,
@@ -4238,25 +4940,83 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   };
 
     const renderReplyIndicator = (reply: Message, isSender: boolean) => {
-      const hasThumbnail = ['image', 'video', 'document'].includes(getReplyMessageType(reply, messages) || '');
+      const hasThumbnail = ['image', 'video', 'document', 'sticker', 'lottie_sticker'].includes(getReplyMessageType(reply, messages) || '');
+      const isReplyingToMe = reply.sender?.id === currentUser?.id;
+      const isCustom = Boolean(chatTheme?.id && chatTheme.id !== 'default');
+      const theirBubbleBg = isCustom
+        ? (chatTheme?.theirBubble?.backgroundColor || theme.theirMessage)
+        : (isDark ? '#1E293B' : '#EAECEF');
+      const theirBubbleTextColor = isCustom
+        ? (chatTheme?.theirBubble?.textColor || theme.textPrimary)
+        : (isDark ? '#FFFFFF' : '#111B21');
+
+      let bubbleBg: string;
+      let lineColor: string;
+      let titleColor: string;
+      let contentColor: string;
+      let borderTopLeftRadius = 12;
+      let borderTopRightRadius = 12;
+
+      if (isSender) {
+        if (!isReplyingToMe) {
+          // Replying to other's message inside my bubble: use left-side chat bubble color!
+          bubbleBg = theirBubbleBg;
+          lineColor = theme.primary;
+          titleColor = theme.primary;
+          contentColor = theirBubbleTextColor;
+          borderTopLeftRadius = 4;
+        } else {
+          // Replying to myself inside my bubble
+          bubbleBg = 'rgba(255,255,255,0.15)';
+          lineColor = '#FFFFFF';
+          titleColor = '#FFFFFF';
+          contentColor = '#EEEEEE';
+          borderTopRightRadius = 4;
+        }
+      } else {
+        // Inside their bubble (left side)
+        bubbleBg = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)';
+        lineColor = theme.primary;
+        titleColor = theme.primary;
+        contentColor = isDark ? '#A1A1AA' : '#666';
+        borderTopLeftRadius = 4;
+      }
+
       return (
         <TouchableOpacity
-          style={[s.replyIndicator, { backgroundColor: isSender ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)' }]}
+          style={[
+            s.replyIndicator,
+            {
+              backgroundColor: bubbleBg,
+              borderRadius: 12,
+              borderTopLeftRadius,
+              borderTopRightRadius,
+            },
+            (isSender && !isReplyingToMe && !isDark && !isCustom) ? {
+              borderWidth: StyleSheet.hairlineWidth,
+              borderColor: 'rgba(0, 0, 0, 0.08)',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 1 },
+              shadowOpacity: 0.06,
+              shadowRadius: 1,
+              elevation: 1,
+            } : {},
+          ]}
           onPress={() => jumpToMessage(reply.id)}
           activeOpacity={0.7}
         >
-          <View style={[s.replyIndicatorLine, { backgroundColor: isSender ? '#FFFFFF' : theme.primary }]} />
+          <View style={[s.replyIndicatorLine, { backgroundColor: lineColor }]} />
           <View style={s.replyIndicatorContentWrapper}>
-            <Text style={[s.replyIndicatorText, { color: isSender ? '#FFFFFF' : theme.primary }]} numberOfLines={1}>
-              {String(reply.sender?.id === currentUser?.id ? 'You' : reply.sender?.display_name || 'User')}
+            <Text style={[s.replyIndicatorText, { color: titleColor }]} numberOfLines={1}>
+              {String(isReplyingToMe ? 'You' : reply.sender?.display_name || 'User')}
             </Text>
-            <Text style={[s.replyIndicatorContent, { color: isSender ? '#EEEEEE' : '#666' }]} numberOfLines={2}>
+            <Text style={[s.replyIndicatorContent, { color: contentColor }]} numberOfLines={2}>
               {getMessagePreviewText(reply, messages)}
             </Text>
           </View>
           {hasThumbnail && (
             <View style={s.replyThumbnailContainer}>
-              {renderReplyThumbnail(reply, messages, theme.primary)}
+              {renderReplyThumbnail(reply, messages, lineColor)}
             </View>
           )}
         </TouchableOpacity>
@@ -4306,7 +5066,8 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             </Text>
           </View>
         )}
-        <View
+        <AnimatedMessageBubble
+          isNew={Boolean(isMe && ((item as any)._isNew || item.status === 'sending'))}
           style={[
             s.messageContainer,
             isMe ? s.myMessageContainer : s.theirMessageContainer,
@@ -4372,7 +5133,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                       isMediaMessage && { padding: 0, overflow: 'hidden', backgroundColor: 'transparent' },
                       !isMediaMessage && { minWidth: 50 },
                       highlightMessageId === item.id && { 
-                        backgroundColor: isMe ? theme.myMessage : theme.theirMessage,
+                        backgroundColor: isMe ? '#0284C7' : theme.theirMessage,
                         borderWidth: 2,
                         borderColor: theme.primary 
                       }
@@ -4404,14 +5165,18 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                           paddingBottom: 4,
                           alignSelf: isMe ? 'flex-end' : 'flex-start',
                         }}>
-                          <Text style={{
-                            fontSize: 14,
-                            color: isMe ? '#FFFFFF' : '#111B21',
-                            lineHeight: 18,
-                            textAlign: isMe ? 'right' : 'left',
-                          }}>
-                            {String(item.content)}
-                          </Text>
+                          {renderHighlightedText(
+                            String(item.content || ''),
+                            searchText,
+                            false,
+                            {
+                              fontSize: 14,
+                              color: isMe ? '#FFFFFF' : '#111B21',
+                              lineHeight: 18,
+                              textAlign: isMe ? 'right' : 'left',
+                            },
+                            highlightMessageId === item.id
+                          )}
                         </View>
                       )}
                     </View>
@@ -4429,7 +5194,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
               const isCustom = Boolean(chatTheme?.id && chatTheme.id !== 'default');
               const myBubbleGradient = chatTheme?.myBubble?.gradient || null;
-              const myBubbleBg = myBubbleGradient ? 'transparent' : (chatTheme?.myBubble?.solidColor || theme.myMessage);
+              const myBubbleBg = myBubbleGradient ? 'transparent' : (isCustom ? (chatTheme?.myBubble?.solidColor || '#0284C7') : '#0284C7');
               const myBubbleTextColor = chatTheme?.myBubble?.textColor || '#FFFFFF';
 
               const theirBubbleBg = isCustom
@@ -4457,7 +5222,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                         borderTopRightRadius: 4,
                         paddingHorizontal: 12,
                         paddingVertical: 6,
-                        borderRadius: borderRadius.lg,
+                        borderRadius: 18,
                         overflow: 'hidden',
                       }
                     ]}
@@ -4478,9 +5243,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                     {!!item.edited_at && (
                       <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : (chatTheme?.myBubble?.timeColor || 'rgba(255, 255, 255, 0.75)'), marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                     )}
-                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: myBubbleTextColor }]}>
-                      {typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || '')}
-                    </Text>
+                    {renderHighlightedText(
+                      typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || ''),
+                      searchText,
+                      isEmojiOnly,
+                      isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: myBubbleTextColor }],
+                      highlightMessageId === item.id
+                    )}
                   </TouchableOpacity>
                   {hasReactions && renderReactionsBadge(true)}
                 </View>
@@ -4502,7 +5271,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                         borderTopLeftRadius: 4,
                         paddingHorizontal: 12,
                         paddingVertical: 6,
-                        borderRadius: borderRadius.lg,
+                        borderRadius: 18,
                         ...(!isDark && !isCustom ? {
                           borderWidth: StyleSheet.hairlineWidth,
                           borderColor: 'rgba(0, 0, 0, 0.08)',
@@ -4524,16 +5293,20 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                     {!!item.edited_at && (
                       <Text style={{ fontSize: 11, color: isEmojiOnly ? theme.textMuted : '#ff0000', marginBottom: 2, fontStyle: 'italic' }}>Edited</Text>
                     )}
-                    <Text style={isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: theirBubbleTextColor }]}>
-                      {typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || '')}
-                    </Text>
+                    {renderHighlightedText(
+                      typeof item.content === 'string' && item.content.includes('"ciphertext"') && item.content.includes('"senderIdentityKey"') ? '🔒 [Encrypted message]' : String(item.content || ''),
+                      searchText,
+                      isEmojiOnly,
+                      isEmojiOnly ? { fontSize: emojiFontSize, lineHeight: emojiLineHeight } : [s.messageText, { color: theirBubbleTextColor }],
+                      highlightMessageId === item.id
+                    )}
                   </TouchableOpacity>
                   {hasReactions && renderReactionsBadge(false)}
                 </View>
               );
             })()
           )}
-        </View>
+        </AnimatedMessageBubble>
         
         {/* Seen Status (Instagram Style) */}
         {!isGroup && item.id === latestSeenMessageId && (
@@ -4549,7 +5322,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         )}
       </TouchableOpacity>
     );
-  }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, getDirectMessageSeenTime, liveReadTimes, selectedReceiptUser, selectedMessageIds, isSelectionMode, chatTheme]);
+  }, [currentUser, isGroup, highlightMessageId, mediaErrorIds, messages, editingMessageId, latestSeenMessageId, fmtSeenTime, getDirectMessageSeenTime, liveReadTimes, selectedReceiptUser, selectedMessageIds, isSelectionMode, chatTheme, searchMode, searchText]);
   
 
   const renderGroupCallBanner = () => {
@@ -4674,25 +5447,47 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             }}
             hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           >
-            <View
-              style={[
-                {
-                  width: 38, height: 38, borderRadius: 19,
+            {!isGroup && headerHasStatus ? (
+              <LinearGradient
+                colors={['#0F62FE', '#00E5FF', '#10B981']}
+                start={{ x: 0, y: 1 }}
+                end={{ x: 1, y: 0 }}
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 20,
+                  padding: 2,
+                  justifyContent: 'center',
+                  alignItems: 'center',
                   marginRight: 6,
-                  borderWidth: (!isGroup && headerHasStatus) ? 2 : 0,
-                  borderColor: (!isGroup && headerHasStatus) ? theme.primary : 'transparent',
-                  padding: (!isGroup && headerHasStatus) ? 2 : 0,
-                }
-              ]}
-            >
-              <AvatarWithFallback
-                uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
-                sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
-                displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
-                isGroup={isGroup}
-                style={{ width: '100%', height: '100%', borderRadius: 19 }}
-              />
-            </View>
+                }}
+              >
+                <AvatarWithFallback
+                  uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
+                  sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
+                  displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
+                  isGroup={isGroup}
+                  style={{ width: 36, height: 36, borderRadius: 18 }}
+                />
+              </LinearGradient>
+            ) : (
+              <View
+                style={[
+                  {
+                    width: 38, height: 38, borderRadius: 19,
+                    marginRight: 6,
+                  }
+                ]}
+              >
+                <AvatarWithFallback
+                  uri={isGroup ? (conversation?.profile_picture || route.params?.avatarUri) : (otherUser?.profile_picture || route.params?.avatarUri)}
+                  sticker={isGroup ? null : (otherUser?.avatar_sticker || route.params?.avatarSticker)}
+                  displayName={isGroup ? (conversation?.name || chatTitle) : (otherUser?.display_name || otherUser?.email || chatTitle)}
+                  isGroup={isGroup}
+                  style={{ width: '100%', height: '100%', borderRadius: 19 }}
+                />
+              </View>
+            )}
           </Pressable>
 
           <Pressable
@@ -4712,22 +5507,32 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             <Text style={[s.headerName, isCustomTheme && { color: '#FFFFFF' }]} numberOfLines={1}>
               {chatTitle}
             </Text>
-            <Text style={[s.headerStatus, isCustomTheme && { color: 'rgba(255, 255, 255, 0.75)' }]} numberOfLines={1}>
-              {isGroup
-                ? groupDescription || 'Group details'
-                : otherUser
-                ? amIBlocked
-                ? ''
-                : otherUser.last_seen_privacy === 'nobody'
-                ? ''
-                : (() => {
-                    const formatted = fmtLastSeen(otherUser.last_seen);
-                    if (!formatted) return '';
-                    if (formatted === 'Online') return 'Online';
-                    return `Last seen ${formatted}`;
-                  })()
-                : ''}
-            </Text>
+            {typingUsers.length > 0 ? (
+              <Text
+                style={[
+                  s.headerStatus,
+                  { color: '#10B981', fontWeight: '600' },
+                  isCustomTheme && { color: '#34D399' }
+                ]}
+                numberOfLines={1}
+              >
+                {isGroup
+                  ? `${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`
+                  : 'typing...'}
+              </Text>
+            ) : (
+              <Text style={[s.headerStatus, isCustomTheme && { color: 'rgba(255, 255, 255, 0.75)' }]} numberOfLines={1}>
+                {isGroup
+                  ? groupDescription || 'Group details'
+                  : otherUser
+                  ? amIBlocked
+                  ? ''
+                  : otherUser.last_seen_privacy === 'nobody'
+                  ? ''
+                  : fmtLastSeen(otherUser.last_seen)
+                  : ''}
+              </Text>
+            )}
           </Pressable>
         </View>
 
@@ -4795,17 +5600,18 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           </TouchableOpacity>
           <TouchableOpacity
             style={[s.callIcon, isCustomTheme && { backgroundColor: 'rgba(255, 255, 255, 0.15)' }]}
-            onPress={() => setShowThemeModal(true)}
+            onPress={() => setShowHeaderMenu(true)}
             activeOpacity={0.7}
             hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           >
-            <Icon name="color-palette-outline" size={18} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
+            <Icon name="ellipsis-vertical" size={19} color={isCustomTheme ? '#FFFFFF' : theme.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
     );
   };
 
+  console.log('⏱️ [ChatRoom] >>> HOOKS & LOGIC FINISHED in ' + (performance.now() - _renderT0).toFixed(2) + 'ms - STARTING JSX RENDER');
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>
       {/* 1. Full Screen Edge-to-Edge Static Background Layer (Status Bar to Bottom Nav Bar) */}
@@ -4870,6 +5676,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           data={groupedMessages}
           renderItem={renderMessage}
           keyExtractor={item => (item.local_id || item.id).toString()}
+          extraData={`${searchMode}_${searchText}_${highlightMessageId}_${selectedMessageIds.length}`}
           style={{ backgroundColor: 'transparent' }}
           contentContainerStyle={s.messagesList}
           inverted={true}
@@ -4877,6 +5684,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
           // does not compete with the back button tap and cause 500ms input latency.
           scrollEnabled={!isNavigatingBack.current}
           keyboardShouldPersistTaps="handled"
+          onTouchStart={() => {
+            if (isStickerPickerDeliberatelyOpenRef.current) {
+              handleCloseStickerPickerStable();
+            } else if (kbHeight.value > 0) {
+              Keyboard.dismiss();
+            }
+          }}
           // Load older messages when user scrolls to top (= onEndReached in inverted list)
           onEndReached={loadOlderMessages}
           onEndReachedThreshold={0.3}
@@ -4910,12 +5724,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             ) : null
           }
           onContentSizeChange={() => {
-            if (isNearBottomRef.current) {
-              flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+            if (isNearBottomRef.current && currentScrollOffset.current > 15) {
+              flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
             }
           }}
-          initialNumToRender={10}
-          maxToRenderPerBatch={8}
+          initialNumToRender={3}
+          maxToRenderPerBatch={6}
           windowSize={5}
           updateCellsBatchingPeriod={30}
           removeClippedSubviews={Platform.OS === 'android'}
@@ -4958,14 +5772,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         </Animated.View>
       </View>
 
-      {/* Typing */}
-      {typingUsers.length > 0 && (
-        <View style={s.typingContainer}>
-          <Text style={s.typingText}>
-            {`${typingUsers.join(', ')} ${typingUsers.length > 1 ? 'are' : 'is'} typing...`}
-          </Text>
-        </View>
-      )}
+
 
       {/* Reply preview */}
       {replyToMessage && (
@@ -4978,7 +5785,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               {getMessagePreviewText(replyToMessage, messages)}
             </Text>
           </View>
-          {['image', 'video', 'document'].includes(getReplyMessageType(replyToMessage, messages) || '') && (
+          {['image', 'video', 'document', 'sticker', 'lottie_sticker'].includes(getReplyMessageType(replyToMessage, messages) || '') && (
             <View style={s.replyPreviewThumbnailContainer}>
               {renderReplyThumbnail(replyToMessage, messages)}
             </View>
@@ -5555,7 +6362,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
                 onRegisterClear={handleRegisterClearStable}
                 isDisabled={false}
                 onOpenStickerPicker={handleOpenStickerPickerStable}
-                isStickerPickerVisible={stickerPickerVisible}
+                isStickerPickerVisible={isStickerPickerDeliberatelyOpen}
                 onCloseStickerPicker={handleCloseStickerPickerStable}
                 onFocus={handleInputFocusStable}
                 isCustomTheme={Boolean(chatTheme?.id && chatTheme.id !== 'default')}
@@ -5629,14 +6436,19 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
       <Toast />
 
-      {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide) ── */}
-      <StickerPickerSheet
-        visible={stickerPickerVisible}
-        stickerPacks={BUILT_IN_STICKER_PACKS}
-        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-        onClose={() => setStickerPickerVisible(false)}
-        sheetHeight={286}
-      />
+      {/* ── Lottie Sticker Picker Sheet (Mounted after screen transition, 0ms GPU slide) ── */}
+      {(canRenderStickerPicker || stickerPickerVisible || isStickerPickerDeliberatelyOpen) && (
+        <StickerPickerSheet
+          visible={stickerPickerVisible}
+          stickerPacks={BUILT_IN_STICKER_PACKS}
+          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+          isDeliberatelyOpen={isStickerPickerDeliberatelyOpen}
+          isDeliberatelyOpenSV={isStickerPickerDeliberatelyOpenSV}
+          onClose={handleCloseStickerPickerStable}
+          sharedHeight={stickerSpacerHeight}
+          sheetHeight={286}
+        />
+      )}
 
       {!!stickerPreview && (
         <StickerPreviewModal
@@ -5768,6 +6580,92 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         }}
       />
       )}
+      {/* ── 3-Dot Header Popover Menu ── */}
+      {showHeaderMenu && (
+        <Modal
+          visible={showHeaderMenu}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setShowHeaderMenu(false)}
+        >
+          <Pressable style={s.popoverBackdrop} onPress={() => setShowHeaderMenu(false)}>
+            <View
+              style={[s.headerPopoverMenu, { top: insets.top + 52 }]}
+              onStartShouldSetResponder={() => true}
+            >
+            {/* Search */}
+            <TouchableOpacity
+              style={s.popoverMenuItem}
+              onPress={() => {
+                setShowHeaderMenu(false);
+                setSearchMode(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Icon name="search-outline" size={19} color={theme.textPrimary} style={{ marginRight: 12 }} />
+              <Text style={[s.popoverMenuText, { color: theme.textPrimary }]}>Search</Text>
+            </TouchableOpacity>
+
+            <View style={s.popoverMenuDivider} />
+
+            {/* Theme */}
+            <TouchableOpacity
+              style={s.popoverMenuItem}
+              onPress={() => {
+                setShowHeaderMenu(false);
+                setShowThemeModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Icon name="color-palette-outline" size={19} color={theme.textPrimary} style={{ marginRight: 12 }} />
+              <Text style={[s.popoverMenuText, { color: theme.textPrimary }]}>Theme</Text>
+            </TouchableOpacity>
+
+            <View style={s.popoverMenuDivider} />
+
+            {/* Clear Chat */}
+            <TouchableOpacity
+              style={s.popoverMenuItem}
+              onPress={() => {
+                setShowHeaderMenu(false);
+                handleClearChat();
+              }}
+              activeOpacity={0.7}
+            >
+              <Icon name="trash-outline" size={19} color="#EF4444" style={{ marginRight: 12 }} />
+              <Text style={[s.popoverMenuText, { color: '#EF4444' }]}>Clear Chat</Text>
+            </TouchableOpacity>
+
+            {/* Block / Unblock (for 1-on-1 chats) */}
+            {!isGroup && (
+              <>
+                <View style={s.popoverMenuDivider} />
+                <TouchableOpacity
+                  style={s.popoverMenuItem}
+                  onPress={() => {
+                    setShowHeaderMenu(false);
+                    handleBlockUser();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Icon
+                    name={isUserBlocked ? 'shield-checkmark-outline' : 'ban-outline'}
+                    size={19}
+                    color={isUserBlocked ? '#10B981' : '#EF4444'}
+                    style={{ marginRight: 12 }}
+                  />
+                  <Text style={[s.popoverMenuText, { color: isUserBlocked ? '#10B981' : '#EF4444' }]}>
+                    {isUserBlocked ? 'Unblock User' : 'Block User'}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </Pressable>
+      </Modal>
+      )}
+
       {showThemeModal && (
         <ChatThemeModal
           visible={showThemeModal}
@@ -5836,6 +6734,43 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => {
     alignItems: 'center',
   },
   callIconText: { fontSize: 16 },
+  popoverBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+  },
+  headerPopoverMenu: {
+    position: 'absolute',
+    right: 12,
+    minWidth: 175,
+    backgroundColor: theme.surface,
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
+  popoverMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+  },
+  popoverMenuText: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  popoverMenuDivider: {
+    height: 1,
+    backgroundColor: theme.border,
+    marginHorizontal: 10,
+    marginVertical: 2,
+  },
   headerAvatar: {
     width: 38,
     height: 38,
@@ -5891,7 +6826,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => {
   },
   avatarText: { color: theme.primary, fontSize: fontSize.sm, fontWeight: 'bold' },
   messageBubble: {
-    borderRadius: borderRadius.lg,
+    borderRadius: 18,
   },
   myMessageBubble: { backgroundColor: 'transparent', borderTopRightRadius: 4 },
   theirMessageBubble: { backgroundColor: 'transparent', borderTopLeftRadius: 4 },
@@ -5975,7 +6910,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => {
     alignItems: 'center',
     padding: 10,
     backgroundColor: 'rgba(0,0,0,0.03)',
-    borderRadius: borderRadius.md,
+    borderRadius: 18,
     width: 250,
   },
   documentLeftContainer: {

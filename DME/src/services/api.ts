@@ -37,19 +37,61 @@ api.interceptors.request.use(
 );
 
 
-// Response interceptor to handle token refresh
+// Token refresh queue and mutex to prevent race condition during multiple concurrent 401s
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject: (error: any) => void;
+}> = [];
+
+const processQueue = (error: any, token: string | null = null) => {
+  failedQueue.forEach(prom => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token!);
+    }
+  });
+  failedQueue = [];
+};
+
+// Response interceptor to handle token refresh with concurrency safety
 api.interceptors.response.use(
   response => response,
   async error => {
     const originalRequest = error.config;
 
     if (error.response?.status === 401 && !originalRequest._retry) {
+      const requestUrl = originalRequest.url || '';
+      // Don't attempt refresh if the 401 came from auth endpoints
+      if (
+        requestUrl.includes('/accounts/login/') ||
+        requestUrl.includes('/accounts/register/') ||
+        requestUrl.includes('/accounts/logout/') ||
+        requestUrl.includes('/accounts/token/refresh/')
+      ) {
+        return Promise.reject(error);
+      }
+
+      // If a refresh is already in progress, queue this request until the new token arrives
+      if (isRefreshing) {
+        return new Promise<string>((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then(token => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return api(originalRequest);
+          })
+          .catch(err => Promise.reject(err));
+      }
+
       originalRequest._retry = true;
+      isRefreshing = true;
 
       try {
         const refreshToken = await AsyncStorage.getItem('refresh_token');
         if (!refreshToken) {
-          throw new Error('No refresh token');
+          throw new Error('No refresh token available');
         }
 
         const response = await axios.post(
@@ -61,16 +103,22 @@ api.interceptors.response.use(
 
         const { access, refresh } = response.data;
         await AsyncStorage.setItem('access_token', access);
-        
+
         // Save the new refresh token if the server returned one (token rotation)
         if (refresh) {
           await AsyncStorage.setItem('refresh_token', refresh);
         }
 
+        // Release all queued requests with the fresh access token
+        processQueue(null, access);
+
         originalRequest.headers.Authorization = `Bearer ${access}`;
         return api(originalRequest);
       } catch (refreshError: any) {
         const status = refreshError.response?.status;
+        // Reject all queued requests
+        processQueue(refreshError, null);
+
         // Only wipe credentials if the server returned a 400 or 401 (explicit token expiration or invalidation).
         // Do not wipe on network issues (e.g. timeout, no response) or server errors (5xx) to prevent auto-logout.
         if (status === 400 || status === 401) {
@@ -84,7 +132,9 @@ api.interceptors.response.use(
         } else {
           console.log('[api.ts] Token refresh failed due to network or server error. Retaining credentials.', refreshError.message || refreshError);
         }
-        throw refreshError;
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 

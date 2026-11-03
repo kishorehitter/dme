@@ -1,0 +1,208 @@
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/toolbox/DebugLog.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/toolbox/DebugLog.kt
+index 4b6f252..6aa548f 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/toolbox/DebugLog.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/toolbox/DebugLog.kt
+@@ -11,7 +11,7 @@ import java.lang.Exception
+ 
+ object DebugLog {
+     // log level to display
+-    private var level = Log.WARN
++    private var level = Log.DEBUG
+ 
+     // enable thread display in logs
+     private var displayThread = true
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
+index e16ac96..4b41f4f 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
+@@ -202,6 +202,7 @@ public class ReactExoplayerView extends FrameLayout implements
+     private static final String TAG_EVENT_LOGGER = "RNVExoplayer";
+ 
+     private int resumeWindow;
++    public static volatile ReactExoplayerView activeInstance = null;
+     private long resumePosition;
+     private boolean loadVideoStarted;
+     private boolean isFullscreen;
+@@ -340,6 +341,13 @@ public class ReactExoplayerView extends FrameLayout implements
+         audioBecomingNoisyReceiver = new AudioBecomingNoisyReceiver(themedReactContext);
+         audioFocusChangeListener = new OnAudioFocusChangedListener(this, themedReactContext);
+         pictureInPictureReceiver = new PictureInPictureReceiver(this, themedReactContext);
++        activeInstance = this;
++    }
++
++    @Override
++    protected void onAttachedToWindow() {
++        super.onAttachedToWindow();
++        activeInstance = this;
+     }
+ 
+     private boolean isPlayingAd() {
+@@ -397,6 +405,9 @@ public class ReactExoplayerView extends FrameLayout implements
+     }
+ 
+     public void cleanUpResources() {
++        if (activeInstance == this) {
++            activeInstance = null;
++        }
+         stopPlayback();
+         themedReactContext.removeLifecycleEventListener(this);
+         releasePlayer();
+@@ -658,7 +669,9 @@ public class ReactExoplayerView extends FrameLayout implements
+                 }
+                 if (playerNeedsSource) {
+                     // Will force display of shutter view if needed
+-                    exoPlayerView.invalidateAspectRatio();
++                    try {
++                        exoPlayerView.invalidateAspectRatio();
++                    } catch (Exception ignored) {}
+                     // DRM session manager creation must be done on a different thread to prevent crashes so we start a new thread
+                     ExecutorService es = Executors.newSingleThreadExecutor();
+                     es.execute(() -> {
+@@ -666,14 +679,10 @@ public class ReactExoplayerView extends FrameLayout implements
+                         if (viewHasDropped && runningSource == source) {
+                             return;
+                         }
+-                        if (activity == null) {
+-                            DebugLog.e(TAG, "Failed to initialize Player!, null activity");
+-                            eventEmitter.onVideoError.invoke("Failed to initialize Player!", new Exception("Current Activity is null!"), "1001");
+-                            return;
+-                        }
+ 
+-                        // Initialize handler to run on the main thread
+-                        activity.runOnUiThread(() -> {
++                        // Initialize handler to run on the main thread via UiThreadUtil
++                        // so it runs reliably even if activity is null/paused in background
++                        UiThreadUtil.runOnUiThread(() -> {
+                             if (viewHasDropped && runningSource == source) {
+                                 return;
+                             }
+@@ -895,6 +904,10 @@ public class ReactExoplayerView extends FrameLayout implements
+         loadVideoStarted = true;
+ 
+         finishPlayerInitialization();
++
++        if (!isPaused) {
++            setPlayWhenReady(true);
++        }
+     }
+ 
+     private DrmSessionManager initializePlayerDrm() {
+@@ -1330,9 +1343,8 @@ public class ReactExoplayerView extends FrameLayout implements
+ 
+         if (playWhenReady) {
+             this.hasAudioFocus = requestAudioFocus();
+-            if (this.hasAudioFocus) {
+-                player.setPlayWhenReady(true);
+-            }
++            DebugLog.d(TAG, "setPlayWhenReady: playWhenReady=true, hasAudioFocus=" + this.hasAudioFocus + ", isInBackground=" + isInBackground);
++            player.setPlayWhenReady(true);
+         } else {
+             player.setPlayWhenReady(false);
+         }
+@@ -1363,6 +1375,7 @@ public class ReactExoplayerView extends FrameLayout implements
+ 
+     private void onStopPlayback() {
+         audioManager.abandonAudioFocus(audioFocusChangeListener);
++        this.hasAudioFocus = false;
+     }
+ 
+     private void updateResumePosition() {
+@@ -1446,10 +1459,10 @@ public class ReactExoplayerView extends FrameLayout implements
+                         setSelectedTrack(C.TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
+                     }
+                     // Setting the visibility for the player controls
+-                    if (exoPlayerView != null) {
++                    if (exoPlayerView != null && !isInBackground) {
+                         exoPlayerView.showController();
+                     }
+-                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
++                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback && !isInBackground);
+                     break;
+                 case Player.STATE_ENDED:
+                     text += "ended";
+@@ -2039,6 +2052,12 @@ public class ReactExoplayerView extends FrameLayout implements
+ 
+     public void setSrc(Source source) {
+         if (source.getUri() != null || isDaiRequest(source)) {
++            boolean isUriEqual = source.getUri() != null && this.source != null && Objects.equals(this.source.getUri(), source.getUri());
++            if (player != null && isUriEqual && player.getPlaybackState() != Player.STATE_ENDED && !hasVideoEnded) {
++                DebugLog.d(TAG, "setSrc: Same URI already loaded/playing, skipping reload: " + source.getUri());
++                this.source = source;
++                return;
++            }
+             clearResumePosition();
+             boolean isSourceEqual = source.isEquals(this.source);
+             hasDrmFailed = false;
+@@ -2126,6 +2145,23 @@ public class ReactExoplayerView extends FrameLayout implements
+         trackSelector.setParameters(disableParameters);
+     }
+ 
++    public void setVideoTrackDisabled(boolean disabled) {
++        if (trackSelector != null) {
++            DefaultTrackSelector.Parameters.Builder builder = trackSelector.getParameters().buildUpon();
++            builder.setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disabled);
++            trackSelector.setParameters(builder.build());
++        }
++        if (player != null) {
++            try {
++                player.setTrackSelectionParameters(player.getTrackSelectionParameters()
++                        .buildUpon()
++                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disabled)
++                        .build());
++            } catch (Exception ignored) {}
++        }
++        DebugLog.d(TAG, "setVideoTrackDisabled: " + disabled);
++    }
++
+     private void selectTextTrackInternal(String type, String value) {
+         if (player == null || trackSelector == null) return;
+         
+@@ -2845,6 +2881,10 @@ public class ReactExoplayerView extends FrameLayout implements
+         loadVideoStarted = true;
+ 
+         finishPlayerInitialization();
++
++        if (!isPaused) {
++            setPlayWhenReady(true);
++        }
+     }
+ 
+     /**
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/react/VideoManagerModule.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/react/VideoManagerModule.kt
+index 15031e7..e5bb99d 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/react/VideoManagerModule.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/react/VideoManagerModule.kt
+@@ -27,11 +27,32 @@ class VideoManagerModule(reactContext: ReactApplicationContext?) : ReactContextB
+ 
+                 if (view is ReactExoplayerView) {
+                     callback(view)
++                } else if (ReactExoplayerView.activeInstance != null) {
++                    callback(ReactExoplayerView.activeInstance)
+                 } else {
+                     callback(null)
+                 }
+             } catch (e: Exception) {
+-                callback(null)
++                if (ReactExoplayerView.activeInstance != null) {
++                    callback(ReactExoplayerView.activeInstance)
++                } else {
++                    callback(null)
++                }
++            }
++        }
++    }
++
++    @ReactMethod
++    fun setSourceDirect(source: ReadableMap?) {
++        UiThreadUtil.runOnUiThread {
++            try {
++                val active = ReactExoplayerView.activeInstance
++                if (active != null && source != null) {
++                    val parsedSource = Source.parse(source, reactApplicationContext)
++                    active.setSrc(parsedSource)
++                }
++            } catch (e: Exception) {
++                // Ignore
+             }
+         }
+     }

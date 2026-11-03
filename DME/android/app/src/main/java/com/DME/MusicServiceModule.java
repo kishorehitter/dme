@@ -19,11 +19,15 @@ public class MusicServiceModule extends ReactContextBaseJavaModule {
     }
 
     public static void sendEvent(String eventName) {
+        sendEvent(eventName, null);
+    }
+
+    public static void sendEvent(String eventName, com.facebook.react.bridge.WritableMap params) {
         if (reactContextStatic != null) {
             try {
                 reactContextStatic
                     .getJSModule(com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-                    .emit(eventName, null);
+                    .emit(eventName, params);
             } catch (Exception e) {
                 // Context might be invalid/destroyed
             }
@@ -45,16 +49,42 @@ public class MusicServiceModule extends ReactContextBaseJavaModule {
         intent.putExtra(MusicForegroundService.EXTRA_IS_PLAYING, isPlaying);
         intent.putExtra("isDJ", isDJ);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            reactContext.startForegroundService(intent);
-        } else {
-            reactContext.startService(intent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactContext.startForegroundService(intent);
+            } else {
+                reactContext.startService(intent);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MusicServiceModule", "Error with foreground service intent: " + e.getMessage());
         }
     }
 
     @ReactMethod
     public void updatePlaybackState(String title, String artist, String thumbnail, boolean isPlaying, boolean isDJ) {
         startService(title, artist, thumbnail, isPlaying, isDJ);
+    }
+
+    @ReactMethod
+    public void updatePosition(String title, String artist, String thumbnail, double position, double duration, boolean isDJ, boolean isPlaying) {
+        Intent intent = new Intent(reactContext, MusicForegroundService.class);
+        intent.setAction(MusicForegroundService.ACTION_UPDATE_POSITION);
+        intent.putExtra(MusicForegroundService.EXTRA_TITLE, title);
+        intent.putExtra(MusicForegroundService.EXTRA_ARTIST, artist);
+        intent.putExtra("thumbnail", thumbnail);
+        intent.putExtra("position", (long)(position * 1000));
+        intent.putExtra("duration", (long)(duration * 1000));
+        intent.putExtra("isDJ", isDJ);
+        intent.putExtra(MusicForegroundService.EXTRA_IS_PLAYING, isPlaying);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactContext.startForegroundService(intent);
+            } else {
+                reactContext.startService(intent);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MusicServiceModule", "Error with foreground service intent: " + e.getMessage());
+        }
     }
 
     @ReactMethod

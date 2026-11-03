@@ -26,6 +26,11 @@ interface Props {
   onSubmitEditing?: () => void;
   returnKeyType?: string;
   underlineColorAndroid?: string;
+  onFocus?: (e?: any) => void;
+  onBlur?: (e?: any) => void;
+  onTouchStart?: (e?: any) => void;
+  pointerEvents?: 'box-none' | 'none' | 'box-only' | 'auto';
+  editable?: boolean;
 }
 
 export interface RichTextInputRef {
@@ -41,12 +46,9 @@ const RichTextInput = forwardRef<RichTextInputRef, Props>((props, ref) => {
   const { theme } = useTheme();
   const { onTextChange, onChangeText, onContentSizeChange, text, style, placeholderTextColor, ...rest } = props;
   const nativeRef = useRef<any>(null);
+
   useImperativeHandle(ref, () => ({
     clear: () => {
-      try {
-        nativeRef.current?.setNativeProps?.({ text: '' });
-      } catch (_) {}
-
       const handle = findNodeHandle(nativeRef.current);
       if (handle != null) {
         try {

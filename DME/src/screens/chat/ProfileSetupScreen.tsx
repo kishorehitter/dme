@@ -20,7 +20,13 @@ import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
-import AsyncStorage from '@react-native-async-storage/async-storage'; // Assuming this is used for tokens
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import RNFS from 'react-native-fs';
+
+import AvatarWithFallback, { getAvatarGradient } from '../../components/AvatarWithFallback';
+import AvatarPickerModal from '../../components/AvatarPickerModal';
+import LegalModal, { LegalTabType } from '../../components/LegalModal';
+import { ALL_PRESET_AVATARS, PRESET_AVATARS } from '../../utils/presetAvatars';
 // import Toast from 'react-native-toast-message'; // Assuming this is used for notifications (commented out as not used in current scope)
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -54,7 +60,7 @@ const getAvatarColor = (name: string) => {
 export const ProfileSetupScreen: React.FC = () => {
   const { user, completeProfileSetup } = useAuth();
   const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+  const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
   const navigation = useNavigation(); // Add this
   const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('');
@@ -62,7 +68,8 @@ export const ProfileSetupScreen: React.FC = () => {
   const [bio, setBio] = useState('');
 
   const nameToHash = displayName.trim() || username.trim() || 'User';
-  const avatarBgColor = getAvatarColor(nameToHash);
+
+  const gradientColors = getAvatarGradient(nameToHash);
   const [quickReaction, setQuickReaction] = useState('❤️');
   // State to hold image info (base64 URL, name, type) for FormData upload
   const [selectedImageInfo, setSelectedImageInfo] = useState<{ uri: string, name: string, type: string } | null>(null);
@@ -72,8 +79,63 @@ export const ProfileSetupScreen: React.FC = () => {
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
+  const [selectedSticker, setSelectedSticker] = useState<string | null>(null);
+  const [avatarModalVisible, setAvatarModalVisible] = useState(false);
+  const currentStickerImage = selectedSticker && PRESET_AVATARS[selectedSticker]
+    ? PRESET_AVATARS[selectedSticker]
+    : ALL_PRESET_AVATARS[0]?.image;
+
+  const handleSelectAvatar = (stickerId: string) => {
+    setSelectedSticker(stickerId);
+    setImagePreviewUrl(null);
+    setSelectedImageInfo(null);
+    AsyncStorage.removeItem('pending_google_photo').catch(() => {});
+  };
   const [focusedField, setFocusedField] = useState<'username' | 'displayName' | 'bio' | null>(null);
   const [agreed, setAgreed] = useState(false);
+  const [legalModalVisible, setLegalModalVisible] = useState(false);
+  const [legalModalTab, setLegalModalTab] = useState<LegalTabType>('privacy');
+
+  const openLegalModal = (tab: LegalTabType) => {
+    setLegalModalTab(tab);
+    setLegalModalVisible(true);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadGooglePhoto = async () => {
+      try {
+        const googlePhoto = await AsyncStorage.getItem('pending_google_photo');
+        if (googlePhoto && isMounted) {
+          // 1. Immediately show Google avatar preview in UI
+          setImagePreviewUrl(googlePhoto);
+
+          // 2. Download the Google image file to cache so it can be uploaded via FormData on submit
+          const localFilePath = `${RNFS.CachesDirectoryPath}/google_avatar_${Date.now()}.jpg`;
+          const result = await RNFS.downloadFile({
+            fromUrl: googlePhoto,
+            toFile: localFilePath,
+          }).promise;
+
+          if (result.statusCode === 200 && isMounted) {
+            const fileUri = Platform.OS === 'android' ? `file://${localFilePath}` : localFilePath;
+            setSelectedImageInfo({
+              uri: fileUri,
+              name: 'google_avatar.jpg',
+              type: 'image/jpeg',
+            });
+            setImagePreviewUrl(fileUri);
+          }
+        }
+      } catch (err) {
+        console.error('[ProfileSetup] Error pre-filling Google photo:', err);
+      }
+    };
+    loadGooglePhoto();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
 
   const checkUsername = async (value: string) => {
@@ -114,6 +176,7 @@ export const ProfileSetupScreen: React.FC = () => {
       
       setSelectedImageInfo({ uri: asset.uri, name: fileName, type: fileType });
       setImagePreviewUrl(asset.uri);
+      setSelectedSticker(null);
     }
     setGalleryPickerVisible(false);
   };
@@ -135,7 +198,7 @@ export const ProfileSetupScreen: React.FC = () => {
       formData.append('display_name', displayName);
       formData.append('bio', bio);
       formData.append('quick_reaction', quickReaction);
-      formData.append('avatar_sticker', ''); // Send empty string
+      formData.append('avatar_sticker', selectedSticker || '');
 
       // Append profile_picture if image info is available
       if (selectedImageInfo) {
@@ -150,6 +213,7 @@ export const ProfileSetupScreen: React.FC = () => {
 
       // Make the API call using AuthContext completeProfileSetup
       await completeProfileSetup(formData);
+      await AsyncStorage.removeItem('pending_google_photo').catch(() => {});
     } catch (error: any) {
       console.error('Profile setup error:', error);
       Alert.alert('Error', error.response?.data?.detail || error.message || 'Failed to set up profile');
@@ -173,30 +237,65 @@ export const ProfileSetupScreen: React.FC = () => {
     >
       <Text style={s.title}>Complete your profile</Text>
       
-      {/* Profile Picture / Sticker Selection Area */}
-      <View style={s.profilePictureContainer}>
-        {isSubmitting ? (
-          <View style={[s.previewImage, s.previewPlaceholder, s.uploadingContainer]}>
-            <ActivityIndicator size="large" color={theme.textMuted} />
+      {/* Profile Picture / 3D Avatar Area (Matches ProfileScreen edit mode exactly) */}
+      <View style={s.avatarEditRow}>
+        {/* Avatar Circle with Camera Badge */}
+        <View style={s.avatarWrapper120}>
+          <TouchableOpacity
+            onPress={() => setGalleryPickerVisible(true)}
+            activeOpacity={0.88}
+            style={StyleSheet.absoluteFillObject}
+          >
+            {isSubmitting ? (
+              <View style={[s.profilePicture, s.previewPlaceholder, s.uploadingContainer]}>
+                <ActivityIndicator size="large" color={theme.textMuted} />
+              </View>
+            ) : (
+              <AvatarWithFallback
+                uri={imagePreviewUrl}
+                displayName={displayName || username || 'User'}
+                sticker={selectedSticker}
+                style={[s.profilePicture, { borderWidth: 0 }]}
+                initialSize={52}
+              />
+            )}
+            <TouchableOpacity
+              style={s.cameraIcon}
+              onPress={() => setGalleryPickerVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Icon name="camera" size={17} color="#000000" />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
+
+        {/* Dedicated 3D Avatar Button next to Profile Circle */}
+        <TouchableOpacity
+          style={s.avatarStickerButton}
+          onPress={() => setAvatarModalVisible(true)}
+          activeOpacity={0.78}
+        >
+          <View style={s.avatarStickerIconWrap}>
+            <Image
+              source={currentStickerImage || ALL_PRESET_AVATARS[0].image}
+              style={s.avatarStickerPreviewImg}
+              resizeMode="contain"
+            />
+            <View style={s.avatarStickerSparkleBadge}>
+              <Icon name="sparkles" size={10} color="#FFFFFF" />
+            </View>
           </View>
-        ) : imagePreviewUrl ? (
-          <Image source={{ uri: imagePreviewUrl }} style={s.previewImage} />
-        ) : (
-          <View style={[
-            s.previewImage, 
-            s.previewPlaceholder, 
-            { backgroundColor: avatarBgColor }
-          ]}>
-            <Text style={[s.profilePictureText, { color: '#FFFFFF' }]}>
-              {(displayName || username || 'U').charAt(0).toUpperCase()}
+          <View style={s.avatarStickerTextCol}>
+            <Text style={s.avatarStickerTitle} numberOfLines={1}>3D Avatar</Text>
+            <Text style={s.avatarStickerSub} numberOfLines={1}>
+              {selectedSticker ? 'Change 3D' : 'Choose 3D'}
             </Text>
           </View>
-        )}
-        <TouchableOpacity style={s.cameraIcon} onPress={() => setGalleryPickerVisible(true)}>
-          <Icon name="camera" size={18} color={theme.icon} />
+          <View style={s.avatarStickerArrowWrap}>
+            <Icon name="chevron-forward" size={15} color={theme.primary} />
+          </View>
         </TouchableOpacity>
       </View>
-      <Text style={s.changePhotoText}>Tap to choose Profile Picture</Text>
 
       <View style={s.inputGroup}>
         <Text style={s.inputLabel}>Username</Text>
@@ -290,38 +389,64 @@ export const ProfileSetupScreen: React.FC = () => {
       <View style={s.reactionSection}>
         <Text style={s.sectionLabel}>Double-Tap Reaction</Text>
         <View style={s.reactionContainer}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.reactionScroll}>
-            {QUICK_REACTIONS.map(emoji => (
-              <TouchableOpacity
-                key={emoji}
-                style={[
-                  s.reactionItem,
-                  quickReaction === emoji && s.reactionItemActive,
-                ]}
-                onPress={() => setQuickReaction(emoji)}
-              >
-                <Text style={s.reactionText}>{emoji}</Text>
-              </TouchableOpacity>
-            ))}
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false} 
+            contentContainerStyle={s.reactionScroll}
+            
+          >
+            {QUICK_REACTIONS.map(emoji => {
+              const isActive = quickReaction === emoji;
+              return (
+                <TouchableOpacity
+                  key={emoji}
+                  style={[s.reactionItem, isActive && s.reactionItemActive]}
+                  onPress={() => setQuickReaction(emoji)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.reactionText}>{emoji}</Text>
+                  {isActive && (
+                    <View style={s.reactionCheckBadge}>
+                      <Icon name="checkmark" size={8} color="#FFFFFF" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
           </ScrollView>
         </View>
       </View>
 
-      <TouchableOpacity 
-        style={s.checkboxRow} 
-        onPress={() => setAgreed(!agreed)}
-        activeOpacity={0.8}
-      >
-        <Icon 
-          name={agreed ? "checkbox" : "square-outline"} 
-          size={22} 
-          color={agreed ? theme.primary : theme.textSecondary} 
-          style={{ marginRight: 10 }}
-        />
+      <View style={s.checkboxRow}>
+        <TouchableOpacity 
+          onPress={() => setAgreed(!agreed)}
+          activeOpacity={0.8}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Icon 
+            name={agreed ? "checkbox" : "square-outline"} 
+            size={22} 
+            color={agreed ? theme.primary : theme.textSecondary} 
+            style={{ marginRight: 10 }}
+          />
+        </TouchableOpacity>
         <Text style={s.checkboxLabel}>
-          I agree to the <Text style={s.linkText}>Terms of Service</Text> and <Text style={s.linkText}>Privacy Policy</Text>
+          I agree to the{' '}
+          <Text 
+            style={s.linkText}
+            onPress={() => openLegalModal('terms')}
+          >
+            Terms of Service
+          </Text>
+          {' '}and{' '}
+          <Text 
+            style={s.linkText}
+            onPress={() => openLegalModal('privacy')}
+          >
+            Privacy Policy
+          </Text>
         </Text>
-      </TouchableOpacity>
+      </View>
 
       <TouchableOpacity
         style={[
@@ -344,11 +469,24 @@ export const ProfileSetupScreen: React.FC = () => {
         maxSelect={1}
         assetType="Photos"
       />
+      <AvatarPickerModal
+        visible={avatarModalVisible}
+        onClose={() => setAvatarModalVisible(false)}
+        onSelect={handleSelectAvatar}
+        currentSticker={selectedSticker}
+        profilePicture={imagePreviewUrl}
+        displayName={displayName || username || 'User'}
+      />
+      <LegalModal
+        visible={legalModalVisible}
+        initialTab={legalModalTab}
+        onClose={() => setLegalModalVisible(false)}
+      />
     </ScrollView>
   );
 };
 
-const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = false) => StyleSheet.create({
   container: { 
     paddingHorizontal: 24, 
     paddingTop: 24, 
@@ -428,19 +566,148 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   errorText: { color: '#EF4444', fontSize: 12, fontWeight: '500' },
   successText: { color: '#10B981', fontSize: 12, fontWeight: '500' },
   
+
+  avatarEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 16,
+    width: '100%',
+    marginBottom: 8,
+  },
+  avatarWrapper120: {
+    width: 120,
+    height: 120,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  profilePicture: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+  },
+  cameraIcon: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    backgroundColor: '#FFFFFF',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: theme.surface,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  avatarStickerButton: {
+    flex: 1,
+    maxWidth: 205,
+    height: 106,
+    borderRadius: 20,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent',
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  avatarStickerIconWrap: {
+    position: 'relative',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: isDark ? 'rgba(15, 98, 254, 0.25)' : '#E0EDFE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#BAD7FE',
+  },
+  avatarStickerPreviewImg: {
+    width: 40,
+    height: 40,
+  },
+  avatarStickerSparkleBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    backgroundColor: '#0F62FE',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    elevation: 3,
+  },
+  avatarStickerTextCol: {
+    flex: 1,
+    marginLeft: 10,
+    justifyContent: 'center',
+  },
+  avatarStickerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.textPrimary,
+    letterSpacing: -0.2,
+  },
+  avatarStickerSub: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: theme.primary,
+    marginTop: 2,
+  },
+  avatarStickerArrowWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 2,
+  },
+
   // Profile Picture / Sticker Styles
   profilePictureContainer: {
     alignItems: 'center',
-    marginBottom: 10,
-    width: 120,
+    marginBottom: 12,
     alignSelf: 'center',
+  },
+  avatarWrapper: {
+    width: 120,
+    height: 120,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   previewImage: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    borderWidth: 3,
-    borderColor: theme.border,
+  },
+  removePhotoButton: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: '#EF4444',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    elevation: 6,
+    zIndex: 10,
   },
   previewPlaceholder: {
     backgroundColor: theme.inputBackground,
@@ -458,18 +725,26 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   uploadingContainer: {
     backgroundColor: theme.background,
   },
-  cameraIcon: {
-    position: 'absolute',
-    bottom: 8,
-    right: 5,
-    backgroundColor: theme.background,
-    width: 30,
-    height: 30,
-    borderRadius: 5,
+  avatarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 18,
+  },
+  sideActionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: theme.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: theme.border,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
   cameraIconText: {
     fontSize: 18,
@@ -574,8 +849,9 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     borderColor: theme.border,
     borderRadius: 12,
     paddingHorizontal: 8,
-    paddingVertical:6,
+    paddingVertical: 2,
     backgroundColor: theme.inputBackground,
+    overflow: 'hidden',
   },
   sectionLabel: {
     fontSize: 14,
@@ -584,23 +860,33 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     marginBottom: 8,
   },
   reactionScroll: {
-    paddingVertical: 4,
+    paddingVertical: 8,
+    alignItems: 'center',
   },
   reactionItem: {
-    width: 36,
-    height: 36,
+    width: 44,
+    height: 44,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 8,
-    borderRadius: 18,
-    backgroundColor: theme.inputBackground,
+    marginRight: 6,
+    borderRadius: 22,
+    overflow: 'visible',
   },
   reactionItemActive: {
-    backgroundColor: theme.background,
-    borderWidth: 1,
-    borderColor: theme.primary,
+    transform: [{ scale: 1.15 }],
+  },
+  reactionCheckBadge: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#22C55E',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   reactionText: {
-    fontSize: 22,
+    fontSize: 24,
   },
 });

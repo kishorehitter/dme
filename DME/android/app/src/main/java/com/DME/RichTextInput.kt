@@ -76,7 +76,7 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
         }
         val contentWidth = width.toDouble() / density
         
-        if (Math.abs(contentHeight - lastEmittedContentHeight) >= 3.0) {
+        if (Math.abs(contentHeight - lastEmittedContentHeight) >= 1.0) {
             lastEmittedContentHeight = contentHeight
             val event = Arguments.createMap()
             val contentSize = Arguments.createMap()
@@ -113,8 +113,13 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
                 } catch (_: Exception) {}
                 
                 emitContentSizeChange()
+                post { emitContentSizeChange() }
             }
-            override fun afterTextChanged(s: Editable?) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (isSettingText) return
+                emitContentSizeChange()
+                post { emitContentSizeChange() }
+            }
         })
     }
 
@@ -124,10 +129,12 @@ class RichTextInput(context: ThemedReactContext) : ReactEditText(context) {
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
+        emitContentSizeChange()
     }
 
     fun setRichText(text: String?) {
-        val nextText = text ?: ""
+        if (text == null) return
+        val nextText = text
         if (nextText != this.text.toString()) {
             isSettingText = true
             setText(nextText)

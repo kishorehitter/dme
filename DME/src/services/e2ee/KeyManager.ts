@@ -45,7 +45,7 @@ export async function getActiveUserId(): Promise<string> {
     return 'default';
 }
 
-interface UserKeyStore {
+export interface UserKeyStore {
     identityKey?: { publicKey: string; privateKey: string };
     signedPreKeys: { [keyId: string]: { publicKey: string; privateKey: string; signature?: string } };
     oneTimePreKeys: { [keyId: string]: { publicKey: string; privateKey: string } };
@@ -64,6 +64,49 @@ async function saveUserKeyStore(uid: string, store: UserKeyStore): Promise<void>
 }
 
 export class KeyManager {
+    /** Export current user key store */
+    static async exportKeyStore(): Promise<UserKeyStore> {
+        const uid = await getActiveUserId();
+        const store = await loadUserKeyStore(uid);
+        if (!store.identityKey) {
+            try {
+                const creds = await Keychain.getGenericPassword({ service: `dme_e2ee_${uid}_identity` });
+                if (creds) {
+                    store.identityKey = JSON.parse(creds.password);
+                }
+            } catch {}
+        }
+        if (!store.signedPreKeys || !store.signedPreKeys['1']) {
+            if (!store.signedPreKeys) store.signedPreKeys = {};
+            try {
+                const creds = await Keychain.getGenericPassword({ service: `dme_e2ee_${uid}_spk_1` });
+                if (creds) {
+                    store.signedPreKeys['1'] = JSON.parse(creds.password);
+                }
+            } catch {}
+        }
+        return store;
+    }
+
+    /** Import key store */
+    static async importKeyStore(store: UserKeyStore): Promise<void> {
+        const uid = await getActiveUserId();
+        await saveUserKeyStore(uid, store);
+        if (store.identityKey) {
+            try {
+                await Keychain.setGenericPassword('identity', JSON.stringify(store.identityKey), { service: `dme_e2ee_${uid}_identity` });
+            } catch {}
+        }
+        if (store.signedPreKeys) {
+            for (const keyId of Object.keys(store.signedPreKeys)) {
+                try {
+                    const spk = store.signedPreKeys[keyId];
+                    await Keychain.setGenericPassword('signed_prekey', JSON.stringify({ publicKey: spk.publicKey, privateKey: spk.privateKey }), { service: `dme_e2ee_${uid}_spk_${keyId}` });
+                } catch {}
+            }
+        }
+    }
+
     /** Generate Ed25519 identity key pair and store securely */
     static async generateAndStoreIdentityKeyPair(): Promise<Uint8Array> {
         const uid = await getActiveUserId();
@@ -279,10 +322,22 @@ export class KeyManager {
     }
 
     /** Ensure user keys are generated locally and synced to server */
-    static async ensureKeysSetup(): Promise<void> {
+    static async ensureKeysSetup(forceUpload = false): Promise<void> {
         try {
             const hasLocalIdentity = await this.hasIdentityKey();
             const hasLocalSigned = await this.hasSignedPreKey(1);
+
+            // If local keys are missing, check if the user has an active encrypted backup before overwriting!
+            if (!hasLocalIdentity && !forceUpload) {
+                try {
+                    const backupRes = await api.get('/e2ee/backup/status/');
+                    if (backupRes.data?.has_backup) {
+                        console.log('[E2EE] Found active backup on server. Waiting for user restore before generating fresh keys.');
+                        return;
+                    }
+                } catch {}
+            }
+
             const statusRes = await api.get('/e2ee/keys/status/');
             const serverHasKeys = !!(statusRes.data.has_identity_key && statusRes.data.has_signed_prekey);
 

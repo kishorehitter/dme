@@ -52,6 +52,8 @@ export interface Conversation {
   } | null;
   unread_count: number;
   updated_at: string;
+  participants_count?: number;
+  participants?: any[];
 }
 
 export interface AuthTokens {

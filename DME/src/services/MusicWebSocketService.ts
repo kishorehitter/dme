@@ -23,7 +23,8 @@ export type MusicWSMessage = {
     | 'webrtc_answer'
     | 'webrtc_ice'
     | 'webrtc_request_offer'
-    | 'mic_permission_update';
+    | 'mic_permission_update'
+    | 'dj_switched';
   data: any;
 };
 
@@ -213,6 +214,10 @@ class MusicWebSocketService {
 
   updateMicPermission(targetUserId: number, allowed: boolean) {
     this.send({ type: 'update_mic_permission', target_user_id: targetUserId, allowed });
+  }
+
+  switchDJ(targetUserId: number) {
+    this.send({ type: 'switch_dj', target_user_id: targetUserId });
   }
 
   // ── Core ─────────────────────────────────────────

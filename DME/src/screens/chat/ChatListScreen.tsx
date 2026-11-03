@@ -4,6 +4,8 @@ import LottieStickerMessage from '../../components/LottieStickerMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import OnboardingTour, { TourTarget, TourStepKey } from '../../components/OnboardingTour';
 import LogoutConfirmationModal from '../../components/LogoutConfirmationModal';
+import ChatLockPinModal from '../../components/ChatLockPinModal';
+import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import {
   View,
   Text as RNText,
@@ -38,6 +40,7 @@ import BiometricService from '../../services/BiometricService';
 
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
+import { launchImageLibrary } from 'react-native-image-picker';
 
 const SafeText = (props: any) => {
   const children = React.Children.map(props.children, child => {
@@ -81,7 +84,9 @@ import { StatusService, Status, UserStatusGroup } from '../../services/StatusSer
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { useTheme } from '../../context/ThemeContext';
 import { Conversation, User } from '../../types';
-import { MessageCipher } from '../../services/e2ee';
+import { MessageCipher, BackupManager, KeyManager } from '../../services/e2ee';
+import BackupRestoreModal from '../../components/e2ee/BackupRestoreModal';
+import BackupSetupModal from '../../components/e2ee/BackupSetupModal';
 import {
   isTriviaChallengeMessage,
   isScoreSubmissionMessage,
@@ -95,19 +100,35 @@ interface ChatListScreenProps {
 }
 
 const PopoverMenu = ({ 
-  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect, onSettings, onAppUpdate, onShareApp
+  visible, onClose, onNewGroup, onClearAll, onProfile, onLogout, onSelect, onSettings, onAppUpdate, onShareApp, onChatBackup, onAppTour
 }: { 
   visible: boolean, onClose: () => void, onNewGroup: () => void, onClearAll: () => void,
   onProfile: () => void, onLogout: () => void, onSelect: () => void,
-  onSettings: () => void, onAppUpdate: () => void, onShareApp: () => void
+  onSettings: () => void, onAppUpdate: () => void, onShareApp: () => void, onChatBackup: () => void,
+  onAppTour?: () => void
 }) => {
   const { hasUpdate } = useUpdateInfo();
   const { theme, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
+
+  const topOffset = (StatusBar.currentHeight || insets.top || 0) + 50;
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1}>
-        <View style={s.popover}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent={true}
+      onRequestClose={onClose}
+    >
+      <TouchableOpacity
+        style={s.popoverBackdrop}
+        onPress={onClose}
+        activeOpacity={1}
+      >
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
+        <View style={[s.popover, { top: topOffset }]} onStartShouldSetResponder={() => true}>
           <TouchableOpacity style={s.popoverItem} onPress={() => { onClose(); onAppUpdate(); }}>
             <Icon name="download-outline" size={20} color={theme.textPrimary} />
             <Text style={s.popoverText}>App Update</Text>
@@ -137,6 +158,16 @@ const PopoverMenu = ({
             <Icon name="share-social-outline" size={20} color={theme.textPrimary} />
             <Text style={s.popoverText}>Share App</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={s.popoverItem} onPress={() => { onClose(); onChatBackup(); }}>
+            <Icon name="shield-checkmark-outline" size={20} color="#10B981" />
+            <Text style={s.popoverText}>Chat Backup</Text>
+          </TouchableOpacity>
+          {onAppTour && (
+            <TouchableOpacity style={s.popoverItem} onPress={() => { onClose(); onAppTour(); }}>
+              <Icon name="compass-outline" size={20} color={theme.textPrimary} />
+              <Text style={s.popoverText}>App Tour</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={s.popoverItem} onPress={() => { onClose(); onSettings(); }}>
             <Icon name="settings-outline" size={20} color={theme.textPrimary} />
             <Text style={s.popoverText}>Settings</Text>
@@ -193,9 +224,30 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
     }
   } catch {}
 
-  const message_type = typeof lastMessage.message_type === 'string' ? lastMessage.message_type : '';
+  let message_type = typeof lastMessage.message_type === 'string' ? lastMessage.message_type : '';
   const rawContent = lastMessage.content;
-  const content = typeof rawContent === 'string' ? rawContent : (rawContent ? JSON.stringify(rawContent) : '');
+  let content = typeof rawContent === 'string' ? rawContent : (rawContent ? JSON.stringify(rawContent) : '');
+
+  // Extract clean text if content is wrapped in raw JSON envelope (e.g. {"content":"hy", "message_type":"text"})
+  if (typeof content === 'string' && content.trim().startsWith('{') && content.trim().endsWith('}')) {
+    try {
+      const parsed = JSON.parse(content.trim());
+      if (parsed && typeof parsed === 'object') {
+        if (!parsed.ciphertext && !parsed.senderIdentityKey) {
+          if (typeof parsed.content === 'string') {
+            content = parsed.content;
+          } else if (typeof parsed.text === 'string') {
+            content = parsed.text;
+          } else if (typeof parsed.message === 'string') {
+            content = parsed.message;
+          }
+          if (parsed.message_type && !message_type) {
+            message_type = parsed.message_type;
+          }
+        }
+      }
+    } catch {}
+  }
 
   if (
     message_type === 'lottie_sticker' || 
@@ -219,15 +271,29 @@ const renderLastMessageContent = (lastMessage: Conversation['last_message']) => 
     content.includes('"senderIdentityKey"') ||
     isEncryptedContent(content)
   ) {
+    // 1. Try SQLite cache by server message ID (plaintext stored on send/receive)
     if (lastMessage.id) {
       try {
         const local = localDatabase.getMessageById(lastMessage.id);
         if (local && local.content && typeof local.content === 'string' && !isEncryptedContent(local.content) && !local.content.includes('Unable to decrypt')) {
+          // If it's a media type, show icon not the URL/path
+          const mt = local.message_type || message_type;
+          if (mt === 'image') return <><Icon name="image" size={14} color="#666" /> Photo</>;
+          if (mt === 'video') return <><Icon name="videocam" size={14} color="#666" /> Video</>;
+          if (mt === 'audio') return <><Icon name="mic" size={14} color="#666" /> Audio</>;
+          if (mt === 'lottie_sticker' || mt === 'sticker') return <><Icon name="image-outline" size={14} color="#666" /> Sticker</>;
           return local.content;
         }
       } catch {}
     }
-    return <><Icon name="lock-closed-outline" size={13} color="#888" /> Encrypted message</>;
+    // 2. Fallback: if message_type is known, show icon — never show raw ciphertext
+    if (message_type === 'image') return <><Icon name="image" size={14} color="#666" /> Photo</>;
+    if (message_type === 'video') return <><Icon name="videocam" size={14} color="#666" /> Video</>;
+    if (message_type === 'audio') return <><Icon name="mic" size={14} color="#666" /> Audio</>;
+    if (message_type === 'lottie_sticker' || message_type === 'sticker') return <><Icon name="image-outline" size={14} color="#666" /> Sticker</>;
+    if (message_type === 'document') return <><Icon name="document-text" size={14} color="#666" /> Document</>;
+    // 3. Unknown type with encrypted content — show lock
+    return <><Icon name="lock-closed-outline" size={13} color="#888" /> Message</>;
   }
   
   switch (message_type) {
@@ -309,12 +375,13 @@ interface ConversationItemRowProps {
   theme: any;
   isDark: boolean;
   s: any;
+  typingUserName?: string | null;
   onPress: () => void;
   onLongPress: () => void;
   onAvatarPress: () => void;
 }
 
-const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
+const ConversationItemRowComponent: React.FC<ConversationItemRowProps> = ({
   item,
   isSelected,
   selectionMode,
@@ -324,6 +391,7 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
   theme,
   isDark,
   s,
+  typingUserName,
   onPress,
   onLongPress,
   onAvatarPress,
@@ -348,11 +416,15 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
 
   let isOnline = false;
   if (isFriend && !item.is_group && item.other_user) {
-    const isPrivacyNobody = item.other_user.last_seen_privacy === 'nobody';
+    const isPrivacyNobody = (item.other_user as any)?.last_seen_privacy === 'nobody';
     if (!isPrivacyNobody) {
-      const lastSeen = new Date(item.other_user.last_seen).getTime();
-      const now = Date.now();
-      isOnline = (now - lastSeen) < 120000;
+      if (item.other_user.last_seen === null) {
+        isOnline = true;
+      } else {
+        const lastSeen = new Date(item.other_user.last_seen).getTime();
+        const now = Date.now();
+        isOnline = (now - lastSeen) < 120000;
+      }
     }
   }
 
@@ -377,7 +449,6 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
           Platform.OS === 'ios' && pressed && { opacity: 0.75 },
         ]}
         unstable_pressDelay={0}
-        delayPressIn={0}
         pressRetentionOffset={{ top: 20, left: 20, right: 20, bottom: 20 }}
         onPress={onPress}
         onLongPress={onLongPress}
@@ -406,29 +477,29 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
           </View>
         )}
 
-        <View style={{ position: 'relative', width: 50, height: 50, justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ position: 'relative', width: 48, height: 48, justifyContent: 'center', alignItems: 'center' }}>
           {hasStatus && (
             hasUnseen ? (
               <LinearGradient
-                colors={['#ff4d6d', '#4597f5f6']}
+                colors={['#0F62FE', '#00E5FF', '#10B981']}
                 start={{ x: 0, y: 1 }}
                 end={{ x: 1, y: 0 }}
                 style={{
                   position: 'absolute',
-                  width: 50,
-                  height: 50,
-                  borderRadius: 25,
+                  width: 47,
+                  height: 47,
+                  borderRadius: 23.5,
                 }}
               />
             ) : (
               <View
                 style={{
                   position: 'absolute',
-                  width: 50,
-                  height: 50,
-                  borderRadius: 25,
-                  borderWidth: 2,
-                  borderColor: '#ccc',
+                  width: 47,
+                  height: 47,
+                  borderRadius: 23.5,
+                  borderWidth: 1.5,
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.25)' : '#D1D5DB',
                 }}
               />
             )
@@ -446,51 +517,69 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
               width: 44,
               height: 44,
               borderRadius: 22,
+              borderWidth: 0,
             }}
             onPress={selectionMode ? onPress : onAvatarPress}
           />
           {!item.is_group && isOnline && <View style={s.onlineDot} />}
         </View>
 
-        <View style={s.content}>
-          <Text style={s.name}>
-            {String(
-              item.is_group
+        <View style={s.centerContent}>
+          <View style={s.titleRow}>
+            <Text style={s.name} numberOfLines={1}>
+              {item.is_group
                 ? item.name || 'Group'
-                : item.other_user?.display_name || item.other_user?.email || 'User' || ''
-            )}
-          </Text>
-          <View style={s.lastMessageRow}>
-            {item.last_message && item.last_message.sender_id === user?.id && renderMessageTicks(item.last_message)}
-            <Text style={s.lastMessage} numberOfLines={1}>
-              {!item.is_group &&
-              item.message_request_status === 'pending' &&
-              item.message_request_sender_id === user?.id ? (
-                <>
-                  <Icon name="hourglass-outline" size={14} color="#666" /> Message request pending
-                </>
-              ) : !item.is_group &&
-                item.message_request_status === 'rejected' &&
-                item.message_request_sender_id === user?.id ? (
-                <>
-                  <Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined
-                </>
-              ) : !item.is_group &&
-                item.message_request_status === 'accepted' &&
-                item.message_request_sender_id === user?.id &&
-                item.last_message === null ? (
-                <>
-                  <Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved
-                </>
-              ) : item.is_group && item.last_message === null ? (
-                <>
-                  <Icon name="chatbubble-outline" size={13} color={isDark ? '#64748B' : '#94A3B8'} /> Tap to start
-                  chatting
-                </>
-              ) : (
-                renderLastMessageContent(item.last_message)
-              )}
+                : item.other_user?.display_name || item.other_user?.email || 'User'}
             </Text>
+          </View>
+          <View style={s.messageRow}>
+            {typingUserName ? (
+              <Text
+                style={[
+                  s.lastMessage,
+                  { color: '#10B981', fontWeight: '600' },
+                ]}
+                numberOfLines={1}
+              >
+                {item.is_group ? `${typingUserName} is typing...` : 'typing...'}
+              </Text>
+            ) : (
+              <Text
+                style={[
+                  s.lastMessage,
+                  item.unread_count > 0 && s.unreadMessage,
+                ]}
+                numberOfLines={1}
+              >
+                {!item.is_group &&
+                item.message_request_status === 'pending' &&
+                item.message_request_sender_id === user?.id ? (
+                  <>
+                    <Icon name="hourglass-outline" size={14} color="#666" /> Message request pending
+                  </>
+                ) : !item.is_group &&
+                  item.message_request_status === 'rejected' &&
+                  item.message_request_sender_id === user?.id ? (
+                  <>
+                    <Icon name="close-circle-outline" size={14} color="#F44336" /> Message request declined
+                  </>
+                ) : !item.is_group &&
+                  item.message_request_status === 'accepted' &&
+                  item.message_request_sender_id === user?.id &&
+                  item.last_message === null ? (
+                  <>
+                    <Icon name="checkmark-circle-outline" size={14} color="#4CAF50" /> Message request approved
+                  </>
+                ) : item.is_group && item.last_message === null ? (
+                  <>
+                    <Icon name="chatbubble-outline" size={13} color={isDark ? '#64748B' : '#94A3B8'} /> Tap to start
+                    chatting
+                  </>
+                ) : (
+                  renderLastMessageContent(item.last_message)
+                )}
+              </Text>
+            )}
           </View>
         </View>
 
@@ -506,6 +595,23 @@ const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
     </Animated.View>
   );
 };
+
+const ConversationItemRow = React.memo<ConversationItemRowProps>(
+  ConversationItemRowComponent,
+  (prev, next) => {
+    return (
+      prev.isSelected === next.isSelected &&
+      prev.selectionMode === next.selectionMode &&
+      prev.isDark === next.isDark &&
+      prev.theme === next.theme &&
+      prev.item === next.item &&
+      prev.statusGroups === next.statusGroups &&
+      prev.friends === next.friends &&
+      prev.user?.id === next.user?.id &&
+      prev.typingUserName === next.typingUserName
+    );
+  }
+);
 
 export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
@@ -528,27 +634,33 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
-      const cached = localDatabase.getConversations();
+      const cached = localDatabase.getConversations(true);
       return cached && cached.length > 0 ? cached : [];
     } catch {
       return [];
     }
   });
+
+  const [typingMap, setTypingMap] = useState<Record<number, string>>({});
+  const typingTimeoutsRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(typingTimeoutsRef.current).forEach(t => clearTimeout(t));
+    };
+  }, []);
   const [statusGroups, setStatusGroups] = useState<UserStatusGroup[]>([]);
   const initialTabParam = route?.params?.initialTab || route?.params?.tab;
   const [activeTab, setActiveTab] = useState<'all' | 'groups' | 'pending' | 'locked'>(
-    initialTabParam === 'pending' || initialTabParam === 'groups' || initialTabParam === 'locked'
+    initialTabParam === 'pending' || initialTabParam === 'groups'
       ? initialTabParam
       : 'all'
   );
-  const [lockedIds, setLockedIds] = useState<number[]>(() => {
-    try {
-      return localDatabase.getLockedConversationIds() || [];
-    } catch {
-      return [];
-    }
-  });
+  const [lockedIds, setLockedIds] = useState<number[]>([]);
   const [isLockedAuthenticated, setIsLockedAuthenticated] = useState<boolean>(false);
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinModalMode, setPinModalMode] = useState<'setup' | 'verify'>('verify');
+  const [pendingActionAfterPin, setPendingActionAfterPin] = useState<(() => void) | null>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const chevronAnim = useRef(new Animated.Value(0)).current;
   const arrowRotation = chevronAnim.interpolate({
@@ -560,7 +672,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const [friendRequestsCount, setFriendRequestsCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(() => {
     try {
-      const cached = localDatabase.getConversations();
+      const cached = localDatabase.getConversations(true);
       return !cached || cached.length === 0;
     } catch {
       return true;
@@ -570,6 +682,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const [menuVisible, setMenuVisible] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [restoreModalVisible, setRestoreModalVisible] = useState(false);
+  const [backupSetupModalVisible, setBackupSetupModalVisible] = useState(false);
   const { user, logout } = useAuth();
   const updateInfo = useUpdateInfo();
   const insets = useSafeAreaInsets();
@@ -580,57 +694,293 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
 
-  const [containerHeight, setContainerHeight] = useState<number | null>(null);
-  const searchRef = useRef<TextInput>(null);
-  const userTouchedSearch = useRef(false);
+  const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
+  const [isMusicPlaying, setIsMusicPlaying] = useState<boolean>(() => Boolean((global as any).isMusicPlaying));
+  const spinValue = useRef(new Animated.Value(0)).current;
+  const [myStatuses, setMyStatuses] = useState<Status[]>([]);
 
-  // ── Auto-reset countdown after 1 s of idle typing ───────────────────────────
-  const [countdownActive, setCountdownActive] = useState(false);
-  const [countdownValue, setCountdownValue] = useState(3);
-  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const clearCountdown = () => {
-    setCountdownActive(false);
-    setCountdownValue(3);
-    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-  };
-
-  const startCountdown = () => {
-    setCountdownActive(true);
-    setCountdownValue(3);
-    let tick = 3;
-    countdownIntervalRef.current = setInterval(() => {
-      tick -= 1;
-      setCountdownValue(tick);
-      if (tick <= 0) {
-        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+  useFocusEffect(
+    useCallback(() => {
+      userTouchedSearch.current = false;
+      setActiveRoomCode((global as any).activeMusicRoomCode || null);
+      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
+      if (user?.id) {
+        StatusService.getStatuses().then(statuses => {
+          if (Array.isArray(statuses)) {
+            setMyStatuses(statuses.filter((s: Status) => s.user_id === user.id));
+          }
+        }).catch(() => {});
       }
-    }, 1000);
-    countdownTimerRef.current = setTimeout(() => {
-      setSearchQuery('');
-      setCountdownActive(false);
-      setCountdownValue(3);
-    }, 3000);
+    }, [user?.id])
+  );
+
+  const [statusGalleryVisible, setStatusGalleryVisible] = useState(false);
+
+  const handleUploadStatus = useCallback(() => {
+    setStatusGalleryVisible(true);
+  }, []);
+
+  const handleStatusGallerySelect = useCallback((assets: GalleryAsset[]) => {
+    setStatusGalleryVisible(false);
+    if (assets && assets.length > 0) {
+      const asset = assets[0];
+      if (!asset?.uri) return;
+      navigation.navigate('StatusEditor', {
+        mediaUri: asset.uri,
+        mediaType: asset.type?.startsWith('video') ? 'video' : 'photo',
+        source: 'gallery',
+      });
+    }
+  }, [navigation]);
+
+  const handleProfileAvatarPress = useCallback(() => {
+    if (myStatuses.length > 0) {
+      navigation.navigate('StatusViewer', {
+        statuses: myStatuses,
+        initialIndex: 0,
+        currentUserId: user?.id,
+        isOwn: true,
+      });
+    } else {
+      navigation.navigate('Profile');
+    }
+  }, [myStatuses, navigation, user?.id]);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      setActiveRoomCode((global as any).activeMusicRoomCode || null);
+      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
+    };
+    const handlePlaybackState = (playing: boolean) => {
+      setIsMusicPlaying(Boolean(playing));
+    };
+
+    const subMinimize = DeviceEventEmitter.addListener('minimize_music_room', handleVisibility);
+    const subOpen = DeviceEventEmitter.addListener('open_music_room', handleVisibility);
+    const subClose = DeviceEventEmitter.addListener('close_music_room', () => {
+      setActiveRoomCode(null);
+      setIsMusicPlaying(false);
+    });
+    const subPlayback = DeviceEventEmitter.addListener('music_playback_state_changed', handlePlaybackState);
+
+    let spinAnimation: Animated.CompositeAnimation | null = null;
+    if (activeRoomCode) {
+      spinValue.setValue(0);
+      spinAnimation = Animated.loop(
+        Animated.timing(spinValue, {
+          toValue: 1,
+          duration: 3000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      );
+      spinAnimation.start();
+    } else {
+      spinValue.setValue(0);
+    }
+
+    return () => {
+      subMinimize.remove();
+      subOpen.remove();
+      subClose.remove();
+      subPlayback.remove();
+      if (spinAnimation) spinAnimation.stop();
+    };
+  }, [activeRoomCode]);
+
+  const spin = spinValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  const [isKeyboardActive, setIsKeyboardActive] = useState(false);
+  // Expandable entertainment hub (Disco Ball + Trivia Book + Add Friend) - initially opened
+  const [isHubExpanded, setIsHubExpanded] = useState(true);
+  const wasExpandedBeforeKeyboard = useRef(true);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      if (searchRef.current?.isFocused()) {
+        setIsKeyboardActive(true);
+        wasExpandedBeforeKeyboard.current = isHubExpanded;
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setIsHubExpanded(false);
+      }
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      if (isKeyboardActive) {
+        setIsKeyboardActive(false);
+        searchRef.current?.blur();
+        if (wasExpandedBeforeKeyboard.current) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsHubExpanded(true);
+        }
+      }
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [isKeyboardActive, isHubExpanded]);
+
+  // ── Onboarding tour ────────────────────────────────────────────────────────
+  const ONBOARDING_KEY = `dme_onboarding_done_v1_${user?.id || 'default'}`;
+  const [tourVisible, setTourVisible] = useState(false);
+  const [tourRequested, setTourRequested] = useState(false);
+  const [tourTargets, setTourTargets] = useState<Partial<Record<TourStepKey, TourTarget>>>({});
+  const fabRef = useRef<View>(null);
+  const playBtnRef = useRef<View>(null);
+  const menuBtnRef = useRef<View>(null);
+  const triviaBtnRef = useRef<View>(null);
+
+  const measureRef = (ref: React.RefObject<View>, key: TourStepKey) => {
+    return new Promise<void>((resolve) => {
+      let attempts = 0;
+      const tryMeasure = () => {
+        if (!ref.current) {
+          if (attempts < 10) {
+            attempts++;
+            setTimeout(tryMeasure, 120);
+          } else {
+            resolve();
+          }
+          return;
+        }
+        ref.current.measure((x, y, width, height, pageX, pageY) => {
+          if (width > 0 && height > 0) {
+            setTourTargets((prev) => ({
+              ...prev,
+              [key]: { key, x: pageX, y: pageY, width, height } as TourTarget,
+            }));
+            resolve();
+          } else if (attempts < 10) {
+            attempts++;
+            setTimeout(tryMeasure, 120);
+          } else {
+            console.warn(`Failed to measure ${key} after 10 attempts`);
+            resolve();
+          }
+        });
+      };
+      tryMeasure();
+    });
   };
 
-  // Reset idle timer on every keystroke
-  useEffect(() => {
-    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    clearCountdown();
-    if (!searchQuery.trim()) return;
-    idleTimerRef.current = setTimeout(() => {
-      startCountdown();
-    }, 1000);
-    return () => {
-      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  const measureAllTargets = async () => {
+    try {
+      setIsHubExpanded(true);
+      DeviceEventEmitter.emit('request_status_tab_measure');
 
-  // ── Search bar pink glow border animation ─────────────────────────────────
+      await new Promise(r => setTimeout(r, 100));
+
+      await Promise.all([
+        measureRef(fabRef, 'fab'),
+        measureRef(triviaBtnRef, 'trivia'),
+        measureRef(playBtnRef, 'play'),
+              ]);
+
+      // Fallback for statusTab if event didn't arrive
+      setTimeout(() => {
+        setTourTargets(prev => {
+          if (prev.statusTab) return prev;
+          const statusW = 32;
+          const statusH = 32;
+          const screenW = Dimensions.get('window').width;
+          const screenH = Dimensions.get('window').height;
+          const statusX = (screenW - statusW) / 2;
+          const statusY = screenH - (64 + (insets.bottom || 48)) + 6;
+          return {
+            ...prev,
+            statusTab: { key: 'statusTab', x: statusX, y: statusY, width: statusW, height: statusH },
+          };
+        });
+      }, 300);
+    } catch (error) {
+      console.error('Error measuring targets:', error);
+    }
+  };
+
+  const startOnboardingTour = useCallback(() => {
+    setIsHubExpanded(true);
+    setTourRequested(true);
+    setTimeout(() => {
+      measureAllTargets();
+    }, 200);
+  }, [insets.bottom]);
+
+  // Check if first launch — only show the guidance tour once for brand new registered users, never on comeback/reinstall
+  useEffect(() => {
+    if (!user?.id) return;
+    AsyncStorage.getItem(ONBOARDING_KEY).then(async (val) => {
+      if (val) return; // Tour already seen
+
+      // Check if user is a brand new user who just completed initial profile setup
+      const isFreshSignup = await AsyncStorage.getItem('dme_is_fresh_signup');
+      if (isFreshSignup === 'true') {
+        await AsyncStorage.removeItem('dme_is_fresh_signup');
+        startOnboardingTour();
+      } else {
+        // Returning user logging in on fresh install or comeback — suppress tour permanently
+        await AsyncStorage.setItem(ONBOARDING_KEY, 'true');
+      }
+    });
+  }, [user?.id, startOnboardingTour]);
+
+  useEffect(() => {
+    const replaySub = DeviceEventEmitter.addListener('replay_onboarding_tour', startOnboardingTour);
+    return () => replaySub.remove();
+  }, [startOnboardingTour]);
+
+
+
+  const handleTourFinished = () => {
+    setTourVisible(false);
+    setTourRequested(false);
+    AsyncStorage.setItem(ONBOARDING_KEY, 'true');
+  };
+
+  // 1. Listen for the status tab's real position (sent from MainTabs)
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('status_tab_measured', (data) => {
+      setTourTargets(prev => ({
+        ...prev,
+        statusTab: { key: 'statusTab', x: data.x, y: data.y, width: data.width, height: data.height },
+      }));
+    });
+    return () => sub.remove();
+  }, []);
+
+  // 2. Once all 5 targets are measured and tour was requested, show the tour
+  useEffect(() => {
+    const allReady = (['fab', 'trivia', 'play', 'statusTab'] as TourStepKey[]).every(k => tourTargets[k]);
+    if (allReady && tourRequested) {
+      setTourVisible(true);
+      setTourRequested(false);
+    }
+  }, [tourTargets, tourRequested]);
+
+  const handleDownloadUpdate = async (downloadUrl: string) => {
+    try {
+      setIsDownloadingUpdate(true);
+      setDownloadProgress(0);
+      await downloadAndInstallAPK(downloadUrl, (received, total) => {
+        if (total > 0) {
+          setDownloadProgress(Math.round((received / total) * 100));
+        }
+      });
+    } catch (error) {
+      console.error('Update download/install failed', error);
+      Alert.alert('Update Failed', 'Failed to download or install the app update. Please try again.');
+    } finally {
+      setIsDownloadingUpdate(false);
+    }
+  };
+
+  // ── Search bar pink glow border animation ─────────────────────────────
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchBarWidth, setSearchBarWidth] = useState(350);
   const borderTranslateX = useRef(new Animated.Value(0)).current;
@@ -683,357 +1033,19 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     });
   };
 
-  const [isKeyboardActive, setIsKeyboardActive] = useState(false);
-
-  useEffect(() => {
-    const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
-      if (searchRef.current?.isFocused()) {
-        setIsKeyboardActive(true);
-      }
-    });
-    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
-      if (isKeyboardActive) {
-        setIsKeyboardActive(false);
-        searchRef.current?.blur();
-      }
-    });
-
-    return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, [isKeyboardActive]);
-
-  // ── Onboarding tour ────────────────────────────────────────────────────────
-  const ONBOARDING_KEY = `dme_onboarding_done_v1_${user?.id || 'default'}`;
-  const [tourVisible, setTourVisible] = useState(false);
-  const [tourTargets, setTourTargets] = useState<Partial<Record<TourStepKey, TourTarget>>>({});
-  const fabRef = useRef<View>(null);
-  const playBtnRef = useRef<View>(null);
-  const menuBtnRef = useRef<View>(null);
-  const triviaBtnRef = useRef<View>(null);
-
-  // Check if first launch
-  useEffect(() => {
-    if (!user?.id) return;
-    AsyncStorage.getItem(ONBOARDING_KEY).then(val => {
-      if (!val) {
-        // Delay slightly so the layout is fully settled before we measure
-        setTimeout(() => measureAllTargets(), 650);
-      }
-    });
-  }, [user?.id]);
-
-  const measureRef = (ref: React.RefObject<View>, key: TourStepKey) => {
-    return new Promise<void>((resolve) => {
-      let attempts = 0;
-      const tryMeasure = () => {
-        if (!ref.current) {
-          resolve();
-          return;
-        }
-        ref.current.measure((x, y, width, height, pageX, pageY) => {
-          if (width > 0 && height > 0) {
-            setTourTargets((prev) => ({
-              ...prev,
-              [key]: { key, x: pageX, y: pageY, width, height } as TourTarget,
-            }));
-            resolve();
-          } else if (attempts < 10) {
-            attempts++;
-            setTimeout(tryMeasure, 150);
-          } else {
-            console.warn(`Failed to measure ${key} after 10 attempts`);
-            resolve();
-          }
-        });
-      };
-      tryMeasure();
-    });
-  };
-
-  const measureAllTargets = async () => {
-    try {
-      await Promise.all([
-        measureRef(fabRef, 'fab'),
-        measureRef(playBtnRef, 'play'),
-        measureRef(menuBtnRef, 'menu'),
-        measureRef(triviaBtnRef, 'trivia'),
-      ]);
-      // statusTab arrives separately via the event listener below
-    } catch (error) {
-      console.error('Error measuring targets:', error);
-    }
-  };
-
-  const handleTourFinished = () => {
-    setTourVisible(false);
-    AsyncStorage.setItem(ONBOARDING_KEY, 'true');
-  };
-
-  // 1. Listen for the status tab's real position (sent from MainTabs)
-  useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('status_tab_measured', (data) => {
-      setTourTargets(prev => ({
-        ...prev,
-        statusTab: { key: 'statusTab', x: data.x, y: data.y, width: data.width, height: data.height },
-      }));
-    });
-    return () => sub.remove();
-  }, []);
-
-  // 2. Once all 5 targets are measured, show the tour
-  useEffect(() => {
-    const allReady = (['fab', 'play', 'menu', 'statusTab', 'trivia'] as TourStepKey[]).every(k => tourTargets[k]);
-    if (allReady && !tourVisible) {
-      setTourVisible(true);
-    }
-  }, [tourTargets]);
-
-  const handleDownloadUpdate = async (downloadUrl: string) => {
-    try {
-      setIsDownloadingUpdate(true);
-      setDownloadProgress(0);
-      await downloadAndInstallAPK(downloadUrl, (received, total) => {
-        if (total > 0) {
-          setDownloadProgress(Math.round((received / total) * 100));
-        }
-      });
-    } catch (error) {
-      console.error('Update download/install failed', error);
-      Alert.alert('Update Failed', 'Failed to download or install the app update. Please try again.');
-    } finally {
-      setIsDownloadingUpdate(false);
-    }
-  };
-
-  const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
-  const [isMusicPlaying, setIsMusicPlaying] = useState<boolean>(() => Boolean((global as any).isMusicPlaying));
-  const spinValue = useRef(new Animated.Value(0)).current;
-
-  useFocusEffect(
-    useCallback(() => {
-      userTouchedSearch.current = false;
-      setActiveRoomCode((global as any).activeMusicRoomCode || null);
-      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
-    }, [])
-  );
-
-  useEffect(() => {
-    const handleVisibility = () => {
-      setActiveRoomCode((global as any).activeMusicRoomCode || null);
-      setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
-    };
-    const handlePlaybackState = (playing: boolean) => {
-      setIsMusicPlaying(Boolean(playing));
-    };
-
-    const subMinimize = DeviceEventEmitter.addListener('minimize_music_room', handleVisibility);
-    const subOpen = DeviceEventEmitter.addListener('open_music_room', handleVisibility);
-    const subClose = DeviceEventEmitter.addListener('close_music_room', () => {
-      setActiveRoomCode(null);
-      setIsMusicPlaying(false);
-    });
-    const subPlayback = DeviceEventEmitter.addListener('music_playback_state_changed', handlePlaybackState);
-
-    return () => {
-      subMinimize.remove();
-      subOpen.remove();
-      subClose.remove();
-      subPlayback.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    let animation: Animated.CompositeAnimation | null = null;
-    if (activeRoomCode && isMusicPlaying) {
-      animation = Animated.loop(
-        Animated.timing(spinValue, {
-          toValue: 1,
-          duration: 4000,
-          useNativeDriver: true,
-        })
-      );
-      animation.start();
-    } else {
-      spinValue.setValue(0);
-    }
-    return () => {
-      if (animation) {
-        animation.stop();
-      }
-    };
-  }, [activeRoomCode, isMusicPlaying]);
-
-  const spin = spinValue.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '360deg'],
-  });
-
   const [previewData, setPreviewData] = useState<{
     visible: boolean; uri: string | null; isGroup: boolean; displayName: string; sticker: string | null;
   }>({
     visible: false, uri: null, isGroup: false, displayName: '', sticker: null,
   });
 
-  const conversationsRef = useRef<Conversation[]>([]);
-  conversationsRef.current = conversations;
-
-  const fetchRealLastMessage = useCallback(async (conversationId: number) => {
-    try {
-      const msgs = await chatAPI.getMessages(conversationId);
-      const msgsList = Array.isArray(msgs) ? msgs : (msgs?.results || []);
-      const realMsgs = msgsList.filter(
-        (m: any) => !isTriviaChallengeMessage(m) && !isScoreSubmissionMessage(m)
-      );
-      if (realMsgs.length > 0) {
-        const latestReal = realMsgs[realMsgs.length - 1];
-        const formattedLastMsg = {
-          id: latestReal.id || 0,
-          content: latestReal.content || '',
-          message_type: latestReal.message_type || 'text',
-          created_at: latestReal.created_at,
-          sender_id: latestReal.sender?.id || latestReal.sender_id || 0,
-          status: latestReal.status || (latestReal.is_read ? 'read' : 'sent'),
-        };
-        setConversations(prev => {
-          const updated = prev.map(c =>
-            c.id === conversationId ? { ...c, last_message: formattedLastMsg } : c
-          );
-          localDatabase.saveConversations(updated);
-          return updated;
-        });
-        localDatabase.saveMessages(msgsList, conversationId);
-      }
-    } catch (err) {
-      console.warn('Could not fetch real last message for conv', conversationId, err);
-    }
-  }, []);
-
-  const cleanConversationLastMessage = useCallback(
-    (conv: Conversation): Conversation => {
-      if (!conv.last_message) {
-        const inMemory = conversationsRef.current.find(c => c.id === conv.id);
-        if (
-          inMemory?.last_message &&
-          !isTriviaChallengeMessage(inMemory.last_message) &&
-          !isScoreSubmissionMessage(inMemory.last_message)
-        ) {
-          return { ...conv, last_message: inMemory.last_message };
-        }
-        try {
-          const cachedConvs = localDatabase.getConversations();
-          const cached = cachedConvs.find(c => c.id === conv.id);
-          if (
-            cached?.last_message &&
-            !isTriviaChallengeMessage(cached.last_message) &&
-            !isScoreSubmissionMessage(cached.last_message)
-          ) {
-            return { ...conv, last_message: cached.last_message };
-          }
-        } catch {}
-        return conv;
-      }
-
-      if (isTriviaChallengeMessage(conv.last_message) || isScoreSubmissionMessage(conv.last_message)) {
-        if (conv.last_message.content) {
-          syncChallengeFromMessage(conv.last_message.content, conv.id);
-        }
-
-        // 1. Check in-memory previous conversations state
-        const existingConv = conversationsRef.current.find(c => c.id === conv.id);
-        if (
-          existingConv?.last_message &&
-          !isTriviaChallengeMessage(existingConv.last_message) &&
-          !isScoreSubmissionMessage(existingConv.last_message)
-        ) {
-          return {
-            ...conv,
-            last_message: existingConv.last_message,
-          };
-        }
-
-        // 2. Check local database cached messages
-        try {
-          const recentMsgs = localDatabase.getRecentMessages(conv.id, 30);
-          const realMsgs = recentMsgs.filter(
-            m => !isTriviaChallengeMessage(m) && !isScoreSubmissionMessage(m)
-          );
-          if (realMsgs.length > 0) {
-            const latestReal = realMsgs[realMsgs.length - 1];
-            return {
-              ...conv,
-              last_message: {
-                id: latestReal.id || 0,
-                content: latestReal.content || '',
-                message_type: latestReal.message_type || 'text',
-                created_at: latestReal.created_at,
-                sender_id: latestReal.sender?.id || latestReal.sender_id || 0,
-                status: latestReal.status || (latestReal.is_read ? 'read' : 'sent'),
-              },
-            };
-          }
-        } catch {}
-
-        // 3. Check local database cached conversation
-        try {
-          const cachedConvs = localDatabase.getConversations();
-          const cached = cachedConvs.find(c => c.id === conv.id);
-          if (
-            cached?.last_message &&
-            !isTriviaChallengeMessage(cached.last_message) &&
-            !isScoreSubmissionMessage(cached.last_message)
-          ) {
-            return {
-              ...conv,
-              last_message: cached.last_message,
-            };
-          }
-        } catch {}
-
-        // 4. Trigger asynchronous fetch of actual messages from server to restore real message
-        fetchRealLastMessage(conv.id);
-
-        return {
-          ...conv,
-          last_message: null,
-        };
-      }
-
-      // If last_message content is encrypted, resolve plaintext from local SQLite
-      if (conv.last_message && conv.last_message.content && MessageCipher.isEncrypted(conv.last_message.content)) {
-        try {
-          const local = conv.last_message.id ? localDatabase.getMessageById(conv.last_message.id) : null;
-          if (local && local.content && !MessageCipher.isEncrypted(local.content) && !local.content.includes('Unable to decrypt')) {
-            return {
-              ...conv,
-              last_message: {
-                ...conv.last_message,
-                content: local.content,
-              },
-            };
-          }
-          const recentMsgs = localDatabase.getRecentMessages(conv.id, 5);
-          const latestReal = recentMsgs.find(m => m.content && !MessageCipher.isEncrypted(m.content) && !m.content.includes('Unable to decrypt'));
-          if (latestReal && latestReal.content) {
-            return {
-              ...conv,
-              last_message: {
-                ...conv.last_message,
-                content: latestReal.content,
-              },
-            };
-          }
-        } catch {}
-      }
-
-      return conv;
-    },
-    [fetchRealLastMessage]
-  );
+  const pendingReloadRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
-    if (isLoadingRef.current) return;
+    if (isLoadingRef.current) {
+      pendingReloadRef.current = true;
+      return;
+    }
     isLoadingRef.current = true;
     try {
       const [convs, statuses, msgReqs, friendReqs, friendsList] = await Promise.all([
@@ -1047,9 +1059,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       if (Array.isArray(convs)) conversationsArray = convs;
       else if (convs?.results) conversationsArray = convs.results;
       conversationsArray = conversationsArray.filter(c => !deletedConversationIdsRef.current.has(c.id));
-      
-      // Clean contest/score submission messages so chat list stays 100% clean
-      conversationsArray = conversationsArray.map(cleanConversationLastMessage);
 
       // Cache fresh data to local DB
       localDatabase.saveConversations(conversationsArray);
@@ -1060,6 +1069,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           .map(c => c.other_user!.id)
       );
       setConversations(conversationsArray);
+      if (Array.isArray(statuses) && user?.id) {
+        setMyStatuses(statuses.filter((s: Status) => s.user_id === user.id));
+      }
       setStatusGroups(StatusService.groupByUser(statuses.filter(s => s.user_id !== user?.id && directUserIds.has(s.user_id))));
 
       if (Array.isArray(msgReqs)) {
@@ -1068,173 +1080,226 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       const receivedReqs = Array.isArray(friendReqs?.received) ? friendReqs.received : [];
       setFriendRequestsCount(receivedReqs.length);
       setFriends(Array.isArray(friendsList) ? friendsList : (friendsList?.results || []));
+    } catch (e) {
+      console.warn('Failed to load conversations', e);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
       isLoadingRef.current = false;
+      if (pendingReloadRef.current) {
+        pendingReloadRef.current = false;
+        loadConversations();
+      }
     }
-  }, [user?.id, cleanConversationLastMessage]);
+  }, [user?.id]);
 
+  // Initial load on mount and every time screen gains focus
   useEffect(() => {
     loadConversations();
-    websocketService.connectToNotifications().catch(err => console.error('Notification connection failed:', err));
-
-    const unsubscribe = websocketService.onMessage((message) => {
-        if (message.type === 'new_message_summary') {
-            const newMessage = message.data;
-            if (isTriviaChallengeMessage(newMessage) || isScoreSubmissionMessage(newMessage)) {
-                if (newMessage.content) {
-                    syncChallengeFromMessage(newMessage.content, newMessage.conversation);
-                }
-                return;
-            }
-            let resolvedContent = newMessage.content;
-            if (MessageCipher.isEncrypted(resolvedContent)) {
-                try {
-                    const local = localDatabase.getMessageById(newMessage.id);
-                    if (local && local.content && !MessageCipher.isEncrypted(local.content) && !local.content.includes('Unable to decrypt')) {
-                        resolvedContent = local.content;
-                    }
-                } catch {}
-            }
-            setConversations(prev => {
-                const existing = prev.find(c => c.id === newMessage.conversation);
-                if (existing) {
-                    const isOwnMessage = newMessage.sender.id === user?.id;
-                    const isEdit = existing.last_message?.id === newMessage.id;
-                    const isReaction = newMessage.is_reaction === true;
-                    const updated = { 
-                        ...existing, 
-                        last_message: {
-                            id: newMessage.id,
-                            content: resolvedContent,
-                            message_type: newMessage.message_type,
-                            created_at: newMessage.created_at,
-                            sender_id: newMessage.sender.id,
-                            status: newMessage.is_read ? 'read' : (newMessage.delivered_at ? 'delivered' : 'sent')
-                        },
-                        unread_count: (isEdit || isReaction)
-                          ? (existing.unread_count || 0)
-                          : (isOwnMessage ? (existing.unread_count || 0) : (existing.unread_count || 0) + 1)
-                    };
-                    // Save to local cache
-                    localDatabase.saveConversation(updated);
-                    return [updated, ...prev.filter(c => c.id !== newMessage.conversation)];
-                }
-                loadConversations();
-                return prev;
-            });
-        } else if (message.type === 'delivered') {
-            const { message_ids } = message.data;
-            if (message_ids && Array.isArray(message_ids)) {
-                setConversations(prev => {
-                    return prev.map(c => {
-                        if (c.last_message && message_ids.includes(c.last_message.id) && c.last_message.sender_id === user?.id) {
-                            const updated = {
-                                ...c,
-                                last_message: { ...c.last_message, status: 'delivered' as const }
-                            };
-                            localDatabase.saveConversation(updated);
-                            return updated;
-                        }
-                        return c;
-                    });
-                });
-            }
-        } else if (message.type === 'read_receipt') {
-            const { message_ids } = message.data;
-            if (message_ids && Array.isArray(message_ids)) {
-                setConversations(prev => {
-                    return prev.map(c => {
-                        if (c.last_message && message_ids.includes(c.last_message.id) && c.last_message.sender_id === user?.id) {
-                            const updated = {
-                                ...c,
-                                last_message: { ...c.last_message, status: 'read' as const }
-                            };
-                            localDatabase.saveConversation(updated);
-                            return updated;
-                        }
-                        return c;
-                    });
-                });
-            }
-        } else if (message.type === 'message_request_status') {
-            // Update the conversation's message_request_status inline so the
-            // conversation moves between Pending / All / Friends immediately.
-            const { conversation_id, status: reqStatus } = message.data || {};
-            if (conversation_id) {
-                setConversations(prev => {
-                    const exists = prev.some(c => c.id === conversation_id);
-                    if (!exists) {
-                        // Conversation isn't in the list yet (e.g., sender's convo was hidden
-                        // by the receiver-pending filter). Do a full reload to fetch it.
-                        loadConversations();
-                        return prev;
-                    }
-                    return prev.map(c =>
-                        c.id === conversation_id
-                            ? { ...c, message_request_status: reqStatus }
-                            : c
-                    );
-                });
-                // For accepted/rejected, always do a full reload to ensure correct ordering
-                // and friend-status enrichment from the server.
-                if (reqStatus === 'accepted') {
-                    loadConversations();
-                }
-            }
-            // Refresh friends list too — friendship state may have changed.
-            chatAPI.getFriends().then(data => {
-                setFriends(Array.isArray(data) ? data : (data?.results || []));
-            }).catch(() => {});
-        }
-    });
-
-    const readSub = DeviceEventEmitter.addListener('conversation_read', ({ conversationId }) => {
-        const cId = parseInt(conversationId, 10);
-        setConversations(prev => prev.map(c => {
-            if (c.id === cId) {
-                const updated = { ...c, unread_count: 0 };
-                localDatabase.saveConversation(updated);
-                return updated;
-            }
-            return c;
-        }));
-    });
-
-    // When a friend request is accepted from FriendListScreen, reload everything
-    // so the conversation appears in All/Friends with the correct status.
-    const friendAcceptedSub = DeviceEventEmitter.addListener('friend_request_accepted', () => {
-        loadConversations();
-    });
-
-    return () => { 
-        websocketService.disconnectRoom();
-        unsubscribe();
-        readSub.remove();
-        friendAcceptedSub.remove();
-    };
   }, [loadConversations]);
 
-  // Reload conversations whenever the screen comes back into focus
-  // (e.g. after returning from ChatRoomScreen or ProfileScreen)
-  useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', () => {
-      // Defer network call until back navigation transition completes smoothly
-      const timer = setTimeout(() => {
-        InteractionManager.runAfterInteractions(() => {
-          loadConversations();
-        });
-      }, 200);
+  useFocusEffect(
+    useCallback(() => {
+      loadConversations();
+    }, [loadConversations])
+  );
 
-      return () => clearTimeout(timer);
+  // Instantly update last message preview and unread badge when a message arrives or is sent
+  useEffect(() => {
+    const handleUpdate = ({ conversationId, last_message }: { conversationId?: number; last_message?: any }) => {
+      if (!conversationId || !last_message) return;
+      const convId = Number(conversationId);
+      const senderId = Number(last_message.sender_id || last_message.sender?.id || 0);
+      const isIncoming = senderId !== Number(user?.id);
+      const normalizedLastMessage = {
+        id: Number(last_message.id) || Date.now(),
+        content: String(last_message.content || ''),
+        message_type: String(last_message.message_type || 'text'),
+        created_at: last_message.created_at || new Date().toISOString(),
+        sender_id: senderId,
+        sender: last_message.sender,
+      };
+
+      setConversations(prev => {
+        const existingIndex = prev.findIndex(c => c.id === convId);
+        if (existingIndex !== -1) {
+          const existing = prev[existingIndex];
+          const updatedConv: Conversation = {
+            ...existing,
+            last_message: normalizedLastMessage as any,
+            updated_at: last_message.created_at || new Date().toISOString(),
+            unread_count: isIncoming ? (existing.unread_count || 0) + 1 : existing.unread_count,
+          };
+          const rest = prev.filter((_, idx) => idx !== existingIndex);
+          return [updatedConv, ...rest];
+        }
+        return prev;
+      });
+
+      // Background sync to ensure full state, badges & requests are updated
+      loadConversations();
+    };
+
+    const handleFriendUpdate = (data?: any) => {
+      if (data?.action === 'sent') {
+        setFriendRequestsCount(prev => prev + 1);
+      } else if (data?.action === 'accepted' || data?.action === 'rejected' || data?.action === 'cancelled') {
+        setFriendRequestsCount(prev => Math.max(0, prev - 1));
+      }
+      loadConversations();
+    };
+
+    const sub1 = DeviceEventEmitter.addListener('chat_list_update', handleUpdate);
+    const sub2 = DeviceEventEmitter.addListener('local_message_sent', ({ conversationId, message }) => {
+      handleUpdate({ conversationId, last_message: message });
     });
-    return unsubscribe;
-  }, [navigation, loadConversations]);
+    const sub3 = DeviceEventEmitter.addListener('friend_request_updated', handleFriendUpdate);
+    const sub4 = DeviceEventEmitter.addListener('friend_request_accepted', () => loadConversations());
+
+    return () => {
+      sub1.remove();
+      sub2.remove();
+      sub3.remove();
+      sub4.remove();
+    };
+  }, [user?.id, loadConversations]);
+
+  // Connect to persistent global notification WebSocket stream for instant real-time updates
+  useEffect(() => {
+    if (user?.id) {
+      websocketService.connectToNotifications().catch(err => {
+        console.log('[ChatListScreen] Notification WS error:', err);
+      });
+    }
+
+    const unsub = websocketService.onMessage((msg: WebSocketMessage) => {
+      if (msg.type === 'new_message_summary' && msg.data) {
+        const messageData = msg.data;
+        const convId = Number(messageData.conversation_id || messageData.conversation);
+        if (convId) {
+          if (typingTimeoutsRef.current[convId]) {
+            clearTimeout(typingTimeoutsRef.current[convId]);
+            delete typingTimeoutsRef.current[convId];
+          }
+          setTypingMap(prev => {
+            if (!prev[convId]) return prev;
+            const next = { ...prev };
+            delete next[convId];
+            return next;
+          });
+
+          const senderId = Number(messageData.sender?.id || messageData.sender_id || 0);
+          const isIncoming = senderId !== Number(user?.id);
+          const last_message = {
+            id: Number(messageData.id) || Date.now(),
+            content: String(messageData.content || ''),
+            message_type: String(messageData.message_type || 'text'),
+            created_at: messageData.created_at || new Date().toISOString(),
+            sender_id: senderId,
+            sender: messageData.sender,
+          };
+
+          setConversations(prev => {
+            const existingIndex = prev.findIndex(c => c.id === convId);
+            if (existingIndex !== -1) {
+              const existing = prev[existingIndex];
+              const updatedConv: Conversation = {
+                ...existing,
+                last_message: last_message as any,
+                updated_at: last_message.created_at,
+                unread_count: isIncoming ? (existing.unread_count || 0) + 1 : existing.unread_count,
+              };
+              const rest = prev.filter((_, idx) => idx !== existingIndex);
+              return [updatedConv, ...rest];
+            }
+            return prev;
+          });
+
+          // Sync fresh data from API
+          loadConversations();
+        }
+      } else if (
+        msg.type === 'read_receipt' ||
+        msg.type === 'delivered' ||
+        msg.type === 'message_request_created' ||
+        msg.type === 'message_request_status' ||
+        msg.type === 'friend_request_update' ||
+        msg.type === 'friend_request_updated'
+      ) {
+        if (msg.type === 'friend_request_update' || msg.type === 'friend_request_updated') {
+          const action = msg.data?.action;
+          if (action === 'sent') {
+            setFriendRequestsCount(prev => prev + 1);
+          } else if (action === 'accepted' || action === 'rejected' || action === 'cancelled') {
+            setFriendRequestsCount(prev => Math.max(0, prev - 1));
+          }
+        }
+        loadConversations();
+      } else if (msg.type === 'typing' && msg.data) {
+        console.log('[ChatListScreen] Typing WS message received:', msg.data);
+        const convId = Number(msg.data.conversation_id);
+        const senderId = Number(msg.data.user_id || 0);
+        const isTyping = Boolean(msg.data.is_typing);
+        const userName = msg.data.user_name || 'Someone';
+
+        if (convId && (!senderId || senderId !== Number(user?.id))) {
+          if (typingTimeoutsRef.current[convId]) {
+            clearTimeout(typingTimeoutsRef.current[convId]);
+            delete typingTimeoutsRef.current[convId];
+          }
+
+          if (isTyping) {
+            setTypingMap(prev => ({ ...prev, [convId]: userName }));
+            typingTimeoutsRef.current[convId] = setTimeout(() => {
+              setTypingMap(prev => {
+                if (!prev[convId]) return prev;
+                const next = { ...prev };
+                delete next[convId];
+                return next;
+              });
+              delete typingTimeoutsRef.current[convId];
+            }, 3500);
+          } else {
+            setTypingMap(prev => {
+              if (!prev[convId]) return prev;
+              const next = { ...prev };
+              delete next[convId];
+              return next;
+            });
+          }
+        }
+      }
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [user?.id, loadConversations]);
+
+  const [containerHeight, setContainerHeight] = useState<number | null>(null);
+  const searchRef = useRef<TextInput>(null);
+  const userTouchedSearch = useRef(false);
+
+  // ── Auto-reset countdown after 1 s of idle typing ───────────────────────────
+  const [countdownActive, setCountdownActive] = useState(false);
+  const [countdownValue, setCountdownValue] = useState(3);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearCountdown = () => {
+    setCountdownActive(false);
+    setCountdownValue(3);
+    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+  };
+
+  const startCountdown = () => {
+  };
 
   useEffect(() => {
     const tabParam = route?.params?.initialTab || route?.params?.tab;
-    if (tabParam && ['all', 'groups', 'pending', 'locked'].includes(tabParam)) {
+    if (tabParam && ['all', 'groups', 'pending'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [route?.params?.initialTab, route?.params?.tab]);
@@ -1246,6 +1311,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   const handleConfirmLogout = async () => {
     try {
       setIsLoggingOut(true);
+      setIsLockedAuthenticated(false);
+      setLockedIds([]);
+      setActiveTab('all');
       await logout();
     } catch (e) {
       console.error('Logout error:', e);
@@ -1324,6 +1392,12 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   }, [toastOpacity]);
 
   const handleLockedTabPress = async () => {
+    // If no chats are locked in the vault, mute the action and do not open PIN modal
+    if (lockedIds.length === 0) {
+      showToast('No locked chats', 'lock-closed');
+      return;
+    }
+
     if (activeTab === 'locked') {
       setActiveTab('all');
       return;
@@ -1334,27 +1408,49 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       return;
     }
 
-    const success = await BiometricService.authenticate(
-      'Locked Chats',
-      'Verify your identity with fingerprint or PIN to view locked chats'
-    );
-
-    if (success) {
+    const hasPin = await BiometricService.hasPin(user?.id);
+    setPinModalMode(hasPin ? 'verify' : 'setup');
+    setPendingActionAfterPin(() => () => {
       setIsLockedAuthenticated(true);
       setActiveTab('locked');
+    });
+    setPinModalVisible(true);
+  };
+
+  const handlePinSuccess = () => {
+    setPinModalVisible(false);
+    if (pendingActionAfterPin) {
+      pendingActionAfterPin();
+      setPendingActionAfterPin(null);
     }
   };
 
-  // Auto-relock when app is backgrounded or minimized
+  // Auto-relock when app is backgrounded or minimized; reload conversations when active
   useEffect(() => {
     const sub = AppState.addEventListener('change', nextState => {
       if (nextState === 'background' || nextState === 'inactive') {
         setIsLockedAuthenticated(false);
         setActiveTab(prev => (prev === 'locked' ? 'all' : prev));
+      } else if (nextState === 'active') {
+        loadConversations();
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [loadConversations]);
+
+  // Guard: Never allow activeTab === 'locked' if user is not authenticated for locked chats
+  useEffect(() => {
+    if (activeTab === 'locked' && !isLockedAuthenticated) {
+      setActiveTab('all');
+    }
+  }, [activeTab, isLockedAuthenticated]);
+
+  // Guard: If activeTab === 'locked' but there are no locked chats, revert to 'all'
+  useEffect(() => {
+    if (activeTab === 'locked' && lockedIds.length === 0) {
+      setActiveTab('all');
+    }
+  }, [activeTab, lockedIds.length]);
 
   const toggleSelection = (id: number) => {
     setSelectedIds(prev => 
@@ -1368,24 +1464,28 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     const allLocked = selectedIds.every(id => lockedIds.includes(id));
     const newLockState = !allLocked;
 
-    const success = await BiometricService.authenticate(
-      newLockState ? 'Lock Selected Chats' : 'Unlock Selected Chats',
-      `Verify your identity to ${newLockState ? 'lock' : 'unlock'} selected chats`
-    );
+    const executeLockToggle = async () => {
+      const currentLocked = await BiometricService.getPersistedLockedChatIds(user?.id);
+      let updated: number[];
+      if (newLockState) {
+        updated = Array.from(new Set([...currentLocked, ...selectedIds]));
+      } else {
+        updated = currentLocked.filter(id => !selectedIds.includes(id));
+      }
 
-    if (!success) return;
+      await BiometricService.setPersistedLockedChatIds(user?.id, updated);
+      setLockedIds(updated);
+      setSelectionMode(false);
+      setSelectedIds([]);
+      loadConversations();
 
-    selectedIds.forEach(id => {
-      localDatabase.setChatLocked(id, newLockState);
-    });
+      showToast(newLockState ? 'Chat Locked' : 'Chat Unlocked', newLockState ? 'lock-closed' : 'lock-open');
+    };
 
-    const updated = localDatabase.getLockedConversationIds();
-    setLockedIds(updated);
-    setSelectionMode(false);
-    setSelectedIds([]);
-    loadConversations();
-
-    showToast(newLockState ? 'Chat Locked' : 'Chat Unlocked', newLockState ? 'lock-closed' : 'lock-open');
+    const hasPin = await BiometricService.hasPin(user?.id);
+    setPinModalMode(hasPin ? 'verify' : 'setup');
+    setPendingActionAfterPin(() => executeLockToggle);
+    setPinModalVisible(true);
   };
 
   const handleBatchDelete = async () => {
@@ -1405,7 +1505,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   useEffect(() => {
     navigation.setOptions({
       headerShown: true,
-      headerTitleAlign: 'center',
       headerStyle: {
         backgroundColor: selectionMode 
           ? (isDark ? '#0F172A' : '#0B192C') 
@@ -1414,26 +1513,29 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         shadowOpacity: 0,
         borderBottomWidth: 0,
       },
-      headerTitle: () => (
-        selectionMode ? null : (
-          <View ref={triviaBtnRef} collapsable={false} style={{ alignItems: 'center', justifyContent: 'center' }}>
-            <TouchableOpacity
-              onPress={() => navigation.navigate('TriviaHub')}
-              activeOpacity={0.7}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <View pointerEvents="none" style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
-                <LottieStickerMessage
-                  url="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4da/lottie.json"
-                  size={34}
-                  autoPlay={false}
-                />
-              </View>
-            </TouchableOpacity>
+      headerTitleAlign: 'center',
+      headerTitle: () => {
+        if (selectionMode) return null;
+        const brandTextStyle = {
+          fontFamily: 'ClashDisplay-Bold',
+          fontSize: 22,
+          color: isDark ? '#FFFFFF' : '#0F172A',
+          letterSpacing: 1.2,
+          includeFontPadding: false,
+        };
+        return (
+          <View
+            accessible={true}
+            accessibilityRole="header"
+            accessibilityLabel="YOUTELITE"
+            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Text style={brandTextStyle}>YOUT</Text>
+            <Text style={[brandTextStyle, { marginHorizontal: 1.6 }]}>E</Text>
+            <Text style={brandTextStyle}>LITE</Text>
           </View>
-        )
-      ),
+        );
+      },
       headerLeft: () => (
         selectionMode ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}>
@@ -1450,126 +1552,80 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
             </Text>
           </View>
         ) : (
-          <Text style={{ fontWeight: 'bold', fontSize: 28, color: '#222', marginLeft: 16 }}>Yesenta</Text>
+          <View style={{ width: 125, flexDirection: 'row', alignItems: 'center', paddingLeft: 24 }}>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Profile')}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
+              accessibilityLabel="Profile"
+              accessibilityRole="button"
+            >
+              <Icon name="create-outline" size={28} color={theme.textPrimary} />
+            </TouchableOpacity>
+          </View>
         )
       ),
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 14 }}>
-          {selectionMode ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              {/* Lock / Unlock Pill with Vector Icon */}
-              <TouchableOpacity
-                style={[s.headerPillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
-                onPress={handleBatchToggleLock}
-                disabled={selectedIds.length === 0}
-                activeOpacity={0.7}
-              >
-                <Icon
-                  name={selectedIds.every(id => lockedIds.includes(id)) ? 'lock-open' : 'lock-closed'}
-                  size={13}
-                  color="#FFFFFF"
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={s.headerPillBtnText}>
-                  {selectedIds.every(id => lockedIds.includes(id)) ? 'Unlock' : 'Lock'}
-                </Text>
-              </TouchableOpacity>
+        selectionMode ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginRight: 14 }}>
+            {/* Lock / Unlock Pill with Vector Icon */}
+            <TouchableOpacity
+              style={[s.headerPillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
+              onPress={handleBatchToggleLock}
+              disabled={selectedIds.length === 0}
+              activeOpacity={0.7}
+            >
+              <Icon
+                name={selectedIds.every(id => lockedIds.includes(id)) ? 'lock-open' : 'lock-closed'}
+                size={13}
+                color="#FFFFFF"
+                style={{ marginRight: 4 }}
+              />
+              <Text style={s.headerPillBtnText}>
+                {selectedIds.every(id => lockedIds.includes(id)) ? 'Unlock' : 'Lock'}
+              </Text>
+            </TouchableOpacity>
 
-              {/* Delete Pill */}
+            {/* Delete Pill */}
+            <TouchableOpacity
+              style={[s.headerDeletePillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
+              onPress={handleBatchDelete}
+              disabled={selectedIds.length === 0}
+              activeOpacity={0.7}
+            >
+              <Icon
+                name="trash-outline"
+                size={13}
+                color="#FFFFFF"
+                style={{ marginRight: 4 }}
+              />
+              <Text style={s.headerDeletePillBtnText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ width: 125, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 18 }}>
+            <View ref={menuBtnRef} collapsable={false}>
               <TouchableOpacity
-                style={[s.headerDeletePillBtn, selectedIds.length === 0 && { opacity: 0.5 }]}
-                onPress={handleBatchDelete}
-                disabled={selectedIds.length === 0}
+                onPress={() => setMenuVisible(true)}
                 activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
               >
-                <Icon
-                  name="trash-outline"
-                  size={13}
-                  color="#FFFFFF"
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={s.headerDeletePillBtnText}>Delete</Text>
+                <Icon name="menu" size={26} color={theme.textPrimary} />
               </TouchableOpacity>
             </View>
-          ) : (
-             <>
-                <View ref={playBtnRef} collapsable={false} style={{ marginRight: 22 }}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (activeRoomCode) {
-                        DeviceEventEmitter.emit('minimize_music_room', false);
-                      } else {
-                        navigation.navigate('YouTubeDiscovery', {});
-                      }
-                    }}
-                    activeOpacity={0.7}
-                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-                    style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
-                  >
-                    <View pointerEvents="none" style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
-                      {activeRoomCode && isMusicPlaying ? (
-                        <Animated.View style={{ transform: [{ rotate: spin }] }}>
-                          <LottieStickerMessage
-                            url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
-                            size={38}
-                            autoPlay={true}
-                          />
-                        </Animated.View>
-                      ) : (
-                        <LottieStickerMessage
-                          url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
-                          size={38}
-                          autoPlay={false}
-                        />
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                </View>
-                <TouchableOpacity
-                  onPress={() => navigation.navigate('Profile')}
-                  activeOpacity={0.7}
-                  hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-                  style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center', marginRight: 16 }}
-                >
-                  <View pointerEvents="none">
-                    <AvatarWithFallback
-                      uri={user?.profile_picture}
-                      sticker={user?.avatar_sticker}
-                      displayName={user?.display_name || user?.username || ''}
-                      style={{ width: 34, height: 34, borderRadius: 17 }}
-                    />
-                  </View>
-                </TouchableOpacity>
-                <View ref={menuBtnRef} collapsable={false}>
-                  <TouchableOpacity
-                    onPress={() => setMenuVisible(true)}
-                    activeOpacity={0.7}
-                    hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-                    style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
-                  >
-                    <Icon name="menu" size={26} color={theme.textPrimary} />
-                  </TouchableOpacity>
-                </View>
-             </>
-          )}
-        </View>
+          </View>
+        )
       ),
-      headerStyle: { 
-        backgroundColor: selectionMode 
-          ? (isDark ? '#0F172A' : '#0B192C') 
-          : theme.surface, 
-        elevation: 0, 
-        shadowOpacity: 0, 
-        borderBottomWidth: 0 
-      },
     });
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode, isMusicPlaying, spin]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode, isMusicPlaying, spin, isDark, theme, user, friendRequestsCount]);
 
   const handleShareApp = async () => {
     try {
       const shareUrl = 'https://dme-19zq.onrender.com/invite';
       await Share.share({
-        message: `Join me on Yesenta! It's a fast, secured messaging app with Learn and Watch together. Download it here: ${shareUrl}`,
+        message: `Join me on youtelite! It's a fast, secured messaging app with Learn and Watch together. Download it here: ${shareUrl}`,
       });
     } catch (error) {
       console.warn('Error sharing app', error);
@@ -1696,6 +1752,34 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         onProfile={() => { setMenuVisible(false); navigation.navigate('Profile'); }}        
         onLogout={() => { setMenuVisible(false); handleLogout(); }}
         onSelect={() => { setMenuVisible(false); setSelectionMode(true); }}
+        onChatBackup={async () => {
+          setMenuVisible(false);
+          try {
+            const status = await BackupManager.checkServerBackupStatus();
+            if (status.hasBackup) {
+              Alert.alert(
+                'E2EE Chat Backup',
+                'You have an active encrypted backup in the cloud. What would you like to do?',
+                [
+                  {
+                    text: 'Restore Chats',
+                    onPress: () => setRestoreModalVisible(true),
+                  },
+                  {
+                    text: 'Create New Backup',
+                    onPress: () => setBackupSetupModalVisible(true),
+                  },
+                  { text: 'Cancel', style: 'cancel' },
+                ]
+              );
+            } else {
+              setBackupSetupModalVisible(true);
+            }
+          } catch {
+            setBackupSetupModalVisible(true);
+          }
+        }}
+        onAppTour={startOnboardingTour}
         onSettings={() => {
           setMenuVisible(false);
           navigation.navigate('Settings');
@@ -1705,7 +1789,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           if (updateInfo.hasUpdate && updateInfo.downloadUrl) {
             handleDownloadUpdate(updateInfo.downloadUrl);
           } else {
-            Alert.alert('App Update', 'You are on the latest version of Yesenta.');
+            Alert.alert('App Update', 'You are on the latest version of youtelite.');
           }
         }}
       />
@@ -1714,6 +1798,35 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         onClose={() => setLogoutModalVisible(false)}
         onConfirm={handleConfirmLogout}
         loading={isLoggingOut}
+      />
+      <ChatLockPinModal
+        visible={pinModalVisible}
+        mode={pinModalMode}
+        userId={user?.id}
+        onSuccess={handlePinSuccess}
+        onCancel={() => {
+          setPinModalVisible(false);
+          setPendingActionAfterPin(null);
+        }}
+      />
+      <BackupRestoreModal
+        visible={restoreModalVisible}
+        onSuccess={async () => {
+          setRestoreModalVisible(false);
+          await loadConversations();
+        }}
+        onSkip={async () => {
+          setRestoreModalVisible(false);
+          await KeyManager.ensureKeysSetup(true);
+          await loadConversations();
+        }}
+      />
+      <BackupSetupModal
+        visible={backupSetupModalVisible}
+        onClose={() => setBackupSetupModalVisible(false)}
+        onSuccess={() => {
+          setBackupSetupModalVisible(false);
+        }}
       />
       <Modal visible={isDownloadingUpdate} transparent animationType="fade">
         <View style={{
@@ -1761,6 +1874,105 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           </View>
         </View>
       </Modal>
+
+      {/* ── Top Action Row (Profile Story Circle on Left, Horizontal Disco & Trivia Dock on Right) ── */}
+      <View style={s.topActionRow}>
+        {/* Left: Profile with dynamic Status border or plain circle, and + badge */}
+        <View style={s.profileStoryContainer}>
+          <TouchableOpacity
+            onPress={handleProfileAvatarPress}
+            activeOpacity={0.85}
+            accessibilityLabel={myStatuses.length > 0 ? "View my status" : "My Profile"}
+          >
+            {myStatuses.length > 0 ? (
+              /* Outer border with combination logo colors (Cobalt Blue -> Cyan -> Emerald) */
+              <LinearGradient
+                colors={['#0F62FE', '#00E5FF', '#10B981']}
+                start={{ x: 0, y: 1 }}
+                end={{ x: 1, y: 0 }}
+                style={s.storyCircleGradient}
+              >
+                <View style={s.storyCircleInner}>
+                  <AvatarWithFallback
+                    uri={user?.profile_picture}
+                    sticker={user?.avatar_sticker}
+                    displayName={user?.display_name || user?.username || user?.email || 'User'}
+                    style={s.storyAvatar}
+                  />
+                </View>
+              </LinearGradient>
+            ) : (
+              /* Plain circle with no outer border */
+              <View style={s.plainProfileCircle}>
+                <AvatarWithFallback
+                  uri={user?.profile_picture}
+                  sticker={user?.avatar_sticker}
+                  displayName={user?.display_name || user?.username || user?.email || 'User'}
+                  style={s.plainAvatar}
+                />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* + circle at bottom right edge of circle to upload status */}
+          <TouchableOpacity
+            style={[s.addStatusBadge, { borderColor: theme.surface }]}
+            onPress={handleUploadStatus}
+            activeOpacity={0.85}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Upload status"
+          >
+            <View style={s.addStatusBadgeGradient}>
+              <Icon name="add" size={15} color="#000000" />
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* Center: Friend List Button between Profile and Book */}
+        <View ref={fabRef} collapsable={false}>
+          <TouchableOpacity
+            onPress={() => {
+              if (friendRequestsCount > 0) {
+                navigation.navigate('FriendList', { initialTab: 'approve' });
+              } else {
+                navigation.navigate('FriendList', { initialTab: 'friends' });
+              }
+            }}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={s.friendBtnRow}
+            accessibilityLabel="Friend List"
+          >
+            <Icon name="people" size={34} color={isDark ? '#94A3B8' : '#64748B'} />
+            {friendRequestsCount > 0 && (
+              <View style={s.headerFriendBadge}>
+                <Text style={s.headerFriendBadgeText}>
+                  {friendRequestsCount > 99 ? '99+' : friendRequestsCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Right: Book Button (Knowledge Quest) without outer container and without inner circle */}
+        <View ref={triviaBtnRef} collapsable={false}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('TriviaHub')}
+            activeOpacity={0.7}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={s.bookButtonPlain}
+            accessibilityLabel="Q-Zone"
+          >
+            <View pointerEvents="none">
+              <LottieStickerMessage
+                url="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4da/lottie.json"
+                size={50}
+                autoPlay={false}
+              />
+            </View>
+          </TouchableOpacity>
+        </View>
+      </View>
       <View
         style={{ paddingHorizontal: 16, paddingBottom: 4, paddingTop: 4, backgroundColor: theme.surface }}
         onTouchStart={() => { userTouchedSearch.current = true; }}
@@ -1837,11 +2049,15 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                 setIsSearchFocused(true);
                 startSpinForward();
                 setIsKeyboardActive(true);
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                setIsHubExpanded(false);
               }}
               onBlur={() => {
                 setIsSearchFocused(false);
                 startSpinReverse();
                 setIsKeyboardActive(false);
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                setIsHubExpanded(true);
               }}
             />
             {searchQuery.length > 0 && (
@@ -1865,6 +2081,8 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       </View>
 
       <FlatList
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
         ListHeaderComponent={
           <View style={[s.tabContainerWrapper, { backgroundColor: theme.surface }]}>
             {/* ── 2 Visible Main Tabs: All & Groups ── */}
@@ -1955,33 +2173,40 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                     style={[
                       s.subDrawerTabBtn,
                       activeTab === 'locked' && s.subDrawerTabBtnActive,
+                      lockedIds.length === 0 && s.subDrawerTabBtnMuted,
                     ]}
                     onPress={handleLockedTabPress}
-                    activeOpacity={0.7}
+                    activeOpacity={lockedIds.length === 0 ? 0.9 : 0.7}
                   >
                     <Icon
                       name={activeTab === 'locked' && isLockedAuthenticated ? 'lock-open-outline' : 'lock-closed'}
                       size={13}
-                      color={activeTab === 'locked' ? (isDark ? '#38BDF8' : '#0B192C') : (isDark ? '#94A3B8' : '#64748B')}
+                      color={
+                        lockedIds.length === 0
+                          ? (isDark ? 'rgba(148, 163, 184, 0.45)' : 'rgba(100, 116, 139, 0.45)')
+                          : activeTab === 'locked'
+                          ? (isDark ? '#38BDF8' : '#0B192C')
+                          : (isDark ? '#94A3B8' : '#64748B')
+                      }
                       style={{ marginRight: 5 }}
                     />
                     <Text
                       style={[
                         s.subDrawerTabText,
-                        activeTab === 'locked' ? s.subDrawerTabTextActive : s.subDrawerTabTextInactive,
+                        lockedIds.length === 0
+                          ? s.subDrawerTabTextMuted
+                          : activeTab === 'locked'
+                          ? s.subDrawerTabTextActive
+                          : s.subDrawerTabTextInactive,
                       ]}
                     >
                       Locked
                     </Text>
-                    {unreadLockedCount > 0 ? (
+                    {unreadLockedCount > 0 && (
                       <View style={[s.drawerBadge, s.drawerBadgeActive]}>
                         <Text style={s.drawerBadgeText}>{unreadLockedCount}</Text>
                       </View>
-                    ) : lockedIds.length > 0 ? (
-                      <View style={[s.drawerBadge, activeTab === 'locked' ? s.drawerBadgeActive : s.drawerBadgeInactive]}>
-                        <Text style={s.drawerBadgeText}>{lockedIds.length}</Text>
-                      </View>
-                    ) : null}
+                    )}
                   </TouchableOpacity>
 
                   {/* Pending Tab */}
@@ -2020,7 +2245,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         }
 
         data={listData}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 110) }}
+        extraData={typingMap}
+        windowSize={7}
+        maxToRenderPerBatch={5}
+        updateCellsBatchingPeriod={50}
+        initialNumToRender={12}
+        removeClippedSubviews={true}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 86, 116) }}
         renderItem={({ item }) => {
           if ((item as any).isMessageRequest) {
             const reqSender = item.sender;
@@ -2126,6 +2357,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               theme={theme}
               isDark={isDark}
               s={s}
+              typingUserName={typingMap[item.id] || null}
               onPress={() => {
                 if (selectionMode) {
                   toggleSelection(item.id);
@@ -2177,7 +2409,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadConversations} tintColor={THEME_COLOR} />}
         ListEmptyComponent={
           !isLoading ? (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 320, paddingHorizontal: 24, paddingVertical: 40 }}>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 300, paddingHorizontal: 24, paddingTop: 16, paddingBottom: 85 }}>
               <Icon 
                 name={
                   activeTab === 'locked'
@@ -2213,8 +2445,40 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                   ? 'Group chats you join will appear here'
                   : activeTab === 'friends'
                   ? 'Chats with your friends will appear here'
-                  : 'Tap + to start a new chat'}
+                  : 'Tap the Friends icon above to start chatting'}
               </Text>
+              {(activeTab === 'all' || activeTab === 'friends') && (
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('FriendList', { initialTab: 'friends' })}
+                  activeOpacity={0.85}
+                  style={{
+                    marginTop: 18,
+                    borderRadius: 24,
+                    overflow: 'hidden',
+                    elevation: 5,
+                    shadowColor: '#0F62FE',
+                    shadowOffset: { width: 0, height: 3 },
+                    shadowOpacity: 0.35,
+                    shadowRadius: 6,
+                  }}
+                >
+                  <LinearGradient
+                    colors={['#0F62FE', '#00D2FF']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{
+                      paddingHorizontal: 22,
+                      paddingVertical: 11,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <Icon name="people" size={18} color="#FFFFFF" />
+                    <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>Start a Chat</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
             </View>
           ) : null
         }
@@ -2237,55 +2501,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
             </View>
         </TouchableOpacity>
       </Modal>
-      <View 
-        ref={fabRef} 
-        collapsable={false} 
-        style={[s.fabWrapper, { bottom: 80 + insets.bottom }]}
-      >
-        <TouchableOpacity 
-          style={s.composeButton} 
-          onPress={() => {
-            if (friendRequestsCount > 0) {
-              navigation.navigate('FriendList', { initialTab: 'approve' });
-            } else {
-              navigation.navigate('FriendList', { initialTab: 'friends' });
-            }
-          }}
-          activeOpacity={0.82}
-        >
-          {/* Theme-Consistent Premium Glass Gradient */}
-          <LinearGradient
-            colors={
-              isDark
-                ? ['#0E2849', '#071527']
-                : ['#FFFFFF', '#F0F5FF']
-            }
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={[
-              StyleSheet.absoluteFillObject,
-              {
-                borderTopLeftRadius: 25,
-                borderTopRightRadius: 10,
-                borderBottomLeftRadius: 10,
-                borderBottomRightRadius: 10,
-              },
-            ]}
-          />
-
-          {/* Icon */}
-          <Icon name="person-add" size={24} color={isDark ? theme.primary : '#205CB8'} />
-
-          {/* Notification Badge */}
-          {friendRequestsCount > 0 && (
-            <View style={s.badgeContainer}>
-              <Text style={s.badgeText}>
-                {friendRequestsCount}
-              </Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      </View>
 
       {/* ── Center-screen animated modal toast (matching friend request) ── */}
       <Modal visible={toastVisible} transparent animationType="none" statusBarTranslucent>
@@ -2302,12 +2517,89 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         </View>
       </Modal>
 
+      {/* ── Disco Ball Floating Button Alone (Music Room / Watch Together) ── */}
+      <View 
+        pointerEvents="box-none"
+        style={[s.fabWrapper, { bottom: 120 + insets.bottom }]}
+      >
+        <View ref={playBtnRef} collapsable={false}>
+          <TouchableOpacity
+            style={[
+              s.miniFabRoundedButton,
+              { borderColor: isDark ? 'rgba(56, 189, 248, 0.55)' : 'rgba(99, 102, 241, 0.35)' }
+            ]}
+            onPress={() => {
+              if (activeRoomCode) {
+                DeviceEventEmitter.emit('minimize_music_room', false);
+              } else {
+                navigation.navigate('YouTubeDiscovery', {});
+              }
+            }}
+            activeOpacity={0.82}
+            accessibilityLabel="Music Room"
+          >
+            <LinearGradient
+              colors={
+                isDark
+                  ? ['#1E3A8A', '#0F172A']
+                  : ['#FFFFFF', '#E0E7FF']
+              }
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[StyleSheet.absoluteFillObject, { borderRadius: 31 }]}
+            />
+            {/* 3D Specular Highlight Sheen */}
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                top: 3,
+                left: 10,
+                right: 10,
+                height: 14,
+                borderRadius: 12,
+                backgroundColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(255, 255, 255, 0.7)',
+              }}
+            />
+            <View pointerEvents="none" style={{ width: 50, height: 50, alignItems: 'center', justifyContent: 'center' }}>
+              {activeRoomCode ? (
+                <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                  <LottieStickerMessage
+                    url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
+                    size={46}
+                    autoPlay={true}
+                  />
+                </Animated.View>
+              ) : (
+                <LottieStickerMessage
+                  url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
+                  size={46}
+                  autoPlay={false}
+                />
+              )}
+            </View>
+            {activeRoomCode && (
+              <View style={s.musicActiveDot} />
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {tourVisible && (
         <OnboardingTour
           targets={tourTargets}
           onFinished={handleTourFinished}
         />
       )}
+
+      <CustomGalleryPicker
+        visible={statusGalleryVisible}
+        onClose={() => setStatusGalleryVisible(false)}
+        onSelect={handleStatusGallerySelect}
+        maxSelect={1}
+        assetType="All"
+        maxDuration={61}
+      />
     </View>
   );
 };
@@ -2471,6 +2763,10 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     borderWidth: 1,
     borderColor: isDark ? '#38BDF8' : '#0EA5E9',
   },
+  subDrawerTabBtnMuted: {
+    opacity: 0.42,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)',
+  },
   subDrawerTabText: {
     fontSize: 12.5,
     fontWeight: '600',
@@ -2481,6 +2777,10 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
   },
   subDrawerTabTextInactive: {
     color: isDark ? '#94A3B8' : '#64748B',
+  },
+  subDrawerTabTextMuted: {
+    color: isDark ? 'rgba(148, 163, 184, 0.5)' : 'rgba(100, 116, 139, 0.5)',
+    fontWeight: '500',
   },
   drawerBadge: {
     marginLeft: 6,
@@ -2572,6 +2872,13 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     marginRight: 10,
     justifyContent: 'center',
   },
+  popoverBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: isDark ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.25)',
+  },
   popover: { position: 'absolute', top: 50, right: 16, width: 180, backgroundColor: theme.surface, borderRadius: 8, padding: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, zIndex: 1000 },
   popoverItem: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
   popoverText: { fontSize: 14, color: theme.textPrimary },
@@ -2587,7 +2894,195 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     fontSize: 11,
     fontWeight: '600',
   },
-  fabWrapper: { position: 'absolute', bottom: 80, right: 16, zIndex: 50 },
+  topActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 6,
+    backgroundColor: theme.surface,
+  },
+  profileStoryContainer: {
+    position: 'relative',
+    width: 64,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storyCircleGradient: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    padding: 2.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storyCircleInner: {
+    width: 59,
+    height: 59,
+    borderRadius: 29.5,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storyAvatar: {
+    width: 59,
+    height: 59,
+    borderRadius: 29.5,
+    borderWidth: 0,
+  },
+  plainProfileCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plainAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 0,
+  },
+  addStatusBadge: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 23,
+    height: 23,
+    borderRadius: 11.5,
+    borderWidth: 2,
+    elevation: 6,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+    zIndex: 10,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  addStatusBadgeGradient: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 11.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  bookButtonPlain: {
+    width: 56,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  friendBtnRow: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  hubContainerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 30,
+    borderWidth: 1.5,
+    borderColor: isDark
+      ? 'rgba(56, 189, 248, 0.65)'
+      : 'rgba(32, 92, 184, 0.35)',
+    backgroundColor: isDark
+      ? '#060B14'
+      : '#FFFFFF',
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.6 : 0.2,
+    shadowRadius: 10,
+  },
+  fabWrapper: { 
+    position: 'absolute', 
+    bottom: 98, 
+    right: 16, 
+    zIndex: 50,
+    alignItems: 'center',
+  },
+  hubContainer: {
+    width: 66,
+    borderRadius: 33,
+    borderWidth: 1.5,
+    borderColor: isDark
+      ? 'rgba(56, 189, 248, 0.65)'
+      : 'rgba(32, 92, 184, 0.35)',
+    backgroundColor: isDark
+      ? '#060B14'
+      : '#FFFFFF',
+    paddingTop: 8,
+    paddingBottom: 8,
+    paddingHorizontal: 7,
+    alignItems: 'center',
+    elevation: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: isDark ? 0.75 : 0.25,
+    shadowRadius: 16,
+  },
+  headerFriendBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    backgroundColor: '#EF4444',
+    borderRadius: 9,
+    minWidth: 17,
+    height: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  headerFriendBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  hubTopToggleButton: {
+    width: 44,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniFabRoundedButton: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    borderWidth: 1.5,
+    borderColor: isDark
+      ? 'rgba(56, 189, 248, 0.4)'
+      : 'rgba(32, 92, 184, 0.22)',
+    backgroundColor: isDark
+      ? '#071527'
+      : '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.5 : 0.22,
+    shadowRadius: 6,
+  },
+  musicActiveDot: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: '#10B981',
+    borderWidth: 1.5,
+    borderColor: isDark ? '#071527' : '#FFFFFF',
+  },
   composeButton: {
     width: 60,
     height: 50,
@@ -2662,6 +3157,21 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     fontSize: 12,
     fontWeight: 'bold',
   },
+  centerContent: {
+    flex: 1,
+    justifyContent: 'center',
+    marginLeft: 10,
+    marginRight: 8,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  messageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
   rightContent: {
     alignItems: 'flex-end',
     justifyContent: 'space-between',
@@ -2717,30 +3227,5 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     color: '#FFF',
     fontSize: 10,
     fontWeight: '700',
-  },
-  toastOverlay: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'transparent',
-  },
-  toastBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(30, 30, 30, 0.88)',
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 12,
-  },
-  toastText: {
-    color: '#FFF',
-    fontSize: 15,
-    fontWeight: '600',
-    letterSpacing: 0.2,
   },
 });

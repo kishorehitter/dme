@@ -21,6 +21,7 @@ import {
   DeviceEventEmitter,
   TouchableWithoutFeedback,
   NativeModules,
+  StatusBar,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -99,7 +100,7 @@ const MyStatusRow: React.FC<MyStatusRowProps> = ({
           {/* gradient ring border when has unseen */}
           {hasStatus && !allSeen ? (
             <LinearGradient
-              colors={['#38BDF8', '#0F62FE']}
+              colors={['#0F62FE', '#00E5FF', '#10B981']}
               start={{ x: 0, y: 1 }}
               end={{ x: 1, y: 0 }}
               style={{
@@ -224,7 +225,7 @@ const FriendStatusRow: React.FC<FriendStatusRowProps> = ({ group, onPress }) => 
       <View style={styles.avatarWrapper}>
         {group.has_unseen ? (
           <LinearGradient
-            colors={['#38BDF8', '#0F62FE']}
+            colors={['#0F62FE', '#00E5FF', '#10B981']}
             start={{ x: 0, y: 1 }}
             end={{ x: 1, y: 0 }}
             style={styles.gradientRing54}
@@ -291,11 +292,18 @@ export const StatusTabScreen = () => {
 
   useFocusEffect(useCallback(() => { 
     if ((global as any).activeMusicRoomCode) return;
+    StatusBar.setTranslucent(true);
+    StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
+    StatusBar.setBackgroundColor('transparent');
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
+      NativeModules.SystemBar.setNavigationBarColor('#00000000', isDark);
+    }
     const t = setTimeout(() => {
       loadStatuses();
     }, 120);
     return () => clearTimeout(t);
-  }, [loadStatuses]));
+  }, [loadStatuses, isDark]));
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
@@ -407,6 +415,7 @@ export const StatusTabScreen = () => {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
         <MediaPickerModal
           visible={cameraMenuVisible}
           onClose={() => setCameraMenuVisible(false)}
@@ -454,20 +463,15 @@ export const StatusTabScreen = () => {
       />
       <Text style={styles.sectionHeader}>Recent updates</Text>
       <FlatList
+        showsVerticalScrollIndicator={false}
         data={friendGroups}
         keyExtractor={item => String(item.user_id)}
         contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 100) }}
         ListEmptyComponent={
-          refreshing ? (
-            <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color={theme.textPrimary} />
-            </View>
-          ) : (
-            <View style={styles.empty}>
-              <Icon name="person-outline" size={38} color={theme.border} />
-              <Text style={styles.emptyText}>No recent updates</Text>
-            </View>
-          )
+          <View style={styles.empty}>
+            <Icon name="person-outline" size={38} color={theme.border} />
+            <Text style={styles.emptyText}>No recent updates</Text>
+          </View>
         }
         renderItem={({ item }) => (
           <FriendStatusRow
@@ -580,11 +584,18 @@ export const CallLogTabScreen = () => {
   }, []);
 
   useFocusEffect(useCallback(() => {
+    StatusBar.setTranslucent(true);
+    StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
+    StatusBar.setBackgroundColor('transparent');
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
+      NativeModules.SystemBar.setNavigationBarColor('#00000000', isDark);
+    }
     const t = setTimeout(() => {
       loadLogs();
     }, 120);
     return () => clearTimeout(t);
-  }, [loadLogs]));
+  }, [loadLogs, isDark]));
 
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.length === 0) return;
@@ -707,6 +718,7 @@ export const CallLogTabScreen = () => {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor="transparent" translucent={true} />
       <CallLogPopoverMenu 
         visible={menuVisible} 
         onClose={() => setMenuVisible(false)}
@@ -734,20 +746,15 @@ export const CallLogTabScreen = () => {
         onSelect={() => DeviceEventEmitter.emit('toggle_call_log_selection_mode')}
       />
       <FlatList
+        showsVerticalScrollIndicator={false}
         data={logs}
         keyExtractor={item => String(item.id)}
         contentContainerStyle={{ flexGrow: 1, paddingBottom: Math.max(insets.bottom + 80, 100) }}
         ListEmptyComponent={
-          refreshing ? (
-            <View style={styles.centerLoading}>
-              <ActivityIndicator size="large" color={theme.primary} />
-            </View>
-          ) : (
-            <View style={styles.empty}>
-              <Icon name="call-outline" size={38} color={theme.border} />
-              <Text style={styles.emptyText}>No call history</Text>
-            </View>
-          )
+          <View style={styles.empty}>
+            <Icon name="call-outline" size={38} color={theme.border} />
+            <Text style={styles.emptyText}>No call history</Text>
+          </View>
         }
         renderItem={({ item }) => {
           const dir      = getDirection(item);

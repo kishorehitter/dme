@@ -138,6 +138,11 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState<Record<number, number>>({});
+
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+  const questionsRef = useRef(questions);
+  questionsRef.current = questions;
   const [timeLeft, setTimeLeft] = useState(720);
   const [gracePeriodUsed, setGracePeriodUsed] = useState(false);
   const [score, setScore] = useState(0);
@@ -147,6 +152,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const [showGraceModal, setShowGraceModal] = useState(false);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [exitModalVisible, setExitModalVisible] = useState(false);
+  const [contestInfoModalVisible, setContestInfoModalVisible] = useState(false);
   const [viewedSet, setViewedSet] = useState<Set<number>>(new Set());
   const [revealedSet, setRevealedSet] = useState<Set<number>>(new Set());
   const [flatListHeight, setFlatListHeight] = useState(SCREEN_H);
@@ -168,8 +174,36 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const [setResults, setSetResults] = useState<SetResult[]>([]);
   // The set IDs selected for the current multi-set game
   const [activeSetIds, setActiveSetIds] = useState<string[]>([]);
+  const [customSetName, setCustomSetName] = useState<string>('');
   const [activeChallengeData, setActiveChallengeData] = useState<TriviaChallengePayload | null>(null);
   const [challengeLeaderboardModalVisible, setChallengeLeaderboardModalVisible] = useState(false);
+  const [contestSubmittedModal, setContestSubmittedModal] = useState(false);
+  const submissionTimeoutRef = useRef<any>(null);
+
+  const navigateToInvitedContests = useCallback(() => {
+    if (submissionTimeoutRef.current) {
+      clearTimeout(submissionTimeoutRef.current);
+      submissionTimeoutRef.current = null;
+    }
+    setContestSubmittedModal(false);
+    navigation.reset({
+      index: 2,
+      routes: [
+        { name: 'MainTabs' },
+        { name: 'TriviaHub' },
+        { name: 'TriviaChallenges', params: { initialTab: 'invited' } },
+      ],
+    });
+  }, [navigation]);
+
+  useEffect(() => {
+    return () => {
+      if (submissionTimeoutRef.current) {
+        clearTimeout(submissionTimeoutRef.current);
+      }
+    };
+  }, []);
+  const [submitConfirmModalVisible, setSubmitConfirmModalVisible] = useState(false);
   const [activeChallengeLeaderboard, setActiveChallengeLeaderboard] = useState<any[]>([]);
   
   // Challenge Friends Modal
@@ -446,6 +480,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   useEffect(() => {
     if (route.params?.customQuestions && route.params.customQuestions.length > 0) {
       const qList = route.params.customQuestions;
+      const setNameParam = route.params?.customSetName || 'Practice Quiz';
+      setCustomSetName(setNameParam);
       setQuestions(qList);
       setSelectedCategory('custom');
       setActiveSetIds(['custom']);
@@ -455,7 +491,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       setGameState('playing');
       navigation.setParams({ customQuestions: undefined, customSetName: undefined });
     }
-  }, [route.params?.customQuestions]);
+  }, [route.params?.customQuestions, route.params?.customSetName]);
 
   // Handle 24-Hour Ephemeral Tournament Challenge (from Chat / Custom Sets)
   useEffect(() => {
@@ -471,6 +507,9 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       const dynamicTime = cData.timeLimitSeconds || Math.max(120, qList.length * 48);
 
       setActiveChallengeData(cData);
+      if (cData.title) {
+        setCustomSetName(cData.title);
+      }
       setQuestions(qList);
       setSelectedCategory('custom');
       setActiveSetIds([cData.challengeId]);
@@ -483,11 +522,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       gameStartTimeRef.current = Date.now();
       setGameState('playing');
 
-      Toast.show({
-        type: 'info',
-        text1: '⚔️ Group Contest Started!',
-        text2: `${qList.length} Questions • ${Math.floor(dynamicTime / 60)} mins limit`,
-      });
+      
 
       navigation.setParams({ challengeData: undefined });
     }
@@ -520,6 +555,22 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
   useEffect(() => {
     const backAction = () => {
+      if (contestSubmittedModal) {
+        navigateToInvitedContests();
+        return true;
+      }
+      if (submitConfirmModalVisible) {
+        setSubmitConfirmModalVisible(false);
+        return true;
+      }
+      if (contestInfoModalVisible) {
+        setContestInfoModalVisible(false);
+        return true;
+      }
+      if (exitModalVisible) {
+        setExitModalVisible(false);
+        return true;
+      }
       if (gameState === 'playing') {
         setExitModalVisible(true);
         return true;
@@ -529,15 +580,40 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         return true;
       }
       if (gameState === 'summary') {
-        navigation.navigate('MainTabs');
+        if (activeChallengeData) {
+          navigateToInvitedContests();
+        } else if (selectedCategory === 'custom') {
+          if (navigation.canGoBack()) {
+            navigation.goBack();
+          } else {
+            navigation.navigate('CustomTriviaSets');
+          }
+        } else if (navigation.canGoBack()) {
+          navigation.goBack();
+        } else {
+          navigation.navigate('TriviaHub');
+        }
         return true;
       }
-      return false;
+      if (gameState === 'categorySelect') {
+        if (navigation.canGoBack()) {
+          navigation.goBack();
+        } else {
+          navigation.navigate('TriviaHub');
+        }
+        return true;
+      }
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+        return true;
+      }
+      navigation.navigate('TriviaHub');
+      return true;
     };
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [gameState, navigation]);
+  }, [gameState, submitConfirmModalVisible, exitModalVisible, contestInfoModalVisible, contestSubmittedModal, selectedCategory, activeChallengeData, navigation, navigateToInvitedContests]);
 
   // Animation values
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -611,20 +687,30 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
     outputRange: [0, 6],
   });
 
-  // PanResponder for horizontal swiping in Challenge Mode
+  // PanResponder for horizontal swiping in Challenge Mode:
+  // Swipe LEFT -> Prev question, Swipe RIGHT -> Next question
   const challengePanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 15 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2;
+      },
       onMoveShouldSetPanResponderCapture: (_, gestureState) => {
         return Math.abs(gestureState.dx) > 15 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2;
       },
       onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dx < -40) {
-          // Swipe LEFT -> Next question / Skip
-          goToNextWithAnswers();
-        } else if (gestureState.dx > 40) {
+        if (gestureState.dx < -30) {
+          // Swipe LEFT -> Next question (or prompt submit if at the end)
+          if (currentIndexRef.current < questionsRef.current.length - 1) {
+            navigateWithAnimation(currentIndexRef.current + 1);
+          } else {
+            setSubmitConfirmModalVisible(true);
+          }
+        } else if (gestureState.dx > 30) {
           // Swipe RIGHT -> Previous question
-          goToPrev();
+          if (currentIndexRef.current > 0) {
+            navigateWithAnimation(currentIndexRef.current - 1);
+          }
         }
       },
     })
@@ -634,7 +720,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   const correctSoundRef = useRef<Sound | null>(null);
   const incorrectSoundRef = useRef<Sound | null>(null);
   const selectSoundRef = useRef<Sound | null>(null);
-  const correctSoundTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const correctSoundTimerRef = useRef<any>(null);
 
   // Load sound effects on mount & style native bottom navigation bar
   useEffect(() => {
@@ -1026,7 +1112,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
     const numSets = activeSetIds.length;
     for (let s = 0; s < numSets; s++) {
       const setId = activeSetIds[s];
-      if (selectedCategory !== 'any' && setId && setId !== 'mixed') {
+      if (selectedCategory !== 'any' && selectedCategory !== 'custom' && setId && setId !== 'mixed') {
         const startIndex = s * 15;
         const endIndex = Math.min((s + 1) * 15, questions.length);
         const setQuestions = questions.slice(startIndex, endIndex);
@@ -1058,28 +1144,28 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
     setScore(finalScore);
 
-    // If this was a 24-Hour Tournament Challenge, record score to its leaderboard
+    // If this was a Group Contest Challenge, record score to its leaderboard and show appreciative completion modal
     if (activeChallengeData) {
       const percentage = Math.round((finalScore / (questions.length || 1)) * 100);
       submitChallengeScore(activeChallengeData.challengeId, {
-        userId: user?.id || 'me',
-        userName: user?.name || user?.username || 'Challenger',
+        userId: user?.id || "me",
+        userName: user?.name || user?.username || "Challenger",
         userAvatar: user?.avatar,
         score: finalScore,
         totalQuestions: questions.length,
         timeTakenSeconds: timeTaken,
         percentage,
         submittedAt: new Date().toISOString(),
-      }).then(updated => {
-        if (updated && updated.leaderboard) {
-          setActiveChallengeLeaderboard(updated.leaderboard);
-        }
-        Toast.show({
-          type: 'success',
-          text1: '🏆 Score Recorded!',
-          text2: `You scored ${finalScore}/${questions.length} in ${Math.floor(timeTaken / 60)}m ${timeTaken % 60}s`,
-        });
-      }).catch(err => console.error('Error recording challenge score:', err));
+      }).catch(err => console.error("Error recording challenge score:", err));
+
+      setContestSubmittedModal(true);
+      if (submissionTimeoutRef.current) {
+        clearTimeout(submissionTimeoutRef.current);
+      }
+      submissionTimeoutRef.current = setTimeout(() => {
+        navigateToInvitedContests();
+      }, 3500);
+      return;
     }
 
     // Refresh avg
@@ -1199,25 +1285,14 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   };
 
   const goToPrev = () => {
-    let prevIdx = currentIndex - 1;
-    while (prevIdx >= 0 && userAnswers[prevIdx] !== undefined) {
-      prevIdx--;
+    if (currentIndex > 0) {
+      navigateWithAnimation(currentIndex - 1);
     }
-    
-    if (prevIdx >= 0) {
-      navigateWithAnimation(prevIdx);
-    } else {
-      let foundUnanswered = -1;
-      for (let i = questions.length - 1; i >= 0; i--) {
-        if (userAnswers[i] === undefined) {
-          foundUnanswered = i;
-          break;
-        }
-      }
-      
-      if (foundUnanswered !== -1 && foundUnanswered !== currentIndex) {
-        navigateWithAnimation(foundUnanswered);
-      }
+  };
+
+  const goToNextManual = () => {
+    if (currentIndex < questions.length - 1) {
+      navigateWithAnimation(currentIndex + 1);
     }
   };
 
@@ -1226,9 +1301,6 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
     const newAnswers = { ...userAnswers, [currentIndex]: optionIndex };
     setUserAnswers(newAnswers);
-
-    const currentQuestion = questions[currentIndex];
-    const isCorrect = optionIndex === currentQuestion.correctIndex;
 
     Animated.sequence([
       Animated.timing(optionScales[optionIndex], {
@@ -1243,15 +1315,13 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
       }),
     ]).start();
 
-    if (isCorrect) {
-      playCorrectFeedback();
-    } else {
-      playIncorrectFeedback();
-    }
+    // Mute buzzer / ding during mock test & practice; play crisp neutral selection click
+    playSelectTone();
 
+    // Smoothly advance to next unanswered question after 450ms
     setTimeout(() => {
       goToNextWithAnswers(newAnswers);
-    }, 1000);
+    }, 450);
   };
 
   const getScoreRating = (pct: number) => {
@@ -1349,14 +1419,45 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
             borderBottomColor: 'rgba(30, 58, 95, 0.08)',
             backgroundColor: '#ffffff',
           }}>
-            <TouchableOpacity onPress={() => navigation.navigate('MainTabs')} style={styles.backButton}>
+            <TouchableOpacity
+              onPress={() => {
+                if (activeChallengeData) {
+                  navigateToInvitedContests();
+                } else if (selectedCategory === 'custom') {
+                  if (navigation.canGoBack()) {
+                    navigation.goBack();
+                  } else {
+                    navigation.navigate('CustomTriviaSets');
+                  }
+                } else if (navigation.canGoBack()) {
+                  navigation.goBack();
+                } else {
+                  navigation.navigate('TriviaHub');
+                }
+              }}
+              style={styles.backButton}
+            >
               <Icon name="arrow-back" size={28} color="#1E3A5F" />
             </TouchableOpacity>
             <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={{ fontSize: 20, color: '#1E3A5F', fontFamily: 'Kalam-Bold' }}>Result</Text>
+              <Text style={{ fontSize: 20, color: '#1E3A5F', fontFamily: 'Kalam-Bold' }}>
+                {selectedCategory === 'custom'
+                  ? (language === 'tamil' ? 'பயிற்சி முடிவு' : 'Practice Result')
+                  : (language === 'tamil' ? 'முடிவு' : 'Result')}
+              </Text>
             </View>
             <TouchableOpacity
-              onPress={() => setGameState('categorySelect')}
+              onPress={() => {
+                if (selectedCategory === 'custom') {
+                  setUserAnswers({});
+                  setCurrentIndex(0);
+                  setScore(0);
+                  setTimeLeft(Math.max(120, questions.length * 48));
+                  setGameState('playing');
+                } else {
+                  setGameState('categorySelect');
+                }
+              }}
               style={{ padding: 4 }}
             >
               <Icon name="refresh" size={26} color="#1E3A5F" />
@@ -1374,7 +1475,16 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 paddingRight: Math.max(insets.right || 0, 16),
               },
             ]}>
-              <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (navigation.canGoBack()) {
+                    navigation.goBack();
+                  } else {
+                    navigation.navigate('TriviaHub');
+                  }
+                }}
+                style={styles.backButton}
+              >
                 <Icon name="chevron-back" size={28} color={isPrepareMode ? '#F8FAFC' : '#1E3A5F'} />
               </TouchableOpacity>
               <Text
@@ -1394,7 +1504,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               <View style={[
                 styles.languageToggleBox,
                 {
-                  backgroundColor: isPrepareMode ? '#1E293B' : '#E2E8F0',
+                  backgroundColor: isPrepareMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
                 },
               ]}>
                 <TouchableOpacity 
@@ -1419,7 +1529,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   <Text style={[
                     styles.langBtnText,
                     language === 'tamil' && styles.langBtnTextActive,
-                  ]}>TA</Text>
+                  ]}>த</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1616,7 +1726,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
           {/* ACTIVE QUIZ SCREEN */}
           {gameState === 'playing' && currentQuestion && (
-            <View style={styles.quizContainer}>
+            <View style={styles.quizContainer} {...challengePanResponder.panHandlers}>
               {/* Header: Score, Progress, Category */}
               {/* Header Row 1: Back Button, Progress & Question Count, Language Toggle */}
               <View style={[
@@ -1631,46 +1741,32 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   <Icon name="close" size={28} color="#1E3A5F" />
                 </TouchableOpacity>
                 <View style={styles.progressContainer}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
                     <Text style={styles.questionIndexText}>
                       <Text style={styles.qLabel}>Q: </Text>
                       <Text style={styles.qCountBlue}>{currentIndex + 1}/{questions.length}</Text>
                     </Text>
-                    {/* Multi-Set indicator Row */}
-                    {activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
+                    {activeChallengeData && (
                       <View style={{
                         flexDirection: 'row',
                         alignItems: 'center',
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)',
+                        backgroundColor: isDark ? 'rgba(139, 92, 246, 0.16)' : '#EDE9FE',
                         borderWidth: 1,
-                        borderColor: 'rgba(0, 0, 0, 0.15)',
+                        borderColor: isDark ? 'rgba(139, 92, 246, 0.32)' : '#DDD6FE',
                         borderRadius: 8,
                         paddingHorizontal: 8,
                         paddingVertical: 2,
+                        marginLeft: 8,
                       }}>
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#000000' }}>Set: </Text>
-                        {activeSetIds.map((sid, index) => {
-                          const isCurrent = Math.floor(currentIndex / 15) === index;
-                          const numStr = sid.replace('set', '');
-                          return (
-                            <React.Fragment key={index}>
-                              {index > 0 && <Text style={{ fontSize: 11, fontWeight: '700', color: 'rgba(0,0,0,0.25)' }}>|</Text>}
-                              <Text style={{
-                                fontSize: 11,
-                                fontWeight: '700',
-                                color: '#000000',
-                                paddingHorizontal: 2,
-                              }}>
-                                {numStr}
-                              </Text>
-                            </React.Fragment>
-                          );
-                        })}
-                      </View>
-                    )}
-                    {activeSetIds.length > 0 && activeSetIds[0] === 'mixed' && (
-                      <View style={styles.setIdBadge}>
-                        <Text style={styles.setIdBadgeText}>Mixed</Text>
+                        <Icon name="trophy" size={11} color={isDark ? '#A78BFA' : '#7C3AED'} style={{ marginRight: 4 }} />
+                        <Text style={{
+                          color: isDark ? '#A78BFA' : '#7C3AED',
+                          fontSize: 11,
+                          fontWeight: '800',
+                          letterSpacing: 0.2,
+                        }}>
+                          {language === 'tamil' ? 'குழு போட்டி' : 'Group Contest'}
+                        </Text>
                       </View>
                     )}
                   </View>
@@ -1682,33 +1778,49 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                           width: progressAnim.interpolate({
                             inputRange: [0, 1],
                             outputRange: ['0%', '100%'],
-                        }),
-                      },
-                    ]}
-                  />
+                          }),
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+                <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                  {activeChallengeData ? (
+                    <TouchableOpacity
+                      onPress={() => setContestInfoModalVisible(true)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(30, 58, 95, 0.06)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Icon name="information-circle-outline" size={22} color={isDark ? '#94A3B8' : '#1E3A5F'} />
+                    </TouchableOpacity>
+                  ) : selectedCategory !== 'custom' ? (
+                    <View style={styles.gameLanguageToggleContainer}>
+                      <TouchableOpacity 
+                        style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
+                        onPress={() => toggleLanguage('english')}
+                      >
+                        <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
+                        onPress={() => toggleLanguage('tamil')}
+                      >
+                        <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>த</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={{ width: 44 }} />
+                  )}
                 </View>
               </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                {selectedCategory !== 'custom' ? (
-                  <View style={styles.gameLanguageToggleContainer}>
-                    <TouchableOpacity 
-                      style={[styles.gameLanguageButton, language === 'english' && styles.gameLanguageButtonActive]}
-                      onPress={() => toggleLanguage('english')}
-                    >
-                      <Text style={[styles.gameLanguageButtonText, language === 'english' && styles.gameLanguageButtonTextActive]}>EN</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={[styles.gameLanguageButton, language === 'tamil' && styles.gameLanguageButtonActive]}
-                      onPress={() => toggleLanguage('tamil')}
-                    >
-                      <Text style={[styles.gameLanguageButtonText, language === 'tamil' && styles.gameLanguageButtonTextActive]}>TA</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={{ width: 44 }} />
-                )}
-              </View>
-            </View>
 
             {/* Category Tag, Unanswered Indicator & Timer Row */}
             <View style={styles.categoryAndTimerRow}>
@@ -1725,7 +1837,11 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               <View style={styles.headerRowCenter}>
                 <View style={styles.pointsCenterBadge}>
                   <Text style={styles.pointsCenterText} numberOfLines={1} ellipsizeMode="tail">
-                    {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
+                    {activeChallengeData
+                      ? activeChallengeData.title
+                      : selectedCategory === 'custom'
+                        ? (customSetName || (language === 'tamil' ? 'பயிற்சி' : 'Practice'))
+                        : (language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name)}
                   </Text>
                 </View>
               </View>
@@ -1740,6 +1856,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
             {/* Bordered Container enclosing Question Card & Choices */}
             <View style={styles.mainGameBox}>
+
+
               {/* Question Card */}
               <Animated.View
                 style={[styles.card, { transform: [{ scale: cardScale }] }, { position: 'relative' }]}
@@ -1753,34 +1871,17 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                   const answeredOption = userAnswers[currentIndex];
                   const isLocked = answeredOption !== undefined;
                   const isSelected = answeredOption === index;
-                  const isCorrectOption = index === currentQuestion.correctIndex;
-                  const showCorrect = isLocked && isCorrectOption;
-                  const showWrong = isLocked && isSelected && !isCorrectOption;
 
-                  let optionBgColor = 'rgba(30, 58, 95, 0.04)';
-                  let optionBorderColor = 'rgba(30, 58, 95, 0.12)';
-                  let badgeBgColor = 'rgba(30, 58, 95, 0.06)';
-                  let badgeTextColor = '#1E3A5F';
-                  let badgeBorderColor = 'rgba(30, 58, 95, 0.15)';
+                  // Never show right/wrong while playing!
+                  const showCorrect = false;
+                  const showWrong = false;
 
-                  if (showCorrect) {
-                    optionBgColor = '#2EC4B6';
-                    optionBorderColor = '#2EC4B6';
-                    badgeBgColor = '#2EC4B6';
-                    badgeTextColor = '#FFFDF9';
-                    badgeBorderColor = '#2EC4B6';
-                  } else if (showWrong) {
-                    optionBgColor = '#FF3366';
-                    optionBorderColor = '#FF3366';
-                    badgeBgColor = '#FF3366';
-                    badgeTextColor = '#FFFDF9';
-                    badgeBorderColor = '#FF3366';
-                  } else if (isSelected) {
-                    optionBgColor = 'rgba(30, 58, 95, 0.12)';
-                    optionBorderColor = '#1E3A5F';
-                    badgeBgColor = '#1E3A5F';
-                    badgeTextColor = '#FFFDF9';
-                    badgeBorderColor = '#1E3A5F';
+                  let optionBgColor = isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(30, 58, 95, 0.04)';
+                  let optionBorderColor = isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(30, 58, 95, 0.12)';
+
+                  if (isSelected) {
+                    optionBgColor = isDark ? 'rgba(14, 165, 233, 0.22)' : 'rgba(14, 165, 233, 0.12)';
+                    optionBorderColor = isDark ? '#38BDF8' : '#0EA5E9';
                   }
 
                   return (
@@ -1798,7 +1899,10 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                         <Text style={[
                           styles.outsideLetterText,
                           {
-                            color: showCorrect ? '#2EC4B6' : showWrong ? '#FF3366' : isSelected ? '#0F172A' : '#94A3B8',
+                            color: isSelected
+                              ? (isDark ? '#38BDF8' : '#0284C7')
+                              : (isDark ? '#64748B' : '#94A3B8'),
+                            fontWeight: isSelected ? '800' : '700',
                           }
                         ]}>
                           {String.fromCharCode(65 + index)}.
@@ -1810,17 +1914,30 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                           {
                             backgroundColor: optionBgColor,
                             borderColor: optionBorderColor,
+                            borderWidth: isSelected ? 2 : 1.5,
                           },
                         ]}>
-                          <Text style={[styles.choiceText, language === 'tamil' && styles.choiceTextTamil, { color: showCorrect || showWrong ? '#FFFDF9' : '#0F172A' }]}>
+                          <Text style={[
+                            styles.choiceText,
+                            language === 'tamil' && styles.choiceTextTamil,
+                            {
+                              color: isSelected
+                                ? (isDark ? '#FFFFFF' : '#0369A1')
+                                : (isDark ? '#F1F5F9' : '#0F172A'),
+                              fontWeight: isSelected ? '700' : '600',
+                            }
+                          ]}>
                             {choice}
                           </Text>
-                          {showCorrect && (
-                            <Icon name="checkmark-circle" size={22} color="#FFFDF9" style={styles.feedbackIcon} />
-                          )}
-                          {showWrong && (
-                            <Icon name="close-circle" size={22} color="#FFFDF9" style={styles.feedbackIcon} />
-                          )}
+
+                          <Icon
+                            name={isSelected ? "radio-button-on" : "radio-button-off"}
+                            size={20}
+                            color={isSelected
+                              ? (isDark ? '#38BDF8' : '#0EA5E9')
+                              : (isDark ? 'rgba(255, 255, 255, 0.22)' : 'rgba(30, 58, 95, 0.22)')}
+                            style={styles.feedbackIcon}
+                          />
                         </View>
                       </TouchableOpacity>
                     </Animated.View>
@@ -1839,19 +1956,50 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
               },
             ]}>
               {currentIndex > 0 ? (
-                <TouchableOpacity style={styles.chevronCircleBtn} onPress={() => goToPrev()}>
-                  <Icon name="chevron-back" size={24} color="#1E3A5F" />
+                <TouchableOpacity
+                  style={[
+                    styles.chevronCircleBtn,
+                    {
+                      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(30, 58, 95, 0.15)',
+                      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(30, 58, 95, 0.03)',
+                      opacity: 0.35,
+                    }
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => goToPrev()}
+                >
+                  <Icon name="chevron-back" size={22} color={isDark ? '#94A3B8' : '#1E3A5F'} />
                 </TouchableOpacity>
               ) : (
                 <View style={{ width: 44, height: 44 }} />
               )}
 
               {currentIndex < questions.length - 1 ? (
-                <TouchableOpacity style={styles.chevronCircleBtn} onPress={() => goToNextWithAnswers()}>
-                  <Icon name="chevron-forward" size={24} color="#1E3A5F" />
+                <TouchableOpacity
+                  style={[
+                    styles.chevronCircleBtn,
+                    {
+                      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(30, 58, 95, 0.15)',
+                      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(30, 58, 95, 0.03)',
+                      opacity: 0.35,
+                    }
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => goToNextManual()}
+                >
+                  <Icon name="chevron-forward" size={22} color={isDark ? '#94A3B8' : '#1E3A5F'} />
                 </TouchableOpacity>
               ) : (
-                <View style={{ width: 44, height: 44 }} />
+                <TouchableOpacity
+                  style={styles.submitExamBtn}
+                  activeOpacity={0.85}
+                  onPress={() => setSubmitConfirmModalVisible(true)}
+                >
+                  <Icon name="checkmark-circle" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.submitExamBtnText}>
+                    {language === 'tamil' ? 'சமர்ப்பி' : 'Submit'}
+                  </Text>
+                </TouchableOpacity>
               )}
             </View>
 
@@ -1982,19 +2130,49 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       {user?.display_name || 'Guest'}
                     </Text>
                   </View>
-                  <View style={styles.detailRow}>
-                    <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'பிரிவு' : 'Category'}</Text>
-                    <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
-                      {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
-                    </Text>
-                  </View>
-                  {activeSetIds && activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
-                    <View style={styles.detailRow}>
-                      <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'விளையாடிய தொகுதி' : 'Set Played'}</Text>
-                      <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
-                        {(language === 'tamil' ? 'தொகுதி ' : 'set ') + activeSetIds.map(id => id.replace('set', '')).join('/')}
-                      </Text>
-                    </View>
+                  {selectedCategory === 'custom' ? (
+                    <>
+                      <View style={styles.detailRow}>
+                        <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>
+                          {language === 'tamil' ? 'வினாடி வினா தலைப்பு' : 'Quiz Title'}
+                        </Text>
+                        <Text
+                          style={[styles.detailValue, { color: '#0F62FE', fontWeight: '800', flex: 1, textAlign: 'right' }]}
+                          numberOfLines={2}
+                        >
+                          {customSetName || activeChallengeData?.title || 'Practice Quiz'}
+                        </Text>
+                      </View>
+                      <View style={styles.detailRow}>
+                        <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>
+                          {language === 'tamil' ? 'முறை' : 'Mode'}
+                        </Text>
+                        <Text style={[styles.detailValue, { color: '#10B981', fontWeight: '700' }]}>
+                          {language === 'tamil' ? 'பயிற்சி' : 'Practice'}
+                        </Text>
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <View style={styles.detailRow}>
+                        <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>
+                          {language === 'tamil' ? 'பிரிவு' : 'Category'}
+                        </Text>
+                        <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
+                          {language === 'tamil' && activeCategoryConfig.nameTa ? activeCategoryConfig.nameTa : activeCategoryConfig.name}
+                        </Text>
+                      </View>
+                      {activeSetIds && activeSetIds.length > 0 && activeSetIds[0] !== 'mixed' && (
+                        <View style={styles.detailRow}>
+                          <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>
+                            {language === 'tamil' ? 'விளையாடிய தொகுதி' : 'Set Played'}
+                          </Text>
+                          <Text style={[styles.detailValue, { color: activeCategoryConfig.color }, language === 'tamil' && styles.detailValueTamil]}>
+                            {(language === 'tamil' ? 'தொகுதி ' : 'set ') + activeSetIds.map(id => id.replace('set', '')).join('/')}
+                          </Text>
+                        </View>
+                      )}
+                    </>
                   )}
                   <View style={styles.detailRow}>
                     <Text style={[styles.detailLabel, language === 'tamil' && styles.detailLabelTamil]}>{language === 'tamil' ? 'சரியான பதில்கள்' : 'Correct Answers'}</Text>
@@ -2062,7 +2240,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
                 <TouchableOpacity
                   style={[styles.scoreboardOutlineBtn, { marginTop: 0 }]}
-                  onPress={() => navigation.navigate('TriviaChallenges')}
+                  onPress={navigateToInvitedContests}
                   activeOpacity={0.8}
                 >
                   <Icon name="trophy-outline" size={18} color="#8B5CF6" style={{ marginRight: 6 }} />
@@ -2071,11 +2249,49 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
                 <TouchableOpacity
                   style={[styles.scoreboardOutlineBtn, { marginTop: 0 }]}
-                  onPress={() => navigation.goBack()}
+                  onPress={() => {
+                    if (navigation.canGoBack()) {
+                      navigation.goBack();
+                    } else {
+                      navigation.navigate('TriviaHub');
+                    }
+                  }}
                   activeOpacity={0.8}
                 >
                   <Icon name="chatbubbles-outline" size={18} color={isDark ? '#38BDF8' : '#0F62FE'} style={{ marginRight: 6 }} />
                   <Text style={styles.scoreboardOutlineBtnText}>Return to Chat</Text>
+                </TouchableOpacity>
+              </View>
+            ) : selectedCategory === 'custom' ? (
+              <View style={{ width: '100%', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.scoreboardOutlineBtn, { marginTop: 0, borderColor: '#10B981', backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : '#ECFDF5' }]}
+                  onPress={() => {
+                    setUserAnswers({});
+                    setCurrentIndex(0);
+                    setScore(0);
+                    setTimeLeft(Math.max(120, questions.length * 48));
+                    setGameState('playing');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="refresh" size={18} color="#10B981" style={{ marginRight: 6 }} />
+                  <Text style={[styles.scoreboardOutlineBtnText, { color: '#10B981', fontWeight: '800' }]}>Practice Again</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.scoreboardOutlineBtn, { marginTop: 0 }]}
+                  onPress={() => {
+                    if (navigation.canGoBack()) {
+                      navigation.goBack();
+                    } else {
+                      navigation.navigate('CustomTriviaSets');
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="arrow-back" size={18} color={isDark ? '#38BDF8' : '#0F62FE'} style={{ marginRight: 6 }} />
+                  <Text style={styles.scoreboardOutlineBtnText}>Back to Contest List</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -2137,7 +2353,7 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                       style={[prepStyles.langBtn, language === 'tamil' && prepStyles.langBtnActive]}
                       onPress={() => toggleLanguage('tamil')}
                     >
-                      <Text style={[prepStyles.langBtnTxt, language === 'tamil' && prepStyles.langBtnTxtActive]}>TA</Text>
+                      <Text style={[prepStyles.langBtnTxt, language === 'tamil' && prepStyles.langBtnTxtActive]}>த</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -2387,7 +2603,19 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
                 style={[styles.modalButton, styles.modalExitButton]}
                 onPress={() => {
                   setExitModalVisible(false);
-                  navigation.goBack();
+                  if (activeChallengeData) {
+                    navigateToInvitedContests();
+                  } else if (selectedCategory === 'custom') {
+                    if (navigation.canGoBack()) {
+                      navigation.goBack();
+                    } else {
+                      navigation.navigate('CustomTriviaSets');
+                    }
+                  } else if (navigation.canGoBack()) {
+                    navigation.goBack();
+                  } else {
+                    navigation.navigate('TriviaHub');
+                  }
                 }}
               >
                 <Text style={styles.modalExitButtonText}>Exit</Text>
@@ -2674,7 +2902,258 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
         </View>
       </Modal>
 
+      {/* ── SUBMIT EXAM CONFIRMATION MODAL ── */}
+      <Modal
+        visible={submitConfirmModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setSubmitConfirmModalVisible(false)}
+      >
+        <View style={styles.submissionModalOverlay}>
+          <View style={[styles.submissionModalCard, { backgroundColor: isDark ? "#0F172A" : "#FFFFFF" }]}>
+            <View style={[
+              styles.submissionIconCircle,
+              {
+                backgroundColor: (questions.length - Object.keys(userAnswers).length) > 0
+                  ? 'rgba(245, 158, 11, 0.15)'
+                  : 'rgba(16, 185, 129, 0.15)'
+              }
+            ]}>
+              <Icon
+                name={(questions.length - Object.keys(userAnswers).length) > 0 ? "alert-circle" : "checkmark-circle"}
+                size={42}
+                color={(questions.length - Object.keys(userAnswers).length) > 0 ? "#F59E0B" : "#10B981"}
+              />
+            </View>
+
+            <Text style={[styles.submissionTitle, { color: theme.textPrimary }]}>
+              {language === 'tamil' ? 'தேர்வை முடிக்கவா?' : 'Submit Quiz?'}
+            </Text>
+
+            <Text style={[styles.submissionMessage, { color: theme.textSecondary, marginBottom: 14 }]}>
+              {language === 'tamil'
+                ? 'உங்கள் விடைகளை சமர்ப்பிக்க விரும்புகிறீர்களா?'
+                : 'Are you sure you want to finish and submit your answers?'}
+            </Text>
+
+            {/* Questions Answered vs Unanswered summary cards */}
+            <View style={styles.confirmStatsRow}>
+              <View style={[styles.confirmStatBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9' }]}>
+                <Text style={[styles.confirmStatValue, { color: '#10B981' }]}>
+                  {Object.keys(userAnswers).length}
+                </Text>
+                <Text style={[styles.confirmStatLabel, { color: theme.textSecondary }]}>
+                  {language === 'tamil' ? 'பதிலளித்தவை' : 'Answered'}
+                </Text>
+              </View>
+
+              <View style={[styles.confirmStatBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9' }]}>
+                <Text style={[styles.confirmStatValue, { color: (questions.length - Object.keys(userAnswers).length) > 0 ? '#EF4444' : '#10B981' }]}>
+                  {questions.length - Object.keys(userAnswers).length}
+                </Text>
+                <Text style={[styles.confirmStatLabel, { color: theme.textSecondary }]}>
+                  {language === 'tamil' ? 'பதிலளிக்காதவை' : 'Unanswered'}
+                </Text>
+              </View>
+
+              <View style={[styles.confirmStatBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9' }]}>
+                <Text style={[styles.confirmStatValue, { color: '#6366F1' }]}>
+                  {questions.length}
+                </Text>
+                <Text style={[styles.confirmStatLabel, { color: theme.textSecondary }]}>
+                  {language === 'tamil' ? 'மொத்தம்' : 'Total'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Unanswered Warning Alert if any */}
+            {(questions.length - Object.keys(userAnswers).length) > 0 && (
+              <View style={styles.unansweredAlertBanner}>
+                <Icon name="warning" size={16} color="#B45309" style={{ marginRight: 6 }} />
+                <Text style={styles.unansweredAlertBannerText}>
+                  {language === 'tamil'
+                    ? `${questions.length - Object.keys(userAnswers).length} வினாக்களுக்கு இன்னும் பதிலளிக்கவில்லை!`
+                    : `You have ${questions.length - Object.keys(userAnswers).length} unanswered question(s)!`}
+                </Text>
+              </View>
+            )}
+
+            {/* Action buttons: Review vs Submit */}
+            <View style={styles.confirmActionBtnRow}>
+              <TouchableOpacity
+                style={[styles.confirmCancelBtn, { borderColor: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(30, 58, 95, 0.2)' }]}
+                onPress={() => setSubmitConfirmModalVisible(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.confirmCancelBtnText, { color: theme.textSecondary }]}>
+                  {language === 'tamil' ? 'மீண்டும் பார்' : 'Review'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.confirmSubmitBtn}
+                onPress={() => {
+                  setSubmitConfirmModalVisible(false);
+                  endGameWithAnswers(userAnswers);
+                }}
+                activeOpacity={0.85}
+              >
+                <Icon name="checkmark" size={18} color="#FFFFFF" style={{ marginRight: 4 }} />
+                <Text style={styles.confirmSubmitBtnText}>
+                  {language === 'tamil' ? 'சமர்ப்பி' : 'Submit'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── 24-HOUR CHALLENGE LIVE LEADERBOARD MODAL ── */}
+            {/* ── CONTEST INFORMATION & COMPETITIVE EXAM RULES MODAL ── */}
+      <Modal
+        visible={contestInfoModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setContestInfoModalVisible(false)}
+      >
+        <View style={styles.contestInfoModalOverlay}>
+          <View style={[styles.contestInfoModalCard, { backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
+            {/* Header: Trophy Icon + Title + Close Button */}
+            <View style={styles.contestInfoHeader}>
+              <View style={[styles.contestInfoIconCircle, { backgroundColor: isDark ? 'rgba(139, 92, 246, 0.16)' : '#EDE9FE' }]}>
+                <Icon name="trophy" size={22} color={isDark ? '#A78BFA' : '#7C3AED'} />
+              </View>
+              <View style={{ flex: 1, marginHorizontal: 12 }}>
+                <Text style={[styles.contestInfoTitle, { color: theme.textPrimary }]} numberOfLines={1}>
+                  {activeChallengeData?.title || (language === 'tamil' ? 'குழு போட்டி' : 'Group Contest')}
+                </Text>
+                <Text style={[styles.contestInfoSubtitle, { color: theme.textSecondary }]}>
+                  {language === 'tamil' ? 'போட்டித் தேர்வு விதிமுறைகள்' : 'Competitive Exam Rules'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setContestInfoModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={[styles.contestInfoCloseBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' }]}
+              >
+                <Icon name="close" size={18} color={theme.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Quick Metrics Pill Row */}
+            <View style={[styles.contestInfoMetricsRow, { backgroundColor: isDark ? '#1E293B' : '#F8FAFC', borderColor: isDark ? 'rgba(255,255,255,0.08)' : '#E2E8F0' }]}>
+              <View style={styles.contestInfoMetricItem}>
+                <Icon name="help-circle-outline" size={16} color={isDark ? '#38BDF8' : '#0F62FE'} />
+                <Text style={[styles.contestInfoMetricText, { color: theme.textPrimary }]}>
+                  {questions.length} {language === 'tamil' ? 'வினாக்கள்' : 'Questions'}
+                </Text>
+              </View>
+              <View style={[styles.contestInfoMetricDivider, { backgroundColor: isDark ? '#334155' : '#CBD5E1' }]} />
+              <View style={styles.contestInfoMetricItem}>
+                <Icon name="timer-outline" size={16} color="#D97706" />
+                <Text style={[styles.contestInfoMetricText, { color: theme.textPrimary }]}>
+                  {Math.round((activeChallengeData?.timeLimitSeconds || (questions.length * 48)) / 60)} {language === 'tamil' ? 'நிமிடம்' : 'Mins'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Info Rules List */}
+            <View style={{ gap: 12, marginVertical: 16, width: '100%' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <View style={[styles.ruleBullet, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                  <Icon name="shield-checkmark" size={15} color="#10B981" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.ruleTitle, { color: theme.textPrimary }]}>
+                    {language === 'tamil' ? 'சீல் வைக்கப்பட்ட விடைகள்' : 'Sealed Answers'}
+                  </Text>
+                  <Text style={[styles.ruleDesc, { color: theme.textSecondary }]}>
+                    {language === 'tamil'
+                      ? 'விடைகள் மற்றும் மதிப்பெண்கள் போட்டி முடியும் வரை ரகசியமாக வைக்கப்படும்.'
+                      : 'Answers, choices, and scores remain sealed until the contest concludes.'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <View style={[styles.ruleBullet, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
+                  <Icon name="timer" size={15} color="#F59E0B" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.ruleTitle, { color: theme.textPrimary }]}>
+                    {language === 'tamil' ? 'நேர வரம்பு' : 'Timed Challenge'}
+                  </Text>
+                  <Text style={[styles.ruleDesc, { color: theme.textSecondary }]}>
+                    {language === 'tamil'
+                      ? 'டைமர் முடிந்தால் வினாடி வினா தானாக சமர்ப்பிக்கப்படும்.'
+                      : 'The countdown runs continuously. Auto-submits when time expires.'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <View style={[styles.ruleBullet, { backgroundColor: 'rgba(139, 92, 246, 0.15)' }]}>
+                  <Icon name="podium" size={15} color="#8B5CF6" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.ruleTitle, { color: theme.textPrimary }]}>
+                    {language === 'tamil' ? 'நேரலை தரவரிசை' : 'Leaderboard Standings'}
+                  </Text>
+                  <Text style={[styles.ruleDesc, { color: theme.textSecondary }]}>
+                    {language === 'tamil'
+                      ? 'முடிவுகள் அறிவிக்கப்பட்டதும் வெற்றியாளர்கள் பட்டியல் புதுப்பிக்கப்படும்.'
+                      : 'Final rankings and winner certificates are published once the contest window closes.'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Got It Button */}
+            <TouchableOpacity
+              style={[styles.contestInfoGotItBtn, { backgroundColor: isDark ? '#0284C7' : '#0F62FE' }]}
+              onPress={() => setContestInfoModalVisible(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.contestInfoGotItText}>
+                {language === 'tamil' ? 'புரிந்தது' : 'Got it'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+{/* Contest Submitted Appreciative Modal */}
+      <Modal
+        visible={contestSubmittedModal}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={navigateToInvitedContests}
+      >
+        <View style={styles.submissionModalOverlay}>
+          <View style={[styles.submissionModalCard, { backgroundColor: isDark ? "#0F172A" : "#FFFFFF" }]}>
+            <View style={styles.submissionIconCircle}>
+              <Icon name="checkmark-circle" size={48} color="#10B981" />
+            </View>
+            <Text style={[styles.submissionTitle, { color: theme.textPrimary }]}>
+              Submission Received! 🎉
+            </Text>
+            <Text style={[styles.submissionMessage, { color: theme.textSecondary }]}>
+              Thanks for participating! Your answers have been recorded. Results will be announced by the host within 24 hours.
+            </Text>
+            <TouchableOpacity
+              style={styles.submissionDoneBtn}
+              onPress={navigateToInvitedContests}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.submissionDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={challengeLeaderboardModalVisible}
         transparent
@@ -3310,23 +3789,26 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   langBtnActive: {
-    backgroundColor: '#0F62FE',
+    backgroundColor: '#64748B',
+    borderWidth: 1,
+    borderColor: '#475569',
   },
   langBtnText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#94A3B8',
   },
   langBtnTextActive: {
     color: '#FFFFFF',
+    fontWeight: '800',
   },
   gameLanguageToggleContainer: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(0, 110, 255, 0.05)',
+    backgroundColor: 'rgba(100, 116, 139, 0.12)',
     borderRadius: 12,
     padding: 2,
     borderWidth: 1,
-    borderColor: 'rgba(30, 58, 95, 0.12)',
+    borderColor: 'rgba(100, 116, 139, 0.25)',
   },
   gameLanguageButton: {
     paddingHorizontal: 8,
@@ -3334,7 +3816,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   gameLanguageButtonActive: {
-    backgroundColor: '#0F62FE',
+    backgroundColor: '#64748B',
   },
   gameLanguageButtonText: {
     color: 'rgba(30, 58, 95, 0.6)',
@@ -3342,7 +3824,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   gameLanguageButtonTextActive: {
-    color: '#FFFDF9',
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
   categoryTabsContainer: {
     marginVertical: 10,
@@ -3981,6 +4464,270 @@ const styles = StyleSheet.create({
     fontFamily: 'Kalam-Bold',
     fontSize: 16,
   },
+  examModeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(79, 70, 229, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(79, 70, 229, 0.25)",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 12,
+  },
+  examModeBannerText: {
+    color: "#6366F1",
+    fontSize: 12,
+    fontWeight: "700",
+    flex: 1,
+    lineHeight: 16,
+  },
+  contestInfoModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  contestInfoModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 22,
+    padding: 22,
+    alignItems: 'center',
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+  },
+  contestInfoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 16,
+  },
+  contestInfoIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contestInfoTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  contestInfoSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  contestInfoCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contestInfoMetricsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    width: '100%',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  contestInfoMetricItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  contestInfoMetricDivider: {
+    width: 1,
+    height: 18,
+  },
+  contestInfoMetricText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  ruleBullet: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ruleTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  ruleDesc: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  contestInfoGotItBtn: {
+    width: '100%',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+  },
+  contestInfoGotItText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  submissionModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+  },
+  submissionModalCard: {
+    width: "100%",
+    borderRadius: 22,
+    padding: 24,
+    alignItems: "center",
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+  },
+  submissionIconCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "rgba(16, 185, 129, 0.14)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  submissionTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  submissionMessage: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    textAlign: "center",
+    marginBottom: 20,
+    paddingHorizontal: 8,
+  },
+  submissionDoneBtn: {
+    backgroundColor: "#10B981",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 36,
+    elevation: 2,
+  },
+  submissionDoneText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  submitExamBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#10B981',
+    borderRadius: 22,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    elevation: 3,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+  },
+  submitExamBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  confirmStatsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 8,
+    marginBottom: 14,
+  },
+  confirmStatBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  confirmStatValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  confirmStatLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  unansweredAlertBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 16,
+    width: '100%',
+  },
+  unansweredAlertBannerText: {
+    color: '#92400E',
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+  },
+  confirmActionBtnRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  confirmSubmitBtn: {
+    flex: 1.2,
+    backgroundColor: '#10B981',
+    paddingVertical: 12,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+  },
+  confirmSubmitBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
 });
 
 // ── Prepare Mode Styles ──────────────────────────────────────────────────────
@@ -4044,7 +4791,9 @@ const prepStyles = StyleSheet.create({
     borderRadius: 12,
   },
   langBtnActive: {
-    backgroundColor: '#4597f5',
+    backgroundColor: '#64748B',
+    borderWidth: 1,
+    borderColor: '#475569',
   },
   langBtnTxt: {
     color: 'rgba(255, 255, 255, 0.6)',
@@ -4052,7 +4801,8 @@ const prepStyles = StyleSheet.create({
     fontSize: 12,
   },
   langBtnTxtActive: {
-    color: '#fff',
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
   // Each slide occupies the full window height
   slideContent: {

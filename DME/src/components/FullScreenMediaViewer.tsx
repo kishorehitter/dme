@@ -1,3 +1,10 @@
+
+
+
+
+
+
+
 import React, { useEffect, useLayoutEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, StatusBar, Platform, BackHandler, NativeModules, Dimensions } from 'react-native';
 import Video from 'react-native-video';

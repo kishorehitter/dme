@@ -112,12 +112,12 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
-            resValue "string", "app_name", "Yesenta"
+            resValue "string", "app_name", "Youtelite"
         }
         debug2 {
             signingConfig signingConfigs.debug
             applicationIdSuffix ".debug2"
-            resValue "string", "app_name", "Yesenta (Debug 2)"
+            resValue "string", "app_name", "Youtelite (Debug 2)"
             debuggable true
             matchingFallbacks = ['debug']
         }
@@ -145,6 +145,11 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation platform('com.google.firebase:firebase-bom:32.7.0')
     implementation 'androidx.media:media:1.6.0'
+    implementation 'androidx.media3:media3-exoplayer:1.8.0'
+    implementation 'androidx.media3:media3-datasource:1.8.0'
+    implementation 'androidx.media3:media3-common:1.8.0'
+    implementation 'androidx.media3:media3-exoplayer-dash:1.8.0'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.8.0'
 
     // For Animated GIF support
     implementation "com.facebook.fresco:animated-gif:3.2.0"

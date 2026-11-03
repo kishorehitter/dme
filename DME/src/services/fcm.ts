@@ -729,6 +729,19 @@ class FCMService {
           const convId = data.conv_id || data.conversation_id;
           if (convId && this._activeConversationId === String(convId)) return;
           await this.displayGroupedMessageNotification(data);
+          // Notify ChatListScreen to update preview instantly (foreground, chat not open)
+          if (convId && data.type === 'new_message') {
+            DeviceEventEmitter.emit('chat_list_update', {
+              conversationId: Number(convId),
+              last_message: {
+                id: Number(data.msg_id) || Date.now(),
+                content: data.notif_body || '',
+                message_type: data.msg_type || 'text',
+                created_at: new Date().toISOString(),
+                sender: { id: Number(data.sender_id) || 0, display_name: data.sender || '' },
+              },
+            });
+          }
           break;
         }
 
@@ -752,6 +765,12 @@ class FCMService {
           break;
         }
 
+        case 'friend_request': {
+          await this.displayDefaultNotification(title, body, data);
+          DeviceEventEmitter.emit('friend_request_updated', data);
+          break;
+        }
+
         default:
           await this.displayDefaultNotification(title, body, data);
           break;
@@ -765,6 +784,22 @@ class FCMService {
           const convId = data.conv_id || data.conversation_id;
           if (convId && this._activeConversationId === String(convId)) return;
           await this.displayGroupedMessageNotification(data);
+          // Notify ChatListScreen to update preview instantly (data-only FCM, chat not open)
+          if (convId) {
+            DeviceEventEmitter.emit('chat_list_update', {
+              conversationId: Number(convId),
+              last_message: {
+                id: Number(data.msg_id) || Date.now(),
+                content: data.notif_body || '',
+                message_type: data.msg_type || 'text',
+                created_at: new Date().toISOString(),
+                sender: { id: Number(data.sender_id) || 0, display_name: data.sender || '' },
+              },
+            });
+          }
+        } else if (data.type === 'friend_request') {
+          await this.displayDefaultNotification(title, body, data);
+          DeviceEventEmitter.emit('friend_request_updated', data);
         } else {
           await this.displayDefaultNotification(title, body, data);
         }

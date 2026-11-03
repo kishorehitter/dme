@@ -44,7 +44,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def new_message_summary(self, event):
         """Send message update to WebSocket."""
-        print(f"   📨 NotificationConsumer: Broadcasting new_message_summary to user_updates_{self.user.id}")
+        print(f"    NotificationConsumer: Broadcasting new_message_summary to user_updates_{self.user.id}")
         await self.send(text_data=json.dumps({
             'type': 'new_message_summary',
             'data': event['data']
@@ -76,6 +76,25 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'message_request_status',
             'data': event['data']
+        }))
+
+    async def friend_request_updated(self, event):
+        """Handle friend request updated notification."""
+        await self.send(text_data=json.dumps({
+            'type': 'friend_request_update',
+            'data': event.get('data', {})
+        }))
+
+    async def typing_indicator(self, event):
+        """Send typing indicator to global notification WebSocket."""
+        await self.send(text_data=json.dumps({
+            'type': 'typing',
+            'data': {
+                'conversation_id': event.get('conversation_id'),
+                'user_id': event.get('user_id'),
+                'user_name': event.get('user_name'),
+                'is_typing': event.get('is_typing', False)
+            }
         }))
 
     async def get_user_from_token(self):
@@ -119,10 +138,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Authenticate user from JWT token in query params
         self.user = await self.get_user_from_token()
 
-        print(f"   🔌 WebSocket CONNECT: user={self.user.id if self.user else None}, conversation={self.conversation_id}, room={self.room_group_name}")
+        print(f"    WebSocket CONNECT: user={self.user.id if self.user else None}, conversation={self.conversation_id}, room={self.room_group_name}")
 
         if not self.user or not self.user.is_authenticated:
-            print(f"   ❌ WebSocket rejected: user not authenticated")
+            print(f"    WebSocket rejected: user not authenticated")
             await self.close(code=4001)
             return
 
@@ -133,7 +152,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
         if not is_participant:
-            print(f"   ❌ WebSocket rejected: user not participant")
+            print(f"    WebSocket rejected: user not participant")
             await self.close(code=4003)
             return
 
@@ -151,7 +170,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
         await self.accept()
-        print(f"   ✅ WebSocket ACCEPTED: user={self.user.id}, conversation={self.conversation_id}")
+        print(f"    WebSocket ACCEPTED: user={self.user.id}, conversation={self.conversation_id}")
 
         # Send confirmation
         await self.send(text_data=json.dumps({
@@ -162,7 +181,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Track which conversation this user is viewing
         user_active_conversations[self.user.id] = self.conversation_id
-        print(f"   📍 User {self.user.id} now viewing conversation {self.conversation_id}")
+        print(f"    User {self.user.id} now viewing conversation {self.conversation_id}")
 
         # Clear last_seen when user connects (they're online now)
         await self.update_last_seen(online=True)
@@ -185,7 +204,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 delivered_at__isnull=True
             ).update(delivered_at=timezone.now())
             if count > 0:
-                print(f"   ✅ Marked {count} undelivered message(s) as delivered for user {self.user.id}")
+                print(f"    Marked {count} undelivered message(s) as delivered for user {self.user.id}")
         await _mark_delivered()
     async def disconnect(self, close_code):
         """Update last_seen and notify room when user disconnects."""
@@ -197,15 +216,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if room_group_name and user and getattr(user, 'is_authenticated', False):
             # Broadcast that user stopped typing
             try:
+                conv_id = int(conversation_id) if conversation_id else None
+                u_name = getattr(user, 'display_name', '') or getattr(user, 'first_name', '') or getattr(user, 'username', '') or 'Someone'
+                event_payload = {
+                    'type': 'typing_indicator',
+                    'conversation_id': conv_id,
+                    'user_id': user.id,
+                    'user_name': u_name,
+                    'is_typing': False
+                }
                 await self.channel_layer.group_send(
                     room_group_name,
-                    {
-                        'type': 'typing_indicator',
-                        'user_id': user.id,
-                        'user_name': getattr(user, 'display_name', '') or str(user.id),
-                        'is_typing': False
-                    }
+                    event_payload
                 )
+                if conv_id:
+                    participants = await self.get_conversation_participants_async()
+                    for p_id in participants:
+                        if p_id != user.id:
+                            await self.channel_layer.group_send(
+                                f'user_updates_{p_id}',
+                                event_payload
+                            )
             except Exception as e:
                 print(f"Error sending typing_indicator on disconnect: {e}")
 
@@ -232,7 +263,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Remove from active conversations tracking
         if user and getattr(user, 'id', None) in user_active_conversations:
             del user_active_conversations[user.id]
-            print(f"   📍 User {user.id} left conversation {conversation_id}")
+            print(f"    User {user.id} left conversation {conversation_id}")
         
         # Set last_seen to current time (user went offline)
         if user and getattr(user, 'is_authenticated', False):
@@ -255,11 +286,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def receive(self, text_data):
         """Receive message from WebSocket."""
-        print(f"   📩 WebSocket RECEIVE: {text_data[:100]}")
+        print(f"    WebSocket RECEIVE: {text_data[:100]}")
         try:
             data = json.loads(text_data)
             message_type = data.get('type', 'message')
-            print(f"   📩 Message type: {message_type}")
+            print(f"    Message type: {message_type}")
 
             if message_type == 'message':
                 await self.handle_message(data)
@@ -270,7 +301,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             elif message_type == 'reaction':
                 await self.handle_reaction(data)
         except Exception as e:
-            print(f"   ❌ WebSocket RECEIVE ERROR: {e}")
+            print(f"    WebSocket RECEIVE ERROR: {e}")
             raise
 
     async def handle_message(self, data):
@@ -281,13 +312,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Check if sender is blocked by any participant in the conversation
         is_blocked = await self.check_if_blocked()
         if is_blocked:
-            print(f"   🚫 Message blocked: user {self.user.id} is blocked")
+            print(f"    Message blocked: user {self.user.id} is blocked")
             return
 
         # Check message permission (friends / message request gate)
         is_allowed, is_first, error_msg = await self.check_message_permission()
         if not is_allowed:
-            print(f"   🚫 Message gated: {error_msg}")
+            print(f"    Message gated: {error_msg}")
             await self.send(text_data=json.dumps({
                 'type': 'error',
                 'data': {'error': error_msg}
@@ -296,8 +327,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         content = data.get('content', '')
         message_type = data.get('message_type', 'text')
-        reply_to_id = data.get('reply_to')  # Extract reply_to from WebSocket data
+        reply_to_id = data.get('reply_to') or data.get('reply_to_id')  # Extract reply_to from WebSocket data
         duration = data.get('duration')  # Extract duration for audio messages
+
+        if isinstance(content, dict):
+            if 'message_type' in content and message_type == 'text':
+                message_type = content.get('message_type', 'text')
+            if 'reply_to_id' in content and not reply_to_id:
+                reply_to_id = content.get('reply_to_id')
+            if 'duration' in content and not duration:
+                duration = content.get('duration')
+            if 'content' in content:
+                content = content.get('content', '')
 
         if not content and message_type == 'text':
             return
@@ -428,15 +469,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def handle_typing(self, data):
         """Handle typing indicator."""
+        is_typing = data.get('is_typing', True)
+        user_name = self.user.display_name or self.user.first_name or self.user.username or 'Someone'
+        event_payload = {
+            'type': 'typing_indicator',
+            'conversation_id': int(self.conversation_id),
+            'user_id': self.user.id,
+            'user_name': user_name,
+            'is_typing': is_typing
+        }
+
+        # 1. Broadcast to chat room
         await self.channel_layer.group_send(
             self.room_group_name,
-            {
-                'type': 'typing_indicator',
-                'user_id': self.user.id,
-                'user_name': self.user.display_name,
-                'is_typing': data.get('is_typing', True)
-            }
+            event_payload
         )
+
+        # 2. Broadcast to participants' global notification updates (for ChatListScreen preview)
+        try:
+            participants = await self.get_conversation_participants_async()
+            print(f"    ChatConsumer.handle_typing: conv={self.conversation_id}, user={self.user.id}, is_typing={is_typing}, participants={participants}")
+            for p_id in participants:
+                if p_id != self.user.id:
+                    print(f"    Broadcasting typing to user_updates_{p_id}")
+                    await self.channel_layer.group_send(
+                        f'user_updates_{p_id}',
+                        event_payload
+                    )
+        except Exception as e:
+            print(f"Error broadcasting typing to user_updates: {e}")
 
     async def handle_read(self, data):
         """Handle read receipt."""
@@ -480,7 +541,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not message_id:
             return
 
-        print(f"   ❤️ Reaction: message {message_id}, emoji {emoji} by user {self.user.id}")
+        print(f"    Reaction: message {message_id}, emoji {emoji} by user {self.user.id}")
 
         # Save to DB and get info
         res = await self.save_message_reaction(message_id, emoji)
@@ -493,7 +554,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         recipient = res['recipient']
         recipient_id = res['recipient_id']
 
-        print(f"   📡 Broadcasting reaction to room {self.room_group_name}: message={message_id}, reactions={reactions}")
+        print(f"    Broadcasting reaction to room {self.room_group_name}: message={message_id}, reactions={reactions}")
 
         # Broadcast to room
         await self.channel_layer.group_send(
@@ -504,7 +565,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'reactions': reactions
             }
         )
-        print(f"   ✅ Reaction broadcast sent")
+        print(f"    Reaction broadcast sent")
 
         # Send new_message_summary to participants' chatlist updates (without incrementing badge)
         participants = await self.get_conversation_participants_async()
@@ -592,7 +653,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def broadcast_reaction(self, event):
         """Send reaction update to WebSocket."""
-        print(f"   📨 broadcast_reaction called for user {self.user.id}: message={event.get('message_id')}, reactions={event.get('reactions')}")
+        print(f"    broadcast_reaction called for user {self.user.id}: message={event.get('message_id')}, reactions={event.get('reactions')}")
         await self.send(text_data=json.dumps({
             'type': 'reaction',
             'data': {
@@ -600,7 +661,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'reactions': event['reactions']
             }
         }))
-        print(f"   ✅ Reaction sent to user {self.user.id}")
+        print(f"    Reaction sent to user {self.user.id}")
 
     async def new_message_summary(self, event):
         """Handle new message summary notification."""
@@ -702,6 +763,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'typing',
             'data': {
+                'conversation_id': event.get('conversation_id', int(self.conversation_id) if hasattr(self, 'conversation_id') else None),
                 'user_id': event['user_id'],
                 'user_name': event['user_name'],
                 'is_typing': event['is_typing']
@@ -923,7 +985,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Build the title: Group Name + Sender Name or just Sender Name
             notification_title = f"{group_name} - {sender_name}" if group_name else sender_name
 
-            print(f"   🔔 FCM Notification triggered for conversation {conversation_id}")
+            print(f"    FCM Notification triggered for conversation {conversation_id}")
             print(f"      - Title: {notification_title}")
 
             participants = ConversationParticipant.objects.filter(
@@ -970,6 +1032,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         }
                     )
         except Exception as e:
-            print(f"   ❌ Error sending FCM notification: {e}")
+            print(f"    Error sending FCM notification: {e}")
             import traceback
             traceback.print_exc()

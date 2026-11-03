@@ -1565,6 +1565,7 @@ class FriendRequestActionView(APIView):
                 return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
             fr.status = 'rejected'
             fr.save()
+            _broadcast_friend_request_update(fr, 'rejected')
             return Response(FriendRequestSerializer(fr, context={'request': request}).data)
 
         return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1579,6 +1580,7 @@ class FriendRequestActionView(APIView):
             ).first()
             if not fr:
                 return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            _broadcast_friend_request_update(fr, 'cancelled')
             fr.delete()
             return Response({'message': 'Friend request cancelled'}, status=status.HTTP_200_OK)
         except Exception as e:
@@ -1652,6 +1654,29 @@ class MessageRequestActionView(APIView):
 
 # ─── FCM Notification Helpers ─────────────────────────────────────────────────
 
+def _broadcast_friend_request_update(fr, action):
+    """Broadcast real-time friend request changes over WebSocket."""
+    try:
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            event_data = {
+                'action': action,
+                'request_id': getattr(fr, 'id', None),
+                'sender_id': getattr(fr, 'sender_id', None),
+                'receiver_id': getattr(fr, 'receiver_id', None),
+            }
+            for u_id in [getattr(fr, 'sender_id', None), getattr(fr, 'receiver_id', None)]:
+                if u_id:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_updates_{u_id}',
+                        {'type': 'friend_request_updated', 'data': event_data}
+                    )
+    except Exception as e:
+        print(f'Warning: _broadcast_friend_request_update failed: {e}')
+
+
 def _notify_friend_request_sent(fr):
     """Push notification to the receiver when a friend request is sent."""
     try:
@@ -1673,6 +1698,7 @@ def _notify_friend_request_sent(fr):
         )
     except Exception as e:
         print(f'Warning: FCM friend_request_sent failed: {e}')
+    _broadcast_friend_request_update(fr, 'sent')
 
 
 def _auto_accept_message_request(user_a, user_b):
@@ -1742,6 +1768,8 @@ def _notify_friend_request_accepted(fr):
         )
     except Exception as e:
         print(f'Warning: FCM friend_request_accepted failed: {e}')
+    _broadcast_friend_request_update(fr, 'accepted')
+    _broadcast_friend_request_update(fr, 'accepted')
 
 
 def _notify_message_request_accepted(msg_req):
@@ -1870,6 +1898,7 @@ class FriendRequestRejectView(APIView):
             return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
         fr.status = 'rejected'
         fr.save()
+        _broadcast_friend_request_update(fr, 'rejected')
         return Response(FriendRequestSerializer(fr, context={'request': request}).data)
 
 
@@ -1885,6 +1914,7 @@ class FriendRequestCancelView(APIView):
             ).first()
             if not fr:
                 return Response({'error': 'Friend request not found'}, status=status.HTTP_404_NOT_FOUND)
+            _broadcast_friend_request_update(fr, 'cancelled')
             fr.delete()
             return Response({'message': 'Friend request cancelled'}, status=status.HTTP_200_OK)
         except Exception as e:

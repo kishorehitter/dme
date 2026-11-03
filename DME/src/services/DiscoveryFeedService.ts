@@ -218,6 +218,11 @@ const DEFAULT_FALLBACK_VIDEOS: Song[] = [
   { videoId: 'DyDfgMOUjCI', title: 'Billie Eilish - bad guy', channelTitle: 'Billie Eilish', thumbnail: 'https://img.youtube.com/vi/DyDfgMOUjCI/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
   { videoId: 'I_2D8Eo15wE', title: 'The Weeknd - Blinding Lights', channelTitle: 'The Weeknd', thumbnail: 'https://img.youtube.com/vi/I_2D8Eo15wE/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
   { videoId: 'gNi_6U5Pm_o', title: 'Post Malone, Swae Lee - Sunflower', channelTitle: 'Post Malone', thumbnail: 'https://img.youtube.com/vi/gNi_6U5Pm_o/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
+  { videoId: 'fJ9rUzIMcZQ', title: 'Queen - Bohemian Rhapsody', channelTitle: 'Queen', thumbnail: 'https://img.youtube.com/vi/fJ9rUzIMcZQ/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
+  { videoId: 'L_LUpnjgPso', title: 'Coldplay - Hymn For The Weekend', channelTitle: 'Coldplay', thumbnail: 'https://img.youtube.com/vi/L_LUpnjgPso/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
+  { videoId: 'k2qgadSvNyU', title: 'Dua Lipa - New Rules', channelTitle: 'Dua Lipa', thumbnail: 'https://img.youtube.com/vi/k2qgadSvNyU/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
+  { videoId: 'JGwWNGJdvx8', title: 'Ed Sheeran - Shape of You', channelTitle: 'Ed Sheeran', thumbnail: 'https://img.youtube.com/vi/JGwWNGJdvx8/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
+  { videoId: 'hLQl3WQQoQ0', title: 'Adele - Someone Like You', channelTitle: 'Adele', thumbnail: 'https://img.youtube.com/vi/hLQl3WQQoQ0/hqdefault.jpg', addedBy: 'YouTube', source: 'youtube' },
 ];
 
 export default DiscoveryFeedService.getInstance();

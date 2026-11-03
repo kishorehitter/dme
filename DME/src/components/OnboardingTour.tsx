@@ -23,7 +23,7 @@ export interface TourTarget {
   height: number;
 }
 
-export type TourStepKey = 'fab' | 'play' | 'menu' | 'statusTab' | 'trivia';
+export type TourStepKey = 'fab' | 'trivia' | 'play' | 'statusTab';
 
 const STEPS: {
   key: TourStepKey;
@@ -33,31 +33,10 @@ const STEPS: {
   tipPosition: 'top' | 'bottom';
 }[] = [
   {
-    key: 'fab',
-    icon: 'person-add-outline',
-    title: 'Add a New Friend',
-    description: 'Tap this button to search for a User, view your Friend list or Sent and Accept new Friend Request.',
-    tipPosition: 'top',
-  },
-  {
     key: 'play',
     icon: 'play-circle-outline',
     title: 'Watch Together',
-    description: 'Create/Join a room to discover new content, learn, listen to music, and watch videos with your friends in real time.',
-    tipPosition: 'bottom',
-  },
-  {
-    key: 'menu',
-    icon: 'ellipsis-vertical',
-    title: 'More Options',
-    description: 'Access your profile, create groups, clear chats, settings, app updates and logout from this menu.',
-    tipPosition: 'bottom',
-  },
-  {
-    key: 'statusTab',
-    icon: 'person-circle-outline',
-    title: 'Status Tab',
-    description: 'Switch to the Status tab to upload photos or videos as your status and see updates from friends.',
+    description: 'Create or join a room to discover content, listen to music, and watch videos with your friends in real time.',
     tipPosition: 'top',
   },
   {
@@ -65,6 +44,20 @@ const STEPS: {
     icon: 'help-circle-outline',
     title: 'Knowledge Quest',
     description: 'Challenge yourself with general knowledge questions! Tap here to start a solo quiz and test your knowledge across topics.',
+    tipPosition: 'top',
+  },
+  {
+    key: 'statusTab',
+    icon: 'person-circle-outline',
+    title: 'Status Tab',
+    description: 'Switch to the Status tab to upload photos or videos as your status and see stories from friends.',
+    tipPosition: 'top',
+  },
+  {
+    key: 'fab',
+    icon: 'people',
+    title: 'Friend List',
+    description: 'Tap this button to view your friend list, search for users, and manage incoming or sent requests.',
     tipPosition: 'bottom',
   },
 ];
@@ -175,8 +168,8 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   const cardX = (SCREEN_W - CARD_W) / 2;
   const CARD_H = 230;
 
-  const isBottomStep = step.key === 'statusTab' || step.key === 'fab';
-  const cardAboveY = target.y - CARD_H - (isBottomStep ? 60 : 30);
+  const isBottomStep = step.key === 'statusTab' || step.key === 'play' || step.key === 'trivia';
+  const cardAboveY = target.y - CARD_H - (isBottomStep ? 70 : 30);
   const cardBelowY = target.y + target.height + (isTopPointer ? 75 : 40);
 
   let cardY: number;
@@ -205,15 +198,12 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
   const getHorizontalOffset = (key: TourStepKey) => {
     switch (key) {
       case 'play':
-        return 0;      // Music Room pointer offset (positive = right, negative = left)
       case 'trivia':
-        return 4;      // Trivia pointer offset
-      case 'menu':
-        return 4;      // Menu pointer offset
-      case 'fab':
-        return -12;    // New Chat pointer offset
+        return -4;      // Hub circular buttons (50x50) aligned vertically
       case 'statusTab':
-        return -12;    // Status Tab pointer offset
+        return -4;      // Status Tab center icon
+      case 'fab':
+        return -2;      // Friends icon in header
       default:
         return 0;
     }

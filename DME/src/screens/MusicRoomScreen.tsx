@@ -17,13 +17,14 @@
 
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
+  View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback, Pressable,
   FlatList, Image, ActivityIndicator,
   StatusBar, TextInput,
-  Dimensions, Keyboard, Platform, ScrollView,
-  KeyboardAvoidingView, Modal, BackHandler,
+  Dimensions, Keyboard, Platform, ScrollView, useWindowDimensions,
+  KeyboardAvoidingView, Modal, BackHandler, Switch,
   Animated, PanResponder, DeviceEventEmitter, AppState, Vibration,
   LayoutChangeEvent, NativeModules, LayoutAnimation, Easing as RNEasing,
+  Share,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import AmbientDiscoBackground, { RoomTheme } from '../components/AmbientDiscoBackground';
@@ -31,17 +32,21 @@ import BackgroundAmbientPlayer from '../components/BackgroundAmbientPlayer';
 import DrivePlayer from '../components/DrivePlayer';
 import DirectVideoPlayer from '../components/DirectVideoPlayer';
 import YoutubePlayer from '../components/YoutubePlayer';
+import YouTubeDecipherService from '../services/YouTubeDecipherService';
 import TrackPlayerService, { extractStreamUrlClientSide, extractVideoStreamUrlClientSide, heightToQualityKey, getEffectiveResolutionHeight } from '../services/TrackPlayerService';
 import TrackPlayer, { Event, PlaybackState } from '@rntp/player';
-import { startMusicService, updateMusicService, stopMusicService } from '../services/MusicServiceBridge';
+import { startMusicService, updateMusicService, stopMusicService, updateMusicServicePosition } from '../services/MusicServiceBridge';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
+import { setSystemPipEnabled, setSystemPipMinimized, setSystemPipAspectRatio, getAspectRatioFraction, enterSystemPip, closeSystemPip, addPipListener, hasSystemPipPermission, openSystemPipSettings } from '../services/PipService';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useCall } from '../context/CallContext';
 import api, { musicAPI } from '../services/api';
 import InviteModal from '../components/InviteModal';
+import RoomParticipantsModal from '../components/RoomParticipantsModal';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import RelatedVideosGrid from '../components/RelatedVideosGrid';
 import DiscoveryFeedService from '../services/DiscoveryFeedService';
@@ -61,17 +66,177 @@ import StickerPreviewModal from '../components/StickerPreviewModal';
 import { CustomGalleryPicker } from '../components/CustomGalleryPicker';
 import FastImage from 'react-native-fast-image';
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
+import DriveStreamService from '../services/DriveStreamService';
 import StickerPickerSheet from '../components/StickerPickerSheet';
 import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../components/DoubleTapHeartOverlay';
 import LottieStickerMessage from '../components/LottieStickerMessage';
 import { BUILT_IN_STICKER_PACKS, Sticker } from '../stickers/stickerPacks';
-import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
-import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Reanimated, { useSharedValue, useAnimatedStyle, useDerivedValue, useAnimatedReaction, withTiming, withSpring, cancelAnimation, Easing } from 'react-native-reanimated';
+import { useGenericKeyboardHandler, KeyboardController, AndroidSoftInputModes } from 'react-native-keyboard-controller';
 import { useMusicVoiceChat } from '../hooks/useMusicVoiceChat';
 
 
+// ── WhatsApp / Instagram style smooth mounting & slide-up entrance for newly sent bubbles ──
+const AnimatedMessageBubble = React.memo(({
+  isNew,
+  children,
+  style,
+}: {
+  isNew: boolean;
+  children: React.ReactNode;
+  style?: any;
+}) => {
+  const anim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+
+  useEffect(() => {
+    if (isNew) {
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 180,
+        easing: RNEasing.out(RNEasing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  }, []);
+
+  if (!isNew) {
+    return <View style={style}>{children}</View>;
+  }
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [20, 0],
+              }),
+            },
+            {
+              scale: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.95, 1],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+});
+
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
+
+// ── Isolated Input Box: Encapsulates inputHeight so multiline expansions (<1ms)
+// NEVER trigger a re-render of the 6,000-line MusicRoomScreen tree (WhatsApp / ChatInputArea style) ──
+const MusicInputBox = React.memo(
+  React.forwardRef<RichTextInputRef, {
+    isLight: boolean;
+    themePlaceholderColor: string;
+    isStickerPickerDeliberatelyOpen: boolean;
+    disabled?: boolean;
+    onFocusInput: () => void;
+    onOpenStickerPicker: () => void;
+    onChangeText: (text: string) => void;
+    onContentCommitted: (event: any) => void;
+  }>((props, ref) => {
+    const {
+      isLight,
+      themePlaceholderColor,
+      isStickerPickerDeliberatelyOpen,
+      disabled = false,
+      onFocusInput,
+      onOpenStickerPicker,
+      onChangeText,
+      onContentCommitted,
+    } = props;
+
+    const innerRef = useRef<RichTextInputRef>(null);
+    const [inputHeight, setInputHeight] = useState(45);
+
+    React.useImperativeHandle(ref, () => ({
+      clear: () => {
+        LayoutAnimation.configureNext({
+          duration: 100,
+          update: { type: LayoutAnimation.Types.easeOut },
+        });
+        setInputHeight(45);
+        innerRef.current?.clear();
+      },
+      setText: (t: string) => innerRef.current?.setText(t),
+      focus: () => innerRef.current?.focus(),
+      blur: () => innerRef.current?.blur(),
+    }));
+
+    const handleContentSizeChange = useCallback((e: any) => {
+      const h = e.nativeEvent?.contentSize?.height;
+      if (h) {
+        const next = Math.max(45, Math.min(180, Math.round(h)));
+        setInputHeight(prev => {
+          if (Math.abs(prev - next) >= 4) {
+            LayoutAnimation.configureNext({
+              duration: 100,
+              update: { type: LayoutAnimation.Types.easeOut },
+            });
+            return next;
+          }
+          return prev;
+        });
+      }
+    }, []);
+
+    return (
+      <View
+        style={[
+          s.inputWrapper,
+          isLight && { backgroundColor: 'rgba(0,0,0,0.06)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' }
+        ]}
+        onTouchStart={disabled ? undefined : onFocusInput}
+        pointerEvents={disabled ? 'none' : 'auto'}
+      >
+        <TouchableOpacity
+          style={s.innerStickerButton}
+          activeOpacity={0.7}
+          delayPressIn={0}
+          disabled={disabled}
+          onPress={onOpenStickerPicker}
+          accessibilityLabel={isStickerPickerDeliberatelyOpen ? "Switch to keyboard" : "Switch to stickers"}
+        >
+          <Icon
+            name="happy-outline"
+            size={22}
+            color={isStickerPickerDeliberatelyOpen ? "#8AB4F8" : (isLight ? '#64748B' : "rgba(255,255,255,0.6)")}
+          />
+        </TouchableOpacity>
+        <RichTextInput
+          ref={innerRef}
+          editable={!disabled}
+          onTouchStart={disabled ? undefined : onFocusInput}
+          onFocus={disabled ? undefined : onFocusInput}
+          onBlur={() => {}}
+          style={[s.chatInput, { paddingLeft: 42, paddingRight: 12, height: inputHeight, textAlignVertical: inputHeight > 50 ? 'top' : 'center' }, isLight && { color: '#0F172A' }]}
+          underlineColorAndroid="transparent"
+          autoFocus={false}
+          onChangeText={onChangeText}
+          onContentSizeChange={handleContentSizeChange}
+          multiline
+          maxLength={2000}
+          placeholder="Type a message..."
+          placeholderTextColor={themePlaceholderColor}
+          onContentCommitted={onContentCommitted}
+        />
+      </View>
+    );
+  })
+);
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility Functions
@@ -83,7 +248,9 @@ const fmtTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 };
 
-const fetchChannelLogo = async (videoId: string): Promise<string | null> => {
+const fetchChannelDetails = async (videoId: string): Promise<{ logo: string | null; channelUrl: string | null }> => {
+  let logo: string | null = null;
+  let channelUrl: string | null = null;
   try {
     const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
@@ -93,24 +260,55 @@ const fetchChannelLogo = async (videoId: string): Promise<string | null> => {
     const html = await res.text();
     const ownerMatch = html.match(/"videoOwnerRenderer"\s*:\s*\{[^}]*?"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
     if (ownerMatch && ownerMatch[1]) {
-      return ownerMatch[1].replace(/\\u0026/g, '&');
+      logo = ownerMatch[1].replace(/\\u0026/g, '&');
+    } else {
+      const avatarMatch = html.match(/"avatar"\s*:\s*\{\s*"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
+      if (avatarMatch && avatarMatch[1]) {
+        logo = avatarMatch[1].replace(/\\u0026/g, '&');
+      } else {
+        const matches = html.match(/https:\/\/yt3\.(?:ggpht|googleusercontent)\.com\/[a-zA-Z0-9_\-=/]+/g);
+        if (matches && matches.length > 0) {
+          logo = matches[0];
+        }
+      }
     }
-    const avatarMatch = html.match(/"avatar"\s*:\s*\{\s*"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
-    if (avatarMatch && avatarMatch[1]) {
-      return avatarMatch[1].replace(/\\u0026/g, '&');
-    }
-    const matches = html.match(/https:\/\/yt3\.(?:ggpht|googleusercontent)\.com\/[a-zA-Z0-9_\-=/]+/g);
-    if (matches && matches.length > 0) {
-      return matches[0];
+
+    const canonicalMatch = html.match(/"canonicalBaseUrl"\s*:\s*"(\/@[^"]+)"/);
+    if (canonicalMatch && canonicalMatch[1]) {
+      channelUrl = `https://m.youtube.com${canonicalMatch[1]}/videos`;
+    } else {
+      const navUrlMatch = html.match(/"videoOwnerRenderer"\s*:\s*\{[^}]*?"navigationEndpoint"\s*:\s*\{[^}]*?"url"\s*:\s*"(\/[^"]+)"/);
+      if (navUrlMatch && navUrlMatch[1]) {
+        const base = navUrlMatch[1].startsWith('/') ? navUrlMatch[1] : `/${navUrlMatch[1]}`;
+        channelUrl = `https://m.youtube.com${base}/videos`;
+      } else {
+        const browseMatch = html.match(/"browseId"\s*:\s*"(UC[a-zA-Z0-9_\-]+)"/);
+        if (browseMatch && browseMatch[1]) {
+          channelUrl = `https://m.youtube.com/channel/${browseMatch[1]}/videos`;
+        }
+      }
     }
   } catch (e) {
-    console.warn('🎵 Channel logo fetch failed:', e);
+    console.warn('🎵 Channel details fetch failed:', e);
   }
-  return null;
+  return { logo, channelUrl };
 };
 
-const fetchVideoAspectRatio = async (videoId: string): Promise<number | null> => {
-  // 1. Check YouTube video stream formats (provides exact pixel aspect ratio e.g. 1.437 for Pavazha Malli)
+const fetchChannelLogo = async (videoId: string): Promise<string | null> => {
+  const details = await fetchChannelDetails(videoId);
+  return details.logo;
+};
+
+interface VideoAspectRatioResult {
+  aspectRatio: number;
+  verticalPercent: number;
+  isNativeWidescreen: boolean;
+}
+
+const fetchVideoAspectRatio = async (videoId: string): Promise<VideoAspectRatioResult | null> => {
+  // 1. Check YouTube video stream formats first!
+  // If YouTube serves a native widescreen stream format (e.g. 3840x1608 or 3840x1692, AR > 1.82),
+  // the stream ITSELF has NO black bars to crop!
   try {
     const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
@@ -127,17 +325,36 @@ const fetchVideoAspectRatio = async (videoId: string): Promise<number | null> =>
         if (videoFormats.length > 0) {
           videoFormats.sort((a: any, b: any) => b.width - a.width);
           const top = videoFormats[0];
-          const ar = top.width / top.height;
-          if (ar >= 0.4 && ar <= 3.5) {
-            console.log(`📐 [EXACT FORMAT AR] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${ar.toFixed(3)}`);
-            return ar;
+          const streamAr = top.width / top.height;
+          if (streamAr > 1.82) {
+            console.log(`📐 [NATIVE WIDESCREEN STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)} (0% black bars)`);
+            return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: true };
+          }
+          if (streamAr < 1.70 && streamAr >= 0.4) {
+            console.log(`📐 [TALL/4:3 STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)}`);
+            return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: false };
           }
         }
       }
     }
   } catch (e) {}
 
-  // 2. YouTube official oEmbed API fallback
+  // 2. Check storyboard/thumbnail letterbox detection (detects cinema letterbox bars encoded into 16:9 streams)
+  try {
+    const letterboxRes = await YouTubeDecipherService.detectLetterboxAspectRatio(videoId);
+    if (letterboxRes && letterboxRes.aspectRatio >= 0.4 && letterboxRes.aspectRatio <= 3.5) {
+      if (Math.abs(letterboxRes.aspectRatio - 16 / 9) > 0.05 && letterboxRes.verticalPercent > 0.03) {
+        console.log(`📐 [LETTERBOX DETECTED] Video ${videoId} letterbox AR: ${letterboxRes.aspectRatio.toFixed(3)}, verticalPercent: ${(letterboxRes.verticalPercent * 100).toFixed(1)}%`);
+        return {
+          aspectRatio: letterboxRes.aspectRatio,
+          verticalPercent: Math.min(0.22, letterboxRes.verticalPercent),
+          isNativeWidescreen: false,
+        };
+      }
+    }
+  } catch (_) {}
+
+  // 3. YouTube official oEmbed API fallback
   try {
     const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
     const oembedRes = await fetch(oembedUrl);
@@ -147,7 +364,7 @@ const fetchVideoAspectRatio = async (videoId: string): Promise<number | null> =>
         const ar = data.width / data.height;
         if (ar >= 0.4 && ar <= 3.5) {
           console.log(`📐 [AUTO AR] Video ${videoId} oEmbed dimensions: ${data.width}x${data.height} -> Aspect Ratio: ${ar.toFixed(3)}`);
-          return ar;
+          return { aspectRatio: ar, verticalPercent: 0.0, isNativeWidescreen: ar > 1.82 };
         }
       }
     }
@@ -162,7 +379,7 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
   const base: Song = {
     videoId,
     title:        cleanFallback || 'Loading...',
-    thumbnail:    `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+    thumbnail:    `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
     channelTitle: 'YouTube',
     addedBy:      fallbackName ?? 'Someone',
   };
@@ -171,8 +388,9 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
   let resolvedChannel = base.channelTitle;
   let resolvedThumb = base.thumbnail;
   let resolvedLogo: string | undefined = undefined;
+  let resolvedChannelUrl: string | undefined = undefined;
 
-  // 1. YouTube official oEmbed API — ultra-fast (50ms), guaranteed accurate title & channel name
+  // 1. YouTube official oEmbed API — ultra-fast (50ms), guaranteed accurate title, channel name & author url
   try {
     const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
     if (oembedRes.ok) {
@@ -180,17 +398,25 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
       if (data.title) resolvedTitle = data.title;
       if (data.author_name) resolvedChannel = data.author_name;
       if (data.thumbnail_url) resolvedThumb = data.thumbnail_url;
+      if (data.author_url) {
+        let cleanAuthor = data.author_url.replace('https://www.youtube.com', 'https://m.youtube.com');
+        if (!cleanAuthor.endsWith('/videos')) {
+          cleanAuthor = `${cleanAuthor.replace(/\/+$/, '')}/videos`;
+        }
+        resolvedChannelUrl = cleanAuthor;
+      }
     }
   } catch (e) {
     console.warn('🎵 oEmbed metadata fetch failed:', e);
   }
 
-  // 2. Fetch Channel Logo from watch page HTML
+  // 2. Fetch Channel Logo & Channel URL from watch page HTML
   try {
-    const channelLogo = await fetchChannelLogo(videoId);
-    if (channelLogo) resolvedLogo = channelLogo;
+    const details = await fetchChannelDetails(videoId);
+    if (details.logo) resolvedLogo = details.logo;
+    if (details.channelUrl && !resolvedChannelUrl) resolvedChannelUrl = details.channelUrl;
   } catch (e) {
-    console.warn('🎵 Channel logo fetch error:', e);
+    console.warn('🎵 Channel details fetch error:', e);
   }
 
   // 3. Optional backend search API fallback if title is still missing
@@ -209,12 +435,17 @@ const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Pro
     } catch (_) {}
   }
 
+  if (!resolvedChannelUrl && resolvedChannel && resolvedChannel !== 'YouTube') {
+    resolvedChannelUrl = `https://m.youtube.com/results?search_query=${encodeURIComponent(resolvedChannel)}`;
+  }
+
   return {
     ...base,
     title:        resolvedTitle,
     channelTitle: resolvedChannel,
     thumbnail:    resolvedThumb,
     channelLogo:  resolvedLogo,
+    channelUrl:   resolvedChannelUrl,
   };
 };
 
@@ -247,27 +478,34 @@ interface ControlsProps {
   isBuffering: boolean;
   position: number;
   duration: number;
+  isLive?: boolean;
   onPlayPause: () => void;
   onSeek: (t: number) => void;
   onNext: () => void;
   onToggleFullscreen: () => void;
   onShowRelated: () => void;
   onSettings?: () => void;
+  qualityLabel?: string;
   onSingleTap?: () => void;
   onKeepControlsAlive?: () => void;
   isFullscreen: boolean;
   isDrivePlayer?: boolean;
   title?: string;
+  isMuted?: boolean;
+  onToggleMute?: () => void;
 }
 
 const VideoControls: React.FC<ControlsProps> = ({
   visible, isPlaying, isEnded, canControl, isBuffering,
-  position, duration,
+  position, duration, isLive,
   onPlayPause, onSeek, onNext, onToggleFullscreen, onShowRelated, onSettings,
+  qualityLabel,
   onSingleTap, onKeepControlsAlive,
   isFullscreen,
   isDrivePlayer,
   title,
+  isMuted = false,
+  onToggleMute,
 }) => {
   const insets = useSafeAreaInsets();
   const canControlRef = useRef(canControl);
@@ -331,8 +569,35 @@ const VideoControls: React.FC<ControlsProps> = ({
     }, 500);
   };
 
+  const opacity    = useRef(new Animated.Value(1)).current;
+  const knobX      = useRef(new Animated.Value(0)).current;
+  const knobOpacity = useRef(new Animated.Value(0)).current;
+  const isSeeking  = useRef(false);
+  const [isDraggingSeek, setIsDraggingSeek] = useState(false);
+  const [dragDisplayPos, setDragDisplayPos] = useState<number | null>(null);
+  const lastSeekTargetTimeRef = useRef<number | null>(null);
+  const lastSeekTimestampRef  = useRef<number>(0);
+  const seekTarget = useRef(0);
+  const barLayoutX = useRef(0);
+  const barWidth   = useRef(width);
+  const trackerPageX = useRef(0);
+  const portraitTrackerRef = useRef<View>(null);
+  const fullscreenTrackerRef = useRef<View>(null);
+  const pct = duration > 0 ? Math.min(position / duration, 1) : 0;
+  const isLiveStream = Boolean(isLive);
+  const displayPosition = (isDraggingSeek && dragDisplayPos !== null) ? dragDisplayPos : position;
+
+  const animateKnobTo = useCallback((targetX: number, durationMs = 160) => {
+    Animated.timing(knobX, {
+      toValue: targetX,
+      duration: durationMs,
+      easing: RNEasing.out(RNEasing.quad),
+      useNativeDriver: false,
+    }).start();
+  }, [knobX]);
+
   const triggerSeekBackward = () => {
-    if (isEnded) return;
+    if (isEnded || isLiveStream) return;
     if (!canControlRef.current) {
       console.warn('📊 [SEEK DENIED] User is not DJ, cannot seek');
       return;
@@ -340,13 +605,18 @@ const VideoControls: React.FC<ControlsProps> = ({
     const cur = positionRef.current || 0;
     const target = Math.max(0, cur - 10);
     positionRef.current = target;
+    lastSeekTargetTimeRef.current = target;
+    lastSeekTimestampRef.current = Date.now();
+    const targetPct = durationRef.current > 0 ? Math.min(target / durationRef.current, 1) : 0;
+    const targetX = Math.max(0, Math.min(barWidth.current, targetPct * barWidth.current));
+    animateKnobTo(targetX, 160);
     onSeek(target);
     triggerBadgeAnim('left');
     onKeepControlsAlive?.();
   };
 
   const triggerSeekForward = () => {
-    if (isEnded) return;
+    if (isEnded || isLiveStream) return;
     if (!canControlRef.current) {
       console.warn('📊 [SEEK DENIED] User is not DJ, cannot seek');
       return;
@@ -355,12 +625,21 @@ const VideoControls: React.FC<ControlsProps> = ({
     const dur = durationRef.current || 0;
     const target = dur > 0 ? Math.min(dur, cur + 10) : cur + 10;
     positionRef.current = target;
+    lastSeekTargetTimeRef.current = target;
+    lastSeekTimestampRef.current = Date.now();
+    const targetPct = dur > 0 ? Math.min(target / dur, 1) : 0;
+    const targetX = Math.max(0, Math.min(barWidth.current, targetPct * barWidth.current));
+    animateKnobTo(targetX, 160);
     onSeek(target);
     triggerBadgeAnim('right');
     onKeepControlsAlive?.();
   };
 
   const handleLeftPress = () => {
+    if (!canControlRef.current) {
+      onSingleTap?.();
+      return;
+    }
     const now = Date.now();
     if (now - lastLeftTapRef.current < 350) {
       if (leftTapTimeoutRef.current) {
@@ -380,6 +659,10 @@ const VideoControls: React.FC<ControlsProps> = ({
   };
 
   const handleRightPress = () => {
+    if (!canControlRef.current) {
+      onSingleTap?.();
+      return;
+    }
     const now = Date.now();
     if (now - lastRightTapRef.current < 350) {
       if (rightTapTimeoutRef.current) {
@@ -398,78 +681,114 @@ const VideoControls: React.FC<ControlsProps> = ({
     }
   };
 
-  const opacity    = useRef(new Animated.Value(1)).current;
-  const knobX      = useRef(new Animated.Value(0)).current;
-  const knobOpacity = useRef(new Animated.Value(0)).current;
-  const isSeeking  = useRef(false);
-  const [isDraggingSeek, setIsDraggingSeek] = useState(false);
-  const seekTarget = useRef(0);
-  const barLayoutX = useRef(0);
-  const barWidth   = useRef(width);
-  const pct = duration > 0 ? Math.min(position / duration, 1) : 0;
+  const updateTrackerPageX = useCallback(() => {
+    const targetRef = isFullscreen ? fullscreenTrackerRef : portraitTrackerRef;
+    targetRef.current?.measure((_x, _y, _w, _h, px, _py) => {
+      if (px !== undefined && !isNaN(px) && px > 0) {
+        trackerPageX.current = px;
+      }
+    });
+  }, [isFullscreen]);
+
+  const getTouchOffset = (evt: any) => {
+    if (trackerPageX.current > 0) {
+      return evt.nativeEvent.pageX - trackerPageX.current;
+    }
+    if (barLayoutX.current > 0) {
+      return evt.nativeEvent.pageX - barLayoutX.current;
+    }
+    return evt.nativeEvent.locationX;
+  };
 
   useEffect(() => {
     Animated.timing(opacity, {
       toValue:         visible ? 1 : 0,
       duration:        200,
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
     Animated.timing(knobOpacity, {
       toValue:         visible ? 1 : 0,
       duration:        200,
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
   }, [visible]);
 
   useEffect(() => {
-    if (!isSeeking.current) {
-      const rawX = pct * barWidth.current;
-      const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
-      knobX.setValue(clampedX);
+    if (isSeeking.current) return;
+
+    // Guard against stale pre-seek position props from audio/video engines
+    if (lastSeekTargetTimeRef.current !== null) {
+      const elapsed = Date.now() - lastSeekTimestampRef.current;
+      const dist = Math.abs(position - lastSeekTargetTimeRef.current);
+      if (dist < 2.0 || elapsed > 1500) {
+        // Seek arrived or timed out, resume normal tracking
+        lastSeekTargetTimeRef.current = null;
+      } else {
+        // Stale pre-seek position prop received, hold knob & filler at seek target!
+        return;
+      }
     }
-  }, [pct]);
+
+    const rawX = pct * barWidth.current;
+    const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
+    knobX.setValue(clampedX);
+  }, [pct, position]);
 
   const pan = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponder: () => Boolean(canControlRef.current),
+    onMoveShouldSetPanResponder: () => Boolean(canControlRef.current),
 
     onPanResponderGrant: (evt) => {
       isSeeking.current = true;
-      setIsDraggingSeek(true);
-      const rawX = Math.max(0, Math.min(barWidth.current, evt.nativeEvent.locationX));
+      updateTrackerPageX();
+      const touchX = getTouchOffset(evt);
+      const rawX = Math.max(0, Math.min(barWidth.current, touchX));
       const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
-      knobX.setValue(clampedX);
-      if (durationRef.current > 0 && barWidth.current > 0) {
-        seekTarget.current = (rawX / barWidth.current) * durationRef.current;
-      } else {
-        seekTarget.current = 0;
-      }
+
+      // Smoothly glide knob and filler to touched position
+      animateKnobTo(clampedX, 160);
+
+      const targetTime = (durationRef.current > 0 && barWidth.current > 0)
+        ? (clampedX / barWidth.current) * durationRef.current
+        : 0;
+      seekTarget.current = targetTime;
+      setDragDisplayPos(targetTime);
     },
 
     onPanResponderMove: (evt) => {
-      const touchX = evt.nativeEvent.pageX - barLayoutX.current;
+      setIsDraggingSeek(true);
+      knobX.stopAnimation();
+      const touchX = getTouchOffset(evt);
       const rawX = Math.max(0, Math.min(barWidth.current, touchX));
       const clampedX = Math.max(0, Math.min(barWidth.current, rawX));
       knobX.setValue(clampedX);
-      if (durationRef.current > 0 && barWidth.current > 0) {
-        seekTarget.current = (rawX / barWidth.current) * durationRef.current;
-      }
+      const targetTime = (durationRef.current > 0 && barWidth.current > 0)
+        ? (clampedX / barWidth.current) * durationRef.current
+        : 0;
+      seekTarget.current = targetTime;
+      setDragDisplayPos(targetTime);
     },
 
     onPanResponderRelease: () => {
       isSeeking.current = false;
       setIsDraggingSeek(false);
+      setDragDisplayPos(null);
       if (!canControlRef.current) {
         console.warn('📊 [DRAG DENIED] User is not DJ, cannot seek');
         return;
       }
       if (seekTarget.current < 0 || isNaN(seekTarget.current)) return;
+      lastSeekTargetTimeRef.current = seekTarget.current;
+      lastSeekTimestampRef.current = Date.now();
       onSeek(seekTarget.current);
+      onKeepControlsAlive?.();
     },
 
     onPanResponderTerminate: () => {
       isSeeking.current = false;
       setIsDraggingSeek(false);
+      setDragDisplayPos(null);
+      onKeepControlsAlive?.();
     },
   })).current;
 
@@ -518,13 +837,27 @@ const VideoControls: React.FC<ControlsProps> = ({
             </View>
 
             <View style={cv.fullscreenTopRight}>
-              {!isDrivePlayer && onSettings && (
+              {onToggleMute && (
                 <TouchableOpacity
                   style={cv.fullscreenIconBtn}
-                  onPress={onSettings}
+                  onPress={() => {
+                    onToggleMute();
+                    onKeepControlsAlive?.();
+                  }}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <Icon name="settings-sharp" size={18} color="#fff" />
+                  <Icon name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="#fff" />
+                </TouchableOpacity>
+              )}
+              {!isDrivePlayer && onSettings && (
+                <TouchableOpacity
+                  style={cv.fullscreenQualityPillBtn}
+                  onPress={onSettings}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Video quality"
+                >
+                  <Text style={cv.fullscreenQualityPillText}>Q</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity
@@ -542,15 +875,30 @@ const VideoControls: React.FC<ControlsProps> = ({
           <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
           <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
           {!isDrivePlayer && onSettings && (
-            <Animated.View style={[{ position: 'absolute', top: 2, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-              <TouchableOpacity style={cv.relatedBtn} onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Icon name="settings-sharp" size={18} color="#fff" />
+            <Animated.View style={[{ position: 'absolute', top: 4, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+              <TouchableOpacity
+                style={cv.qualityPillBtn}
+                onPress={onSettings}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                activeOpacity={0.7}
+                accessibilityLabel="Video quality"
+              >
+                <Text style={cv.qualityPillText}>Q</Text>
               </TouchableOpacity>
             </Animated.View>
           )}
-          <Animated.View style={[{ position: 'absolute', top: 2, right: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-            <TouchableOpacity style={cv.expandBtn} onPress={onToggleFullscreen} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Icon name="expand" size={18} color="#fff" />
+          <Animated.View style={[{ position: 'absolute', top: 4, right: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
+            <TouchableOpacity
+              style={cv.topRightBtn}
+              onPress={() => {
+                onToggleFullscreen();
+                onKeepControlsAlive?.();
+              }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.7}
+              accessibilityLabel="Toggle orientation"
+            >
+              <Icon name="resize" size={16} color="#fff" />
             </TouchableOpacity>
           </Animated.View>
         </>
@@ -558,25 +906,26 @@ const VideoControls: React.FC<ControlsProps> = ({
 
       {/* ── Center Controls Row: Double Tap Left (-10s), Play/Pause, Double Tap Right (+10s) ── */}
       <Animated.View
-        style={[cv.centerRow, { opacity }]}
+        style={[cv.centerRow, isFullscreen && { top: 60, bottom: 95 }, { opacity }]}
         pointerEvents={visible ? 'box-none' : 'none'}
       >
         {/* Left Side: Double tap to seek -10s */}
-        <TouchableOpacity
-          style={cv.sideSeekZone}
-          activeOpacity={1}
-          onPress={handleLeftPress}
-          pointerEvents={visible ? 'auto' : 'none'}
-        >
-          {showLeftBadge && (
-            <Animated.View style={[cv.seekBadge, { opacity: leftBadgeOpacity, transform: [{ scale: leftBadgeScale }] }]}>
-              <View style={cv.seekBadgeInner}>
-                <Icon name="play-back" size={18} color="#fff" />
-                <Text style={cv.seekBadgeText}>-10s</Text>
-              </View>
-            </Animated.View>
-          )}
-        </TouchableOpacity>
+        <View style={cv.sideSeekZone} pointerEvents={visible ? 'auto' : 'none'}>
+          <TouchableOpacity
+            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+            activeOpacity={1}
+            onPress={handleLeftPress}
+          >
+            {showLeftBadge && (
+              <Animated.View style={[cv.seekBadge, { opacity: leftBadgeOpacity, transform: [{ scale: leftBadgeScale }] }]}>
+                <View style={cv.seekBadgeInner}>
+                  <Icon name="play-back" size={18} color="#fff" />
+                  <Text style={cv.seekBadgeText}>-10s</Text>
+                </View>
+              </Animated.View>
+            )}
+          </TouchableOpacity>
+        </View>
 
         {/* Center: Play / Pause */}
         {!isBuffering && !isEnded && !isDraggingSeek ? (
@@ -602,21 +951,22 @@ const VideoControls: React.FC<ControlsProps> = ({
         )}
 
         {/* Right Side: Double tap to seek +10s */}
-        <TouchableOpacity
-          style={cv.sideSeekZone}
-          activeOpacity={1}
-          onPress={handleRightPress}
-          pointerEvents={visible ? 'auto' : 'none'}
-        >
-          {showRightBadge && (
-            <Animated.View style={[cv.seekBadge, { opacity: rightBadgeOpacity, transform: [{ scale: rightBadgeScale }] }]}>
-              <View style={cv.seekBadgeInner}>
-                <Icon name="play-forward" size={18} color="#fff" />
-                <Text style={cv.seekBadgeText}>+10s</Text>
-              </View>
-            </Animated.View>
-          )}
-        </TouchableOpacity>
+        <View style={cv.sideSeekZone} pointerEvents={visible ? 'auto' : 'none'}>
+          <TouchableOpacity
+            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+            activeOpacity={1}
+            onPress={handleRightPress}
+          >
+            {showRightBadge && (
+              <Animated.View style={[cv.seekBadge, { opacity: rightBadgeOpacity, transform: [{ scale: rightBadgeScale }] }]}>
+                <View style={cv.seekBadgeInner}>
+                  <Icon name="play-forward" size={18} color="#fff" />
+                  <Text style={cv.seekBadgeText}>+10s</Text>
+                </View>
+              </Animated.View>
+            )}
+          </TouchableOpacity>
+        </View>
       </Animated.View>
 
       {isFullscreen ? (
@@ -628,56 +978,128 @@ const VideoControls: React.FC<ControlsProps> = ({
             paddingBottom: insets.bottom > 0 ? insets.bottom + 8 : 16,
             opacity,
           }
-        ]} pointerEvents={visible ? 'auto' : 'none'}>
-          <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 12 }]}>
-            <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
+        ]} pointerEvents={visible ? 'box-none' : 'none'}>
+          <View style={[cv.timeRow, { paddingHorizontal: 0, marginBottom: 12 }]} pointerEvents="box-none">
+            {isLiveStream ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFFFFF', marginRight: 6 }} />
+                <Text style={[cv.timeText, { color: '#FFFFFF', fontWeight: '700' }]}>LIVE</Text>
+              </View>
+            ) : (
+              <Text style={cv.timeText}>{fmtTime(displayPosition)} / {fmtTime(duration)}</Text>
+            )}
           </View>
           <View
-            {...pan.panHandlers}
+            ref={fullscreenTrackerRef}
+            {...(canControl && !isLiveStream ? pan.panHandlers : {})}
+            pointerEvents={canControl && !isLiveStream ? 'auto' : 'none'}
             style={{ height: 28, justifyContent: 'center', paddingHorizontal: 0 }}
             onLayout={(event) => {
               const { x, width: w } = event.nativeEvent.layout;
               barLayoutX.current = x;
               barWidth.current = w;
+              updateTrackerPageX();
+              if (!isSeeking.current && w > 0) {
+                knobX.setValue(pct * w);
+              }
             }}
           >
-            <View style={cv.track}>
-              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
-              <Animated.View style={[cv.knob, { opacity: knobOpacity, transform: [{ translateX: knobX }] }]} />
+            <View style={[cv.track, (!canControl || isLiveStream) && { backgroundColor: 'rgba(255, 255, 255, 0.15)' }]}>
+              <Animated.View style={[cv.fill, (!canControl || isLiveStream) && { backgroundColor: isLiveStream ? '#FFFFFF' : 'rgba(255, 255, 255, 0.55)' }, isLiveStream ? { width: '100%' } : { width: knobX }]} />
+              {canControl && !isLiveStream && (
+                <Animated.View style={[cv.knob, { opacity: knobOpacity, transform: [{ translateX: knobX }] }]} />
+              )}
             </View>
           </View>
         </Animated.View>
       ) : (
-        // ── NON-FULLSCREEN: Static height track, knob appears on tap ──
-        <>
-          <Animated.View style={[cv.timeRow, cv.timeRowFloating, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
-            <Text style={cv.timeText}>{fmtTime(position)} / {fmtTime(duration)}</Text>
-          </Animated.View>
-
-          <Animated.View
-            {...pan.panHandlers}
-            style={[cv.bottomEdgeTrackHit, { opacity }]}
-            pointerEvents={visible ? 'auto' : 'none'}
-            onLayout={(event) => {
-              const { x, width: w } = event.nativeEvent.layout;
-              barLayoutX.current = x;
-              barWidth.current = w;
-            }}
-          >
-            <View style={cv.bottomEdgeTrack}>
-              <View style={[cv.fill, { width: `${pct * 100}%` }]} />
-              <Animated.View
-                style={[
-                  cv.knob,
-                  {
-                    opacity: knobOpacity,
-                    transform: [{ translateX: knobX }],
-                  },
-                ]}
+        // ── NON-FULLSCREEN: Single bottom-aligned row [Mute] [Counter + Track] [Skip] at bottom: 4 ──
+        <Animated.View
+          style={[cv.portraitBottomRow, { opacity }]}
+          pointerEvents={visible ? 'box-none' : 'none'}
+        >
+          {/* Left: Speaker (Mute/Unmute) Button */}
+          {onToggleMute && (
+            <TouchableOpacity
+              style={cv.bottomRowBtn}
+              onPress={() => {
+                onToggleMute();
+                onKeepControlsAlive?.();
+              }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Toggle mute"
+            >
+              <Icon
+                name={isMuted ? 'volume-mute' : 'volume-high'}
+                size={16}
+                color="#fff"
               />
+            </TouchableOpacity>
+          )}
+
+          {/* Center: Counter on left above Track Bar, with Track Bar at bottom */}
+          <View style={cv.portraitCenterTrackColumn} pointerEvents="box-none">
+            {/* Duration Counter on left side above tracking bar */}
+            {isLiveStream ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFFFFF', marginRight: 5 }} />
+                <Text style={[cv.portraitDurationText, { color: '#FFFFFF', fontWeight: '700' }]}>LIVE</Text>
+              </View>
+            ) : (
+              <Text style={cv.portraitDurationText} pointerEvents="none">
+                {fmtTime(displayPosition)} / {fmtTime(duration)}
+              </Text>
+            )}
+
+            {/* Video Time Tracker Scrubber */}
+            <View
+              ref={portraitTrackerRef}
+              {...(canControl && !isLiveStream ? pan.panHandlers : {})}
+              pointerEvents={canControl && !isLiveStream ? 'auto' : 'none'}
+              style={cv.portraitTrackerHit}
+              onLayout={(event) => {
+                const { x, width: w } = event.nativeEvent.layout;
+                barLayoutX.current = x;
+                barWidth.current = w;
+                updateTrackerPageX();
+                if (!isSeeking.current && w > 0) {
+                  knobX.setValue(pct * w);
+                }
+              }}
+            >
+              <View style={[cv.portraitTrackerTrack, (!canControl || isLiveStream) && { backgroundColor: 'rgba(255, 255, 255, 0.15)' }]}>
+                <Animated.View style={[cv.fill, (!canControl || isLiveStream) && { backgroundColor: isLiveStream ? '#FFFFFF' : 'rgba(255, 255, 255, 0.55)' }, isLiveStream ? { width: '100%' } : { width: knobX }]} />
+                {canControl && !isLiveStream && (
+                  <Animated.View
+                    style={[
+                      cv.knob,
+                      {
+                        opacity: knobOpacity,
+                        transform: [{ translateX: knobX }],
+                      },
+                    ]}
+                  />
+                )}
+              </View>
             </View>
-          </Animated.View>
-        </>
+          </View>
+
+          {/* Right: Skip Button */}
+          <TouchableOpacity
+            style={[cv.bottomRowBtn, !canControl && { opacity: 0.4 }]}
+            onPress={() => {
+              onNext();
+              onKeepControlsAlive?.();
+            }}
+            disabled={!canControl}
+            activeOpacity={0.7}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel="Skip video"
+          >
+            <Icon name="play-skip-forward" size={15} color="#fff" />
+          </TouchableOpacity>
+        </Animated.View>
       )}
     </Animated.View>
   );
@@ -728,8 +1150,51 @@ const cv = StyleSheet.create({
   },
   expandBtn:        { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   relatedBtn:       { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  qualityPillBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.20)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qualityPillText: {
+    color: '#ffffff',
+    fontSize: 13.5,
+    fontWeight: '800',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  fullscreenQualityPillBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.20)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullscreenQualityPillText: {
+    color: '#ffffff',
+    fontSize: 14.5,
+    fontWeight: '800',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  topRightBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.20)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   bufferWrap:       { ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center', gap: 10, backgroundColor: 'rgba(0,0,0,0.3)' },
-  bufferText:       { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '600' },
   centreBtn:        { width: 54, height: 54, justifyContent: 'center', alignItems: 'center' },
   centreBtnInner:   { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   centreBtnDisabled:{ backgroundColor: 'rgba(0,0,0,0.2)' },
@@ -768,34 +1233,62 @@ const cv = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
-  // ── Non-fullscreen, always-visible bottom-edge progress line ──
-  bottomEdgeTrackHit: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 24, // generous invisible drag area
-    justifyContent: 'flex-end', // Aligns the line flush to the absolute bottom edge (bottom: 0)
+  bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12, zIndex: 30, elevation: 10 },
+  bottomRowBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  bottomEdgeTrack: {
+  portraitBottomRow: {
+    position: 'absolute',
+    bottom: 4, // Matches top buttons padding (top: 4)
+    left: 8,   // Matches top buttons padding (left: 8)
+    right: 8,  // Matches top buttons padding (right: 8)
+    flexDirection: 'row',
+    alignItems: 'flex-end', // In that row they are bottom aligned!
+    zIndex: 30,
+    elevation: 10,
+  },
+  portraitCenterTrackColumn: {
+    flex: 1,
+    marginHorizontal: 8,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-start',
+  },
+  portraitDurationText: {
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 10,
+    lineHeight: 11,
+    fontWeight: '700',
+    textAlign: 'left',
+    paddingLeft: 2,
+    marginBottom: -3, // Minimizes vertical space to sit tightly above the tracking bar
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+    includeFontPadding: false,
+  },
+  portraitTrackerHit: {
     width: '100%',
-    height: 1.5,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    height: 18,
+    justifyContent: 'center',
+  },
+  portraitTrackerTrack: {
+    width: '100%',
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
     position: 'relative',
     justifyContent: 'center',
   },
-  timeRowFloating: {
-    position: 'absolute',
-    left: 8,
-    right: 8,
-    bottom: 8,
-  },
-  track:            { width: '100%', height: 1.5, backgroundColor: 'rgba(255,255,255,0.2)', position: 'relative', justifyContent: 'center' },
-  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#fff' },
-  knob:             { position: 'absolute', left: 0, marginLeft: -3.5, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#fff', top: -2.75, elevation: 6, zIndex: 99 },
+  track:            { width: '100%', height: 2.5, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.2)', position: 'relative', justifyContent: 'center' },
+  fill:             { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 1.5, backgroundColor: '#fff' },
+  knob:             { position: 'absolute', left: 0, marginLeft: -4, width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff', top: -2.75, elevation: 6, zIndex: 99 },
   timeRow:          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  timeText:         { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700' },
+  timeText:         { color: 'rgba(255,255,255,0.85)', fontSize: 10.5, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
   watchBadge:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
   watchText:        { color: 'rgba(255,255,255,0.5)', fontSize: 9, fontWeight: '700', textTransform: 'uppercase' },
 });
@@ -861,7 +1354,7 @@ const QUALITY_METADATA: Record<string, { label: string; badge?: string; icon: st
   'tiny':    { label: '144p Min', badge: 'Lowest', icon: 'speedometer-outline' },
 };
 
-const QUALITY_PRIORITY = ['auto', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
+const QUALITY_PRIORITY = ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
 
 const getMinimalQualityLabel = (key: string): string => {
   switch (key) {
@@ -883,8 +1376,16 @@ const getMinimalQualityLabel = (key: string): string => {
   }
 };
 
+const STICKER_DRAWER_HEIGHT = 286;
 const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingView;
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 0 };
+
+export const ROOM_THEMES: { id: RoomTheme; label: string; icon: string; color: string }[] = [
+  { id: 'cinema', label: 'Cinema', icon: 'film-outline', color: '#EAB308' },
+  { id: 'rave', label: 'Party', icon: 'flash-outline', color: '#7C3AED' },
+  { id: 'dark', label: 'Dark', icon: 'moon-outline', color: '#64748B' },
+  // { id: 'light', label: 'Light', icon: 'sunny-outline', color: '#F59E0B' },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main MusicRoomScreen
@@ -898,6 +1399,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, roomName: initialRoomName } = route.params || {};
   const { user } = useAuth();
+  const { theme, isDark } = useTheme();
   const [fullscreen, setFullscreen] = useState(false);
   const insets = useSafeAreaInsets();
   const lastNonZeroBottomInsetRef = useRef(insets.bottom || 24);
@@ -911,8 +1413,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // Symmetric instant insets:
   // - In fullscreen: 0 (edge-to-edge video).
   // - In portrait: ALWAYS full portrait insets (cached fallback ensures 1ms instant layout with zero delayed resize).
-  const stableBottomInset = fullscreen ? 0 : (insets.bottom > 0 ? insets.bottom : (lastNonZeroBottomInsetRef.current || 0));
-  const stableTopInset    = fullscreen ? 0 : (insets.top    > 0 ? insets.top    : (lastNonZeroTopInsetRef.current    || 0));
+  const stableBottomInset = fullscreen ? 0 : (lastNonZeroBottomInsetRef.current || insets.bottom || 0);
+  const stableTopInset    = fullscreen ? 0 : (lastNonZeroTopInsetRef.current    || insets.top    || 0);
   
   // Calculate initial position from background cache on mount
   const cachedRoomState = musicWebSocketService.getLastRoomState();
@@ -955,21 +1457,36 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, []);
 
+  const chatMessageRef = useRef('');
+  // Native-layer instant toggle: 0 = mic, 1 = send. setValue() bypasses React
+  // reconciliation entirely — same pattern as ChatInputArea.tsx (WhatsApp-style).
+  const hasTextAnim = useRef(new Animated.Value(0)).current;
+
   const handleTextChange = (text: string) => {
-    setChatMessage(text);
+    chatMessageRef.current = text;
+    // Native instant toggle - 0 frame, no React re-render needed
+    hasTextAnim.setValue(text.length > 0 ? 1 : 0);
     handleTyping(text);
+
+    const prevHadText = (chatMessage || '').length > 0;
+    const nowHasText = (text || '').length > 0;
+    if (prevHadText !== nowHasText) {
+      setChatMessage(text);
+    }
 
     const match = text.match(/(^|\s)@([a-zA-Z0-9_]*)$/);
     if (match) {
       setMentionListVisible(true);
       setMentionFilter(match[2].toLowerCase());
-    } else {
+    } else if (mentionListVisible) {
       setMentionListVisible(false);
     }
   };
 
   const handleMentionSelect = (participantName: string) => {
-    const newText = chatMessage.replace(/(^|\s)@([a-zA-Z0-9_]*)$/, `$1@${participantName} `);
+    const current = chatMessageRef.current || chatMessage;
+    const newText = current.replace(/(^|\s)@([a-zA-Z0-9_]*)$/, `$1@${participantName} `);
+    chatMessageRef.current = newText;
     setChatMessage(newText);
     richInputRef.current?.setText(newText);
     setMentionListVisible(false);
@@ -978,9 +1495,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [fetchedChannelLogo, setFetchedChannelLogo] = useState<string | null>(null);
+  const [fetchedChannelUrl, setFetchedChannelUrl] = useState<string | null>(null);
+  const [discoveryInitialUrl, setDiscoveryInitialUrl] = useState<string | null>(null);
   const [currentRoomName, setCurrentRoomName] = useState(initialRoomName || '');
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
+  const [participantsModalVisible, setParticipantsModalVisible] = useState(false);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
+  const [thumbFallbackUri, setThumbFallbackUri] = useState<string | null>(null);
+  const thumbnailFadeAnim = useRef(new Animated.Value(1)).current;
+  const [showThumbnailOverlay, setShowThumbnailOverlay] = useState(true);
   const [isTrackPlayerReady, setIsTrackPlayerReady] = useState(false);
   const trackPlayerReadyTime = useRef(0);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
@@ -989,7 +1512,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [mentionListVisible, setMentionListVisible] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [chatMessage, setChatMessage] = useState('');
-  const [inputHeight, setInputHeight] = useState(40);
   const [preparingVideoId, setPreparingVideoId] = useState<string | null>(initialVideoId || null);
   const [isFirstCreation, setIsFirstCreation] = useState(!!initialVideoId);
   const [prepTime, setPrepTime] = useState(0);
@@ -1009,6 +1531,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [stickerPreview, setStickerPreview] = useState<{uri: string; mimeType: string} | null>(null);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
   const [galleryPickerVisible, setGalleryPickerVisible] = useState(false);
+  const [isInputActive, setIsInputActive] = useState(false);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
@@ -1018,12 +1541,23 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [liveExactResolution, setLiveExactResolution] = useState<string | null>(null);
   const videoFormatsRef = useRef<Record<string, string>>({});
   const [showQualityOptions, setShowQualityOptions] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const handleToggleMute = useCallback(() => {
+    setIsMuted(prev => !prev);
+  }, []);
+
+  useEffect(() => {
+    try {
+      TrackPlayer.setVolume(isMuted ? 0 : 1);
+    } catch (_) {}
+  }, [isMuted]);
 
   // ─── Direct ExoPlayer (Rave-style Native Video) State ───────────────────────
   const [directStreamUrl, setDirectStreamUrl] = useState<string | null>(null);
   const [directAudioUrl, setDirectAudioUrl] = useState<string | null>(null);
   const [directStreamType, setDirectStreamType] = useState<'mpd' | 'mp4' | 'm3u8'>('mp4');
-  const [isDirectLoading, setIsDirectLoading] = useState(false);
+  const [directStreamHeaders, setDirectStreamHeaders] = useState<Record<string, string> | undefined>(undefined);
+  const [isDirectLoading, setIsDirectLoading] = useState(() => !directStreamUrl && !!initialVideoId && initialSource !== 'drive');
   const [directStreamsList, setDirectStreamsList] = useState<any[]>([]);
   const directStreamsListRef = useRef<any[]>([]);
   const failedStreamUrlsRef = useRef<Set<string>>(new Set());
@@ -1035,8 +1569,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const lastLoadedStreamVideoId = useRef<string | null>(null);
   const initialSongLoadedRef = useRef(false);
   const songPlaybackStartedRef = useRef(false);
+  const isInitialVideoStartedRef = useRef(!initialVideoId);
   const lastAuxPassTimeRef = useRef(0);
-  const loadedAudioSessionRef = useRef<string | null>((global as any).loadedAudioSessionId || null);
+  const lastResetSongVideoIdRef = useRef<string | null>(initialVideoId || null);
+  const loadedAudioSessionRef = useRef<string | null>(null);
   const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seekPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPlayerReadyRef = useRef(false);
@@ -1044,8 +1580,72 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const isAdPlayingRef = useRef(false);
   const isDJBackgroundedRef = useRef(false);
 
-  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateMicPermission, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
+  const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateMicPermission, switchDJ, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName, allowedSpeakers } = roomState;
+  const activeVideoId = currentSong?.videoId || initialVideoId;
+
+  // Authoritative DJ state: WebSocket isDJ when connected, otherwise route param isDJMode
+  const effectiveIsDJ = isConnected ? isDJ : Boolean(isDJMode);
+
+  useEffect(() => {
+    setThumbFallbackUri(null);
+  }, [activeVideoId]);
+
+  useEffect(() => {
+    if (isPlayerReady) {
+      Animated.timing(thumbnailFadeAnim, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: true,
+      }).start(() => {
+        setShowThumbnailOverlay(false);
+      });
+    } else {
+      setShowThumbnailOverlay(true);
+      thumbnailFadeAnim.setValue(1);
+    }
+  }, [isPlayerReady]);
+
+  const displayTitle = (currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...' && currentSong.title !== 'YouTube Video' && currentSong.title !== 'Watch Party' && currentSong.title !== 'Drive Video')
+    ? currentSong.title
+    : (initialTitle && initialTitle !== 'YouTube Video' && initialTitle !== 'Watch Party' && initialTitle !== 'Drive Video' ? initialTitle : (initialRoomName && initialRoomName !== 'YouTube Video' && initialRoomName !== 'Watch Party' ? initialRoomName : 'Loading...'));
+
+  const isDJRef = useRef(effectiveIsDJ);
+  isDJRef.current = effectiveIsDJ;
+  const isDJModeRef = useRef(effectiveIsDJ);
+  isDJModeRef.current = effectiveIsDJ;
+
+  // ── Center-screen modern fade toast (Friend Request Style) ──
+  const [centerToastVisible, setCenterToastVisible] = useState(false);
+  const [centerToastMessage, setCenterToastMessage] = useState('');
+  const [centerToastIcon, setCenterToastIcon] = useState('star');
+  const [centerToastIconColor, setCenterToastIconColor] = useState('#FACC15');
+  const centerToastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showCenterToast = useCallback((message: string, icon = 'star', iconColor = '#FACC15') => {
+    setCenterToastMessage(message);
+    setCenterToastIcon(icon);
+    setCenterToastIconColor(iconColor);
+    setCenterToastVisible(true);
+    centerToastOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(centerToastOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+      Animated.delay(1200),
+      Animated.timing(centerToastOpacity, { toValue: 0, duration: 280, useNativeDriver: true }),
+    ]).start(() => setCenterToastVisible(false));
+  }, [centerToastOpacity]);
+
+  const prevEffectiveIsDJRef = useRef(effectiveIsDJ);
+  useEffect(() => {
+    if (prevEffectiveIsDJRef.current !== undefined && prevEffectiveIsDJRef.current !== effectiveIsDJ) {
+      if (effectiveIsDJ) {
+        showCenterToast('You are now the Leader! 👑', 'star', '#FACC15');
+      } else {
+        showCenterToast('Leader Role Transferred', 'star-outline', '#FACC15');
+      }
+    }
+    prevEffectiveIsDJRef.current = effectiveIsDJ;
+  }, [effectiveIsDJ, showCenterToast]);
 
   useEffect(() => {
     if (currentSong?.videoId) {
@@ -1053,12 +1653,36 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, [currentSong?.videoId]);
 
+  useEffect(() => {
+    if (isPlayerReady || isPlaying || (livePosition > 0)) {
+      isInitialVideoStartedRef.current = true;
+    }
+  }, [isPlayerReady, isPlaying, livePosition]);
+
+  // Pre-warm the next queued video stream in memory so that when the current song finishes,
+  // the next song's DASH MPD is already resolved and cached in memory (0ms delay).
+  useEffect(() => {
+    if (queue && queue.length > 0) {
+      const nextItem = queue[0];
+      const nextSong = nextItem?.song || nextItem;
+      const nextVideoId = nextSong?.videoId;
+      const nextSource = nextSong?.source;
+      if (nextVideoId && nextSource !== 'drive') {
+        console.log(`🚀 [PreWarm] Pre-extracting stream for next queue track: ${nextVideoId} (${nextSong.title || 'untitled'})`);
+        extractVideoStreamUrlClientSide(nextVideoId).catch((err) => {
+          console.warn(`⚠️ [PreWarm] Pre-extraction failed for ${nextVideoId}:`, err);
+        });
+      }
+    }
+  }, [queue]);
+
   const resolveStreamUrlForQuality = useCallback((dashUrl: string | null, streams: any[], qualityKey: string) => {
     if (dashUrl) {
       return { url: dashUrl, audioUrl: null, type: 'mpd' as const };
     }
 
     const heightMap: Record<string, number> = {
+      'hd2160': 2160, 'highres': 2160,
       'hd1440': 1440,
       'hd1080': 1080, 'hd720': 720, 'large': 480,
       'medium': 360, 'small': 240, 'tiny': 144,
@@ -1070,7 +1694,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     const parsedHeight = parseInt(qualityKey.replace(/\D/g, ''), 10);
     const rawTarget = heightMap[qualityKey] || (parsedHeight > 0 ? parsedHeight : 0);
-    const targetHeight = Math.min(1440, rawTarget);
+    const targetHeight = Math.min(2160, rawTarget);
 
     // If targetHeight > 1080, include VP9 streams because 1440p exists in VP9/AV1
     const mp4Streams = streams.filter(s => s.mimeType ? (s.mimeType.startsWith('video/mp4') || !s.mimeType.includes('webm')) : true);
@@ -1124,46 +1748,57 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, []);
 
   const videoThumbnailUrl = useMemo(() => {
-    // 1. Current song thumbnail / videoId
-    if (currentSong?.thumbnail && typeof currentSong.thumbnail === 'string' && currentSong.thumbnail.startsWith('http')) {
-      return currentSong.thumbnail;
-    }
-    if (currentSong?.videoId) {
-      if (currentSong?.source === 'drive') {
-        return `https://drive.google.com/thumbnail?id=${currentSong.videoId}&sz=w800`;
+    const raw = (() => {
+      // 1. Current song thumbnail / videoId
+      if (currentSong?.thumbnail && typeof currentSong.thumbnail === 'string' && currentSong.thumbnail.startsWith('http')) {
+        return currentSong.thumbnail;
       }
-      return `https://img.youtube.com/vi/${currentSong.videoId}/hqdefault.jpg`;
-    }
-
-    // 2. If current song not yet loaded, check upcoming queued song
-    if (queue && queue.length > 0) {
-      const nextItem = queue[0];
-      const nextSong = nextItem?.song || nextItem;
-      if (nextSong?.thumbnail && typeof nextSong.thumbnail === 'string' && nextSong.thumbnail.startsWith('http')) {
-        return nextSong.thumbnail;
-      }
-      if (nextSong?.videoId) {
-        if (nextSong?.source === 'drive') {
-          return `https://drive.google.com/thumbnail?id=${nextSong.videoId}&sz=w800`;
+      if (currentSong?.videoId) {
+        if (currentSong?.source === 'drive') {
+          return `https://drive.google.com/thumbnail?id=${currentSong.videoId}&sz=w1280`;
         }
-        return `https://img.youtube.com/vi/${nextSong.videoId}/hqdefault.jpg`;
+        return `https://i.ytimg.com/vi/${currentSong.videoId}/maxresdefault.jpg`;
       }
-    }
 
-    // 3. Only fall back to initial navigation params on cold start before the room loads
-    if (!initialSongLoadedRef.current) {
+      // 2. If current song not yet loaded, check upcoming queued song
+      if (queue && queue.length > 0) {
+        const nextItem = queue[0];
+        const nextSong = nextItem?.song || nextItem;
+        if (nextSong?.thumbnail && typeof nextSong.thumbnail === 'string' && nextSong.thumbnail.startsWith('http')) {
+          return nextSong.thumbnail;
+        }
+        if (nextSong?.videoId) {
+          if (nextSong?.source === 'drive') {
+            return `https://drive.google.com/thumbnail?id=${nextSong.videoId}&sz=w1280`;
+          }
+          return `https://i.ytimg.com/vi/${nextSong.videoId}/maxresdefault.jpg`;
+        }
+      }
+
+      // 3. Fallback to initial navigation params while room is connecting/initializing
       if (initialThumbnail) return initialThumbnail;
       const vid = initialVideoId;
       const src = initialSource;
       if (vid) {
         if (src === 'drive') {
-          return `https://drive.google.com/thumbnail?id=${vid}&sz=w800`;
+          return `https://drive.google.com/thumbnail?id=${vid}&sz=w1280`;
         }
-        return `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+        return `https://i.ytimg.com/vi/${vid}/maxresdefault.jpg`;
       }
+      return null;
+    })();
+
+    if (!raw) return null;
+    // Upgrade any YouTube thumbnail URL to maxresdefault (720p HD 16:9, no letterbox bars)
+    if (raw.includes('ytimg.com') || raw.includes('youtube.com')) {
+      return raw.replace(/\/(hqdefault|mqdefault|sddefault|default|hq720)\.(jpg|webp)/, '/maxresdefault.jpg').replace('http://', 'https://');
     }
-    return null;
-  }, [currentSong?.thumbnail, currentSong?.videoId, currentSong?.source, queue]);
+    // Upgrade Google Drive thumbnails to 1280px width
+    if (raw.includes('drive.google.com/thumbnail')) {
+      return raw.replace(/sz=w\d+/, 'sz=w1280');
+    }
+    return raw;
+  }, [currentSong?.thumbnail, currentSong?.videoId, currentSong?.source, queue, initialThumbnail, initialVideoId, initialSource]);
 
 
 
@@ -1175,24 +1810,49 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, []);
 
   const dynamicQualityOptions = useMemo(() => {
-    // Prioritize direct extracted streams if available
-    const directKeys = directStreamsList.map(s => s.qualityKey).filter(Boolean);
-    const validLevels = (directKeys.length > 0 ? directKeys : availableQualities).filter(q => q && q !== 'auto');
-    const sourceList = validLevels.length > 0
-      ? ['auto', ...validLevels]
-      : ['auto', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
+    // 1. Gather real quality keys from direct extracted streams
+    const directKeys = directStreamsList
+      .map(s => s.qualityKey || (s.height ? heightToQualityKey(s.height, s.width) : null))
+      .filter(Boolean);
 
-    // Filter out anything strictly above 1440p (8K, 4K, 2160p, 4320p)
-    const EXCLUDED_OVER_1440 = new Set(['hd4320', 'highres', 'hd2160', '4320p', '2160p', '8k', '4k']);
-    const filtered = sourceList.filter(q => {
-      if (EXCLUDED_OVER_1440.has(String(q).toLowerCase())) return false;
+    // 2. Gather reported quality keys from player level events
+    const reportedKeys = availableQualities
+      .filter(q => q && q !== 'auto')
+      .map(q => {
+        const h = parseInt(String(q).replace(/\D/g, ''), 10);
+        return h > 0 ? heightToQualityKey(h) : q;
+      })
+      .filter(Boolean);
+
+    // Use direct extracted stream tiers if available; fallback to reported levels
+    const rawKeys = directKeys.length > 0 ? directKeys : reportedKeys;
+
+    // Filter out anything strictly above 2160p (8K, 4320p)
+    const EXCLUDED_OVER_2160 = new Set(['hd4320', '4320p', '8k']);
+    const filtered = rawKeys.filter(q => {
+      if (EXCLUDED_OVER_2160.has(String(q).toLowerCase())) return false;
       const num = parseInt(String(q).replace(/\D/g, ''), 10);
-      if (num > 1440) return false;
+      if (num > 2160) return false;
       return true;
     });
+
+    // For 8K videos (4320p / 8K), ensure hd2160 (4K UHD) is included as top selectable tier
+    if (rawKeys.some(q => String(q).includes('4320') || String(q).includes('8k') || parseInt(String(q).replace(/\D/g, ''), 10) >= 4320)) {
+      if (!filtered.includes('hd2160')) {
+        filtered.push('hd2160');
+      }
+    }
+
+    // Deduplicate so each available resolution tier appears exactly once
     const unique = Array.from(new Set(filtered));
 
-    return unique.sort((a, b) => {
+    // Show ONLY the genuinely available qualities for this video.
+    // If stream data has not arrived yet, use safe fallback tiers until extraction finishes.
+    const sourceList = unique.length > 0
+      ? unique
+      : ['hd720', 'large', 'medium', 'small', 'tiny'];
+
+    return sourceList.sort((a, b) => {
       const idxA = QUALITY_PRIORITY.indexOf(a);
       const idxB = QUALITY_PRIORITY.indexOf(b);
       return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
@@ -1253,37 +1913,440 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     displayName?: string;
   }>({ visible: false });
 
-  // ─── Room Theme State & Persistence ─────────────────────────────────────────
+  // ─── Picture-in-Picture & Floating Mini-Player State ─────────────────────────
+  const [pipEnabled, setPipEnabled] = useState(false);
+  const pipEnabledSV = useSharedValue(0);
+
+  const [isSystemPip, setIsSystemPip] = useState(false);
+  const isSystemPipSV = useSharedValue(0);
+
+  const [pipDismissed, setPipDismissed] = useState(false);
+  const pipDismissedSV = useSharedValue(0);
+
+  useEffect(() => {
+    pipDismissedSV.value = pipDismissed ? 1 : 0;
+  }, [pipDismissed]);
+
+  useEffect(() => {
+    if (!isMinimized) {
+      setPipDismissed(false);
+      pipDismissedSV.value = 0;
+      DeviceEventEmitter.emit('pip_dismissed', false);
+      // PiP auto-enter managed dynamically by playback state effect
+    }
+  }, [isMinimized, pipEnabled]);
+
+  // Dynamic sizing (YouTube-style dynamic aspect ratio resize)
+  const currentAspectRatioRef = useRef<number>(16 / 9);
+  const miniWidth = useSharedValue(176);
+  const miniHeight = useSharedValue(99); // 16:9
+
+  const defaultMiniX = width - 176 - 14;
+  const defaultMiniY = height - 99 - Math.max(insets.bottom, 16) - 75;
+  const miniX = useSharedValue(defaultMiniX);
+  const miniY = useSharedValue(defaultMiniY);
+  const miniPosRef = useRef({ x: defaultMiniX, y: defaultMiniY });
+
+  // Load persisted PiP preference (initially OFF by default)
+  useEffect(() => {
+    AsyncStorage.getItem('@music_room_pip_enabled').then(val => {
+      const isEnabled = val === 'true'; // default: false
+      setPipEnabled(isEnabled);
+      pipEnabledSV.value = isEnabled ? 1 : 0;
+      (global as any).isPipEnabledInMusicRoom = isEnabled;
+      DeviceEventEmitter.emit('pip_mode_changed', isEnabled);
+    }).catch(() => {
+      setPipEnabled(false);
+      pipEnabledSV.value = 0;
+      (global as any).isPipEnabledInMusicRoom = false;
+      setSystemPipEnabled(false);
+    });
+  }, []);
+
+  const handleTogglePip = useCallback((value: boolean) => {
+    setPipEnabled(value);
+    pipEnabledSV.value = value ? 1 : 0;
+    (global as any).isPipEnabledInMusicRoom = value;
+    DeviceEventEmitter.emit('pip_mode_changed', value);
+    AsyncStorage.setItem('@music_room_pip_enabled', value ? 'true' : 'false').catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    isSystemPipSV.value = isSystemPip ? 1 : 0;
+  }, [isSystemPip]);
+
+  const wasInSystemPipRef = useRef(false);
+
+  useEffect(() => {
+    const removePip = addPipListener((inPip, isExpanded) => {
+      const wasInPip = wasInSystemPipRef.current;
+      wasInSystemPipRef.current = inPip;
+      if (!inPip) {
+        // Exiting system PiP: synchronously snap ALL shared values to full-screen Music Room!
+        isSystemPipSV.value = 0;
+        isMinimizedSV.value = 0;
+        pipDismissedSV.value = 0;
+        (global as any).isSystemPipActive = false;
+        (global as any).isMusicRoomMinimized = false;
+        (globalThis as any).isMusicRoomMinimized = false;
+        try {
+          cancelAnimation(miniX);
+          cancelAnimation(miniY);
+          cancelAnimation(miniWidth);
+          cancelAnimation(miniHeight);
+        } catch (_) {}
+        setIsSystemPip(false);
+        setPipDismissed(false);
+        DeviceEventEmitter.emit('pip_dismissed', false);
+        DeviceEventEmitter.emit('minimize_music_room', false);
+        wasInSystemPipRef.current = false;
+      } else {
+        setIsSystemPip(true);
+        isSystemPipSV.value = 1;
+        (global as any).isSystemPipActive = true;
+        setShowControls(false);
+        setStickerPickerVisible(false);
+        setShowSettingsModal(false);
+        setShowDiscovery(false);
+        Keyboard.dismiss();
+      }
+    });
+    return () => {
+      (global as any).isSystemPipActive = false;
+      setSystemPipEnabled(false);
+      removePip();
+    };
+  }, []);
+
+  const handleCloseRoom = useCallback(() => {
+    (global as any).keepMusicRoomAlive = false;
+    (global as any).activeMusicRoomCode = null;
+    (global as any).isMusicPlaying = false;
+    (global as any).loadedAudioSessionId = null;
+    try { TrackPlayerService.endSession(); } catch (_) {}
+    stopMusicService();
+    loadedAudioSessionRef.current = null;
+    musicWebSocketService.disconnect();
+    DeviceEventEmitter.emit('music_playback_state_changed', false);
+    DeviceEventEmitter.emit('close_music_room');
+  }, []);
+
+  const [pipControlsVisible, setPipControlsVisible] = useState(false);
+  const pipControlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pipTapTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetPipControlsTimeout = useCallback(() => {
+    if (pipControlsTimeoutRef.current) {
+      clearTimeout(pipControlsTimeoutRef.current);
+    }
+    pipControlsTimeoutRef.current = setTimeout(() => {
+      setPipControlsVisible(false);
+    }, 3500);
+  }, []);
+
+  const lastPipTapTimeRef = useRef<number>(0);
+  const handlePipTap = useCallback(() => {
+    // If a pinch gesture was active recently, ignore tap
+    if (touchStateRef.current.wasPinching || Date.now() - touchStateRef.current.pinchEndedAt < 400) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastPipTapTimeRef.current < 350) {
+      // DOUBLE TAP detected: Immediate maximize back to full Music Room!
+      if (pipTapTimeoutRef.current) {
+        clearTimeout(pipTapTimeoutRef.current);
+        pipTapTimeoutRef.current = null;
+      }
+      if (pipControlsTimeoutRef.current) {
+        clearTimeout(pipControlsTimeoutRef.current);
+        pipControlsTimeoutRef.current = null;
+      }
+      lastPipTapTimeRef.current = 0;
+      setPipControlsVisible(false);
+      DeviceEventEmitter.emit('minimize_music_room', false);
+    } else {
+      lastPipTapTimeRef.current = now;
+      if (pipTapTimeoutRef.current) {
+        clearTimeout(pipTapTimeoutRef.current);
+      }
+      pipTapTimeoutRef.current = setTimeout(() => {
+        // SINGLE TAP: Toggle Android System PiP controls overlay
+        setPipControlsVisible(prev => {
+          const next = !prev;
+          if (pipControlsTimeoutRef.current) {
+            clearTimeout(pipControlsTimeoutRef.current);
+            pipControlsTimeoutRef.current = null;
+          }
+          if (next) {
+            pipControlsTimeoutRef.current = setTimeout(() => {
+              setPipControlsVisible(false);
+            }, 3500);
+          }
+          return next;
+        });
+        pipTapTimeoutRef.current = null;
+      }, 250);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isMinimized) {
+      setPipControlsVisible(false);
+      if (pipControlsTimeoutRef.current) {
+        clearTimeout(pipControlsTimeoutRef.current);
+        pipControlsTimeoutRef.current = null;
+      }
+      if (pipTapTimeoutRef.current) {
+        clearTimeout(pipTapTimeoutRef.current);
+        pipTapTimeoutRef.current = null;
+      }
+    }
+  }, [isMinimized]);
+
+  useEffect(() => {
+    return () => {
+      if (pipControlsTimeoutRef.current) clearTimeout(pipControlsTimeoutRef.current);
+      if (pipTapTimeoutRef.current) clearTimeout(pipTapTimeoutRef.current);
+    };
+  }, []);
+
+  const touchStateRef = useRef<{
+    mode: 'drag' | 'pinch' | 'idle';
+    wasPinching: boolean;
+    initialDist: number;
+    initialWidth: number;
+    initialHeight: number;
+    pinchEndedAt: number;
+  }>({
+    mode: 'idle',
+    wasPinching: false,
+    initialDist: 0,
+    initialWidth: 176,
+    initialHeight: 99,
+    pinchEndedAt: 0,
+  });
+
+  const miniPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: (evt) => {
+        return Boolean(evt.nativeEvent.touches && evt.nativeEvent.touches.length > 1);
+      },
+      onMoveShouldSetPanResponder: (_, gesture) => {
+        return Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4 || gesture.numberActiveTouches > 1;
+      },
+      onMoveShouldSetPanResponderCapture: (_, gesture) => {
+        return Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4 || gesture.numberActiveTouches > 1;
+      },
+      onPanResponderGrant: (evt, gesture) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length >= 2) {
+          touchStateRef.current.mode = 'pinch';
+          touchStateRef.current.wasPinching = true;
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          touchStateRef.current.initialDist = Math.hypot(dx, dy) || 1;
+          touchStateRef.current.initialWidth = miniWidth.value;
+          touchStateRef.current.initialHeight = miniHeight.value;
+        } else {
+          touchStateRef.current.mode = 'drag';
+        }
+      },
+      onPanResponderMove: (evt, gesture) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length >= 2) {
+          // Dynamic 2-Finger Pinch to Expand / Shrink
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          const currentDist = Math.hypot(dx, dy);
+          if (touchStateRef.current.mode !== 'pinch') {
+            touchStateRef.current.mode = 'pinch';
+            touchStateRef.current.wasPinching = true;
+            touchStateRef.current.initialDist = currentDist || 1;
+            touchStateRef.current.initialWidth = miniWidth.value;
+            touchStateRef.current.initialHeight = miniHeight.value;
+            return;
+          }
+          touchStateRef.current.wasPinching = true;
+          const ratio = currentDist / (touchStateRef.current.initialDist || 1);
+          const currentAr = currentAspectRatioRef.current || (16 / 9);
+
+          let newW = miniWidth.value;
+          let newH = miniHeight.value;
+
+          if (currentAr < 1.0) {
+            // Vertical short (e.g. 9:16): scale based on height
+            const minH = 150;
+            const maxH = Math.round(height * 0.45);
+            newH = Math.min(Math.max(touchStateRef.current.initialHeight * ratio, minH), maxH);
+            newW = Math.round(newH * currentAr);
+          } else {
+            // Landscape / normal (e.g. 16:9, 4:3): scale based on width
+            const minW = 140;
+            const maxW = width - 20;
+            newW = Math.min(Math.max(touchStateRef.current.initialWidth * ratio, minW), maxW);
+            newH = Math.round(newW / currentAr);
+          }
+
+          miniWidth.value = newW;
+          miniHeight.value = newH;
+
+          // Prevent spilling off-screen during dynamic resize
+          const maxX = width - newW - 10;
+          const maxY = height - newH - Math.max(insets.bottom, 16) - 55;
+          if (miniX.value > maxX) miniX.value = maxX;
+          if (miniY.value > maxY) miniY.value = maxY;
+        } else if (touchStateRef.current.mode === 'drag' && !touchStateRef.current.wasPinching) {
+          // Single-Finger Drag to Move Position
+          miniX.value = miniPosRef.current.x + gesture.dx;
+          miniY.value = miniPosRef.current.y + gesture.dy;
+        }
+      },
+      onPanResponderRelease: (evt, gesture) => {
+        const wasPinch = touchStateRef.current.mode === 'pinch' || touchStateRef.current.wasPinching;
+        touchStateRef.current.mode = 'idle';
+
+        if (wasPinch) {
+          touchStateRef.current.wasPinching = false;
+          touchStateRef.current.pinchEndedAt = Date.now();
+          // Retain resized dimensions smoothly without auto-opening the room
+          const curW = miniWidth.value;
+          const curH = miniHeight.value;
+          const maxX = width - curW - 10;
+          const maxY = height - curH - Math.max(insets.bottom, 16) - 55;
+          const finalX = Math.min(Math.max(miniX.value, 10), maxX);
+          const finalY = Math.min(Math.max(miniY.value, Math.max(insets.top, 24) + 8), maxY);
+          miniPosRef.current = { x: finalX, y: finalY };
+          miniX.value = withSpring(finalX, { damping: 16, stiffness: 130 });
+          miniY.value = withSpring(finalY, { damping: 16, stiffness: 130 });
+          return;
+        }
+
+        // Ignore releases occurring right after pinch ended
+        if (Date.now() - touchStateRef.current.pinchEndedAt < 400) {
+          return;
+        }
+
+        // Tap detected (< 6px movement): Handle Tap / Double Tap
+        if (Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
+          handlePipTap();
+          return;
+        }
+
+        // Single-finger drag ended: Snap to nearest edge (left or right)
+        let targetX = miniPosRef.current.x + gesture.dx;
+        let targetY = miniPosRef.current.y + gesture.dy;
+        const curW = miniWidth.value;
+        const curH = miniHeight.value;
+
+        const minX = 10;
+        const maxX = width - curW - 10;
+        const minY = Math.max(insets.top, 24) + 8;
+        const maxY = height - curH - Math.max(insets.bottom, 16) - 55;
+
+        const midX = width / 2;
+        const finalX = (targetX + curW / 2 < midX) ? minX : maxX;
+        const finalY = Math.min(Math.max(targetY, minY), maxY);
+
+        miniPosRef.current = { x: finalX, y: finalY };
+
+        miniX.value = withSpring(finalX, { damping: 16, stiffness: 130 });
+        miniY.value = withSpring(finalY, { damping: 16, stiffness: 130 });
+      },
+      onPanResponderTerminate: () => {
+        touchStateRef.current.mode = 'idle';
+        touchStateRef.current.wasPinching = false;
+      },
+    })
+  ).current;
+
+  // ─── Room Theme State & Persistence ───────────────────────────────────
   const [roomTheme, setRoomTheme] = useState<RoomTheme>('cinema');
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  // ─── Cinematic Smooth Screen Transition (Fade out to black & fade in to eliminate any flash) ───
+  const screenTransitionFadeAnim = useRef(new Animated.Value(0)).current;
+  const [isScreenTransitioning, setIsScreenTransitioning] = useState(false);
+  const isScreenTransitioningRef = useRef(false);
+
+  const triggerSmoothScreenTransition = useCallback((action: () => void) => {
+    if (isScreenTransitioningRef.current) return;
+    isScreenTransitioningRef.current = true;
+    setIsScreenTransitioning(true);
+
+    Animated.timing(screenTransitionFadeAnim, {
+      toValue: 1,
+      duration: 180,
+      easing: RNEasing.out(RNEasing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      try {
+        action();
+      } catch (err) {
+        console.warn('Error during smooth screen transition:', err);
+      }
+
+      // Small hold (80ms) for Android layout & SurfaceHolder recreation behind the blackout curtain
+      setTimeout(() => {
+        Animated.timing(screenTransitionFadeAnim, {
+          toValue: 0,
+          duration: 240,
+          easing: RNEasing.in(RNEasing.quad),
+          useNativeDriver: true,
+        }).start(() => {
+          isScreenTransitioningRef.current = false;
+          setIsScreenTransitioning(false);
+        });
+      }, 80);
+    });
+  }, [screenTransitionFadeAnim]);
+
+  const handleThemeChange = useCallback((newTheme: RoomTheme) => {
+    if (newTheme === roomTheme) return;
+    triggerSmoothScreenTransition(() => {
+      setRoomTheme(newTheme);
+      AsyncStorage.setItem('@music_room_theme', newTheme).catch(() => {});
+    });
+  }, [roomTheme, triggerSmoothScreenTransition]);
+
+  const handlePrevTheme = useCallback(() => {
+    const currentIdx = ROOM_THEMES.findIndex(t => t.id === roomTheme);
+    const prevIdx = (currentIdx - 1 + ROOM_THEMES.length) % ROOM_THEMES.length;
+    handleThemeChange(ROOM_THEMES[prevIdx].id);
+  }, [roomTheme, handleThemeChange]);
+
+  const handleNextTheme = useCallback(() => {
+    const currentIdx = ROOM_THEMES.findIndex(t => t.id === roomTheme);
+    const nextIdx = (currentIdx + 1) % ROOM_THEMES.length;
+    handleThemeChange(ROOM_THEMES[nextIdx].id);
+  }, [roomTheme, handleThemeChange]);
 
   useEffect(() => {
     AsyncStorage.getItem('@music_room_theme').then(saved => {
-      if (saved === 'cinema' || saved === 'rave' || saved === 'dark' || saved === 'light') {
+      if (saved === 'cinema' || saved === 'rave' || saved === 'dark' /* || saved === 'light' */) {
         setRoomTheme(saved as RoomTheme);
       }
     }).catch(() => {});
   }, []);
 
-  const handleThemeChange = (newTheme: RoomTheme) => {
-    setRoomTheme(newTheme);
-    AsyncStorage.setItem('@music_room_theme', newTheme).catch(() => {});
-  };
-
-  const handleCycleTheme = () => {
+  const handleCycleTheme = useCallback(() => {
     const nextTheme: Record<RoomTheme, RoomTheme> = {
       cinema: 'rave',
       rave: 'dark',
-      dark: 'light',
-      light: 'cinema',
+      dark: 'cinema',
+      // dark: 'light',
+      // light: 'cinema',
     };
     handleThemeChange(nextTheme[roomTheme]);
-  };
+  }, [roomTheme, handleThemeChange]);
 
-  const isLight = roomTheme === 'light';
+  // const isLight = roomTheme === 'light';
+  const isLight = false;
   const themeTextColor = isLight ? '#0F172A' : '#FFFFFF';
   const themeSubTextColor = isLight ? '#475569' : 'rgba(255,255,255,0.6)';
   const themeIconColor = isLight ? '#0F172A' : '#FFFFFF';
   const themePlaceholderColor = isLight ? 'rgba(15, 23, 42, 0.45)' : 'rgba(255,255,255,0.40)';
+  const showInnerGallery = !isInputActive && !stickerPickerVisible && (!chatMessage || chatMessage.length === 0);
 
   const handleAvatarPress = (uri?: string, sticker?: string, displayName?: string) => {
     setPreviewData({
@@ -1327,12 +2390,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isReseeking, setIsReseeking] = useState(false);
   const richInputRef = useRef<RichTextInputRef>(null);
 
-  useEffect(() => {
-    if (chatMessage === '') {
-      richInputRef.current?.clear();
-    }
-  }, [chatMessage]);
-
   const checkLikeStatus = useCallback(async (videoId: string, source: string = 'youtube') => {
     try {
       const likes = await musicAPI.getLikes();
@@ -1360,6 +2417,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       console.error('Error toggling like:', e);
     }
   };
+
+  const handleShareRoom = useCallback(async () => {
+    try {
+      const shareUrl = 'https://dme-19zq.onrender.com/invite';
+      const songText = displayTitle ? `"${displayTitle}"` : 'music';
+      const roomDesc = roomName ? ` in "${roomName}"` : '';
+      const codeText = roomCode ? `\n\nRoom Code: ${roomCode}` : '';
+      await Share.share({
+        title: 'Join youtelite Music Room',
+        message: `🎵 Join me on youtelite to listen to ${songText}${roomDesc}!${codeText}\n\n📲 Download & Join: ${shareUrl}`,
+      });
+    } catch (err) {
+      console.warn('Error sharing room:', err);
+    }
+  }, [displayTitle, roomName, roomCode]);
 
   const recordHistory = useCallback(async (song: Song) => {
     try {
@@ -1411,6 +2483,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       local_id: localId,
       user: myName,
       user_id: user?.id,
+      avatar: user?.profile_picture,
+      avatar_sticker: user?.avatar_sticker,
       text: caption || '',
       media_url: asset.uri,
       local_uri: asset.uri,
@@ -1418,6 +2492,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       reply_to: currentReplyTo,
       created_at: new Date().toISOString(),
       status: 'sending',
+      _isNew: true,
     };
 
     setMessages(prev => [...prev, optimisticMsg]);
@@ -1481,46 +2556,214 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // fresh suggestions only — no PIP, no current-song display, per spec.
   const [showRelated, setShowRelated] = useState(false);
   const showRelatedRef = useRef(false);
+  const showRelatedSV = useSharedValue(0);
   useEffect(() => {
     showRelatedRef.current = showRelated;
+    showRelatedSV.value = showRelated ? 1 : 0;
   }, [showRelated]);
   const isKeyboardVisibleRef = useRef(false);
 
   const stickerPickerVisibleRef = useRef(false);
   stickerPickerVisibleRef.current = stickerPickerVisible;
   const safeBottomPadding = stableBottomInset + 12;
-  const { height: keyboardHeight, progress } = useReanimatedKeyboardAnimation();
+  const isKeyboardOpeningRef = useRef(false);
+  const isSwitchingToKeyboardRef = useRef(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      KeyboardController.setInputMode(AndroidSoftInputModes.SOFT_INPUT_ADJUST_NOTHING);
+    }
+  }, []);
+
+  const kbHeight = useSharedValue(0);
+  const kbProgress = useSharedValue(0);
   const stickerSpacerHeight = useSharedValue(0);
-  // Lifts the entire conversation area (messages + chat bar) smoothly when keyboard or sticker drawer opens.
-  // Using pure GPU translateY transform ensures 60fps/120fps with zero layout recalculation and zero jerking.
-  const conversationLiftStyle = useAnimatedStyle(() => {
-    const kbHeight = Math.abs(keyboardHeight.value);
-    const lift = kbHeight > 0 ? Math.max(0, kbHeight - stableBottomInset) : 0;
-    const finalLift = Math.max(lift, stickerSpacerHeight.value);
+  const collapseProgress = useSharedValue(0);
+  const settledKeyboardHeight = useSharedValue(STICKER_DRAWER_HEIGHT);
+  const isStickerPickerDeliberatelyOpenSV = useSharedValue(0);
+  const isKeyboardClosingSV = useSharedValue(0);
+  const [isStickerPickerDeliberatelyOpen, setIsStickerPickerDeliberatelyOpen] = useState(false);
+  const isMinimizedSV = useSharedValue(isMinimized ? 1 : 0);
+  const bottomInsetSV = useSharedValue(stableBottomInset);
+  useEffect(() => {
+    isMinimizedSV.value = isMinimized ? 1 : 0;
+  }, [isMinimized]);
+  useEffect(() => {
+    bottomInsetSV.value = stableBottomInset;
+  }, [stableBottomInset]);
+
+  useGenericKeyboardHandler({
+    onStart: (e) => {
+      'worklet';
+      if (e.height > 0) {
+        isKeyboardClosingSV.value = 0;
+        collapseProgress.value = 1;
+        stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+      } else if (e.height === 0) {
+        if (isStickerPickerDeliberatelyOpenSV.value === 0) {
+          isKeyboardClosingSV.value = 1;
+          collapseProgress.value = 0;
+          stickerSpacerHeight.value = 0;
+          kbHeight.value = 0;
+        } else {
+          isKeyboardClosingSV.value = 0;
+          collapseProgress.value = 1;
+          stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+        }
+      }
+    },
+    onMove: (e) => {
+      'worklet';
+      if (isKeyboardClosingSV.value === 1 && isStickerPickerDeliberatelyOpenSV.value === 0) {
+        collapseProgress.value = 0;
+        stickerSpacerHeight.value = 0;
+        kbHeight.value = 0;
+      } else {
+        kbHeight.value = e.height;
+        kbProgress.value = e.progress;
+      }
+    },
+    onInteractive: (e) => {
+      'worklet';
+      if (isKeyboardClosingSV.value === 1 && isStickerPickerDeliberatelyOpenSV.value === 0) {
+        collapseProgress.value = 0;
+        stickerSpacerHeight.value = 0;
+        kbHeight.value = 0;
+      } else {
+        kbHeight.value = e.height;
+        kbProgress.value = e.progress;
+      }
+    },
+    onEnd: (e) => {
+      'worklet';
+      if (e.height === 0) {
+        if (isStickerPickerDeliberatelyOpenSV.value === 0) {
+          isKeyboardClosingSV.value = 0;
+          stickerSpacerHeight.value = 0;
+          collapseProgress.value = 0;
+          kbHeight.value = 0;
+        } else {
+          isKeyboardClosingSV.value = 0;
+          collapseProgress.value = 1;
+          stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+          kbHeight.value = 0;
+        }
+      } else if (e.height > 150) {
+        settledKeyboardHeight.value = Math.max(STICKER_DRAWER_HEIGHT, e.height - (bottomInsetSV?.value || 0));
+      }
+    },
+  }, []);
+
+  const isMinimizedRef = useRef(isMinimized);
+  isMinimizedRef.current = isMinimized;
+
+  // Only keyboard progress drives video/npBar/header collapse to maximize chat space while typing
+  const kbActiveProgress = useDerivedValue(() => {
+    if (isMinimizedSV.value === 1) return 0;
+    return Math.abs(kbProgress.value);
+  });
+
+  // Combined input active progress for gallery icon fade
+  const inputActiveProgress = useDerivedValue(() => {
+    if (isMinimizedSV.value === 1) return 0;
+    const p = Math.abs(kbProgress.value);
+    const sp = Math.min(1, stickerSpacerHeight.value / STICKER_DRAWER_HEIGHT);
+    return Math.max(p, sp);
+  });
+
+  // Fast millisecond fade for inner gallery icon
+  const galleryFade = useSharedValue(1);
+
+  useEffect(() => {
+    if (showInnerGallery) {
+      galleryFade.value = withTiming(1, { duration: 150 });
+    } else {
+      galleryFade.value = withTiming(0, { duration: 100 });
+    }
+  }, [showInnerGallery]);
+
+  const galleryAnimStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) {
+      return { opacity: 0, transform: [{ scale: 0.85 }] };
+    }
+    const kbFade = Math.max(0, 1 - inputActiveProgress.value * 5);
+    const finalOpacity = Math.min(kbFade, galleryFade.value);
     return {
-      transform: [{ translateY: -finalLift }],
+      opacity: finalOpacity,
+      transform: [{ scale: 0.85 + 0.15 * finalOpacity }],
+    };
+  });
+
+  // Video container smoothly covers header (58dp) and Now Playing bar hides under video (116dp):
+  const headerAnimStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { opacity: 1 };
+    return {
+      opacity: Math.max(0, 1 - collapseProgress.value),
+    };
+  });
+
+  const npBarAnimStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { opacity: 1, transform: [{ translateY: 0 }] };
+    return {
+      opacity: Math.max(0, 1 - collapseProgress.value),
+      transform: [{ translateY: -collapseProgress.value * 116 }],
+    };
+  });
+
+  const conversationContainerStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { transform: [{ translateY: 0 }] };
+    return {
+      transform: [{ translateY: -collapseProgress.value * 116 }],
+    };
+  });
+
+  // Gold-standard WhatsApp 1:1 hardware VSYNC synchronized keyboard lift (identical to ChatRoomScreen):
+  const kbLift = useDerivedValue(() => {
+    if (isMinimizedSV.value === 1 || Platform.OS !== 'android') return 0;
+    const rawH = kbHeight.value;
+    return Math.max(0, rawH - bottomInsetSV.value);
+  });
+
+  // Instant Frame-0 lift via sticker modal (286dp); expands smoothly if Gboard expands (Translate/Stickers/GIF)
+  const finalLift = useDerivedValue(() => {
+    if (isMinimizedSV.value === 1) return 0;
+    return Math.max(kbLift.value, stickerSpacerHeight.value);
+  });
+
+  const conversationLiftStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) {
+      return { transform: [{ translateY: 0 }] };
+    }
+    const containerShift = collapseProgress.value * 116;
+    const remainingLift = Math.max(0, finalLift.value - containerShift);
+    return {
+      transform: [{ translateY: -remainingLift }],
     };
   });
 
   useEffect(() => {
     if (isMinimized) {
+      richInputRef.current?.blur();
+      Keyboard.dismiss();
       setStickerPickerVisible(false);
       stickerSpacerHeight.value = 0;
+      collapseProgress.value = 0;
+      setShowSettingsModal(false);
+      setShowLeaveConfirm(false);
+      setShowDiscovery(false);
+      setShowQualityOptions(false);
+      setShowRelated(false);
+      setShowControls(false);
     }
   }, [isMinimized, stickerSpacerHeight]);
 
+  // Smooth timing animation for sticker picker drawer (identical to ChatRoomScreen)
   useEffect(() => {
     if (stickerPickerVisible) {
       Keyboard.dismiss();
-      stickerSpacerHeight.value = withTiming(286, {
-        duration: 250,
-        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
-      });
+      stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
     } else {
-      stickerSpacerHeight.value = withTiming(0, {
-        duration: 220,
-        easing: Easing.bezier(0.4, 0.0, 1, 1),
-      });
+      stickerSpacerHeight.value = 0;
     }
   }, [stickerPickerVisible, stickerSpacerHeight]);
 
@@ -1530,37 +2773,80 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         setStickerPickerVisible(false);
         stickerSpacerHeight.value = 0;
       };
-    }, [])
+    }, [stickerSpacerHeight])
   );
 
-  const isFocused = useIsFocused();
+    const isFocused = useIsFocused();
   const isFocusedRef = useRef(isFocused);
   isFocusedRef.current = isFocused;
 
-  useEffect(() => {
-    const handleShow = () => {
-      if (isMinimized || !isFocusedRef.current) return;
-      isKeyboardVisibleRef.current = true;
-      setStickerPickerVisible(false);
-    };
+  const isStickerPickerDeliberatelyOpenRef = useRef(false);
 
-    const handleHide = () => {
-      if (isMinimized || !isFocusedRef.current) return;
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      if (isMinimizedRef.current || !isFocusedRef.current) return;
+      isKeyboardVisibleRef.current = true;
+      isKeyboardOpeningRef.current = false;
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      if (isMinimizedRef.current || !isFocusedRef.current) return;
       isKeyboardVisibleRef.current = false;
+      isKeyboardOpeningRef.current = false;
+      if (!isStickerPickerDeliberatelyOpenRef.current) {
+        stickerSpacerHeight.value = 0;
+        collapseProgress.value = 0;
+        kbHeight.value = 0;
+        setStickerPickerVisible(false);
+        setIsStickerPickerDeliberatelyOpen(false);
+        isStickerPickerDeliberatelyOpenSV.value = 0;
+      }
       if (typingIndicatorTimeout.current) clearTimeout(typingIndicatorTimeout.current);
       lastTypingState.current = false;
       musicWebSocketService.sendTyping(false);
-    };
-
-    const listeners = [
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleShow),
-      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleHide),
-    ];
-
+    });
     return () => {
-      listeners.forEach(l => l.remove());
+      showSub.remove();
+      hideSub.remove();
     };
-  }, [safeBottomPadding]);
+  }, [stickerSpacerHeight]);
+
+  const handleOpenStickerPickerStable = useCallback(() => {
+    isStickerPickerDeliberatelyOpenRef.current = true;
+    isStickerPickerDeliberatelyOpenSV.value = 1;
+    setIsStickerPickerDeliberatelyOpen(true);
+    collapseProgress.value = 1;
+    stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+    setStickerPickerVisible(true);
+    richInputRef.current?.blur();
+    Keyboard.dismiss();
+  }, [stickerSpacerHeight]);
+
+  const handleCloseStickerPickerStable = useCallback(() => {
+    isStickerPickerDeliberatelyOpenRef.current = false;
+    isStickerPickerDeliberatelyOpenSV.value = 0;
+    setIsStickerPickerDeliberatelyOpen(false);
+    stickerSpacerHeight.value = 0;
+    collapseProgress.value = 0;
+    setStickerPickerVisible(false);
+  }, [stickerSpacerHeight]);
+
+  const handleInputFocusStable = useCallback(() => {
+    isKeyboardOpeningRef.current = true;
+    collapseProgress.value = 1;
+    const wasStickerOpen = isStickerPickerDeliberatelyOpenRef.current;
+    isStickerPickerDeliberatelyOpenRef.current = false;
+    setIsStickerPickerDeliberatelyOpen(false);
+    if (wasStickerOpen) {
+      isStickerPickerDeliberatelyOpenSV.value = withTiming(0, {
+        duration: 100,
+        easing: Easing.bezier(0.0, 0.0, 0.2, 1),
+      });
+    } else {
+      isStickerPickerDeliberatelyOpenSV.value = 0;
+    }
+    stickerSpacerHeight.value = STICKER_DRAWER_HEIGHT;
+    setStickerPickerVisible(true);
+  }, [stickerSpacerHeight]);
 
 
   const handleRateVideo = (videoId: string, rating: number) => {
@@ -1575,37 +2861,61 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     });
   };
 
-  const renderNpBar = () => {
-    const displayTitle = (currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...' && currentSong.title !== 'YouTube Video' && currentSong.title !== 'Watch Party' && currentSong.title !== 'Drive Video')
-      ? currentSong.title
-      : (!initialSongLoadedRef.current && initialTitle && initialTitle !== 'YouTube Video' && initialTitle !== 'Watch Party' && initialTitle !== 'Drive Video' ? initialTitle : (!initialSongLoadedRef.current && initialRoomName && initialRoomName !== 'YouTube Video' && initialRoomName !== 'Watch Party' ? initialRoomName : 'Loading...'));
+  const handleChannelPress = () => {
+    if (currentSong?.source === 'drive') {
+      Toast.show({ type: 'info', text1: 'Google Drive file has no channel' });
+      return;
+    }
 
+    const channelTitle = currentSong?.channelTitle || 'YouTube';
+    const channelUrl = currentSong?.channelUrl 
+      || fetchedChannelUrl 
+      || (channelTitle && channelTitle !== 'YouTube' 
+          ? `https://m.youtube.com/results?search_query=${encodeURIComponent(channelTitle)}` 
+          : 'https://m.youtube.com');
+
+    setDiscoveryInitialUrl(channelUrl);
+    setShowDiscovery(true);
+  };
+
+  const renderNpBar = () => {
     const pinnerName = currentSong?.addedBy || 'Someone';
     const pinner = participants.find(p => p.name === currentSong?.addedBy) || user;
     const likers = isLiked ? [user] : [];
-    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || (!initialSongLoadedRef.current ? initialThumbnail : null) || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null);
+    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || initialThumbnail || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null);
 
     return (
-      <View style={s.npBar}>
-        <View style={{ width: 36, height: 36, position: 'relative' }}>
-          {logoUri ? (
-            <Image 
-              source={{ uri: logoUri }} 
-              style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.1)' }} 
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isLight ? '#E2E8F0' : '#282828', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)' }}>
-              <Icon name="musical-notes" size={18} color="#FF453A" />
-            </View>
-          )}
+      <Reanimated.View
+        style={[{ height: 58, overflow: 'hidden', zIndex: 5, elevation: 0 }, npBarAnimStyle]}
+        pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible ? 'none' : 'auto'}
+      >
+        <View style={s.npBar}>
+        <View style={{ width: 42, height: 42, position: 'relative' }}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={handleChannelPress}
+            style={{ width: 42, height: 42, borderRadius: 21, overflow: 'hidden' }}
+          >
+            {logoUri ? (
+              <Image 
+                source={{ uri: logoUri }} 
+                style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.1)' }} 
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: isLight ? '#E2E8F0' : '#282828', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)' }}>
+                <Icon name="musical-notes" size={20} color="#FF453A" />
+              </View>
+            )}
+          </TouchableOpacity>
           <TouchableOpacity 
-            style={{ position: 'absolute', bottom: -2, right: -2 }}
-            onPress={() => handleAvatarPress(pinner?.avatar || pinner?.profile_picture, pinner?.avatar_sticker, pinnerName)}
+            style={{ position: 'absolute', bottom: -2, right: -2, zIndex: 2 }}
+            onPress={() => handleAvatarPress((pinner as any)?.avatar || (pinner as any)?.profile_picture, (pinner as any)?.avatar_sticker, pinnerName)}
           >
             <AvatarWithFallback 
-              uri={pinner?.avatar || pinner?.profile_picture} 
+              uri={(pinner as any)?.avatar || (pinner as any)?.profile_picture} 
               displayName={pinnerName} 
+              sticker={(pinner as any)?.avatar_sticker}
               style={{ 
                 width: 14, 
                 height: 14, 
@@ -1616,45 +2926,47 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
             />
           </TouchableOpacity>
         </View>
-        <View style={{ flex: 1, marginLeft: 12 }}>
+        <View style={{ flex: 1, marginLeft: 10, height: 42, justifyContent: 'space-between' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Text style={[s.npTitle, { flex: 1 }, isLight && { color: '#0F172A' }]} numberOfLines={1}>{displayTitle}</Text>
           </View>
 
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 19 }}>
             {/* Likers Container - Left aligned, normal order (heart on left, avatars next to it on right) */}
             <TouchableOpacity 
               onPress={handleToggleLike} 
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
               style={{ 
                 flexDirection: 'row', 
                 alignItems: 'center', 
                 backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
-                paddingHorizontal: 8, 
-                paddingVertical: 4, 
-                borderRadius: 14,
+                paddingHorizontal: 7, 
+                height: 19, 
+                borderRadius: 9.5,
                 flexShrink: 0
               }}
               activeOpacity={0.7}
             >
               <Icon 
                 name={isLiked ? "heart" : "heart-outline"} 
-                size={16} 
+                size={13} 
                 color={isLiked ? (isLight ? "#E11D48" : "#fff") : (isLight ? "#64748B" : "rgba(255,255,255,0.6)")} 
-                style={{ marginRight: likers.length > 0 ? 6 : 0 }} 
+                style={{ marginRight: likers.length > 0 ? 5 : 0 }} 
               />
               {likers.length > 0 && (
                 likers.length <= 4 ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {likers.map((liker, i) => (
+                    {likers.map((liker: any, i) => (
                       <AvatarWithFallback 
                         key={i}
                         uri={liker?.avatar || liker?.profile_picture} 
                         displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
+                        sticker={liker?.avatar_sticker}
                         style={{ 
-                          width: 16, 
-                          height: 16, 
-                          borderRadius: 8, 
-                          marginLeft: i > 0 ? -6 : 0, 
+                          width: 13, 
+                          height: 13, 
+                          borderRadius: 6.5, 
+                          marginLeft: i > 0 ? -4 : 0, 
                           borderWidth: 1, 
                           borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
                         }} 
@@ -1666,18 +2978,19 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                     horizontal 
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
-                    style={{ maxHeight: 20, flexShrink: 1, maxWidth: 80 }}
+                    style={{ maxHeight: 15, flexShrink: 1, maxWidth: 80 }}
                   >
-                    {likers.map((liker, i) => (
+                    {likers.map((liker: any, i) => (
                       <AvatarWithFallback 
                         key={i}
                         uri={liker?.avatar || liker?.profile_picture} 
                         displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
+                        sticker={liker?.avatar_sticker}
                         style={{ 
-                          width: 16, 
-                          height: 16, 
-                          borderRadius: 8, 
-                          marginLeft: i > 0 ? -6 : 0, 
+                          width: 13, 
+                          height: 13, 
+                          borderRadius: 6.5, 
+                          marginLeft: i > 0 ? -4 : 0, 
                           borderWidth: 1, 
                           borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
                         }} 
@@ -1688,26 +3001,82 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
               )}
             </TouchableOpacity>
 
-            {/* Skip Button - Moved to the right end of the like row */}
-            <TouchableOpacity 
-              onPress={handleNext} 
-              disabled={!(isDJ || isDJMode)}
-              style={{ 
-                flexDirection: 'row', 
-                alignItems: 'center', 
-                backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
-                paddingHorizontal: 12, 
-                paddingVertical: 4, 
-                borderRadius: 14,
-                opacity: (isDJ || isDJMode) ? 1 : 0.4
-              }}
-              activeOpacity={0.7}
-            >
-              <Icon name="play-skip-forward" size={16} color={isLight ? '#0F172A' : '#fff'} />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {/* Share Room Button */}
+              <TouchableOpacity 
+                onPress={handleShareRoom} 
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                style={{ 
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
+                  paddingHorizontal: 8, 
+                  height: 19, 
+                  borderRadius: 9.5,
+                }}
+                activeOpacity={0.7}
+                accessibilityLabel="Share room"
+              >
+                <Icon name="share-social-outline" size={13} color={isLight ? '#0F172A' : '#fff'} />
+              </TouchableOpacity>
+
+              {/* Add Friend / Invite Button */}
+              <TouchableOpacity 
+                onPress={() => setInviteModalVisible(true)} 
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                style={{ 
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
+                  paddingHorizontal: 8, 
+                  height: 19, 
+                  borderRadius: 9.5,
+                }}
+                activeOpacity={0.7}
+                accessibilityLabel="Invite friends"
+              >
+                <Icon name="person-add-outline" size={13} color={isLight ? '#0F172A' : '#fff'} />
+              </TouchableOpacity>
+
+              {/* Queue Button - In between invite and skip */}
+              <TouchableOpacity 
+                onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} 
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                style={{ 
+                  flexDirection: 'row', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  backgroundColor: activeTab === 'queue' 
+                    ? (isLight ? 'rgba(2,132,199,0.15)' : 'rgba(2,132,199,0.25)')
+                    : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)'), 
+                  paddingHorizontal: 8, 
+                  height: 19, 
+                  borderRadius: 9.5,
+                }}
+                activeOpacity={0.7}
+                accessibilityLabel="Toggle queue"
+              >
+                <Icon name="list" size={13} color={activeTab === 'queue' ? '#0284C7' : (isLight ? '#0F172A' : '#fff')} />
+                {queue.length > 0 && (
+                  <Text style={{ 
+                    fontSize: 9.5, 
+                    fontWeight: '700', 
+                    marginLeft: 3, 
+                    color: activeTab === 'queue' ? '#0284C7' : (isLight ? '#0F172A' : '#fff'),
+                    includeFontPadding: false 
+                  }}>
+                    {queue.length}
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+            </View>
           </View>
         </View>
-      </View>
+        </View>
+      </Reanimated.View>
     );
   };
   // ----------------------------
@@ -1776,7 +3145,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       NativeModules.SystemBar.setWindowBackground('#000000');
       NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
       NativeModules.SystemBar.setStatusBarColor('#00000000', true);
-      NativeModules.SystemBar.setFitsSystemWindows(false);
     }
   }, [roomCode]);
 
@@ -1792,7 +3160,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         NativeModules.SystemBar.setWindowBackground('#000000');
         NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
         NativeModules.SystemBar.setStatusBarColor('#00000000', true);
-        NativeModules.SystemBar.setFitsSystemWindows(false);
       }
     }, [roomCode])
   );
@@ -1803,6 +3170,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const metadataLock = useRef<string | null>(null);
   const currentSongRef = useRef<Song | null>(null);
   const relatedScrollX = useRef(new Animated.Value(0)).current;
+  const relatedScrollXSV = useSharedValue(0);
+  useEffect(() => {
+    const id = relatedScrollX.addListener(({ value }) => {
+      relatedScrollXSV.value = value;
+    });
+    return () => {
+      relatedScrollX.removeListener(id);
+    };
+  }, [relatedScrollX]);
   // Lets fetchSwipeSuggestions (declared with stable empty deps further
   // down) always read the CURRENT queue when it runs, without needing
   // `queue` in its dependency array — same rationale as currentSongRef.
@@ -1819,6 +3195,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const lastSnapVideoId = useRef<string | null>(null);
   const masterDuration = useRef(0);
   const playingStartTime = useRef(0);
+  const lastSyncBroadcastTimeRef = useRef(0);
 
   const adSkipIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const realDurationLockedRef = useRef(false);
@@ -1851,6 +3228,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     onPanResponderRelease: (evt, gestureState) => {
       const isTap = Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5;
       if (isTap) {
+        if (isKeyboardVisibleRef.current) {
+          Keyboard.dismiss();
+        }
+        if (stickerPickerVisibleRef.current) {
+          setStickerPickerVisible(false);
+        }
         if (showRelatedRef.current) {
           // If related overlay is open, tapping the mini player closes it
           setShowRelated(false);
@@ -1883,6 +3266,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // ── Voice Chat ─────────────────────────────────────────────────────────────
   const { isMicOn, toggleMic, voiceParticipants } = useMusicVoiceChat(user?.id ?? 0, participants);
 
+  const activeMicSpeakers = useMemo(() => {
+    return participants.filter(p => {
+      const isMeSpeaking = p.user_id === (user?.id ?? 0) && isMicOn;
+      const isOtherSpeaking = voiceParticipants.has(p.user_id);
+      return isMeSpeaking || isOtherSpeaking;
+    });
+  }, [participants, user?.id, isMicOn, voiceParticipants]);
+
   const handleToggleMic = () => {
     // Leader (isDJ) always has mic access. Participants need leader permission.
     const isAllowed = isDJ || (allowedSpeakers && allowedSpeakers.includes(user?.id ?? 0));
@@ -1899,36 +3290,76 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   // ─── Dynamic Video Container Aspect Ratio & Song Setup ─────────────────────
   const [detectedAspectRatio, setDetectedAspectRatio] = useState<number | null>(null);
+  const [detectedCropPercent, setDetectedCropPercent] = useState<number>(0.0);
 
   useEffect(() => {
     const targetVideoId = currentSong?.videoId || initialVideoId;
     const targetSource = currentSong?.source || initialSource;
 
-    if (!targetVideoId || targetSource === 'drive') {
-      if (targetSource === 'drive') {
-        setDirectStreamUrl(null);
-        setDirectAudioUrl(null);
-        setDirectStreamsList([]);
+    if (!targetVideoId) {
+      setDirectStreamUrl(null);
+      setDirectStreamHeaders(undefined);
+      setDirectAudioUrl(null);
+      setDirectStreamsList([]);
+      setIsDirectLoading(false);
+      return;
+    }
+
+    if (targetSource === 'drive') {
+      currentDirectFetchId.current = targetVideoId;
+      setDirectStreamsList([]);
+      directStreamsListRef.current = [];
+      setDirectFallbackUrl(null);
+      setDirectAudioUrl(null);
+      setDirectStreamUrl(null);
+      setDirectStreamHeaders(undefined);
+      setAvailableQualities(['auto']);
+      setVideoQuality('auto');
+      setLiveExactResolution(null);
+      setDetectedAspectRatio(null);
+      setDetectedCropPercent(0.0);
+      setShowQualityOptions(false);
+      setIsDirectLoading(true);
+
+      DriveStreamService.resolveDriveStreamUrl(targetVideoId).then((res) => {
         setIsDirectLoading(false);
-      }
+        if (currentDirectFetchId.current === targetVideoId && res && res.url) {
+          console.log('🎬 [MusicRoom] Drive stream resolved for native ExoPlayer:', res.url);
+          setDirectStreamUrl(res.url);
+          setDirectStreamHeaders(res.headers);
+          setDirectStreamType('mp4');
+          setIsPlayerReady(false);
+          isPlayerReadyRef.current = false;
+        }
+      }).catch((e) => {
+        setIsDirectLoading(false);
+        console.warn('⚠️ [MusicRoom] Drive stream resolution failed, using DrivePlayer fallback:', e);
+      });
       return;
     }
 
     // Deduplication guard: do not re-run extraction if already fetching or active for targetVideoId
-    if (currentDirectFetchId.current === targetVideoId) {
+    if (currentDirectFetchId.current === targetVideoId && (directStreamUrl || isDirectLoading)) {
       console.log(`ℹ️ [MusicRoom] Video ${targetVideoId} already active/extracting, skipping duplicate run`);
       return;
     }
 
     currentDirectFetchId.current = targetVideoId;
+    lastLoadedStreamVideoId.current = null;
     videoFormatsRef.current = {};
     failedStreamUrlsRef.current.clear();
     setDirectStreamsList([]);
     directStreamsListRef.current = [];
     fallbackProgressiveUrlRef.current = null; // reset ANDROID fallback URL for new song
     setDirectFallbackUrl(null);
-    setDirectStreamUrl(null); // Clear previous video stream immediately so no frozen screenshot displays
     setDirectAudioUrl(null);
+    setDirectStreamUrl(null); // Clear old stream URL so DirectVideoPlayer stops old playback immediately
+    setShowThumbnailOverlay(true);
+    thumbnailFadeAnim.setValue(1);
+    setIsPlayerReady(false);
+    isPlayerReadyRef.current = false;
+    setIsTrackPlayerReady(false);
+    setMediaFullySynced(false);
     livePositionRef.current = 0; // Reset position so new song starts fresh at 0s
     setLivePosition(0);
     setAvailableQualities(['auto']);
@@ -1936,12 +3367,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     // applied to a new video before ExoPlayer has parsed its track list.
     setVideoQuality('auto');
     setLiveExactResolution(null);
+    setDetectedAspectRatio(null);
+    setDetectedCropPercent(0.0);
     setShowQualityOptions(false);
 
-    fetchVideoAspectRatio(targetVideoId).then((ar) => {
-      if (currentDirectFetchId.current === targetVideoId && ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
-        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" detected AR: ${ar.toFixed(3)} -> Target Height: ${Math.round(width / ar)}px`);
-        setDetectedAspectRatio(ar);
+    fetchVideoAspectRatio(targetVideoId).then((res) => {
+      if (currentDirectFetchId.current === targetVideoId && res && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
+        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" detected AR: ${res.aspectRatio.toFixed(3)}, crop: ${(res.verticalPercent * 100).toFixed(1)}% -> Target Height: ${Math.round(width / res.aspectRatio)}px`);
+        setDetectedAspectRatio(res.aspectRatio);
+        setDetectedCropPercent(res.isNativeWidescreen ? 0.0 : res.verticalPercent);
       }
     });
 
@@ -1953,13 +3387,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           if (meta.channelLogo) {
             setFetchedChannelLogo(meta.channelLogo);
           }
+          if (meta.channelUrl) {
+            setFetchedChannelUrl(meta.channelUrl);
+          }
           if (!currentSong?.title || currentSong.title === 'Watch Party' || currentSong.title === 'YouTube Video' || currentSong.title === 'Loading...') {
             updateCurrentSongMetadata({
               videoId: targetVideoId,
               title: meta.title,
-              thumbnail: meta.thumbnail || `https://img.youtube.com/vi/${targetVideoId}/hqdefault.jpg`,
+              thumbnail: meta.thumbnail || `https://i.ytimg.com/vi/${targetVideoId}/maxresdefault.jpg`,
               channelTitle: meta.channelTitle || 'YouTube',
               channelLogo: meta.channelLogo,
+              channelUrl: meta.channelUrl,
               addedBy: currentSong?.addedBy || user?.display_name || 'Someone',
               source: 'youtube',
               duration: meta.duration || currentSong?.duration,
@@ -1971,6 +3409,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     // Client-side extraction directly on user's device (Rave watch-party architecture)
     setIsDirectLoading(true);
+    // Keep foreground service active during extraction so Android OS never suspends
+    // the process, network, or JS runtime when the user minimizes or enters PiP during loading!
+    if (targetSource !== 'drive') {
+      startMusicService(
+        currentSong?.title || 'Loading...',
+        currentSong?.channelTitle || 'Music Room',
+        currentSong?.thumbnail || `https://i.ytimg.com/vi/${targetVideoId}/maxresdefault.jpg`,
+        Boolean(isDJ || isDJMode)
+      );
+    }
     extractVideoStreamUrlClientSide(targetVideoId).then((res) => {
       if (currentDirectFetchId.current !== targetVideoId) return;
       if (res && res.streams && res.streams.length > 0) {
@@ -1979,7 +3427,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           updateCurrentSongMetadata({
             videoId: targetVideoId,
             title: res.title,
-            thumbnail: currentSong?.thumbnail || `https://img.youtube.com/vi/${targetVideoId}/hqdefault.jpg`,
+            thumbnail: currentSong?.thumbnail || `https://i.ytimg.com/vi/${targetVideoId}/maxresdefault.jpg`,
             channelTitle: res.channelTitle || currentSong?.channelTitle || 'YouTube',
             channelLogo: currentSong?.channelLogo || fetchedChannelLogo || undefined,
             addedBy: currentSong?.addedBy || user?.display_name || 'Someone',
@@ -2014,11 +3462,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         // but onError below handles that by switching to ANDROID progressive at current position.
         if (res.dashUrl) {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with DASH manifest (${res.streams.length} representations)`);
+          lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.dashUrl);
           setDirectAudioUrl(null);
           setDirectStreamType('mpd');
         } else if (res.url) {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with single stream: ${res.url.substring(0, 60)}...`);
+          lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.url);
           setDirectAudioUrl(res.audioUrl || null);
           setDirectStreamType(res.streamType || 'mp4');
@@ -2039,26 +3489,306 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const handleAspectRatio = useCallback((ar: number) => {
     if (ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
-      setDetectedAspectRatio(ar);
+      if (ar > 1.82) {
+        // Stream decoded by player is native widescreen (e.g. 21:9 or 2.39:1 without baked black bars)
+        setDetectedCropPercent(0.0);
+        setDetectedAspectRatio(ar);
+        return;
+      }
+      setDetectedAspectRatio((prev) => {
+        if (prev && Math.abs(prev - 16 / 9) > 0.05 && Math.abs(ar - 16 / 9) < 0.05) {
+          return prev;
+        }
+        return ar;
+      });
     }
   }, []);
 
-  const dynamicVideoHeight = useMemo(() => {
-    if (fullscreen) return height;
-    if (detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio > 0) {
-      if (detectedAspectRatio < 1.0) {
-        // Vertical Short / Portrait Video: allocate top half of screen (~48% height)
-        // so the full vertical short fits completely without cropping, leaving bottom half for chat & keyboard
-        return Math.round(height * 0.48);
-      }
-      // Standard / Landscape / 4:3 videos
-      const targetHeight = width / detectedAspectRatio;
-      const minH = VIDEO_HEIGHT; // Minimum height is the thumbnail height (standard 16:9) — never shrinks below this
-      const maxH = width * 0.85; // ~340px max bound (tall 4:3 videos like Pavazha Malli)
-      return Math.max(minH, Math.min(maxH, targetHeight));
+  // Dynamically synchronize In-App MiniPlayer and Android System PiP dimensions on aspect ratio change
+  useEffect(() => {
+    const ar = detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio >= 0.4 && detectedAspectRatio <= 3.5
+      ? detectedAspectRatio
+      : (16 / 9);
+    currentAspectRatioRef.current = ar;
+
+    let targetW = 176;
+    let targetH = 99;
+    if (ar < 1.0) {
+      // Vertical Shorts (e.g. 9:16): Allocate ~200dp height, width based on aspect ratio (~112dp)
+      targetH = Math.min(220, Math.max(180, Math.round(height * 0.25)));
+      targetW = Math.round(targetH * ar);
+    } else {
+      // Landscape / Normal / 4:3 (e.g. 16:9, 4:3): Standard ~176dp width, height based on aspect ratio
+      targetW = Math.min(200, Math.max(160, Math.round(width * 0.45)));
+      targetH = Math.round(targetW / ar);
     }
-    return VIDEO_HEIGHT; // Default standard 16:9
+
+    if (isMinimized) {
+      miniWidth.value = withTiming(targetW, { duration: 280 });
+      miniHeight.value = withTiming(targetH, { duration: 280 });
+
+      const maxX = width - targetW - 10;
+      const maxY = height - targetH - Math.max(insets.bottom, 16) - 55;
+      if (miniX.value > maxX) {
+        miniX.value = withTiming(maxX, { duration: 240 });
+        miniPosRef.current.x = maxX;
+      }
+      if (miniY.value > maxY) {
+        miniY.value = withTiming(maxY, { duration: 240 });
+        miniPosRef.current.y = maxY;
+      }
+    } else {
+      miniWidth.value = targetW;
+      miniHeight.value = targetH;
+      const maxX = width - targetW - 14;
+      const maxY = height - targetH - Math.max(insets.bottom, 16) - 75;
+      miniX.value = maxX;
+      miniY.value = maxY;
+      miniPosRef.current = { x: maxX, y: maxY };
+    }
+
+    const [num, den] = getAspectRatioFraction(ar);
+    setSystemPipAspectRatio(num, den);
+  }, [detectedAspectRatio, isMinimized, width, height, insets.bottom]);
+
+  const dynamicVideoHeight = useMemo(() => {
+    // Lock dimensions to physical screen so the container NEVER shrinks or fluctuates during PiP transitions
+    const screenDims = Dimensions.get('screen');
+    const screenW = Math.min(screenDims.width, screenDims.height);
+    const screenH = Math.max(screenDims.width, screenDims.height);
+    if (fullscreen) return screenW;
+    const defaultVideoH = screenW * (9 / 16);
+
+    const ar = detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio >= 0.4 && detectedAspectRatio <= 3.5
+      ? detectedAspectRatio
+      : (16 / 9);
+
+    if (ar < 1.0) {
+      // Vertical Short / Portrait Video: allocate top half of screen (~48% height)
+      // so the full vertical short fits completely without cropping, leaving bottom half for chat & keyboard
+      return Math.round(screenH * 0.48);
+    }
+    // For 4:3 or taller videos (where ar < 1.70, so height is higher than 16:9):
+    // Auto-expand container up to maxH so taller videos fit nicely
+    if (ar < 1.70) {
+      const targetHeight = Math.round(screenW / ar);
+      const maxH = Math.round(screenH * 0.55);
+      return Math.min(maxH, targetHeight);
+    }
+    // Standard 16:9 & Widescreen (21:9, 2.35:1, 2.39:1) videos:
+    // MAINTAIN fixed 16:9 thumbnail height center spot so container, info bar and chat area NEVER MOVE!
+    return defaultVideoH;
   }, [fullscreen, detectedAspectRatio]);
+
+  const isWidescreenShort = !fullscreen && !isMinimized && !isSystemPip && !showRelated && !!detectedAspectRatio && detectedAspectRatio > 1.82;
+  const widescreenMetrics = useMemo(() => {
+    const screenDims = Dimensions.get('screen');
+    const screenW = Math.min(screenDims.width, screenDims.height);
+    const defaultVideoH = screenW * (9 / 16);
+    const ar = detectedAspectRatio && detectedAspectRatio > 1.82 ? detectedAspectRatio : (16 / 9);
+    const contentH = Math.round(screenW / ar);
+    const topOffset = Math.round((defaultVideoH - contentH) / 2);
+    return { screenW, defaultVideoH, contentH, topOffset };
+  }, [detectedAspectRatio]);
+
+  const raveContentRect = useMemo(() => {
+    if (fullscreen || isMinimized || isSystemPip) return undefined;
+    const screenDims = Dimensions.get('screen');
+    const screenW = Math.min(screenDims.width, screenDims.height);
+    return {
+      x: 0,
+      y: stableTopInset + 58,
+      width: screenW,
+      height: dynamicVideoHeight,
+    };
+  }, [fullscreen, isMinimized, isSystemPip, stableTopInset, dynamicVideoHeight]);
+
+  const videoContainerAnimatedStyle = useAnimatedStyle(() => {
+    if (fullscreen || isSystemPipSV.value === 1) {
+      return {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: '100%',
+        borderRadius: 0,
+        borderWidth: 0,
+        borderColor: 'transparent',
+        overflow: 'hidden',
+        zIndex: 9999,
+        elevation: 9999,
+        backgroundColor: 'transparent',
+        opacity: 1,
+        transform: [{ translateY: 0 }],
+      };
+    }
+
+    if (isMinimizedSV.value === 1) {
+      if (pipEnabledSV.value === 1 && pipDismissedSV.value === 0) {
+        return {
+          position: 'absolute',
+          left: miniX.value,
+          top: miniY.value,
+          width: miniWidth.value,
+          height: miniHeight.value,
+          borderRadius: 16,
+          borderWidth: 1.5,
+          borderColor: 'rgba(255, 255, 255, 0.22)',
+          overflow: 'hidden',
+          zIndex: 9999,
+          elevation: 20,
+          shadowColor: '#000000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.55,
+          shadowRadius: 10,
+          backgroundColor: 'transparent',
+          opacity: 1,
+          transform: [{ translateY: 0 }],
+        };
+      }
+      return {
+        position: 'absolute',
+        left: -9999,
+        top: -9999,
+        width: 1,
+        height: 1,
+        borderRadius: 0,
+        borderWidth: 0,
+        borderColor: 'transparent',
+        overflow: 'hidden',
+        zIndex: 0,
+        elevation: 0,
+        opacity: 0,
+        transform: [{ translateY: 0 }],
+      };
+    }
+
+    // Inside Music Room: Normal video container at top
+    return {
+      position: 'relative',
+      left: 0,
+      top: 0,
+      width: '100%',
+      height: dynamicVideoHeight,
+      borderRadius: 0,
+      borderWidth: 0,
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      overflow: roomTheme === 'rave' ? 'visible' : 'hidden',
+      zIndex: 20,
+      elevation: 0,
+      opacity: 1,
+      transform: [{ translateY: -collapseProgress.value * 58 }],
+    };
+  }, [dynamicVideoHeight, fullscreen, roomTheme, isSystemPip]);
+
+  const playerLayerAnimatedStyle = useAnimatedStyle(() => {
+    if (fullscreen || isSystemPipSV.value === 1) {
+      return {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: '100%',
+        borderRadius: 0,
+        zIndex: 9999,
+        elevation: 9999,
+        backgroundColor: '#000000',
+        opacity: 1,
+      };
+    }
+
+    if (isMinimizedSV.value === 1) {
+      if (pipEnabledSV.value === 1 && pipDismissedSV.value === 0) {
+        return {
+          position: 'absolute',
+          left: miniX.value,
+          top: miniY.value,
+          width: miniWidth.value,
+          height: miniHeight.value,
+          borderRadius: 16,
+          overflow: 'hidden',
+          zIndex: 9999,
+          elevation: 20,
+          opacity: 1,
+        };
+      }
+      return {
+        position: 'absolute',
+        left: -9999,
+        top: -9999,
+        width: 1,
+        height: 1,
+        opacity: 0,
+        zIndex: 0,
+      };
+    }
+
+    // ── Live Video in Related Videos Grid (Slot 1 PiP) ──
+    if (showRelatedSV.value === 1) {
+      const isEndedOrError = playerState === 'ended' || Boolean(playerError);
+      if (isEndedOrError || !activeVideoId) {
+        return {
+          position: 'absolute',
+          left: -9999,
+          top: -9999,
+          width: 1,
+          height: 1,
+          opacity: 0,
+          zIndex: 0,
+        };
+      }
+      const slotW = width / 2;
+      const slotH = slotW * 0.5625;
+      return {
+        position: 'absolute',
+        left: -relatedScrollXSV.value,
+        top: stableTopInset + 58,
+        width: slotW,
+        height: slotH,
+        zIndex: 35,
+        elevation: 35,
+        backgroundColor: '#000000',
+        borderRadius: 0,
+        overflow: 'hidden',
+        opacity: 1,
+      };
+    }
+
+    if (roomTheme === 'rave') {
+      return {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: '100%',
+        zIndex: 0,
+        elevation: 0,
+        backgroundColor: 'transparent',
+        opacity: 1,
+      };
+    }
+
+    // Default (cinema, dark, light): exact video container bounds
+    return {
+      position: 'absolute',
+      left: 0,
+      top: stableTopInset + 58,
+      width: '100%',
+      height: dynamicVideoHeight,
+      transform: [{ translateY: -collapseProgress.value * 58 }],
+      zIndex: 0,
+      elevation: 0,
+      backgroundColor: 'transparent',
+      opacity: 1,
+    };
+  }, [dynamicVideoHeight, fullscreen, roomTheme, stableTopInset, isSystemPip, showRelated]);
 
   const participantsRef = useRef(participants);
   useEffect(() => {
@@ -2089,8 +3819,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [clearIdleCloseTimer]);
 
   useEffect(() => {
-    // Only schedule idle close if playback has completely ended and there is no active song or queue
-    const isEndedWithEmptyQueue = playerState === 'ended' && !currentSong?.videoId && queue.length === 0;
+    // Only schedule idle close if playback has completely ended and there is no queue to continue
+    const isEndedWithEmptyQueue = playerState === 'ended' && queue.length === 0;
 
     if (isEndedWithEmptyQueue) {
       scheduleIdleClose();
@@ -2099,15 +3829,66 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     return () => clearIdleCloseTimer();
-  }, [isPlaying, playerState, queue.length, currentSong?.videoId, scheduleIdleClose, clearIdleCloseTimer]);
+  }, [isPlaying, playerState, queue.length, scheduleIdleClose, clearIdleCloseTimer]);
+
+  // Rave Architecture: ONLY enable Android Auto-Enter PiP when:
+  // 1. User has PiP enabled (pipEnabled === true)
+  // 2. PiP is not dismissed (!pipDismissed)
+  // 3. Playback is active (isPlaying === true)
+  // 4. Video player is ready and loaded (isPlayerReady === true && !isDirectLoading && directStreamUrl)
+  useEffect(() => {
+    const canPip = Boolean(
+      pipEnabled &&
+      !pipDismissed &&
+      isPlaying &&
+      isPlayerReady &&
+      !isDirectLoading &&
+      directStreamUrl
+    );
+    setSystemPipEnabled(canPip);
+  }, [pipEnabled, pipDismissed, isPlaying, isPlayerReady, isDirectLoading, directStreamUrl]);
+
+  // Live position ticker — updates MediaSession every second so the lock-screen
+  // progress bar tracks playback. Seeking from outside is intentionally blocked
+  // (ACTION_SEEK_TO not included in PlaybackStateCompat actions).
+  useEffect(() => {
+    if (!currentSong?.videoId || !currentSong?.title) return;
+
+    // Keep foreground service alive across song transitions; only stop when leaving room
+    if (!isPlaying) return;
+
+    // masterDuration.current is the real player-reported duration (set by setDuration).
+    // currentSong.duration may be 0 for some videos so we prefer masterDuration.
+    const ticker = setInterval(() => {
+      const pos = livePositionRef.current || 0;
+      const dur = masterDuration.current > 0 ? masterDuration.current : ((currentSong as any)?.duration || 0);
+      if (dur > 0) {
+        updateMusicServicePosition(
+          currentSong.title,
+          currentSong.channelTitle || 'Music Room',
+          currentSong.thumbnail || '',
+          pos,
+          dur,
+          isDJ || isDJMode,
+          isPlaying,
+        );
+      }
+    }, 1000);
+
+    return () => clearInterval(ticker);
+  }, [isPlaying, playerState, currentSong?.videoId, currentSong?.title, isDJ, isDJMode]);
   // Ref that always holds the latest isConnected value — safe to read inside
   // async callbacks / setInterval closures that would otherwise capture a stale copy.
   const isConnectedRef = useRef(isConnected);
   useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
   const handleMinimize = useCallback(() => {
-    (global as any).keepMusicRoomAlive = true;
-    (global as any).activeMusicRoomCode = roomCode;
+    if (!isInitialVideoStartedRef.current) {
+      console.log('⏳ [MusicRoom] Cannot minimize — initial video starting');
+      return;
+    }
+    (globalThis as any).keepMusicRoomAlive = true;
+    (globalThis as any).activeMusicRoomCode = roomCode;
     DeviceEventEmitter.emit('minimize_music_room', true);
   }, [roomCode]);
 
@@ -2135,6 +3916,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // seek and skip firing, instead of yanking the player out of the newer
   // seek's own settle window.
   const resumeSeekTokenRef = useRef(0);
+  const lastSeekTargetRef = useRef<number | null>(null);
 
   // ✅ NEW: Unified performLocalSeek helper to coordinate audio and video seeking
   const performLocalSeek = useCallback((t: number) => {
@@ -2169,6 +3951,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       setLivePosition(t);
       livePositionRef.current = t;
+      lastSeekTargetRef.current = t;
 
       // ExoPlayer (DirectVideoPlayer) seeks are near-instant in progressive MP4.
       // Give it 200ms to settle the seek, then unblock progress/sync callbacks.
@@ -2176,6 +3959,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setTimeout(() => {
         setIsReseeking(false);
         setTimeout(() => { seekingRef.current = false; }, 300);
+        showControlsFor(3500);
       }, 200);
 
     } catch (error) {
@@ -2333,11 +4117,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (!currentSong?.videoId) return;
     if (isReseeking) return; // a seek is in control right now, not us
 
-    // Drive now uses the same rendezvous as YouTube — no special case needed.
-
-    const isReadyToSync = currentSong?.source === 'drive'
-      ? (isPlayerReady && isTrackPlayerReady)
-      : isPlayerReady;
+    // Both Drive and YouTube sync once player is ready
+    const isReadyToSync = isPlayerReady;
 
     if (isReadyToSync) {
       // If room isn't playing yet (DJ startup — syncPlay comes later),
@@ -2444,19 +4225,38 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     // Before the player is ready, livePositionRef is 0 — so drift = full room position (false positive).
     // Before snapshot is consumed, we haven't done the initial seek yet so any drift seek would fight it.
     if (!isPlayerReadyRef.current) return;
-    if (!isDJ && !isDJMode && !joinSnapshotConsumed.current) return;
+    if (!isDJ && !isDJMode && joinSnapshot && joinSnapshot.videoId === currentSong?.videoId && !joinSnapshotConsumed.current) return;
 
     // ✅ Cooldown: ignore drift syncs if we performed a seek very recently (within 5 seconds)
     // to give the video player enough time to buffer, start playing, and catch up.
-    if (Date.now() - lastSeekTimeRef.current < 5000) return;
+    if (Date.now() - lastSeekTimeRef.current < 2000) return;
 
-    // Drift check: Both Drive and YouTube IFrames report their current time via onProgress -> livePositionRef
     let currentPosition = livePositionRef.current;
-    const drift = Math.abs(currentPosition - position);
+    if (currentPosition <= 0 || position <= 0) return;
 
-    if (drift > 3 && !seekingRef.current && !isReseeking) {
-      console.log('🎵 [PARTICIPANT SYNC] Drift detected:', drift, '— resyncing to room position:', position);
-      performLocalSeek(position);
+    const diff = position - currentPosition; // positive if participant is BEHIND DJ, negative if AHEAD
+    const absDiff = Math.abs(diff);
+
+    // 1. Large drift (> 1.5s): hard seek with seek-settle latency compensation (+200ms)
+    if (absDiff > 1.5 && !seekingRef.current && !isReseeking) {
+      console.log('🎵 [PARTICIPANT SYNC] Large drift detected:', diff.toFixed(3), 's — resyncing to room position:', (position + 0.2).toFixed(3));
+      playerRef.current?.setPlaybackRate?.(1.0);
+      performLocalSeek(position + 0.2);
+      return;
+    }
+
+    // 2. Medium drift (0.12s to 1.5s): smooth micro-speed adjustments (no audio stutter/pausing)
+    if (!seekingRef.current && !isReseeking) {
+      if (diff > 0.12) {
+        // Participant is behind DJ: gently accelerate by +5%
+        playerRef.current?.setPlaybackRate?.(1.05);
+      } else if (diff < -0.12) {
+        // Participant is ahead of DJ: gently decelerate by -5%
+        playerRef.current?.setPlaybackRate?.(0.95);
+      } else if (absDiff < 0.06) {
+        // Tightly locked within 60ms: restore 1.0x normal speed
+        playerRef.current?.setPlaybackRate?.(1.0);
+      }
     }
   }, [position, isDJ, isDJMode, isPlaying, currentSong?.videoId, currentSong?.source, performLocalSeek, isReseeking]);
 
@@ -2538,7 +4338,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           NativeModules.SystemBar.setWindowBackground('#000000');
           NativeModules.SystemBar.setNavigationBarColor('#00000000', true);
           NativeModules.SystemBar.setStatusBarColor('#00000000', true);
-          NativeModules.SystemBar.setFitsSystemWindows(false);
         }
 
         // ✅ KEY FIX: Re-enforce whatever play/pause state the room has now.
@@ -2574,20 +4373,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const targetSrc = currentSong?.source || initialSource;
     if (!targetVid || targetSrc === 'drive') {
       setFetchedChannelLogo(null);
+      setFetchedChannelUrl(null);
       return;
     }
     if (currentSong?.channelLogo) {
       setFetchedChannelLogo(currentSong.channelLogo);
-      return;
+    }
+    if (currentSong?.channelUrl) {
+      setFetchedChannelUrl(currentSong.channelUrl);
     }
     let isMounted = true;
-    fetchChannelLogo(targetVid).then(logo => {
-      if (isMounted && logo) {
-        setFetchedChannelLogo(logo);
+    fetchChannelDetails(targetVid).then(details => {
+      if (isMounted) {
+        if (details.logo) setFetchedChannelLogo(details.logo);
+        if (details.channelUrl) setFetchedChannelUrl(details.channelUrl);
       }
     });
     return () => { isMounted = false; };
-  }, [currentSong?.videoId, currentSong?.channelLogo, currentSong?.source, initialVideoId, initialSource]);
+  }, [currentSong?.videoId, currentSong?.channelLogo, currentSong?.channelUrl, currentSong?.source, initialVideoId, initialSource]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Remaining effects (unchanged from original)
@@ -2642,6 +4445,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         const pos = await playerRef.current?.getCurrentTime();
         const dur = await playerRef.current?.getDuration();
         if (pos !== undefined && pos !== null) {
+          if (lastSeekTargetRef.current !== null) {
+            const elapsed = Date.now() - lastSeekTimeRef.current;
+            if (Math.abs(pos - lastSeekTargetRef.current) < 2.5 || elapsed > 1500) {
+              lastSeekTargetRef.current = null;
+            } else {
+              return;
+            }
+          }
           setLivePosition(pos);
           livePositionRef.current = pos;
         }
@@ -2692,7 +4503,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           lastCurrentTime = pos;
         }
 
-        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && Math.floor(pos ?? 0) % 5 === 0) {
+        const nowMs = Date.now();
+        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && (nowMs - lastSyncBroadcastTimeRef.current >= 1500)) {
+          lastSyncBroadcastTimeRef.current = nowMs;
           syncPlay(pos ?? 0);
         }
       } catch (_) {}
@@ -2707,8 +4520,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (forcePlay || (!hasActiveVideo && queue.length === 0)) {
       try {
         playerRef.current?.pauseVideo?.();
+        playerRef.current?.stopVideo?.();
       } catch (_) {}
+      setDirectStreamUrl(null);
+      setShowThumbnailOverlay(true);
+      thumbnailFadeAnim.setValue(1);
       setIsPlayerReady(false);
+      isPlayerReadyRef.current = false;
       setIsBuffering(true);
       let richSong = song;
       if (!song.channelTitle || song.title === 'Loading...' || song.title === 'Initializing...' || song.title === 'Watch Party' || song.title === 'YouTube Video') {
@@ -2727,6 +4545,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         (global as any).loadedAudioSessionId = null;
         setAudioReloadToken(t => t + 1);
       }
+      currentDirectFetchId.current = null;
+      lastLoadedStreamVideoId.current = null;
+      lastResetSongVideoIdRef.current = null;
       setIsSyncing(true);
       loadSong(richSong, currentRoomName);
     } else {
@@ -2753,7 +4574,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const DEBOUNCE_MS = 300;
 
     const handlePlay = (webViewAlreadyHandled = false) => {
-      if (!(isDJ || isDJMode)) return;
+      if (!(isDJ || isDJMode || isDJRef.current || isDJModeRef.current)) return;
       const now = Date.now();
       if (now - lastActionTs < DEBOUNCE_MS) return;
       lastActionTs = now;
@@ -2772,7 +4593,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
 
     const handlePause = (webViewAlreadyHandled = false) => {
-      if (!(isDJ || isDJMode)) return;
+      if (!(isDJ || isDJMode || isDJRef.current || isDJModeRef.current)) return;
       const now = Date.now();
       if (now - lastActionTs < DEBOUNCE_MS) return;
       lastActionTs = now;
@@ -2865,13 +4686,32 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
       }
 
-      handleSelectSong(song);
-      setShowDiscovery(false);
+      const isEndedOrIdle = playerState === 'ended' || playerStateRef.current === 'ended' || !isPlaying;
+
+      if (data.isQueueOnly && !isEndedOrIdle) {
+        addToQueue({ ...song, addedBy: song.addedBy ?? user?.display_name ?? 'Someone' });
+      } else {
+        setShowRelated(false);
+        setPlayerError(null);
+        handleSelectSong(song, true);
+        setShowDiscovery(false);
+        setDiscoveryInitialUrl(null);
+      }
       setIsFirstCreation(false);
     });
 
     return () => sub.remove();
-  }, [roomCode, user?.display_name, handleSelectSong]);
+  }, [roomCode, user?.display_name, handleSelectSong, playerState, isPlaying]);
+
+  // ✅ Auto-play from queue if video ended and a song enters the queue
+  useEffect(() => {
+    if ((isDJ || isDJMode) && (playerState === 'ended' || playerStateRef.current === 'ended') && queue.length > 0) {
+      console.log('🎵 [Auto-Play Queue] Video ended and queue has song, auto-playing next song');
+      setShowRelated(false);
+      setPlayerError(null);
+      passAux();
+    }
+  }, [queue.length, playerState, isDJ, isDJMode, passAux]);
 
   useEffect(() => {
     if (currentSong?.videoId && metadataLock.current !== currentSong.videoId &&
@@ -2895,10 +4735,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const showControlsFor = useCallback((ms = 3500) => {
     setShowControls(true);
     if (controlTimer.current) clearTimeout(controlTimer.current);
-    if (isPlaying) {
-      controlTimer.current = setTimeout(() => setShowControls(false), ms) as any;
-    }
-  }, [isPlaying]);
+    controlTimer.current = setTimeout(() => {
+      if (playerStateRef.current !== 'paused') {
+        setShowControls(false);
+      }
+    }, ms) as any;
+  }, []);
 
   // Keep the swipe gesture's ref pointed at the latest showControlsFor —
   // see the comment at showControlsForRef's declaration for why this
@@ -2907,7 +4749,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     showControlsForRef.current = showControlsFor;
   }, [showControlsFor]);
 
-  useEffect(() => { showControlsFor(); }, [isPlaying, showControlsFor]);
+  useEffect(() => {
+    if (isPlaying) {
+      showControlsFor(3500);
+    }
+  }, [isPlaying, showControlsFor]);
+
 
 
 
@@ -2917,7 +4764,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       const isDrive = initialSource === 'drive';
 
       const buildAndLoad = (resolvedTitle: string, resolvedThumbnail: string, resolvedChannel: string) => {
-        setIsSyncing(true);
+      setIsSyncing(true);
         const song: Song = {
           videoId: initialVideoId,
           title: resolvedTitle,
@@ -2945,7 +4792,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         );
       } else {
         // YouTube: WebView interception — no title captured. Fetch metadata then load.
-        const fallbackThumb = `https://img.youtube.com/vi/${initialVideoId}/mqdefault.jpg`;
+        const fallbackThumb = `https://i.ytimg.com/vi/${initialVideoId}/maxresdefault.jpg`;
         buildAndLoad('Loading...', fallbackThumb, 'YouTube');
 
         // Fetch real metadata in parallel and update once resolved
@@ -2966,11 +4813,30 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     if (currentSong?.videoId) {
+      const isSameAsInitialOrActive =
+        lastResetSongVideoIdRef.current === currentSong.videoId &&
+        (lastLoadedStreamVideoId.current === currentSong.videoId || currentDirectFetchId.current === currentSong.videoId || Boolean(directStreamUrl));
+
+      if (isSameAsInitialOrActive) {
+        console.log(`🎵 [MusicRoom] currentSong confirmed for active video: ${currentSong.videoId} — preserving active stream & playback`);
+        setShowRelated(false);
+        setPlayerError(null);
+        return;
+      }
+
+      lastResetSongVideoIdRef.current = currentSong.videoId;
       metadataLock.current = null;
+      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
+      try { TrackPlayer.pause(); } catch (_) {}
+      setShowThumbnailOverlay(true);
+      thumbnailFadeAnim.setValue(1);
       setIsPlayerReady(false);
       setIsTrackPlayerReady(false); // ✅ Block WebView until audio is ready
+      setMediaFullySynced(false);
       lastSnapVideoId.current = null; // ✅ Allow snap for new song
       setPlayerError(null);
+      setPlayerState('unstarted');
+      playerStateRef.current = 'unstarted';
       isPlayerReadyRef.current = false;
       playerReadyTime.current = 0;
       isAdPlayingRef.current = false;
@@ -3022,30 +4888,51 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (isMinimized) return;
 
     const backAction = () => {
-      if (isKeyboardVisibleRef.current) {
+      if (KeyboardController.isVisible() || kbHeight.value > 0) {
+        KeyboardController.dismiss({ animated: false });
         richInputRef.current?.blur();
         Keyboard.dismiss();
-        isKeyboardVisibleRef.current = false;
-        stickerSpacerHeight.value = 0;
+        if (!isStickerPickerDeliberatelyOpenRef.current) {
+          stickerSpacerHeight.value = 0;
+          collapseProgress.value = 0;
+          setStickerPickerVisible(false);
+          setIsStickerPickerDeliberatelyOpen(false);
+          isStickerPickerDeliberatelyOpenSV.value = 0;
+        }
         return true;
       }
-      if (stickerPickerVisible) {
+      if (isStickerPickerDeliberatelyOpenRef.current || stickerPickerVisible) {
+        isStickerPickerDeliberatelyOpenRef.current = false;
+        isStickerPickerDeliberatelyOpenSV.value = 0;
+        setIsStickerPickerDeliberatelyOpen(false);
         richInputRef.current?.blur();
         Keyboard.dismiss();
-        setStickerPickerVisible(false);
+        KeyboardController.dismiss({ animated: false });
         stickerSpacerHeight.value = 0;
+        collapseProgress.value = 0;
+        setStickerPickerVisible(false);
         return true;
       }
       if (previewData.visible) { setPreviewData(p => ({ ...p, visible: false })); return true; }
-      if (showDiscovery) { setShowDiscovery(false); return true; }
-      if (fullscreen) { setFullscreen(false); return true; }
+      if (showDiscovery) { setShowDiscovery(false); setDiscoveryInitialUrl(null); return true; }
+      if (showSettingsModal) { setShowSettingsModal(false); return true; }
+      if (fullscreen) {
+        triggerSmoothScreenTransition(() => {
+          setFullscreen(false);
+        });
+        return true;
+      }
       if (showLeaveConfirm) { setShowLeaveConfirm(false); return true; }
-      setShowLeaveConfirm(true);
+      if (!isInitialVideoStartedRef.current) {
+        console.log('⏳ [MusicRoom] Back press ignored — initial video starting');
+        return true;
+      }
+      handleMinimize();
       return true;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm]);
+  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm, showSettingsModal, handleMinimize]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -3079,13 +4966,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           Vibration.vibrate([0, 500, 200, 500]);
         }
         setMessages(prev => {
-          // If this incoming message is from current user and matches an optimistic media message, replace it
+          // If this incoming message is from current user and matches an optimistic message, replace it seamlessly
           const isFromMe = Number(msg.data.user_id) === Number(user?.id) || msg.data.user === (user?.display_name || user?.email);
-          if (isFromMe && (msg.data.message_type === 'image' || msg.data.message_type === 'gif' || msg.data.message_type === 'sticker')) {
+          if (isFromMe) {
             const optIdx = prev.findIndex(m =>
               m.status === 'sending' &&
               (m.local_id || String(m.id).startsWith('local_')) &&
-              m.message_type === msg.data.message_type
+              (
+                (m.message_type === msg.data.message_type && (msg.data.message_type === 'image' || msg.data.message_type === 'gif' || msg.data.message_type === 'sticker' || msg.data.message_type === 'lottie_sticker')) ||
+                ((msg.data.message_type === 'text' || !msg.data.message_type) && m.text === msg.data.text)
+              )
             );
             if (optIdx !== -1) {
               const optItem = prev[optIdx];
@@ -3094,11 +4984,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
                 ...msg.data,
                 local_id: optItem.local_id,
                 local_uri: optItem.local_uri || optItem.media_url,
+                _isNew: false, // Already mounted and animated smoothly
               };
               return next;
             }
           }
-          return [...prev, msg.data];
+          return [...prev, { ...msg.data, _isNew: isFromMe }];
         });
         scrollToBottom(true);
       } else if (msg.type === 'typing') {
@@ -3265,6 +5156,83 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, [showRelated, relatedVideos.length, fetchRelated]);
 
+  // ── Unified Handler for Song Playback Completion ───────────────────────────
+  // BUG CHAIN that was killing the foreground service:
+  // 1. closeSystemPip() called while in system PiP → triggers FLAG_ACTIVITY_REORDER_TO_FRONT +
+  //    moveTaskToBack(true) in Kotlin → onPictureInPictureModeChanged(false) fires → MusicRoomScreen's
+  //    PiP listener emits 'minimize_music_room false' ONLY IF AppState is 'active' (it's 'background')
+  //    → but the activity lifecycle disruption (brief foreground → back to background) causes the RN
+  //    JS thread to pause mid-execution, so passAux() state updates may not complete.
+  // 2. setDirectStreamUrl(null) called BEFORE passAux() → ExoPlayer unmounts immediately (no audio) →
+  //    during the gap before new stream URL arrives, Android sees foreground service with no active audio
+  //    session → on aggressive battery, Android may kill or throttle the service.
+  // 3. Both 1 and 2 together guarantee playback dies when minimized.
+  //
+  // FIX:
+  // - Never call closeSystemPip() when queue has a next track. Just dismiss in-app PiP overlay.
+  //   The system PiP window will dismiss itself when ExoPlayer transitions to the next song or when
+  //   the user explicitly closes/expands it. No destructive activity lifecycle disruption.
+  // - Never clear directStreamUrl before passAux(). The stream extraction useEffect already clears
+  //   it when currentSong.videoId changes (line ~2926). Clearing it here creates a dangerous audio gap.
+  // - Only call closeSystemPip() when queue is empty (nothing to play, OK to stop everything).
+  const handleSongPlaybackEnded = useCallback(() => {
+    const now = Date.now();
+    if (now - lastAuxPassTimeRef.current < 3500) return;
+    if (!isPlayerReadyRef.current && (now - playerReadyTime.current < 3000)) {
+      console.log('🛡️ [Playback Ended] Ignored ghost end event during track transition');
+      return;
+    }
+    lastAuxPassTimeRef.current = now;
+
+    const hasQueue = (roomStateQueueRef.current && roomStateQueueRef.current.length > 0) || (queue && queue.length > 0);
+    const canPass = Boolean(isDJ || isDJMode || isDJRef.current || isDJModeRef.current);
+
+    console.log('🎵 [Playback Ended] hasQueue:', hasQueue, 'canPass:', canPass);
+
+    if (canPass && hasQueue) {
+      console.log('🎵 [Playback Ended] Advancing queue via passAux() — resetting video player');
+      try { TrackPlayer.pause(); } catch (_) {}
+      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
+      try { playerRef.current?.stopVideo?.(); } catch (_) {}
+      setDirectStreamUrl(null);
+      setShowThumbnailOverlay(true);
+      thumbnailFadeAnim.setValue(1);
+      setIsPlayerReady(false);
+      isPlayerReadyRef.current = false;
+      setIsTrackPlayerReady(false);
+      setMediaFullySynced(false);
+      setIsBuffering(true);
+      lastLoadedStreamVideoId.current = null;
+      lastResetSongVideoIdRef.current = null;
+      setIsSyncing(true);
+      setPlayerState('unstarted');
+      playerStateRef.current = 'unstarted';
+      setPlayerError(null);
+      setShowRelated(false);
+      livePositionRef.current = 0;
+      setLivePosition(0);
+      passAux();
+    } else {
+      console.log('🎵 [Playback Ended] Queue empty or listener — stopping and closing PiP');
+      // Dismiss the in-app PiP overlay when entire playback finishes
+      setPipDismissed(true);
+      pipDismissedSV.value = 1;
+      DeviceEventEmitter.emit('pip_dismissed', true);
+
+      // Dismiss outside system PiP window when no more songs to play
+      closeSystemPip();
+
+      setPlayerState('ended');
+      playerStateRef.current = 'ended';
+      isPlayingRef.current = false;
+      setIsPlayerReady(false);
+      isPlayerReadyRef.current = false;
+      setIsBuffering(false);
+      fetchRelated();
+      setShowRelated(true);
+    }
+  }, [queue, isDJ, isDJMode, passAux, fetchRelated]);
+
   const onPlayerStateChange = async (state: string) => {
     // ✅ Always update the ref so intervals/timeouts can read the
     // current video state without stale-closure issues.
@@ -3273,6 +5241,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     if (state === 'playing') {
       if (playingStartTime.current === 0) playingStartTime.current = Date.now();
+      showControlsFor(3500);
     } else {
       playingStartTime.current = 0;
     }
@@ -3285,38 +5254,22 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       if (state === 'buffering' || state === 'unstarted' || state === 'cued') setIsBuffering(true);
       else setIsBuffering(false);
     }
-    if (['playing', 'paused'].includes(state)) setIsPlayerReady(true);
 
     if (state === 'ended') {
-      if (duration > 0) {
-        if (isDJ || isDJMode) {
-          if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
-          lastAuxPassTimeRef.current = Date.now();
-          setIsPlayerReady(false);
-          isPlayerReadyRef.current = false;
-          setIsBuffering(true);
-          setIsSyncing(true);
-          setDirectStreamUrl(null);
-          setDirectAudioUrl(null);
-          livePositionRef.current = 0;
-          setLivePosition(0);
-          passAux();
-        } else {
-          fetchRelated();
-          setShowRelated(true);
-        }
-      }
+      handleSongPlaybackEnded();
       return;
     }
 
     if (isUserAction.current || seekingRef.current) return;
-    if (!isDJ && !isDJMode) return;
+    if (!effectiveIsDJ) return;
     
-    // ✅ KEY FIX: Don't broadcast pause when DJ goes to background
-    // WebView naturally pauses in background — this is NOT a user action
-    if (isInBackgroundRef.current) {
-      console.log('📱 [BG] Ignoring WebView state change while backgrounded:', state);
-      return;
+    // Only suppress pause broadcasts while backgrounded without active PiP.
+    // In PiP mode, or when state is 'playing', never suppress!
+    if (isInBackgroundRef.current && !isSystemPip) {
+      if (state === 'paused') {
+        console.log('📱 [BG] Ignoring pause state change while backgrounded');
+        return;
+      }
     }
 
     const currentTime = livePosition;
@@ -3326,7 +5279,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
 
   const handleNext = () => {
-    if (!isDJ && !isDJMode) return;
+    if (!effectiveIsDJ) return;
     setActionWindow();
     if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
     lastAuxPassTimeRef.current = Date.now();
@@ -3336,15 +5289,20 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       // silently fetching suggestions in the background with no UI change.
       setShowRelated(true);
     } else {
-      try {
-        playerRef.current?.pauseVideo?.();
-      } catch (_) {}
+      try { TrackPlayer.pause(); } catch (_) {}
+      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
+      try { playerRef.current?.stopVideo?.(); } catch (_) {}
+      setDirectStreamUrl(null);
+      setShowThumbnailOverlay(true);
+      thumbnailFadeAnim.setValue(1);
       setIsPlayerReady(false);
       isPlayerReadyRef.current = false;
+      setIsTrackPlayerReady(false);
+      setMediaFullySynced(false);
       setIsBuffering(true);
+      lastLoadedStreamVideoId.current = null;
+      lastResetSongVideoIdRef.current = null;
       setIsSyncing(true);
-      setDirectStreamUrl(null);
-      setDirectAudioUrl(null);
       livePositionRef.current = 0;
       setLivePosition(0);
       passAux();
@@ -3352,14 +5310,20 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
 
   const handlePlayPause = async () => {
-    if (!isDJ && !isDJMode) return;
+    if (!effectiveIsDJ) return;
     setActionWindow();
     showControlsFor(3500);
     try {
       const t = livePosition;
       if (isPlaying) {
+        if (currentSong?.source === 'drive') {
+          try { playerRef.current?.pauseVideo?.(); } catch (_) {}
+        }
         syncPause(t);
       } else {
+        if (currentSong?.source === 'drive') {
+          try { playerRef.current?.playVideo?.(); } catch (_) {}
+        }
         syncPlay(t);
       }
     } catch (e) {
@@ -3368,15 +5332,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
 
   const handleSeek = useCallback(async (t: number) => {
+    if (!effectiveIsDJ) return;
     if (isAdPlayingRef.current) return;
     if (seekingRef.current) return;
 
     // Broadcast seek to the room
     syncSeek(t);
 
+    showControlsFor(3500);
+
     // Perform local seek coordination
     performLocalSeek(t);
-  }, [performLocalSeek, syncSeek]);
+  }, [performLocalSeek, syncSeek, showControlsFor]);
 
   const handlePress = (item: any, event: any) => {
     const now = Date.now();
@@ -3437,10 +5404,38 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   };
 const sendChatMessage = () => {
-  if (!chatMessage.trim()) return;
-  musicWebSocketService.sendChatMessage(chatMessage, replyingTo);
+  const textToSend = (chatMessageRef.current || chatMessage).trim();
+  if (!textToSend) return;
+
+  const currentReplyTo = replyingTo;
+  const myParticipant = participantsRef.current?.find(p => Number(p.user_id) === Number(user?.id));
+  const myName = user?.display_name || myParticipant?.name || user?.email || 'You';
+  const localId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  const optimisticMsg: any = {
+    id: localId,
+    local_id: localId,
+    user: myName,
+    user_id: user?.id,
+    avatar: user?.profile_picture,
+    avatar_sticker: user?.avatar_sticker,
+    text: textToSend,
+    message_type: 'text',
+    reply_to: currentReplyTo,
+    created_at: new Date().toISOString(),
+    status: 'sending',
+    _isNew: true,
+  };
+
+  // 1. Synchronously mount outgoing bubble (0ms instant!)
+  // Perfectly cancels out the input collapse so chat never shrinks down/stutters (WhatsApp style)
+  setMessages(prev => [...prev, optimisticMsg]);
+  scrollToBottom(true);
+
+  musicWebSocketService.sendChatMessage(textToSend, currentReplyTo);
+  chatMessageRef.current = '';
+  hasTextAnim.setValue(0); // native instant: show mic immediately
   setChatMessage('');
-  setInputHeight(40);
   // Clear text imperatively (no key change) so the input stays mounted
   // and the keyboard remains open after sending.
   richInputRef.current?.clear();
@@ -3452,19 +5447,302 @@ const sendChatMessage = () => {
 };
 
 const sendLottieSticker = useCallback((sticker: Sticker) => {
-  musicWebSocketService.sendChatMessage(sticker.url, replyingTo, undefined, 'lottie_sticker');
+  const currentReplyTo = replyingTo;
+  const myParticipant = participantsRef.current?.find(p => Number(p.user_id) === Number(user?.id));
+  const myName = user?.display_name || myParticipant?.name || user?.email || 'You';
+  const localId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  const optimisticMsg: any = {
+    id: localId,
+    local_id: localId,
+    user: myName,
+    user_id: user?.id,
+    avatar: user?.profile_picture,
+    avatar_sticker: user?.avatar_sticker,
+    text: sticker.url,
+    message_type: 'lottie_sticker',
+    reply_to: currentReplyTo,
+    created_at: new Date().toISOString(),
+    status: 'sending',
+    _isNew: true,
+  };
+
+  setMessages(prev => [...prev, optimisticMsg]);
+  scrollToBottom(true);
+
+  musicWebSocketService.sendChatMessage(sticker.url, currentReplyTo, undefined, 'lottie_sticker');
   setReplyingTo(null);
-}, [replyingTo]);
+}, [replyingTo, user]);
 
 
 
+
+  const renderSettingsModal = () => {
+    if (!showSettingsModal) return null;
+
+    const currentThemeObj = ROOM_THEMES.find(t => t.id === roomTheme) || ROOM_THEMES[0];
+    const modalBg = theme.surface;
+    const cardBg = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)';
+    const cardBorder = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)';
+    const textPrimary = theme.textPrimary;
+    const textSecondary = theme.textSecondary;
+    const btnBg = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(0, 0, 0, 0.06)';
+
+    return (
+      <View style={s.settingsModalOverlay}>
+        <TouchableOpacity
+          style={StyleSheet.absoluteFill}
+          activeOpacity={1}
+          onPress={() => setShowSettingsModal(false)}
+        />
+        <Pressable
+          style={[
+            s.settingsModalContainer,
+            {
+              backgroundColor: modalBg,
+              borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
+              paddingBottom: Math.max(36, (insets.bottom || stableBottomInset) + 32),
+              minHeight: 270,
+            },
+          ]}
+          onPress={(e) => e.stopPropagation?.()}
+        >
+          {/* Handle Bar */}
+          <View style={{ alignItems: 'center', marginBottom: 12 }}>
+            <View
+              style={{
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)',
+              }}
+            />
+          </View>
+
+          {/* Header */}
+          <View
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 18,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+              >
+                <Icon name="settings-sharp" size={17} color={textPrimary} />
+              </View>
+              <Text style={{ color: textPrimary, fontSize: 17, fontWeight: '700' }}>
+                Room Settings
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setShowSettingsModal(false)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 15,
+                backgroundColor: btnBg,
+                justifyContent: 'center',
+                alignItems: 'center',
+              }}
+            >
+              <Icon name="close" size={18} color={theme.icon} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Settings List */}
+          <View style={{ gap: 10 }}>
+            {/* 1st Item: Theme Row */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: cardBg,
+                borderWidth: 1,
+                borderColor: cardBorder,
+                borderRadius: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+              }}
+            >
+              {/* Left Corner: Theme Label & Icon */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    backgroundColor: currentThemeObj.color + '26',
+                    borderWidth: 1,
+                    borderColor: currentThemeObj.color + '4D',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Icon name={currentThemeObj.icon as any} size={20} color={currentThemeObj.color} />
+                </View>
+                <View>
+                  <Text style={{ color: textPrimary, fontSize: 15, fontWeight: '700' }}>
+                    Theme
+                  </Text>
+                  <Text style={{ color: textSecondary, fontSize: 11.5, marginTop: 1 }}>
+                    Room appearance
+                  </Text>
+                </View>
+              </View>
+
+              {/* Right Corner: Stepper / Theme Switcher with Prev & Next */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+                  borderRadius: 20,
+                  paddingHorizontal: 4,
+                  paddingVertical: 3,
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
+                }}
+              >
+                <TouchableOpacity
+                  onPress={handlePrevTheme}
+                  disabled={isScreenTransitioning}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  activeOpacity={0.6}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 14,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
+                    opacity: isScreenTransitioning ? 0.4 : 1,
+                  }}
+                  accessibilityLabel="Previous theme"
+                >
+                  <Icon name="chevron-back" size={16} color={textPrimary} />
+                </TouchableOpacity>
+
+                <View
+                  style={{
+                    minWidth: 72,
+                    paddingHorizontal: 8,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: textPrimary,
+                      fontSize: 13,
+                      fontWeight: '700',
+                      letterSpacing: 0.3,
+                    }}
+                  >
+                    {currentThemeObj.label}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  onPress={handleNextTheme}
+                  disabled={isScreenTransitioning}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  activeOpacity={0.6}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 14,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
+                    opacity: isScreenTransitioning ? 0.4 : 1,
+                  }}
+                  accessibilityLabel="Next theme"
+                >
+                  <Icon name="chevron-forward" size={16} color={textPrimary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* 2nd Item: Picture-in-Picture Mode */}
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => handleTogglePip(!pipEnabled)}
+              hitSlop={{ top: 10, bottom: 20, left: 10, right: 10 }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: cardBg,
+                borderWidth: 1,
+                borderColor: cardBorder,
+                borderRadius: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+                marginBottom: 14,
+              }}
+            >
+              {/* Left Corner: Label & Icon */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.15)' : 'rgba(2, 132, 199, 0.12)',
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(56, 189, 248, 0.3)' : 'rgba(2, 132, 199, 0.25)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Icon name="tv-outline" size={19} color={isDark ? '#38BDF8' : '#0284C7'} />
+                </View>
+                <View>
+                  <Text style={{ color: textPrimary, fontSize: 15, fontWeight: '700' }}>
+                    Picture-in-Picture
+                  </Text>
+                  <Text style={{ color: textSecondary, fontSize: 11.5, marginTop: 1 }}>
+                    Floating player when minimized
+                  </Text>
+                </View>
+              </View>
+
+              {/* Right Corner: Switch (pointerEvents="none" so any tap on switch triggers the row's handleTogglePip cleanly) */}
+              <View pointerEvents="none">
+                <Switch
+                  value={pipEnabled}
+                  trackColor={{ false: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)', true: '#0284C7' }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+            </TouchableOpacity>
+
+          </View>
+        </Pressable>
+      </View>
+    );
+  };
 
   const renderLeaveModal = () => {
     if (!showLeaveConfirm) return null;
     return (
       <View style={[StyleSheet.absoluteFill, { zIndex: 1000 }]}>
         <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowLeaveConfirm(false)}>
-          <View style={[s.confirmContent, { padding: 20, width: '85%', maxWidth: 300, borderRadius: 20, backgroundColor: '#1A1A1A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }]}>
+          <View style={[s.confirmContent, { padding: 22, width: '85%', maxWidth: 300, borderRadius: 20, backgroundColor: '#1A1A1A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }]}>
             <TouchableOpacity
               onPress={() => setShowLeaveConfirm(false)}
               style={{ position: 'absolute', top: 12, right: 12, width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', justifyContent: 'center', alignItems: 'center', zIndex: 10 }}
@@ -3472,71 +5750,383 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               <Icon name="close" size={16} color="rgba(255,255,255,0.7)" />
             </TouchableOpacity>
 
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 18, marginTop: 4, textAlign: 'center' }}>
-              Watch Party
+            <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700', marginBottom: 6, marginTop: 4, textAlign: 'center' }}>
+              Leaving Room?
             </Text>
+            
 
             <View style={{ flexDirection: 'row', width: '100%', gap: 10 }}>
+              {/* No Button */}
               <TouchableOpacity
                 style={{
                   flex: 1,
-                  flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: 6,
-                  backgroundColor: 'rgba(226, 232, 240, 0.12)',
-                  borderColor: 'rgba(203, 213, 225, 0.35)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
                   borderWidth: 1,
                   borderRadius: 14,
                   paddingVertical: 12,
-                  paddingHorizontal: 6,
                 }}
-                onPress={() => {
-                  setShowLeaveConfirm(false);
-                  handleMinimize();
-                }}
+                onPress={() => setShowLeaveConfirm(false)}
                 activeOpacity={0.7}
               >
-                <Icon name="contract-outline" size={17} color="#CBD5E1" />
-                <Text style={{ color: '#E2E8F0', fontSize: 13, fontWeight: '700' }}>Minimize</Text>
+                <Text style={{ color: '#E2E8F0', fontSize: 14, fontWeight: '700' }}>No</Text>
               </TouchableOpacity>
 
+              {/* Yes Button */}
               <TouchableOpacity
                 style={{
                   flex: 1,
-                  flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: 6,
-                  backgroundColor: 'rgba(226, 232, 240, 0.12)',
-                  borderColor: 'rgba(203, 213, 225, 0.35)',
-                  borderWidth: 1,
+                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
                   borderRadius: 14,
                   paddingVertical: 12,
-                  paddingHorizontal: 6,
                 }}
                 onPress={() => {
                   setShowLeaveConfirm(false);
-                  (global as any).keepMusicRoomAlive = false;
-                  (global as any).activeMusicRoomCode = null;
-                  (global as any).isMusicPlaying = false;
-                  (global as any).loadedAudioSessionId = null;
-                  try { TrackPlayerService.endSession(); } catch (_) {}
-                  stopMusicService();
-                  loadedAudioSessionRef.current = null;
-                  musicWebSocketService.disconnect();
-                  DeviceEventEmitter.emit('music_playback_state_changed', false);
-                  DeviceEventEmitter.emit('close_music_room');
+                  handleCloseRoom();
                 }}
                 activeOpacity={0.7}
               >
-                <Icon name="exit-outline" size={17} color="#CBD5E1" />
-                <Text style={{ color: '#E2E8F0', fontSize: 13, fontWeight: '700' }}>Close</Text>
+                <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>Yes</Text>
               </TouchableOpacity>
             </View>
           </View>
         </TouchableOpacity>
       </View>
+    );
+  };
+
+  const renderPlayerContent = () => {
+    if (!activeVideoId) {
+      return null;
+    }
+
+    if ((currentSong?.source || initialSource) === 'drive' && !directStreamUrl) {
+      return (
+        <DrivePlayer
+          key={`drive_${activeVideoId}`}
+          ref={playerRef}
+          fileId={activeVideoId || ''}
+          play={isPlaying && !playerError}
+          muted={isMuted}
+          isFullscreen={fullscreen}
+          resizeMode={isMinimized ? 'cover' : 'contain'}
+          onAspectRatio={handleAspectRatio}
+          onReady={() => {
+            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+              console.log('🛡️ [DirectVideoPlayer] Stale onReady ignored for', activeVideoId, '(stream loaded for:', lastLoadedStreamVideoId.current, ')');
+              return;
+            }
+            isInitialVideoStartedRef.current = true;
+            setIsPlayerReady(true);
+            isPlayerReadyRef.current = true;
+            setShowThumbnailOverlay(false);
+            playerReadyTime.current = Date.now();
+            setIsBuffering(false);
+
+            if (livePositionRef.current > 1) {
+              const currentPos = livePositionRef.current;
+              setTimeout(() => {
+                try {
+                  playerRef.current?.seekTo?.(currentPos, true);
+                } catch (_) {}
+              }, 100);
+            }
+          }}
+          onStreamResolved={(cdnUrl, cdnHeaders) => {
+            if (!currentSong) return;
+            console.log('🎵 [DRIVE AUDIO] Stream resolved — WebView owns audio');
+          }}
+          onStateChange={onPlayerStateChange}
+          onProgress={(currentTime, dur) => {
+            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+              return;
+            }
+            if (dur > 0 && !isNaN(dur)) setDuration(dur);
+            if (!isPlayerReadyRef.current && currentTime > 0) {
+              setIsPlayerReady(true);
+              isPlayerReadyRef.current = true;
+              setShowThumbnailOverlay(false);
+            }
+            if (lastSeekTargetRef.current !== null) {
+              const elapsed = Date.now() - lastSeekTimeRef.current;
+              if (Math.abs(currentTime - lastSeekTargetRef.current) < 2.5 || elapsed > 1500) {
+                lastSeekTargetRef.current = null;
+              } else {
+                return;
+              }
+            }
+            if (!seekingRef.current && currentTime > 0 && isPlayerReadyRef.current) {
+              livePositionRef.current = currentTime;
+              setLivePosition(currentTime);
+            }
+          }}
+          onError={() => {
+            setIsBuffering(false);
+            setPlayerError('unknown');
+          }}
+        />
+      );
+    }
+
+    const isNativeDirectVideo = currentSong?.source !== 'drive' && (currentSong?.source as string) !== 'embed';
+    if (directStreamUrl || isDirectLoading || (isNativeDirectVideo && !playerError)) {
+      return (
+        <DirectVideoPlayer
+          key="direct_music_player"
+          videoId={activeVideoId}
+          ref={playerRef}
+          videoUri={directStreamUrl || ''}
+          fallbackUri={directFallbackUrl || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
+          audioUri={directAudioUrl}
+          streamType={directStreamType}
+          headers={directStreamHeaders}
+          play={isPlaying && !playerError && !!directStreamUrl}
+          quality={videoQuality}
+          muted={isMuted}
+          initialPosition={initialRoomPosition || 0}
+          isFullscreen={fullscreen}
+          resizeMode={isMinimized ? 'cover' : 'contain'}
+          aspectRatio={detectedAspectRatio || 1.7777}
+          bleedEnabled={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen}
+          contentRect={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen ? raveContentRect : undefined}
+          bbdCropPercent={detectedCropPercent}
+          blurSigma={48.0}
+          onAspectRatio={handleAspectRatio}
+          onExactResolution={setLiveExactResolution}
+          onQualityFallback={(fallbackQuality) => {
+            setVideoQuality(fallbackQuality);
+            setLiveExactResolution('Auto');
+          }}
+          onQualitiesAvailable={(qualities) => {
+            if (directStreamsListRef.current.length > 0) return;
+            if (qualities && qualities.length > 0) {
+              const qKeys = qualities.map((q: string) => {
+                const h = parseInt(q.replace(/\D/g, ''), 10);
+                return heightToQualityKey(h);
+              });
+              setAvailableQualities(prev => Array.from(new Set([...prev, ...qKeys])));
+            }
+          }}
+          onReady={() => {
+            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+              console.log('🛡️ [DirectVideoPlayer] Stale onReady ignored for', activeVideoId, '(stream loaded for:', lastLoadedStreamVideoId.current, ')');
+              return;
+            }
+            isInitialVideoStartedRef.current = true;
+            setIsPlayerReady(true);
+            isPlayerReadyRef.current = true;
+            setShowThumbnailOverlay(false);
+            playerReadyTime.current = Date.now();
+            setIsBuffering(false);
+            setMediaFullySynced(true);
+            const state = isPlaying ? 'playing' : 'paused';
+            setPlayerState(state);
+            playerStateRef.current = state;
+            if (isPlaying) {
+              try { playerRef.current?.playVideo?.(); } catch (_) {}
+              if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+                syncPlay(0);
+              }
+            } else if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+              try { playerRef.current?.playVideo?.(); } catch (_) {}
+              syncPlay(0);
+            }
+
+            if (!isDJ && !isDJMode && joinSnapshot && joinSnapshot.videoId === currentSong?.videoId && !joinSnapshotConsumed.current) {
+              joinSnapshotConsumed.current = true;
+              if (directStreamType !== 'm3u8') {
+                const snapshotTime = joinSnapshot.receivedAt;
+                const snapshotPosition = joinSnapshot.position;
+                setTimeout(() => {
+                  const elapsed = (Date.now() - snapshotTime) / 1000;
+                  const targetPosition = snapshotPosition + elapsed;
+                  const safePosition = duration > 0
+                    ? Math.min(targetPosition, duration - 2)
+                    : targetPosition;
+                  playerRef.current?.seekTo?.(safePosition, true);
+                  livePositionRef.current = safePosition;
+                  lastSeekTimeRef.current = Date.now();
+                }, 500);
+              }
+            }
+          }}
+          onStateChange={onPlayerStateChange}
+          onProgress={(currentTime, dur) => {
+            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+              return;
+            }
+            if (dur > 0 && !isNaN(dur)) setDuration(dur);
+            if (!isPlayerReadyRef.current && currentTime > 0) {
+              setIsPlayerReady(true);
+              isPlayerReadyRef.current = true;
+              setShowThumbnailOverlay(false);
+            }
+            if (lastSeekTargetRef.current !== null) {
+              const elapsed = Date.now() - lastSeekTimeRef.current;
+              if (Math.abs(currentTime - lastSeekTargetRef.current) < 2.5 || elapsed > 1500) {
+                lastSeekTargetRef.current = null;
+              } else {
+                return;
+              }
+            }
+            if (!seekingRef.current && !isReseeking && currentTime > 0 && isPlayerReadyRef.current) {
+              livePositionRef.current = currentTime;
+              setLivePosition(currentTime);
+              const nowSec = Math.floor(currentTime);
+              if (nowSec % 2 === 0 && (global as any).__lastSyncProbeSec !== nowSec) {
+                (global as any).__lastSyncProbeSec = nowSec;
+                console.log(`⏱️ [SYNC_PROBE] ${isDJ || isDJMode ? 'HOST_DJ' : 'GUEST_PARTICIPANT'}: currentTime=${currentTime.toFixed(3)}s, roomPos=${position.toFixed(3)}s, diff=${(currentTime - position).toFixed(3)}s`);
+              }
+            }
+            if (isPlayerReadyRef.current && dur > 5 && currentTime >= dur - 1.5 && currentTime > 5) {
+              handleSongPlaybackEnded();
+            }
+          }}
+          onEnd={() => {
+            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+              return;
+            }
+            handleSongPlaybackEnded();
+          }}
+          onError={(err) => {
+            if ((currentSong?.source || initialSource) === 'drive') {
+              console.warn('⚠️ [DirectVideoPlayer] Error on Drive stream, falling back to DrivePlayer:', err);
+              setDirectStreamUrl(null);
+              setDirectStreamHeaders(undefined);
+              return;
+            }
+            console.warn('[MusicRoomScreen] DirectVideoPlayer error:', err);
+            const targetVideoId = currentSong?.videoId || initialVideoId;
+            if (targetVideoId) {
+              extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
+                if (res && res.dashUrl) {
+                  console.log('🎬 [MusicRoomScreen] Refreshed DASH manifest for seamless recovery');
+                  setDirectStreamUrl(res.dashUrl);
+                  setDirectStreamType('mpd');
+                } else if (res && (res.streamType === 'm3u8' || res.url)) {
+                  console.log('🎬 [MusicRoomScreen] Refreshed stream URL for seamless recovery');
+                  setDirectStreamUrl(res.url);
+                  setDirectStreamType(res.streamType || 'mp4');
+                }
+              }).catch(() => {});
+            }
+          }}
+        />
+      );
+    }
+
+    if (isDirectLoading) {
+      return null;
+    }
+
+    return (
+      <YoutubePlayer
+        key={`yt_${activeVideoId}`}
+        ref={playerRef}
+        videoId={activeVideoId || ''}
+        play={isPlaying && !playerError}
+        muted={isMuted}
+        initialPosition={livePositionRef.current || 0}
+        quality={videoQuality}
+        isFullscreen={fullscreen}
+        resizeMode={isMinimized ? 'cover' : 'contain'}
+        aspectRatio={detectedAspectRatio || 1.7777}
+        onAspectRatio={handleAspectRatio}
+        onQualitiesAvailable={(qualities) => {
+          if (directStreamUrl || directStreamsListRef.current.length > 0) return;
+          if (qualities && qualities.length > 0) {
+            const qList = ['auto', ...qualities.filter(q => q && q !== 'auto')];
+            setAvailableQualities(Array.from(new Set(qList)));
+          }
+        }}
+        onExactResolution={(resolution) => {
+          if (resolution) setLiveExactResolution(resolution);
+        }}
+        onQualityChange={(newQuality) => {
+          const minimal = getMinimalQualityLabel(newQuality);
+          setLiveExactResolution(minimal);
+        }}
+        onAdStarted={() => {
+          setIsAdPlaying(true);
+          isAdPlayingRef.current = true;
+        }}
+        onAdEnded={() => {
+          setIsAdPlaying(false);
+          isAdPlayingRef.current = false;
+        }}
+        onReady={() => {
+          isInitialVideoStartedRef.current = true;
+          setIsPlayerReady(true);
+          isPlayerReadyRef.current = true;
+          setShowThumbnailOverlay(false);
+          playerReadyTime.current = Date.now();
+          setIsBuffering(false);
+          setMediaFullySynced(true);
+          const state = isPlaying ? 'playing' : 'paused';
+          setPlayerState(state);
+          playerStateRef.current = state;
+
+          if (!isDJ && !isDJMode && joinSnapshot && joinSnapshot.videoId === currentSong?.videoId && !joinSnapshotConsumed.current) {
+            joinSnapshotConsumed.current = true;
+            const snapshotTime = joinSnapshot.receivedAt;
+            const snapshotPosition = joinSnapshot.position;
+            setTimeout(() => {
+              const elapsed = (Date.now() - snapshotTime) / 1000;
+              const targetPosition = snapshotPosition + elapsed;
+              const safePosition = duration > 0
+                ? Math.min(targetPosition, duration - 2)
+                : targetPosition;
+              playerRef.current?.seekTo?.(safePosition, true);
+              livePositionRef.current = safePosition;
+              lastSeekTimeRef.current = Date.now();
+            }, 500);
+          }
+        }}
+        onStateChange={onPlayerStateChange}
+        onProgress={(currentTime, dur) => {
+          if (dur > 0 && !isNaN(dur)) setDuration(dur);
+          if (!isPlayerReadyRef.current && currentTime > 0) {
+            setIsPlayerReady(true);
+            isPlayerReadyRef.current = true;
+            setShowThumbnailOverlay(false);
+          }
+          if (lastSeekTargetRef.current !== null) {
+            const elapsed = Date.now() - lastSeekTimeRef.current;
+            if (Math.abs(currentTime - lastSeekTargetRef.current) < 2.5 || elapsed > 1500) {
+              lastSeekTargetRef.current = null;
+            } else {
+              return;
+            }
+          }
+          if (!seekingRef.current && !isReseeking && currentTime > 0 && isPlayerReadyRef.current) {
+            livePositionRef.current = currentTime;
+            setLivePosition(currentTime);
+          }
+        }}
+        onEnd={handleSongPlaybackEnded}
+        onError={(err) => {
+          console.warn('[MusicRoomScreen] YoutubePlayer error:', err);
+          setIsBuffering(false);
+          if (err === 150 || err === 101 || err === 152) {
+            setPlayerError('embed_not_allowed');
+            fetchRelated();
+            setShowRelated(true);
+          } else if (err === 100) {
+            setPlayerError('video_not_found');
+            fetchRelated();
+            setShowRelated(true);
+          } else if (err === 2 || err === 5) {
+            console.log('ℹ️ [MusicRoomScreen] Non-fatal YouTube player warning code:', err);
+          } else {
+            setPlayerError('unknown');
+            fetchRelated();
+            setShowRelated(true);
+          }
+        }}
+      />
     );
   };
 
@@ -3547,117 +6137,104 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
   const reversedMessages = [...messages].reverse();
 
   return (
-    <View style={[s.root, isLight && { backgroundColor: '#F8FAFC' }]}>
-      <StatusBar barStyle={isLight || isMinimized ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
-
-      {/* ── 1. RAVE DUAL-LAYER: BACKGROUND LIVE BLURRED VIDEO LAYER ── */}
-      <BackgroundAmbientPlayer
-        videoId={previewVideoId || currentSong?.videoId || (initialSongLoadedRef.current ? null : initialVideoId)}
-        thumbnailUrl={videoThumbnailUrl}
-        isPlayerReady={isPlayerReady || !!previewVideoId}
-        isPlaying={isPlaying || !!previewVideoId}
-        currentTime={livePosition}
-        isMinimized={isMinimized}
-        fullscreen={fullscreen}
-        theme={roomTheme}
+    <View
+      style={[
+        s.root,
+        (isLight && !isSystemPip && !isMinimized) && { backgroundColor: '#ffffff' },
+        (isMinimized && !isSystemPip) && { backgroundColor: 'transparent' }
+      ]}
+      pointerEvents={isMinimized ? 'box-none' : 'auto'}
+    >
+      <StatusBar
+        barStyle={isLight || isMinimized ? "dark-content" : "light-content"}
+        backgroundColor="transparent"
+        translucent={true}
+        hidden={fullscreen || isSystemPip}
       />
 
-      {/* ── 2. AMBIENT DISCO FLUID AURORA OVERLAY (cinema | dark | light) ── */}
-      <AmbientDiscoBackground
-        isPlaying={isPlaying}
-        isMinimized={isMinimized}
-        fullscreen={fullscreen}
-        videoId={currentSong?.videoId}
-        theme={roomTheme}
-      />
+      {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (cinema | dark | light) ── */}
+      {!isMinimized && !isSystemPip && !fullscreen && roomTheme !== 'rave' && (
+        <AmbientDiscoBackground
+          isPlaying={isPlaying}
+          isMinimized={isMinimized}
+          fullscreen={fullscreen}
+          videoId={currentSong?.videoId}
+          theme={roomTheme}
+        />
+      )}
+
+      {/* ── 2. VIDEO LAYER (Root Level for Full Edge-to-Edge Bleed & Smooth Zero-Restart Switching) ── */}
+      <Reanimated.View
+        style={playerLayerAnimatedStyle}
+        pointerEvents="none"
+      >
+        {renderPlayerContent()}
+      </Reanimated.View>
 
       <KeyboardWrapperView
         {...keyboardWrapperProps}
-        style={[s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset }]}
+        style={isMinimized || fullscreen || isSystemPip ? StyleSheet.absoluteFill : [s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset, zIndex: 20 }]}
+        pointerEvents={showSettingsModal ? 'box-none' : (isMinimized ? 'box-none' : 'auto')}
       >
-        <View style={{ flex: 1 }}>
-          {renderLeaveModal()}
+        <View style={{ flex: 1 }} pointerEvents={isMinimized ? 'box-none' : 'auto'}>
+          {!isMinimized && renderLeaveModal()}
 
-          {!fullscreen && (
-            <View style={s.header}>
-              {/* Left Side: Leader Profile + Expandable Speaker Slots */}
-              {(() => {
-                const leader = participants.find(p => p.is_dj) || participants[0];
-                const isLeaderVoiceActive = leader ? (
-                  leader.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(leader.user_id)
-                ) : false;
+          {!fullscreen && !isMinimized && !isSystemPip && (
+            <Reanimated.View
+              style={[{ height: 58, overflow: 'hidden', zIndex: 30, elevation: 5 }, headerAnimStyle]}
+              pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible ? 'none' : 'auto'}
+            >
+              <View style={s.header}>
+                {/* Left Group: Exit & Room Participants (shifted left) */}
+                <View style={s.headerSideGroup}>
+                  {/* 1. Exit Button */}
+                  <TouchableOpacity
+                    onPress={() => setShowLeaveConfirm(true)}
+                    style={s.headerSlot}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Exit room"
+                  >
+                    <Icon
+                      name="exit-outline"
+                      size={22}
+                      color={themeIconColor}
+                      style={{ transform: [{ scaleX: -1 }] }}
+                    />
+                  </TouchableOpacity>
 
-                const allowedOtherSpeakers = participants.filter(p => {
-                  if (p.user_id === leader?.user_id) return false;
-                  const isAllowed = allowedSpeakers && allowedSpeakers.includes(p.user_id);
-                  const isVoiceActive = p.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(p.user_id);
-                  return isAllowed || isVoiceActive;
-                });
+                  {/* 2. Room Participants Button */}
+                  <TouchableOpacity
+                    onPress={() => setParticipantsModalVisible(true)}
+                    style={s.headerSlot}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    activeOpacity={0.7}
+                    accessibilityLabel="View participants"
+                  >
+                    <Icon name="people" size={23} color={themeIconColor} />
+                  </TouchableOpacity>
+                </View>
 
-                return (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', zIndex: 10 }}>
-                    {/* Theme Switch Button in Header Left Corner */}
-                    <TouchableOpacity
-                      onPress={handleCycleTheme}
-                      activeOpacity={0.7}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 15,
-                        backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
-                        borderWidth: 1,
-                        borderColor: isLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.2)',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        marginRight: 6,
-                      }}
-                      accessibilityLabel="Switch room theme"
+                {/* 3. Center: App Name in Text (Normal) OR Active Speakers on Mic (When mic active) */}
+                <View style={s.headerCenterSlot} pointerEvents="box-none">
+                  {activeMicSpeakers.length === 0 ? (
+                    <View
+                      accessible={true}
+                      accessibilityRole="header"
+                      accessibilityLabel="YOUTELITE"
+                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
                     >
-                      <Icon
-                        name={roomTheme === 'cinema' ? 'color-palette' : (roomTheme === 'rave' ? 'videocam' : (roomTheme === 'dark' ? 'moon' : 'sunny'))}
-                        size={16}
-                        color={isLight ? '#0F172A' : '#FFFFFF'}
-                      />
-                    </TouchableOpacity>
-
-                    {/* Slot 1: Leader (DJ) */}
-                    {leader && (
-                      <TouchableOpacity
-                        onPress={() => handleAvatarPress(leader.avatar, leader.avatar_sticker, leader.name)}
-                        style={{ marginRight: 4, position: 'relative' }}
-                      >
-                        <AvatarWithFallback
-                          uri={leader.avatar}
-                          displayName={leader.name}
-                          sticker={leader.avatar_sticker}
-                          style={{
-                            width: 26,
-                            height: 26,
-                            borderRadius: 13,
-                            borderWidth: isLeaderVoiceActive ? 2 : 1.5,
-                            borderColor: isLeaderVoiceActive
-                              ? '#10B981'
-                              : (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
-                          }}
-                        />
-                        <View style={{ position: 'absolute', top: -4, right: -4, zIndex: 10 }}>
-                          <Icon name="star" size={11} color="#FFD700" />
-                        </View>
-                        {isLeaderVoiceActive && (
-                          <View style={{ position: 'absolute', bottom: -2, right: -2, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#10B981', borderWidth: 1.5, borderColor: '#050811', zIndex: 11 }} />
-                        )}
-                      </TouchableOpacity>
-                    )}
-
-                    {/* Allowed/Active Speaker Profiles (up to 3) */}
-                    {allowedOtherSpeakers.slice(0, 3).map((speaker) => {
-                      const isVoiceOn = speaker.user_id === (user?.id ?? 0) ? isMicOn : voiceParticipants.has(speaker.user_id);
-                      return (
+                      <Text style={s.headerBrandText}>YOUT</Text>
+                      <Text style={[s.headerBrandText, { marginHorizontal: 1.6 }]}>E</Text>
+                      <Text style={s.headerBrandText}>LITE</Text>
+                    </View>
+                  ) : (
+                    <View style={s.activeMicRow}>
+                      {activeMicSpeakers.slice(0, 4).map((speaker) => (
                         <TouchableOpacity
-                          key={`speaker-slot-${speaker.user_id}`}
+                          key={`header-mic-spk-${speaker.user_id}`}
                           onPress={() => handleAvatarPress(speaker.avatar, speaker.avatar_sticker, speaker.name)}
-                          style={{ marginRight: 4, position: 'relative' }}
+                          style={{ position: 'relative' }}
+                          activeOpacity={0.8}
                         >
                           <AvatarWithFallback
                             uri={speaker.avatar}
@@ -3667,410 +6244,97 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                               width: 26,
                               height: 26,
                               borderRadius: 13,
-                              borderWidth: isVoiceOn ? 2 : 1.5,
-                              borderColor: isVoiceOn
-                                ? '#10B981'
-                                : (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
+                              borderWidth: 2,
+                              borderColor: '#10B981',
                             }}
                           />
-                          {isVoiceOn && (
-                            <View style={{ position: 'absolute', bottom: -2, right: -2, width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#10B981', borderWidth: 1.5, borderColor: '#050811', zIndex: 11 }} />
-                          )}
+                          <View style={{
+                            position: 'absolute',
+                            bottom: -1,
+                            right: -1,
+                            width: 8,
+                            height: 8,
+                            borderRadius: 4,
+                            backgroundColor: '#10B981',
+                            borderWidth: 1.5,
+                            borderColor: '#000',
+                          }} />
                         </TouchableOpacity>
-                      );
-                    })}
-
-                    {/* Single Next Open Dummy Slot (only shown if less than 3 extra speakers) */}
-                    {allowedOtherSpeakers.length < 3 && (
-                      <View
-                        style={{
-                          width: 26,
-                          height: 26,
-                          borderRadius: 13,
-                          borderWidth: 1,
-                          borderStyle: 'dashed',
-                          borderColor: isLight ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.18)',
-                          backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          marginRight: 4,
-                        }}
-                      >
-                        <Icon
-                          name="volume-medium-outline"
-                          size={12}
-                          color={isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)'}
-                        />
-                      </View>
-                    )}
-                  </View>
-                );
-              })()}
-
-              {/* Center: App Logo (Exact Center) */}
-              <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', pointerEvents: 'box-none' }}>
-                <TouchableOpacity
-                  onPress={() => setShowLeaveConfirm(true)}
-                  activeOpacity={0.7}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={{
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    padding: 2,
-                    borderRadius: 8,
-                    backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'transparent',
-                  }}
-                >
-                  <Image
-                    source={require('../assets/logo.png')}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: 6,
-                      tintColor: isLight ? '#0F172A' : undefined,
-                    }}
-                    resizeMode="contain"
-                  />
-                </TouchableOpacity>
-              </View>
-
-              {/* Right Side: Actions */}
-              <View style={s.headerRight}>
-                <TouchableOpacity onPress={() => setInviteModalVisible(true)} style={s.headerIconBtn}>
-                  <Icon name="person-add-outline" size={22} color={themeIconColor} />
-                </TouchableOpacity>
-
-                <TouchableOpacity onPress={() => setShowDiscovery(true)} style={s.headerIconBtn}>
-                  <Icon name="search" size={22} color={themeIconColor} />
-                </TouchableOpacity>
-                
-                <TouchableOpacity onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} style={s.headerIconBtn}>
-                  <Icon name="list" size={22} color={activeTab === 'queue' ? '#0284C7' : themeIconColor} />
-                  {queue.length > 0 && (
-                    <View style={s.badge}>
-                      <Text style={s.badgeText}>{queue.length}</Text>
+                      ))}
                     </View>
                   )}
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
+                </View>
 
-          {fullscreen && (
-            <View style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              top: 0,
-              bottom: 0,
-              backgroundColor: '#000',
-              zIndex: 98
-            }} />
+                {/* Right Group: Search Songs & Room Settings (shifted right) */}
+                <View style={s.headerSideGroup}>
+                  {/* 4. Search Songs Button */}
+                  <TouchableOpacity
+                    onPress={() => setShowDiscovery(true)}
+                    style={s.headerSlot}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Search songs"
+                  >
+                    <Icon name="search" size={22} color={themeIconColor} />
+                  </TouchableOpacity>
+
+                  {/* 5. Room Settings Button */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setShowSettingsModal(true);
+                    }}
+                    style={s.headerSlot}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Room Settings"
+                  >
+                    <Icon name="settings-sharp" size={21} color={themeIconColor} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Reanimated.View>
           )}
 
           {/* VIDEO CONTAINER */}
-          <View style={fullscreen ? {
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              top: 0,
-              bottom: 0,
-              backgroundColor: '#000',
-              zIndex: 99,
-              overflow: 'hidden'
-            } : [s.videoWrap, { height: dynamicVideoHeight }]}>
-            <Animated.View style={fullscreen ? StyleSheet.absoluteFill : (showRelated ? {
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              // Collapse to 0×0 when video ended/errored — the grid's slot 1 then
-              // shows the static thumbnail card instead of a black PiP box
-              width: (playerState === 'ended' || !!playerError) ? 0 : width / 2,
-              height: (playerState === 'ended' || !!playerError) ? 0 : (width / 2) * 0.5625,
-              zIndex: 16,
-              backgroundColor: '#000',
-              overflow: 'hidden',
-              opacity: relatedScrollX.interpolate({
-                inputRange: [0, width],
-                outputRange: [1, 0],
-                extrapolate: 'clamp',
-              }),
-            } : [StyleSheet.absoluteFill, { overflow: 'hidden' }])} pointerEvents={currentSong?.source === 'drive' ? 'box-none' : 'none'}>
-
-              {/* ── Player Section ────────────────────────────────────────── */}
-              {/* Keep player mounted while playing (shows as PiP in slot 1 of the related grid).
-                  Only unmount when video has ended or errored — then slot 1 becomes a real video. */}
-              {!(showRelated && (playerState === 'ended' || !!playerError)) && (currentSong?.videoId || (initialSongLoadedRef.current ? null : initialVideoId)) ? (
-
-                // ─── Drive Video ───────────────────────────────────────────────
-                (currentSong?.source || initialSource) === 'drive' ? (
-                  <DrivePlayer
-                    key={currentSong?.videoId || (initialSongLoadedRef.current ? 'drive_active' : initialVideoId)}
-                    ref={playerRef}
-                    fileId={currentSong?.videoId || (initialSongLoadedRef.current ? '' : initialVideoId)}
-                    play={isPlaying && !playerError}
-                    muted={false}
-                    isFullscreen={fullscreen}
-                    onAspectRatio={handleAspectRatio}
-                    onReady={() => {
-                      setIsPlayerReady(true);
-                      isPlayerReadyRef.current = true;
-                      playerReadyTime.current = Date.now();
-                      setIsBuffering(false);
-
-                      if (livePositionRef.current > 1) {
-                        const currentPos = livePositionRef.current;
-                        setTimeout(() => {
-                          try {
-                            playerRef.current?.seekTo?.(currentPos, true);
-                          } catch (_) {}
-                        }, 100);
-                      }
-                    }}
-                    onStreamResolved={(cdnUrl, cdnHeaders) => {
-                      if (!currentSong) return;
-                      console.log('🎵 [DRIVE AUDIO] Stream resolved — WebView owns audio');
-                    }}
-                    onStateChange={onPlayerStateChange}
-                    onProgress={(currentTime, dur) => {
-                      if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current && currentTime > 0) {
-                        livePositionRef.current = currentTime;
-                        setLivePosition(currentTime);
-                      }
-                    }}
+          <Reanimated.View
+            style={[
+              s.videoWrap,
+              videoContainerAnimatedStyle,
+            ]}
+            {...(isMinimized && pipEnabled && !isSystemPip && !pipDismissed ? miniPanResponder.panHandlers : {})}
+          >
+            {/* ─── Clean Thumbnail + White Spinner Overlay (Zero Black Screen, Zero Text) ─── */}
+            {showThumbnailOverlay && !(showRelated && (playerState === 'ended' || !!playerError)) && !playerError && (
+              <Animated.View
+                style={[
+                  StyleSheet.absoluteFill,
+                  {
+                    backgroundColor: 'transparent',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    zIndex: 10,
+                    opacity: thumbnailFadeAnim,
+                  },
+                ]}
+                pointerEvents="none"
+              >
+                {videoThumbnailUrl ? (
+                  <FastImage
+                    source={{ uri: thumbFallbackUri || videoThumbnailUrl, priority: FastImage.priority.high }}
+                    style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+                    resizeMode={FastImage.resizeMode.cover}
                     onError={() => {
-                      setIsBuffering(false);
-                      setPlayerError('unknown');
-                    }}
-                  />
-                ) : directStreamUrl ? (
-                  <DirectVideoPlayer
-                    key={`direct_${currentSong?.videoId || (initialSongLoadedRef.current ? 'direct_active' : initialVideoId) || 'direct_player'}`}
-                    ref={playerRef}
-                    videoUri={directStreamUrl}
-                    fallbackUri={directFallbackUrl || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
-                    audioUri={directAudioUrl}
-                    streamType={directStreamType}
-                    play={isPlaying && !playerError}
-                    quality={videoQuality}
-                    muted={false}
-                    initialPosition={livePositionRef.current || initialRoomPosition || 0}
-                    isFullscreen={fullscreen}
-                    aspectRatio={detectedAspectRatio || 1.7777}
-                    onAspectRatio={handleAspectRatio}
-                    onExactResolution={setLiveExactResolution}
-                    onQualityFallback={(fallbackQuality) => {
-                      setVideoQuality(fallbackQuality);
-                      setLiveExactResolution('Auto');
-                    }}
-                    onQualitiesAvailable={(qualities) => {
-                      // Fix 3: ExoPlayer's track list can be incomplete (e.g. only 1-2 resolutions
-                      // reported even when the DASH MPD has 6+). Only fall back to ExoPlayer's list
-                      // if we have no extraction-derived streams yet.
-                      if (directStreamsListRef.current.length > 0) return;
-                      if (qualities && qualities.length > 0) {
-                        const qKeys = qualities.map((q: string) => {
-                          const h = parseInt(q.replace(/\D/g, ''), 10);
-                          return heightToQualityKey(h);
-                        });
-                        setAvailableQualities(prev => Array.from(new Set([...prev, ...qKeys])));
-                      }
-                    }}
-                    onReady={() => {
-                      setIsPlayerReady(true);
-                      isPlayerReadyRef.current = true;
-                      playerReadyTime.current = Date.now();
-                      setIsBuffering(false);
-                      setMediaFullySynced(true);
-                      const state = isPlaying ? 'playing' : 'paused';
-                      setPlayerState(state);
-                      playerStateRef.current = state;
-
-                      if (!isDJ && !isDJMode && joinSnapshot && !joinSnapshotConsumed.current) {
-                        joinSnapshotConsumed.current = true;
-                        const snapshotTime = joinSnapshot.receivedAt;
-                        const snapshotPosition = joinSnapshot.position;
-                        setTimeout(() => {
-                          const elapsed = (Date.now() - snapshotTime) / 1000;
-                          const targetPosition = snapshotPosition + elapsed;
-                          const safePosition = duration > 0
-                            ? Math.min(targetPosition, duration - 2)
-                            : targetPosition;
-                          playerRef.current?.seekTo?.(safePosition, true);
-                          livePositionRef.current = safePosition;
-                          lastSeekTimeRef.current = Date.now();
-                        }, 500);
-                      }
-                    }}
-                    onStateChange={onPlayerStateChange}
-                    onProgress={(currentTime, dur) => {
-                      if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current && !isReseeking && currentTime > 0) {
-                        livePositionRef.current = currentTime;
-                        setLivePosition(currentTime);
-                      }
-                    }}
-                    onEnd={() => {
-                      if (isDJ || isDJMode) {
-                        if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
-                        lastAuxPassTimeRef.current = Date.now();
-                        setIsPlayerReady(false);
-                        isPlayerReadyRef.current = false;
-                        setIsBuffering(true);
-                        setIsSyncing(true);
-                        setDirectStreamUrl(null);
-                        setDirectAudioUrl(null);
-                        livePositionRef.current = 0;
-                        setLivePosition(0);
-                        passAux();
-                      } else {
-                        fetchRelated();
-                        setShowRelated(true);
-                      }
-                    }}
-                    onError={(err) => {
-                      console.warn('[MusicRoomScreen] DirectVideoPlayer error:', err);
-                      // Never downgrade to progressive! Refresh DASH manifest while preserving current position.
-                      const targetVideoId = currentSong?.videoId || initialVideoId;
-                      if (targetVideoId) {
-                        extractVideoStreamUrlClientSide(targetVideoId).then((res) => {
-                          if (res && res.dashUrl) {
-                            console.log('🎬 [MusicRoomScreen] Refreshed DASH manifest for seamless recovery');
-                            setDirectStreamUrl(res.dashUrl);
-                            setDirectStreamType('mpd');
-                          }
-                        }).catch(() => {});
+                      if (!thumbFallbackUri && activeVideoId && (currentSong?.source || initialSource) !== 'drive') {
+                        setThumbFallbackUri(`https://i.ytimg.com/vi/${activeVideoId}/hqdefault.jpg`);
                       }
                     }}
                   />
-                ) : isDirectLoading ? (
-                  <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
-                    <ActivityIndicator size="large" color="#4F46E5" />
-                  </View>
-                ) : (
-                  <YoutubePlayer
-                    key={currentSong?.videoId || (initialSongLoadedRef.current ? 'yt_active' : initialVideoId) || 'yt_player'}
-                    ref={playerRef}
-                    videoId={currentSong?.videoId || (initialSongLoadedRef.current ? '' : initialVideoId) || ''}
-                    play={isPlaying && !playerError}
-                    muted={false}
-                    initialPosition={livePositionRef.current || 0}
-                    quality={videoQuality}
-                    isFullscreen={fullscreen}
-                    aspectRatio={detectedAspectRatio || 1.7777}
-                    onAspectRatio={handleAspectRatio}
-                    onQualitiesAvailable={(qualities) => {
-                      if (directStreamUrl || directStreamsListRef.current.length > 0) return;
-                      if (qualities && qualities.length > 0) {
-                        const qList = ['auto', ...qualities.filter(q => q && q !== 'auto')];
-                        setAvailableQualities(Array.from(new Set(qList)));
-                      }
-                    }}
-                    onExactResolution={(resolution) => {
-                      if (resolution) setLiveExactResolution(resolution);
-                    }}
-                    onQualityChange={(newQuality) => {
-                      const minimal = getMinimalQualityLabel(newQuality);
-                      setLiveExactResolution(minimal);
-                    }}
-                    onAdStarted={() => {
-                      setIsAdPlaying(true);
-                      isAdPlayingRef.current = true;
-                    }}
-                    onAdEnded={() => {
-                      setIsAdPlaying(false);
-                      isAdPlayingRef.current = false;
-                    }}
-                    onReady={() => {
-                      setIsPlayerReady(true);
-                      isPlayerReadyRef.current = true;
-                      playerReadyTime.current = Date.now();
-                      setIsBuffering(false);
-                      setMediaFullySynced(true);
-                      const state = isPlaying ? 'playing' : 'paused';
-                      setPlayerState(state);
-                      playerStateRef.current = state;
-
-                      if (!isDJ && !isDJMode && joinSnapshot && !joinSnapshotConsumed.current) {
-                        joinSnapshotConsumed.current = true;
-                        const snapshotTime = joinSnapshot.receivedAt;
-                        const snapshotPosition = joinSnapshot.position;
-                        setTimeout(() => {
-                          const elapsed = (Date.now() - snapshotTime) / 1000;
-                          const targetPosition = snapshotPosition + elapsed;
-                          const safePosition = duration > 0
-                            ? Math.min(targetPosition, duration - 2)
-                            : targetPosition;
-                          playerRef.current?.seekTo?.(safePosition, true);
-                          livePositionRef.current = safePosition;
-                          lastSeekTimeRef.current = Date.now();
-                        }, 500);
-                      }
-                    }}
-                    onStateChange={onPlayerStateChange}
-                    onProgress={(currentTime, dur) => {
-                      if (dur > 0 && !isNaN(dur)) setDuration(dur);
-                      if (!seekingRef.current && !isReseeking && currentTime > 0) {
-                        livePositionRef.current = currentTime;
-                        setLivePosition(currentTime);
-                      }
-                    }}
-                    onEnd={() => {
-                      if ((isDJ || isDJMode) && queue.length > 0) {
-                        if (Date.now() - lastAuxPassTimeRef.current < 1500) return;
-                        lastAuxPassTimeRef.current = Date.now();
-                        setIsPlayerReady(false);
-                        isPlayerReadyRef.current = false;
-                        setIsBuffering(true);
-                        setIsSyncing(true);
-                        passAux();
-                      } else {
-                        fetchRelated();
-                        setShowRelated(true);
-                      }
-                    }}
-                    onError={(err) => {
-                      console.warn('[MusicRoomScreen] YoutubePlayer error:', err);
-                      setIsBuffering(false);
-                      if (err === 150 || err === 101 || err === 152) {
-                        setPlayerError('embed_not_allowed');
-                        fetchRelated();
-                        setShowRelated(true);
-                      } else if (err === 100) {
-                        setPlayerError('video_not_found');
-                        fetchRelated();
-                        setShowRelated(true);
-                      } else if (err === 2 || err === 5) {
-                        console.log('ℹ️ [MusicRoomScreen] Non-fatal YouTube player warning code:', err);
-                      } else {
-                        setPlayerError('unknown');
-                        fetchRelated();
-                        setShowRelated(true);
-                      }
-                    }}
-                  />
-                )
-              ) : null}
-
-              {/* ─── Clean Thumbnail + White Spinner Overlay (Zero Black Screen, Zero Text) ─── */}
-              {!(showRelated && (playerState === 'ended' || !!playerError)) && !isPlayerReady && !playerError && (
-                <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]} pointerEvents="none">
-                  {videoThumbnailUrl ? (
-                    <FastImage
-                      key={videoThumbnailUrl}
-                      source={{ uri: videoThumbnailUrl, priority: FastImage.priority.high }}
-                      style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
-                      resizeMode={FastImage.resizeMode.cover}
-                    />
-                  ) : null}
-                  {videoThumbnailUrl ? (
-                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
-                  ) : null}
-                  <ActivityIndicator size="large" color="#FFFFFF" />
-                </View>
-              )}
-            </Animated.View>
+                ) : null}
+                {videoThumbnailUrl ? (
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
+                ) : null}
+                {!isPlayerReady && <ActivityIndicator size="large" color="#FFFFFF" />}
+              </Animated.View>
+            )}
 
             {/* Error overlay — hidden when related grid is showing */}
             {playerError && !showRelated && (
@@ -4126,57 +6390,211 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 and tapping the mini-player inside the related grid expands it back. */}
 
 
-            {!playerError && playerState !== 'ended' && (
-              <View 
+            {!isMinimized && !isSystemPip && !playerError && playerState !== 'ended' && (
+              <Animated.View 
                 style={showRelated ? {
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   width: width / 2,
                   height: (width / 2) * 0.5625,
-                  zIndex: 17,
+                  zIndex: 40,
+                  transform: [{ translateX: Animated.multiply(relatedScrollX, -1) }],
                 } : StyleSheet.absoluteFill}
                 {...playerGestureResponder.panHandlers}
-              />
+              >
+                {showRelated && (
+                  <>
+                    <View style={{
+                      position: 'absolute',
+                      top: 6,
+                      left: 6,
+                      backgroundColor: 'rgba(0, 0, 0, 0.72)',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingHorizontal: 6,
+                      paddingVertical: 3,
+                      borderRadius: 4,
+                      gap: 4,
+                    }} pointerEvents="none">
+                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }} />
+                      <Text style={{ color: '#fff', fontSize: 8.5, fontWeight: '700', letterSpacing: 0.5 }}>PLAYING</Text>
+                    </View>
+                    <View style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                      paddingVertical: 4,
+                      paddingHorizontal: 6,
+                    }} pointerEvents="none">
+                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600', textAlign: 'center' }} numberOfLines={1}>
+                        {currentSong?.title}
+                      </Text>
+                    </View>
+                  </>
+                )}
+              </Animated.View>
             )}
 
-            <VideoControls
-              visible={showControls && !playerError}
-              isPlaying={isPlaying}
-              isEnded={playerState === 'ended'}
-              canControl={(isDJ || isDJMode) && isPlayerReady}
-              isBuffering={Boolean((isBuffering || isReseeking || seekingRef.current || !isPlayerReady || (currentSong?.source === 'drive' && !isTrackPlayerReady)) && !!currentSong)}
-              position={livePosition}
-              duration={duration}
-              onPlayPause={handlePlayPause}
-              onSeek={handleSeek}
-              onNext={handleNext}
-              onToggleFullscreen={() => setFullscreen(!fullscreen)}
-              onShowRelated={() => {
-                const activeId = currentSongRef.current?.videoId || initialVideoId;
-                if (activeId && relatedCacheRef.current.has(activeId)) {
-                  setRelatedVideos(relatedCacheRef.current.get(activeId)!);
-                } else if (activeId) {
-                  fetchRelated(activeId);
-                }
-                setShowRelated(true);
-              }}
-              onSettings={() => {
-                setShowQualityOptions(prev => !prev);
-              }}
-              isFullscreen={fullscreen}
-              isDrivePlayer={currentSong?.source === 'drive'}
-              title={currentSong?.title}
-              onSingleTap={() => {
-                if (showControls) {
-                  setShowControls(false);
-                  if (controlTimer.current) clearTimeout(controlTimer.current);
-                } else {
-                  showControlsFor(3500);
-                }
-              }}
-              onKeepControlsAlive={() => showControlsFor(3500)}
-            />
+            {/* Floating Mini-Player Overlay Controls (Android System PiP Style) */}
+            {isMinimized && pipEnabled && !isSystemPip && !pipDismissed && (
+              <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+                {/* Background Tap Area: Single tap toggles controls; double tap maximizes back to room */}
+                <Pressable
+                  onPress={handlePipTap}
+                  style={StyleSheet.absoluteFill}
+                  accessibilityLabel="Tap for controls, double tap to return to music room"
+                />
+
+                {/* Android System PiP Style Controls Scrim */}
+                {pipControlsVisible && (
+                  <View
+                    style={[
+                      StyleSheet.absoluteFill,
+                      {
+                        backgroundColor: 'rgba(0, 0, 0, 0.52)',
+                        borderRadius: 16,
+                        justifyContent: 'space-between',
+                        padding: 8,
+                      },
+                    ]}
+                    pointerEvents="box-none"
+                  >
+                    {/* Top Row: Left = Expand/Return to Room, Right = Close PiP */}
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' }} pointerEvents="box-none">
+                      {/* Top-Left: Expand / Return to Room */}
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (pipControlsTimeoutRef.current) clearTimeout(pipControlsTimeoutRef.current);
+                          setPipControlsVisible(false);
+                          DeviceEventEmitter.emit('minimize_music_room', false);
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 14,
+                          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                          borderWidth: 1,
+                          borderColor: 'rgba(255, 255, 255, 0.25)',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                        accessibilityLabel="Return to room"
+                      >
+                        <Icon name="expand-outline" size={15} color="#FFFFFF" />
+                      </TouchableOpacity>
+
+                      {/* Top-Right: Close PiP */}
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (pipControlsTimeoutRef.current) clearTimeout(pipControlsTimeoutRef.current);
+                          setPipControlsVisible(false);
+                          setPipDismissed(true);
+                          pipDismissedSV.value = 1;
+                          DeviceEventEmitter.emit('pip_dismissed', true);
+                          closeSystemPip();
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 14,
+                          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                          borderWidth: 1,
+                          borderColor: 'rgba(255, 255, 255, 0.25)',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                        accessibilityLabel="Close PiP"
+                      >
+                        <Icon name="close" size={15} color="#FFFFFF" />
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Bottom-Center Play/Pause Button */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        resetPipControlsTimeout();
+                        handlePlayPause();
+                      }}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      style={{
+                        position: 'absolute',
+                        bottom: 8,
+                        alignSelf: 'center',
+                        width: 32,
+                        height: 32,
+                        borderRadius: 16,
+                        backgroundColor: 'rgba(0, 0, 0, 0.72)',
+                        borderWidth: 1,
+                        borderColor: 'rgba(255, 255, 255, 0.3)',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                      }}
+                      accessibilityLabel={isPlaying ? "Pause video" : "Play video"}
+                    >
+                      <Icon
+                        name={isPlaying ? "pause" : "play"}
+                        size={16}
+                        color="#FFFFFF"
+                        style={!isPlaying ? { marginLeft: 1.5 } : undefined}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {!isMinimized && !isSystemPip && !showRelated && isPlayerReady && !showThumbnailOverlay && (
+              <VideoControls
+                visible={showControls && !playerError}
+                isPlaying={isPlaying}
+                isEnded={playerState === 'ended'}
+                canControl={effectiveIsDJ && isPlayerReady}
+                isBuffering={Boolean((isBuffering || isReseeking || seekingRef.current || !isPlayerReady) && !!currentSong)}
+                position={livePosition}
+                duration={duration}
+                isLive={directStreamType === 'm3u8'}
+                isMuted={isMuted}
+                onToggleMute={handleToggleMute}
+                onPlayPause={handlePlayPause}
+                onSeek={handleSeek}
+                onNext={handleNext}
+                onToggleFullscreen={() => {
+                  triggerSmoothScreenTransition(() => {
+                    setFullscreen(prev => !prev);
+                  });
+                }}
+                onShowRelated={() => {
+                  const activeId = currentSongRef.current?.videoId || initialVideoId;
+                  if (activeId && relatedCacheRef.current.has(activeId)) {
+                    setRelatedVideos(relatedCacheRef.current.get(activeId)!);
+                  } else if (activeId) {
+                    fetchRelated(activeId);
+                  }
+                  setShowRelated(true);
+                }}
+                onSettings={() => {
+                  setShowQualityOptions(prev => !prev);
+                }}
+                qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
+                isFullscreen={fullscreen}
+                isDrivePlayer={currentSong?.source === 'drive'}
+                title={currentSong?.title}
+                onSingleTap={() => {
+                  if (showControls) {
+                    setShowControls(false);
+                    if (controlTimer.current) clearTimeout(controlTimer.current);
+                  } else {
+                    showControlsFor(3500);
+                  }
+                }}
+                onKeepControlsAlive={() => showControlsFor(3500)}
+              />
+            )}
 
 
             {/* Ad overlay — only for YouTube, Drive has no ads. Pure black,
@@ -4196,14 +6614,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 30 }]} />
             )}
 
-            {/* Small corner indicator during seek — audio catching up */}
-            {isReseeking && mediaFullySynced && (
-              <View style={[StyleSheet.absoluteFill, { zIndex: 35, justifyContent: 'center', alignItems: 'center' }]} pointerEvents="none">
-                <View style={{ backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <ActivityIndicator size="small" color="#fff" />
-                </View>
-              </View>
-            )}
+
 
             {/* Related videos overlay — queue (global play order, with
                 pinner avatar badges) + fresh suggestions. No PIP, no
@@ -4227,11 +6638,15 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     queueItems={queue}
                     suggestedVideos={relatedVideos}
                     myUserId={user?.id ?? -1}
-                    currentSong={currentSong}
+                    myAvatar={user?.profile_picture}
+                    myAvatarSticker={user?.avatar_sticker}
+                    participants={participants}
+                    currentSong={(playerState === 'ended' || playerStateRef.current === 'ended' || !!playerError) ? null : currentSong}
                     scrollX={relatedScrollX}
                     onPinVideo={(song) => {
-                      // Auto-play immediately if video ended OR an error opened the grid
-                      if (playerState === 'ended' || !!playerError) {
+                      // Auto-play immediately if video ended OR an error opened the grid OR playback is idle
+                      const isEndedOrIdle = playerState === 'ended' || playerStateRef.current === 'ended' || !isPlaying || !directStreamUrl || !!playerError;
+                      if (isEndedOrIdle) {
                         setShowRelated(false);
                         setPlayerError(null);
                         handleSelectSong(song, true);
@@ -4257,27 +6672,88 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 </TouchableWithoutFeedback>
                 <View style={{
                   width: '88%',
-                  maxWidth: 255,
+                  maxWidth: 260,
                   maxHeight: '90%',
-                  backgroundColor: 'rgba(12, 15, 22, 0.72)',
-                  borderRadius: 10,
-                  padding: 6,
+                  backgroundColor: 'rgba(12, 15, 22, 0.78)',
+                  borderRadius: 12,
+                  paddingHorizontal: 8,
+                  paddingTop: 10,
+                  paddingBottom: 8,
                   borderWidth: 1,
                   borderColor: 'rgba(255, 255, 255, 0.14)',
                   zIndex: 61,
                 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4, paddingBottom: 4 }}>
-                    <Text style={{ fontSize: 9.5, fontWeight: '700', color: 'rgba(255, 255, 255, 0.6)', letterSpacing: 0.8 }}>
-                      QUALITY {liveExactResolution ? `• ${liveExactResolution}` : ''}
-                    </Text>
+                  {/* Floating close button exceeding the top-right edge */}
+                  <TouchableOpacity
+                    onPress={() => setShowQualityOptions(false)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={{
+                      position: 'absolute',
+                      top: -11,
+                      right: -11,
+                      width: 24,
+                      height: 24,
+                      borderRadius: 12,
+                      backgroundColor: '#1E232E',
+                      borderWidth: 1.5,
+                      borderColor: 'rgba(255, 255, 255, 0.3)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      zIndex: 70,
+                      elevation: 6,
+                    }}
+                  >
+                    <Icon name="close" size={13} color="#FFFFFF" />
+                  </TouchableOpacity>
+
+                  {/* Top Bar: Auto Button (Top Left) + Centered QUALITY Title */}
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 8,
+                    paddingHorizontal: '1.5%',
+                  }}>
+                    {/* Top Left: Auto Button (exact same dimensions as grid buttons) */}
                     <TouchableOpacity
-                      onPress={() => setShowQualityOptions(false)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      style={{ padding: 2 }}
+                      onPress={() => handleSelectQuality('auto')}
+                      activeOpacity={0.7}
+                      style={{
+                        width: '22%',
+                        height: 27,
+                        borderRadius: 6,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        backgroundColor: videoQuality === 'auto' ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
+                        borderWidth: 1,
+                        borderColor: videoQuality === 'auto' ? '#38BDF8' : 'rgba(255, 255, 255, 0.08)',
+                      }}
                     >
-                      <Icon name="close" size={13} color="rgba(255, 255, 255, 0.7)" />
+                      <Text style={{
+                        fontSize: 10.5,
+                        fontWeight: videoQuality === 'auto' ? '700' : '600',
+                        color: videoQuality === 'auto' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
+                      }}>
+                        Auto
+                      </Text>
                     </TouchableOpacity>
+
+                    {/* Centered Quality Title */}
+                    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                      <Text style={{
+                        fontSize: 9.5,
+                        fontWeight: '700',
+                        color: 'rgba(255, 255, 255, 0.7)',
+                        letterSpacing: 1,
+                        textAlign: 'center',
+                      }}>
+                        QUALITY {liveExactResolution && liveExactResolution !== 'Auto' ? `• ${liveExactResolution}` : ''}
+                      </Text>
+                    </View>
+
+                    {/* Right spacer to balance the Auto button width so QUALITY stays dead-centered */}
+                    <View style={{ width: '22%' }} />
                   </View>
+
                   <ScrollView
                     showsVerticalScrollIndicator={false}
                     bounces={false}
@@ -4295,14 +6771,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                           onPress={() => handleSelectQuality(opt.key)}
                           activeOpacity={0.7}
                           style={{
-                            width: '22.5%',
-                            marginHorizontal: '1.25%',
-                            marginVertical: 3,
-                            height: 26,
-                            borderRadius: 5,
+                            width: '22%',
+                            marginHorizontal: '1.5%',
+                            marginVertical: 4.5,
+                            height: 27,
+                            borderRadius: 6,
                             justifyContent: 'center',
                             alignItems: 'center',
-                            backgroundColor: isSelected ? 'rgba(2, 132, 199, 0.9)' : 'rgba(255, 255, 255, 0.10)',
+                            backgroundColor: isSelected ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
                             borderWidth: 1,
                             borderColor: isSelected ? '#38BDF8' : 'rgba(255, 255, 255, 0.06)',
                           }}
@@ -4321,14 +6797,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 </View>
               </View>
             )}
-          </View>
+          </Reanimated.View>
 
-          {!fullscreen && (
+          {!fullscreen && !isMinimized && !isSystemPip && (
             renderNpBar()
           )}
 
-          {!fullscreen && (
-            <View style={{ flex: 1, overflow: 'hidden' }}>
+          {!fullscreen && !isMinimized && !isSystemPip && (
+            <Reanimated.View style={[{ flex: 1, overflow: 'hidden', zIndex: 10, elevation: 0 }, conversationContainerStyle]}>
               <Reanimated.View style={[{ flex: 1 }, conversationLiftStyle]}>
               {activeTab === 'chat' ? (
                 <>
@@ -4345,6 +6821,32 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     style={{ flex: 1 }}
                     contentContainerStyle={{ paddingHorizontal: 8, paddingTop: 0, paddingBottom: 10 }}
                     keyboardShouldPersistTaps="handled"
+                    onTouchStart={() => {
+                      if (isStickerPickerDeliberatelyOpenRef.current) {
+                        isStickerPickerDeliberatelyOpenRef.current = false;
+                        isStickerPickerDeliberatelyOpenSV.value = 0;
+                        setIsStickerPickerDeliberatelyOpen(false);
+                        stickerSpacerHeight.value = 0;
+                        setStickerPickerVisible(false);
+                      }
+                      collapseProgress.value = 0;
+                      richInputRef.current?.blur();
+                      KeyboardController.dismiss({ animated: false });
+                      Keyboard.dismiss();
+                    }}
+                    onScrollBeginDrag={() => {
+                      if (isStickerPickerDeliberatelyOpenRef.current) {
+                        isStickerPickerDeliberatelyOpenRef.current = false;
+                        isStickerPickerDeliberatelyOpenSV.value = 0;
+                        setIsStickerPickerDeliberatelyOpen(false);
+                        stickerSpacerHeight.value = 0;
+                        setStickerPickerVisible(false);
+                      }
+                      collapseProgress.value = 0;
+                      richInputRef.current?.blur();
+                      KeyboardController.dismiss({ animated: false });
+                      Keyboard.dismiss();
+                    }}
                     ListEmptyComponent={<Text style={[s.emptyText, isLight && { color: '#64748B' }]}>No messages yet. Say hi! 👋</Text>}
                     onScrollToIndexFailed={(info) => {
                       try {
@@ -4387,13 +6889,13 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                           if (myDisplayName && !mentionsList.some(m => m.searchStr === `@${myDisplayName}`)) {
                             mentionsList.push({
                               searchStr: `@${myDisplayName}`,
-                              participant: { user_id: Number(myId), name: myDisplayName, avatar: user.profile_picture }
+                              participant: { user_id: Number(myId), name: myDisplayName, avatar: user.profile_picture, avatar_sticker: user.avatar_sticker }
                             });
                           }
                           if (myId && !mentionsList.some(m => m.searchStr === `@${myId}`)) {
                             mentionsList.push({
                               searchStr: `@${myId}`,
-                              participant: { user_id: Number(myId), name: myDisplayName || 'You', avatar: user.profile_picture }
+                              participant: { user_id: Number(myId), name: myDisplayName || 'You', avatar: user.profile_picture, avatar_sticker: user.avatar_sticker }
                             });
                           }
                         }
@@ -4455,6 +6957,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                 <View style={{ width: 14, height: 14, borderRadius: 7, marginRight: 4, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
                                   <AvatarWithFallback
                                     uri={avatarUri}
+                                    sticker={(part as any).avatar_sticker}
                                     displayName={part.name}
                                     style={{ width: 14, height: 14, borderRadius: 7 }}
                                   />
@@ -4518,7 +7021,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
                       const isMe = messageUser === myName;
                       const showAvatar = !prevRawMsg || prevMessageUser !== messageUser;
-                      const sender = participants.find(p => p.name === messageUser);
+                      const sender = participants.find(p => p.name === messageUser || (p as any).id === item.user_id || p.user_id === item.user_id);
+                      const senderAvatar = isMe ? user?.profile_picture : (item.avatar || sender?.avatar);
+                      const senderSticker = isMe ? user?.avatar_sticker : (item.avatar_sticker || sender?.avatar_sticker);
                       const isMedia = item.message_type === 'image' || item.message_type === 'gif' || item.message_type === 'sticker';
                       const isSticker = item.message_type === 'sticker';
                       const isLottieSticker = item.message_type === 'lottie_sticker';
@@ -4528,12 +7033,16 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       const emojiFontSize = emojiInfo.count === 1 ? 36 : emojiInfo.count === 2 ? 30 : emojiInfo.count === 3 ? 26 : 22;
                       const emojiLineHeight = emojiFontSize + 8;
 
-                      const replySender = item.reply_to ? participants.find(p => p.name === item.reply_to.user) : null;
+                      const replySender = item.reply_to ? participants.find(p => p.name === item.reply_to.user || (p as any).id === item.reply_to.user_id || p.user_id === item.reply_to.user_id) : null;
                       const isMyReply = item.reply_to ? item.reply_to.user === (user?.display_name || user?.email) : false;
-                      const replyAvatar = item.reply_to ? (isMyReply ? user?.profile_picture : replySender?.avatar) : null;
+                      const replyAvatar = item.reply_to ? (isMyReply ? user?.profile_picture : (item.reply_to.avatar || replySender?.avatar)) : null;
+                      const replySticker = item.reply_to ? (isMyReply ? user?.avatar_sticker : (item.reply_to.avatar_sticker || replySender?.avatar_sticker)) : null;
 
                       return (
-                        <View style={[s.bubble, isMe && s.bubbleMe]}>
+                        <AnimatedMessageBubble
+                          isNew={Boolean(isMe && ((item as any)._isNew || item.status === 'sending'))}
+                          style={[s.bubble, isMe && s.bubbleMe]}
+                        >
                           {showAvatar && (
                             <View style={[
                               { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
@@ -4543,12 +7052,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                   <TouchableOpacity 
                                     style={{ position: 'relative', marginRight: 4 }}
-                                    onPress={() => handleAvatarPress(sender?.avatar, sender?.avatar_sticker, messageUser)}
+                                    onPress={() => handleAvatarPress(senderAvatar, senderSticker, messageUser)}
                                   >
                                     <AvatarWithFallback 
-                                      uri={sender?.avatar} 
+                                      uri={senderAvatar} 
                                       displayName={messageUser} 
-                                      sticker={sender?.avatar_sticker} 
+                                      sticker={senderSticker} 
                                       style={s.messageAvatar} 
                                     />
                                     {sender?.is_dj && (
@@ -4563,11 +7072,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                   <TouchableOpacity 
                                     style={{ position: 'relative', marginLeft: 4 }}
-                                    onPress={() => handleAvatarPress(user?.profile_picture, undefined, messageUser)}
+                                    onPress={() => handleAvatarPress(user?.profile_picture, user?.avatar_sticker, messageUser)}
                                   >
                                     <AvatarWithFallback 
                                       uri={user?.profile_picture} 
                                       displayName={messageUser} 
+                                      sticker={user?.avatar_sticker} 
                                       style={s.messageAvatar} 
                                     />
                                   </TouchableOpacity>
@@ -4598,6 +7108,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                               >
                                 <AvatarWithFallback
                                   uri={replyAvatar}
+                                  sticker={replySticker}
                                   displayName={item.reply_to.user}
                                   style={{ width: 18, height: 18, borderRadius: 9 }}
                                 />
@@ -4691,7 +7202,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                               </View>
                             </TouchableOpacity>
                           </View>
-                        </View>
+                        </AnimatedMessageBubble>
                       );
                     }}
                   />
@@ -4759,7 +7270,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   )}
 
                   {mentionListVisible && (
-                    <View style={[s.mentionListContainer, isLight && { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' }]}>
+                    <View style={[s.mentionListContainer, isLight && { backgroundColor: '#ffffff', borderColor: '#CBD5E1' }]}>
                       <FlatList
                         data={participants.filter(p => p.name !== user?.display_name && p.name.toLowerCase().includes(mentionFilter))}
                         keyExtractor={(p, idx) => p.user_id?.toString() || idx.toString()}
@@ -4774,85 +7285,66 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       />
                     </View>
                   )}
-                  <View style={s.chatBar}>
-                    <TouchableOpacity style={s.plusBtn} onPress={handleOpenGallery}>
-                      <Icon name="add" size={24} color={isLight ? '#0284C7' : '#fffffff6'} />
-                    </TouchableOpacity>
-                    <View
-                      style={[
-                        s.inputWrapper,
-                        { minHeight: 40 },
-                        isLight && { backgroundColor: 'rgba(0,0,0,0.06)', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' }
-                      ]}
-                    >
-                      <TouchableOpacity
-                        style={s.innerStickerButton}
-                        activeOpacity={0.7}
-                        delayPressIn={0}
-                        onPress={() => {
-                          if (stickerPickerVisible) {
-                            richInputRef.current?.blur();
-                            Keyboard.dismiss();
-                            setStickerPickerVisible(false);
-                          } else {
-                            richInputRef.current?.blur();
-                            Keyboard.dismiss();
-                            setStickerPickerVisible(true);
-                          }
-                        }}
-                        accessibilityLabel="Toggle sticker picker"
-                      >
-                        <Icon
-                          name={stickerPickerVisible ? "close-circle" : "sparkles-outline"}
-                          size={22}
-                          color={stickerPickerVisible ? "#8AB4F8" : (isLight ? '#64748B' : "rgba(255,255,255,0.6)")}
-                        />
-                      </TouchableOpacity>
-                      <RichTextInput
-                        ref={richInputRef}
-                        onFocus={() => {
-                          setStickerPickerVisible(false);
-                        }}
-                        style={[s.chatInput, { height: inputHeight, paddingLeft: 42 }, isLight && { color: '#0F172A' }]}
-                        underlineColorAndroid="transparent"
-                        onChangeText={handleTextChange}
-                        onContentSizeChange={(e) => {
-                          const h = e.nativeEvent?.contentSize?.height;
-                          if (h) {
-                            const next = Math.max(40, Math.min(150, Math.round(h)));
-                            setInputHeight(prev => (Math.abs(prev - next) >= 4 ? next : prev));
-                          }
-                        }}
-                        multiline
-                        placeholder="Type a message..."
-                        placeholderTextColor={themePlaceholderColor}
-                        onContentCommitted={(event) => {
-                          const { uri, mimeType } = event.nativeEvent;
-                          Keyboard.dismiss();
-                          setTimeout(() => { setStickerPreview({ uri, mimeType }); }, 100);
-                        }}
-                      />
-                    </View>
-                    <TouchableOpacity style={s.sendBtn} onPress={sendChatMessage} disabled={isSendingMedia}>
-                      {isSendingMedia ? (
-                        <ActivityIndicator size="small" color={isLight ? '#0284C7' : '#f5f5f5f6'} />
-                      ) : (
-                        <Icon name="send" size={18} color={isLight ? '#0284C7' : '#fffffff6'} />
-                      )}
-                    </TouchableOpacity>
-                    {/* ── Mic Button ─────────────────────────────────── */}
+                  <View style={s.chatBar} pointerEvents={showSettingsModal ? 'none' : 'auto'}>
+                    {/* ── Gallery Button — always left corner ── */}
                     <TouchableOpacity
-                      style={[s.micBtn, isMicOn && s.micBtnActive]}
-                      onPress={handleToggleMic}
+                      style={[s.micBtn, isLight && { backgroundColor: 'rgba(0,0,0,0.06)' }]}
+                      onPress={handleOpenGallery}
                       activeOpacity={0.7}
-                      accessibilityLabel={isMicOn ? 'Turn off microphone' : 'Turn on microphone'}
+                      disabled={isSendingMedia || showSettingsModal}
+                      accessibilityLabel="Open gallery"
                     >
                       <Icon
-                        name={isMicOn ? 'mic' : 'mic-off-outline'}
-                        size={18}
-                        color={isMicOn ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.55)')}
+                        name="image-outline"
+                        size={20}
+                        color={isLight ? '#64748B' : 'rgba(255,255,255,0.6)'}
                       />
                     </TouchableOpacity>
+                    <MusicInputBox
+                      ref={richInputRef}
+                      disabled={showSettingsModal}
+                      isLight={isLight}
+                      themePlaceholderColor={themePlaceholderColor}
+                      isStickerPickerDeliberatelyOpen={isStickerPickerDeliberatelyOpen}
+                      onFocusInput={handleInputFocusStable}
+                      onOpenStickerPicker={() => {
+                        if (isStickerPickerDeliberatelyOpen) {
+                          handleInputFocusStable();
+                          richInputRef.current?.focus();
+                        } else {
+                          handleOpenStickerPickerStable();
+                        }
+                      }}
+                      onChangeText={handleTextChange}
+                      onContentCommitted={(event) => {
+                        const { uri, mimeType } = event.nativeEvent;
+                        Keyboard.dismiss();
+                        setTimeout(() => { setStickerPreview({ uri, mimeType }); }, 100);
+                      }}
+                    />
+                    {/* ── Right side: Mic + Send cross-fade via native Animated.Value ──
+                         Both icons always mounted; hasTextAnim drives opacity/scale
+                         instantly (0-frame, no React re-render) like WhatsApp / ChatInputArea ── */}
+                    <View style={[s.micBtn, isLight && { backgroundColor: 'rgba(0,0,0,0.06)' }, isMicOn && s.micBtnActive, { position: 'relative' }]}>
+                      {/* Tap handler: send if text, mic toggle if empty */}
+                      <TouchableOpacity
+                        style={{ ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' }}
+                        onPress={() => { if ((chatMessageRef.current || chatMessage).trim()) { sendChatMessage(); } else { handleToggleMic(); } }}
+                        activeOpacity={0.7}
+                        disabled={isSendingMedia}
+                      >
+                        {/* Send icon — fades in when typing */}
+                        <Animated.View style={{ position: 'absolute', opacity: hasTextAnim, transform: [{ scale: hasTextAnim.interpolate({ inputRange: [0,1], outputRange: [0.4,1] }) }] }} pointerEvents="none">
+                          {isSendingMedia
+                            ? <ActivityIndicator size="small" color={isLight ? '#0284C7' : '#fff'} />
+                            : <Icon name="send" size={18} color={isLight ? '#0284C7' : '#fff'} />}
+                        </Animated.View>
+                        {/* Mic icon — fades out when typing */}
+                        <Animated.View style={{ position: 'absolute', opacity: hasTextAnim.interpolate({ inputRange: [0,1], outputRange: [1,0] }), transform: [{ scale: hasTextAnim.interpolate({ inputRange: [0,1], outputRange: [1,0.4] }) }] }} pointerEvents="none">
+                          <Icon name={isMicOn ? 'mic' : 'mic-off-outline'} size={18} color={isMicOn ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.55)')} />
+                        </Animated.View>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </>
               ) : (
@@ -4876,125 +7368,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                           </TouchableOpacity>
                         </View>
 
-                        {/* ─── ROOM THEME SELECTOR ─── */}
-                        <View style={[s.themeSelectorCard, isLight && { backgroundColor: 'rgba(0,0,0,0.04)', borderColor: 'rgba(0,0,0,0.08)' }]}>
-                          <Text style={[s.themeSectionLabel, isLight && { color: '#64748B' }]}>ROOM THEME</Text>
-                          <View style={s.themePillsContainer}>
-                            <TouchableOpacity
-                              onPress={() => handleThemeChange('cinema')}
-                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'cinema' && s.themePillActiveCinema]}
-                              activeOpacity={0.75}
-                            >
-                              <Icon name="color-palette" size={13} color={roomTheme === 'cinema' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
-                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'cinema' && s.themePillTextActive]}>Cinema</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              onPress={() => handleThemeChange('rave')}
-                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'rave' && s.themePillActiveRave]}
-                              activeOpacity={0.75}
-                            >
-                              <Icon name="videocam" size={13} color={roomTheme === 'rave' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
-                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'rave' && s.themePillTextActive]}>Rave</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              onPress={() => handleThemeChange('dark')}
-                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'dark' && s.themePillActiveDark]}
-                              activeOpacity={0.75}
-                            >
-                              <Icon name="moon" size={13} color={roomTheme === 'dark' ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
-                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'dark' && s.themePillTextActive]}>Dark</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              onPress={() => handleThemeChange('light')}
-                              style={[s.themePill, isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' }, roomTheme === 'light' && s.themePillActiveLight]}
-                              activeOpacity={0.75}
-                            >
-                              <Icon name="sunny" size={13} color={roomTheme === 'light' ? '#0F172A' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')} />
-                              <Text style={[s.themePillText, isLight && { color: '#475569' }, roomTheme === 'light' && s.themePillTextLightActive]}>Light</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        {/* ─── STREAM QUALITY SELECTOR ─── */}
-                        {currentSong?.source !== 'drive' && (
-                          <View style={[s.themeSelectorCard, isLight && { backgroundColor: 'rgba(0,0,0,0.04)', borderColor: 'rgba(0,0,0,0.08)' }]}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                              <Text style={[s.themeSectionLabel, { marginBottom: 0, marginLeft: 4 }, isLight && { color: '#64748B' }]}>
-                                STREAM QUALITY
-                              </Text>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingRight: 4 }}>
-                                <Icon name="pulse-outline" size={12} color="#10B981" />
-                                <Text style={{ fontSize: 11, fontWeight: '700', color: '#10B981' }}>
-                                  {liveExactResolution || (videoQuality === 'auto' ? 'Auto' : getMinimalQualityLabel(videoQuality))}
-                                </Text>
-                              </View>
-                            </View>
-
-                            <ScrollView
-                              horizontal
-                              showsHorizontalScrollIndicator={false}
-                              contentContainerStyle={{ gap: 8, paddingHorizontal: 2, paddingVertical: 2 }}
-                            >
-                              {dynamicQualityOptions.map((opt) => {
-                                const isSelected = (videoQuality === opt.key) ||
-                                  (videoQuality === 'highres' && opt.key === 'hd2160') ||
-                                  (videoQuality === 'hd2160' && opt.key === 'highres');
-
-                                return (
-                                  <TouchableOpacity
-                                    key={opt.key}
-                                    onPress={() => handleSelectQuality(opt.key)}
-                                    activeOpacity={0.75}
-                                    style={[
-                                      s.qualityPill,
-                                      isLight && { backgroundColor: 'rgba(0,0,0,0.05)', borderColor: 'rgba(0,0,0,0.08)' },
-                                      isSelected && s.qualityPillActive,
-                                    ]}
-                                  >
-                                    <Icon
-                                      name={opt.icon || 'film'}
-                                      size={13}
-                                      color={isSelected ? '#fff' : (isLight ? '#64748B' : 'rgba(255,255,255,0.6)')}
-                                    />
-                                    <Text
-                                      style={[
-                                        s.themePillText,
-                                        isLight && { color: '#475569' },
-                                        isSelected && s.qualityPillTextActive,
-                                      ]}
-                                    >
-                                      {opt.label}
-                                    </Text>
-                                    {opt.badge && (
-                                      <View
-                                        style={[
-                                          s.qualityBadge,
-                                          isSelected
-                                            ? { backgroundColor: 'rgba(255,255,255,0.22)' }
-                                            : (isLight ? { backgroundColor: 'rgba(0,0,0,0.08)' } : { backgroundColor: 'rgba(255,255,255,0.1)' }),
-                                        ]}
-                                      >
-                                        <Text
-                                          style={[
-                                            s.qualityBadgeText,
-                                            isSelected
-                                              ? { color: '#ffffff' }
-                                              : (isLight ? { color: '#64748B' } : { color: 'rgba(255,255,255,0.6)' }),
-                                          ]}
-                                        >
-                                          {opt.badge}
-                                        </Text>
-                                      </View>
-                                    )}
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </ScrollView>
-                          </View>
-                        )}
                         <FlatList
                           data={myQueue}
                           keyExtractor={({ item }) => `${item.song.videoId}_${item.addedById}`}
@@ -5021,7 +7394,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   </View>
                 )}
               </Reanimated.View>
-            </View>
+            </Reanimated.View>
           )}
 
         </View>
@@ -5048,25 +7421,18 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         )}
 
         {/* DISCOVERY OVERLAY */}
-        <Modal visible={showDiscovery} animationType="none" onRequestClose={() => setShowDiscovery(false)}>
-          <YouTubeDiscoveryScreen
-            navigation={{
-              goBack: () => setShowDiscovery(false),
-              addListener: () => () => {},
-              setOptions: () => {},
-            } as any}
-            route={{ params: { roomCode } } as any}
-          />
-        </Modal>
-
-        {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide) ── */}
-        <StickerPickerSheet
-          visible={stickerPickerVisible}
-          stickerPacks={BUILT_IN_STICKER_PACKS}
-          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-          onClose={() => setStickerPickerVisible(false)}
-          sheetHeight={286}
-        />
+        {showDiscovery && (
+          <Modal visible={showDiscovery} animationType="none" onRequestClose={() => { setShowDiscovery(false); setDiscoveryInitialUrl(null); }}>
+            <YouTubeDiscoveryScreen
+              navigation={{
+                goBack: () => { setShowDiscovery(false); setDiscoveryInitialUrl(null); },
+                addListener: () => () => {},
+                setOptions: () => {},
+              } as any}
+              route={{ params: { roomCode, initialUrl: discoveryInitialUrl } } as any}
+            />
+          </Modal>
+        )}
 
         {/* STICKER PREVIEW MODAL */}
         <StickerPreviewModal
@@ -5110,10 +7476,24 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           onClose={() => setInviteModalVisible(false)}
           roomCode={roomCode}
           videoId={currentSong?.videoId}
+        />
+
+        <RoomParticipantsModal
+          visible={participantsModalVisible}
+          onClose={() => setParticipantsModalVisible(false)}
           participants={participants}
-          isDJ={isDJ}
+          isDJ={effectiveIsDJ}
+          currentUserId={user?.id}
           allowedSpeakers={allowedSpeakers}
+          voiceParticipants={voiceParticipants}
+          isMicOn={isMicOn}
           onToggleMicPermission={(targetUserId, allow) => updateMicPermission(targetUserId, allow)}
+          onSwitchDJ={(targetUserId, targetName) => {
+            switchDJ(targetUserId);
+            showCenterToast(`${targetName} is now the Leader!`, 'star', '#FACC15');
+          }}
+          onOpenInvite={() => setInviteModalVisible(true)}
+          onAvatarPress={handleAvatarPress}
         />
 
         <DoubleTapHeartOverlay ref={doubleTapHeartRef} defaultEmoji={user?.quick_reaction || '❤️'} />
@@ -5126,19 +7506,128 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           />
         )}
       </KeyboardWrapperView>
+
+      {!isMinimized && renderSettingsModal()}
+
+      {/* ── Center-screen modern fade toast (Friend Request Style) ── */}
+      <Modal visible={centerToastVisible} transparent animationType="none" statusBarTranslucent>
+        <View style={s.centerToastOverlay} pointerEvents="none">
+          <Animated.View style={[s.centerToastBox, { opacity: centerToastOpacity, backgroundColor: isDark ? '#1C1C1E' : '#FFFFFF' }]}>
+            <Icon
+              name={centerToastIcon}
+              size={20}
+              color={centerToastIconColor}
+              style={{ marginRight: 8 }}
+            />
+            <Text style={[s.centerToastText, { color: isDark ? '#FFFFFF' : '#0F172A' }]}>
+              {centerToastMessage}
+            </Text>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide, outside KeyboardWrapperView for true screen bottom alignment) ── */}
+      <StickerPickerSheet
+        visible={stickerPickerVisible}
+        isDeliberatelyOpen={isStickerPickerDeliberatelyOpen}
+        isDeliberatelyOpenSV={isStickerPickerDeliberatelyOpenSV}
+        stickerPacks={BUILT_IN_STICKER_PACKS}
+        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+        onClose={handleCloseStickerPickerStable}
+        sheetHeight={STICKER_DRAWER_HEIGHT}
+        sharedHeight={stickerSpacerHeight}
+      />
+
+      {/* ── CINEMATIC SMOOTH SCREEN TRANSITION FADE CURTAIN (Eliminates flash on theme switch) ── */}
+      {!isMinimized && (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            {
+              backgroundColor: '#000000',
+              opacity: screenTransitionFadeAnim,
+              zIndex: 999999,
+              elevation: 999999,
+            },
+          ]}
+          pointerEvents={isScreenTransitioning ? 'auto' : 'none'}
+        />
+      )}
     </View>
   );
 };
 
 // Styles
 const s = StyleSheet.create({
+  centerToastOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  centerToastBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 13,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(234, 179, 8, 0.45)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 15,
+  },
+  centerToastText: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
   relatedOverlay:    { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000', zIndex: 15 },
   relatedCloseBtn:   { position: 'absolute', top: 12, left: 12, zIndex: 60 },
   root:              { flex: 1, backgroundColor: '#000000', overflow: 'visible' },
+  settingsModalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    zIndex: 1000,
+  },
+  settingsModalContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    paddingTop: 12,
+    paddingHorizontal: 18,
+    elevation: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+  },
   inner:             { flex: 1, backgroundColor: 'transparent' },
   loadingContainer:  { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   loadingText:       { color: '#fff', marginTop: 12 },
-  header:            { height: 48, maxHeight: 48, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, justifyContent: 'space-between' },
+  header:            { height: 58, maxHeight: 58, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, justifyContent: 'space-between' },
+  headerSideGroup:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerSlot:        { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
+  headerCenterSlot:  { flex: 1, height: 36, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
+  headerBrandText: {
+    fontFamily: 'ClashDisplay-Bold',
+    fontSize: 22,
+    color: '#FFFFFF',
+    letterSpacing: 1.2,
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1.5 },
+    textShadowRadius: 3.5,
+  },
+  activeMicRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, paddingVertical: 2.5, borderRadius: 18, backgroundColor: 'rgba(16, 185, 129, 0.12)', borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.35)' },
   headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerIconBtn:     { padding: 6, position: 'relative' },
   badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },
@@ -5148,12 +7637,12 @@ const s = StyleSheet.create({
   headerTitleInput:  { flex: 1, color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', borderBottomWidth: 1, borderBottomColor: '#4597f5f6', padding: 0 },
   headerTitleText:   { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.5, padding: 0 },
   dot:               { width: 6, height: 6, borderRadius: 3 },
-  videoWrap:         { width: '100%', height: VIDEO_HEIGHT, backgroundColor: '#000', position: 'relative', overflow: 'visible', zIndex: 20 },
+  videoWrap:         { width: '100%', height: VIDEO_HEIGHT, backgroundColor: 'transparent', position: 'relative', overflow: 'visible', zIndex: 20 },
   videoWrapFullscreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 99 },
   npBar:             { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 6, backgroundColor: 'transparent' },
   npThumb:           { width: 50, height: 28, borderRadius: 3 },
   npThumbEmpty:      { backgroundColor: '#1A1A1A', justifyContent: 'center', alignItems: 'center' },
-  npTitle:           { color: '#fff', fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  npTitle:           { color: '#fff', fontSize: 11.5, fontWeight: '600', lineHeight: 14, includeFontPadding: false },
   npChannel:         { color: 'rgba(255,255,255,0.4)', fontSize: 10, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.5 },
   likeBtn:           { padding: 4, marginLeft: 8 },
   djBadge:           { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(129,0,209,0.1)', paddingHorizontal: 8, paddingVertical: 1, borderRadius: 10, borderWidth: 0.5, borderColor: 'rgba(129,0,209,0.3)' },
@@ -5172,8 +7661,8 @@ const s = StyleSheet.create({
   bubbleMe:          { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
   bubbleUser:        { color: '#4597f5f6', fontWeight: '700', fontSize: 11, marginBottom: 2, marginLeft: 4 },
   msgContainer:      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, position: 'relative' },
-  msgContainerThem:  { backgroundColor: 'rgba(255, 255, 255, 0.12)', borderTopLeftRadius: 4 },
-  msgContainerMe:    { backgroundColor: '#0284C7', borderTopRightRadius: 4 },
+  msgContainerThem:  { backgroundColor: 'transparent', borderTopLeftRadius: 4 },
+  msgContainerMe:    { backgroundColor: 'transparent', borderTopRightRadius: 4 },
   bubbleMsg:         { fontSize: 15 },
   replyBubble:       { padding: 6, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255, 255, 255, 0.10)' },
   replyUser:         { color: '#4597f5f6', fontSize: 13, fontWeight: '700' },
@@ -5228,12 +7717,14 @@ const s = StyleSheet.create({
   mentionName:       { color: '#fff', fontSize: 14, marginLeft: 10, fontWeight: '500' },
   chatBar:           { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 6, paddingTop: 0, paddingBottom: 8, gap: 4, backgroundColor: 'transparent', zIndex: 1000 },
   inputWrapper:      { flex: 1, position: 'relative', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 22, flexDirection: 'row', alignItems: 'flex-end' },
-  chatInput:         { flex: 1, backgroundColor: 'transparent', paddingRight: 14, paddingTop: Platform.OS === 'ios' ? 8 : 6, paddingBottom: Platform.OS === 'ios' ? 8 : 6, minHeight: 40, maxHeight: 150, color: '#fff', fontSize: 16, textAlignVertical: 'top' },
+  chatInput:         { flex: 1, backgroundColor: 'transparent', paddingRight: 12, paddingTop: Platform.OS === 'ios' ? 8 : 10, paddingBottom: Platform.OS === 'ios' ? 8 : 10, minHeight: 45, maxHeight: 180, color: '#fff', fontSize: 17.8, textAlignVertical: 'center', includeFontPadding: false },
   sendBtn:           { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   plusBtn:           { width: 34, height: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   micBtn:            { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 3, backgroundColor: 'rgba(255,255,255,0.08)' },
   micBtnActive:      { backgroundColor: '#0284C7' },
-  innerStickerButton: { position: 'absolute', left: 8, bottom: 4, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  innerStickerButton: { position: 'absolute', left: 8, bottom: 6.5, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  innerGalleryButton: { position: 'absolute', right: 8, bottom: 4, width: 32, height: 32, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  innerGalleryTouch:  { width: 32, height: 32, justifyContent: 'center', alignItems: 'center' },
   mediaMsgContainer: { padding: 0, paddingHorizontal: 0, paddingVertical: 0, paddingBottom: 0, borderRadius: 12, overflow: 'hidden' },
   messageImage:      { width: width * 0.4, height: width * 0.3, borderRadius: 12 },
   stickerImage:      { width: width * 0.22, height: width * 0.22 },
@@ -5305,8 +7796,8 @@ const s = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.06)',
   },
   themePillActiveCinema: {
-    backgroundColor: '#0284C7',
-    borderColor: '#38BDF8',
+    backgroundColor: '#241604',
+    borderColor: '#EAB308',
   },
   themePillActiveRave: {
     backgroundColor: '#7C3AED',

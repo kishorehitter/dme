@@ -4,11 +4,12 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from .models import IdentityKey, SignedPreKey, OneTimePreKey
+from .models import IdentityKey, SignedPreKey, OneTimePreKey, E2EEBackup
 from .serializers import (
     KeyBundleUploadSerializer,
     OneTimePreKeySerializer,
-    PreKeyBundleResponseSerializer
+    PreKeyBundleResponseSerializer,
+    E2EEBackupSerializer
 )
 
 User = get_user_model()
@@ -148,3 +149,80 @@ class KeyStatusView(APIView):
             "has_signed_prekey": has_signed_prekey,
             "one_time_prekeys_remaining": otpk_count
         }, status=status.HTTP_200_OK)
+
+
+class BackupStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        try:
+            backup = user.e2ee_backup
+            return Response({
+                "has_backup": True,
+                "version": backup.version,
+                "updated_at": backup.updated_at.isoformat()
+            }, status=status.HTTP_200_OK)
+        except E2EEBackup.DoesNotExist:
+            return Response({
+                "has_backup": False,
+                "version": 0,
+                "updated_at": None
+            }, status=status.HTTP_200_OK)
+
+
+class BackupUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        salt = request.data.get('salt')
+        encrypted_backup_key_pin = request.data.get('encrypted_backup_key_pin')
+        encrypted_backup_key_recovery = request.data.get('encrypted_backup_key_recovery')
+        encrypted_payload = request.data.get('encrypted_payload')
+        version = request.data.get('version', 1)
+
+        if not all([salt, encrypted_backup_key_pin, encrypted_backup_key_recovery, encrypted_payload]):
+            return Response(
+                {"error": "Missing required backup fields."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        backup, created = E2EEBackup.objects.update_or_create(
+            user=user,
+            defaults={
+                'salt': salt,
+                'encrypted_backup_key_pin': encrypted_backup_key_pin,
+                'encrypted_backup_key_recovery': encrypted_backup_key_recovery,
+                'encrypted_payload': encrypted_payload,
+                'version': version
+            }
+        )
+
+        return Response({
+            "message": "Backup uploaded successfully.",
+            "version": backup.version,
+            "updated_at": backup.updated_at.isoformat()
+        }, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
+
+
+class BackupDownloadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        try:
+            backup = user.e2ee_backup
+            serializer = E2EEBackupSerializer(backup)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except E2EEBackup.DoesNotExist:
+            return Response({"error": "No backup found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class BackupResetView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        E2EEBackup.objects.filter(user=user).delete()
+        return Response({"message": "Backup reset successfully."}, status=status.HTTP_200_OK)

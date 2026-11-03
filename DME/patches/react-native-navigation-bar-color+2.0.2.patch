@@ -10,3 +10,255 @@ index 9d285c4..4b1c1cc 100644
      }
  
      dependencies {
+diff --git a/node_modules/react-native-navigation-bar-color/android/src/main/java/com/thebylito/navigationbarcolor/NavigationBarColorModule.java b/node_modules/react-native-navigation-bar-color/android/src/main/java/com/thebylito/navigationbarcolor/NavigationBarColorModule.java
+index b3edac7..d7a4a29 100644
+--- a/node_modules/react-native-navigation-bar-color/android/src/main/java/com/thebylito/navigationbarcolor/NavigationBarColorModule.java
++++ b/node_modules/react-native-navigation-bar-color/android/src/main/java/com/thebylito/navigationbarcolor/NavigationBarColorModule.java
+@@ -78,99 +78,139 @@ public class NavigationBarColorModule extends ReactContextBaseJavaModule {
+     public void changeNavigationBarColor(final String color, final Boolean light, final Boolean animated, final Promise promise) {
+         final WritableMap map = Arguments.createMap();
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+-            if (getCurrentActivity() != null) {
++            Activity activity = getCurrentActivity();
++            if (activity != null && !activity.isFinishing() && (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !activity.isDestroyed())) {
+                 try {
+-                    final Window window = getCurrentActivity().getWindow();
+                     runOnUiThread(new Runnable() {
+                         @Override
+                         public void run() {
+-                            if (color.equals("transparent") || color.equals("translucent")) {
+-                                window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+-                                window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+-                                if (color.equals("transparent")) {
+-                                    window.setFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
++                            try {
++                                Activity currentAct = getCurrentActivity();
++                                if (currentAct == null || currentAct.isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && currentAct.isDestroyed())) {
++                                    map.putBoolean("success", false);
++                                    promise.resolve(map);
++                                    return;
++                                }
++                                final Window window = currentAct.getWindow();
++                                if (window == null) {
++                                    map.putBoolean("success", false);
++                                    promise.resolve(map);
++                                    return;
++                                }
++                                if (color.equals("transparent") || color.equals("translucent")) {
++                                    window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
++                                    window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
++                                    if (color.equals("transparent")) {
++                                        window.setFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
++                                    } else {
++                                        window.setFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION, WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
++                                    }
++                                    setNavigationBarTheme(currentAct, light);
++                                    map.putBoolean("success", true);
++                                    promise.resolve(map);
++                                    return;
++                                } else {
++                                    window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
++                                    window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
++                                }
++                                if (animated) {
++                                    Integer colorFrom = window.getNavigationBarColor();
++                                    Integer colorTo = Color.parseColor(String.valueOf(color));
++                                    //window.setNavigationBarColor(colorTo);
++                                    ValueAnimator colorAnimation = ValueAnimator.ofObject(new ArgbEvaluator(), colorFrom, colorTo);
++                                    colorAnimation.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
++                                        @Override
++                                        public void onAnimationUpdate(ValueAnimator animator) {
++                                            try {
++                                                window.setNavigationBarColor((Integer) animator.getAnimatedValue());
++                                            } catch (Throwable ignored) {}
++                                        }
++                                    });
++                                    colorAnimation.start();
+                                 } else {
+-                                    window.setFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION, WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
++                                    window.setNavigationBarColor(Color.parseColor(String.valueOf(color)));
+                                 }
+-                                setNavigationBarTheme(getCurrentActivity(), light);
+-                                map.putBoolean("success", true);
++                                setNavigationBarTheme(currentAct, light);
++                                WritableMap resMap = Arguments.createMap();
++                                resMap.putBoolean("success", true);
++                                promise.resolve(resMap);
++                            } catch (Throwable e) {
++                                map.putBoolean("success", false);
+                                 promise.resolve(map);
+-                                return;
+-                            } else {
+-                                window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+-                                window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+                             }
+-                            if (animated) {
+-                                Integer colorFrom = window.getNavigationBarColor();
+-                                Integer colorTo = Color.parseColor(String.valueOf(color));
+-                                //window.setNavigationBarColor(colorTo);
+-                                ValueAnimator colorAnimation = ValueAnimator.ofObject(new ArgbEvaluator(), colorFrom, colorTo);
+-                                colorAnimation.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+-                                    @Override
+-                                    public void onAnimationUpdate(ValueAnimator animator) {
+-                                        window.setNavigationBarColor((Integer) animator.getAnimatedValue());
+-                                    }
+-                                });
+-                                colorAnimation.start();
+-                            } else {
+-                                window.setNavigationBarColor(Color.parseColor(String.valueOf(color)));
+-                            }
+-                            setNavigationBarTheme(getCurrentActivity(), light);
+-                            WritableMap map = Arguments.createMap();
+-                            map.putBoolean("success", true);
+-                            promise.resolve(map);
+                         }
+                     });
+-                } catch (IllegalViewOperationException e) {
++                } catch (Throwable e) {
+                     map.putBoolean("success", false);
+-                    promise.reject("error", e);
++                    promise.resolve(map);
+                 }
+ 
+             } else {
+-                promise.reject(ERROR_NO_ACTIVITY, new Throwable(ERROR_NO_ACTIVITY_MESSAGE));
+-
++                map.putBoolean("success", false);
++                promise.resolve(map);
+             }
+         } else {
+-            promise.reject(ERROR_API_LEVEL, new Throwable(ERROR_API_LEVEL_MESSAGE));
++            map.putBoolean("success", false);
++            promise.resolve(map);
+         }
+     }
+ 
+     @ReactMethod
+-    public void hideNavigationBar(Promise promise) {
++    public void hideNavigationBar(final Promise promise) {
++        final WritableMap map = Arguments.createMap();
+         try {
+             runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    if (getCurrentActivity() != null) {
+-                        View decorView = getCurrentActivity().getWindow().getDecorView();
+-                        decorView.setSystemUiVisibility(UI_FLAG_HIDE_NAV_BAR);
++                    Activity act = getCurrentActivity();
++                    if (act != null && !act.isFinishing() && (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !act.isDestroyed())) {
++                        Window win = act.getWindow();
++                        if (win != null && win.getDecorView() != null) {
++                            View decorView = win.getDecorView();
++                            decorView.setSystemUiVisibility(UI_FLAG_HIDE_NAV_BAR);
++                        }
++                    }
++                    if (promise != null) {
++                        map.putBoolean("success", true);
++                        promise.resolve(map);
+                     }
+                 }
+             });
+-        } catch (IllegalViewOperationException e) {
+-            WritableMap map = Arguments.createMap();
++        } catch (Throwable e) {
+             map.putBoolean("success", false);
+-            promise.reject("error", e);
++            if (promise != null) {
++                promise.resolve(map);
++            }
+         }
+     }
+ 
+     @ReactMethod
+-    public void showNavigationBar(Promise promise) {
++    public void showNavigationBar(final Promise promise) {
++        final WritableMap map = Arguments.createMap();
+         try {
+             runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    if (getCurrentActivity() != null) {
+-                        View decorView = getCurrentActivity().getWindow().getDecorView();
+-                        int uiOptions = View.SYSTEM_UI_FLAG_VISIBLE;
+-                        decorView.setSystemUiVisibility(uiOptions);
++                    Activity act = getCurrentActivity();
++                    if (act != null && !act.isFinishing() && (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !act.isDestroyed())) {
++                        Window win = act.getWindow();
++                        if (win != null && win.getDecorView() != null) {
++                            View decorView = win.getDecorView();
++                            int uiOptions = View.SYSTEM_UI_FLAG_VISIBLE;
++                            decorView.setSystemUiVisibility(uiOptions);
++                        }
++                    }
++                    if (promise != null) {
++                        map.putBoolean("success", true);
++                        promise.resolve(map);
+                     }
+                 }
+             });
+-        } catch (IllegalViewOperationException e) {
+-            WritableMap map = Arguments.createMap();
++        } catch (Throwable e) {
+             map.putBoolean("success", false);
+-            promise.reject("error", e);
++            if (promise != null) {
++                promise.resolve(map);
++            }
+         }
+     }
+ }
+diff --git a/node_modules/react-native-navigation-bar-color/src/index.js b/node_modules/react-native-navigation-bar-color/src/index.js
+index eeab32f..28c18cf 100644
+--- a/node_modules/react-native-navigation-bar-color/src/index.js
++++ b/node_modules/react-native-navigation-bar-color/src/index.js
+@@ -7,24 +7,42 @@ const changeNavigationBarColor = (
+   light = false,
+   animated = true,
+ ) => {
+-  if (Platform.OS === 'android') {
++  if (Platform.OS === 'android' && NavigationBarColor?.changeNavigationBarColor) {
+     const LightNav = light ? true : false;
+-    NavigationBarColor.changeNavigationBarColor(color, LightNav, animated);
++    try {
++      return Promise.resolve(
++        NavigationBarColor.changeNavigationBarColor(color, LightNav, animated)
++      ).catch(() => ({ success: false }));
++    } catch (_) {
++      return Promise.resolve({ success: false });
++    }
+   }
++  return Promise.resolve({ success: false });
+ };
++
+ const hideNavigationBar = () => {
+-  if (Platform.OS === 'android') {
+-    return NavigationBarColor.hideNavigationBar();
++  if (Platform.OS === 'android' && NavigationBarColor?.hideNavigationBar) {
++    try {
++      return Promise.resolve(NavigationBarColor.hideNavigationBar()).catch(() => false);
++    } catch (_) {
++      return Promise.resolve(false);
++    }
+   } else {
+-    return false;
++    return Promise.resolve(false);
+   }
+ };
++
+ const showNavigationBar = () => {
+-  if (Platform.OS === 'android') {
+-    NavigationBarColor.showNavigationBar();
++  if (Platform.OS === 'android' && NavigationBarColor?.showNavigationBar) {
++    try {
++      return Promise.resolve(NavigationBarColor.showNavigationBar()).catch(() => false);
++    } catch (_) {
++      return Promise.resolve(false);
++    }
+   } else {
+-    return false;
++    return Promise.resolve(false);
+   }
+ };
+ 
++export default changeNavigationBarColor;
+ export {changeNavigationBarColor, hideNavigationBar, showNavigationBar};

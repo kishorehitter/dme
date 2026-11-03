@@ -57,6 +57,26 @@ export const updateMusicService = (
 };
 
 /**
+ * Update MediaSession position so the lock-screen progress bar tracks live playback.
+ * Call this every ~1 second while playing. Seeking from outside is intentionally disabled.
+ */
+export const updateMusicServicePosition = (
+  title: string,
+  artist: string,
+  thumbnail: string,
+  position: number, // seconds
+  duration: number, // seconds
+  isDJ: boolean,
+  isPlaying: boolean = true
+): void => {
+  try {
+    MusicService?.updatePosition(title, artist, thumbnail, position, duration, isDJ, isPlaying);
+  } catch (e) {
+    console.warn('[MusicServiceBridge] updatePosition error:', e);
+  }
+};
+
+/**
  * Stop the foreground service and dismiss the notification.
  * Call this when the user leaves the music room.
  */

@@ -13,7 +13,7 @@ import Animated, {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-export type RoomTheme = 'cinema' | 'rave' | 'dark' | 'light';
+export type RoomTheme = 'cinema' | 'rave' | 'dark'; // | 'light';
 
 interface AmbientDiscoBackgroundProps {
   isPlaying?: boolean;
@@ -27,45 +27,28 @@ interface AmbientDiscoBackgroundProps {
 // 2.2x canvas size for generous visible motion range
 const CANVAS_SIZE = Math.round(Math.max(SCREEN_WIDTH, SCREEN_HEIGHT) * 2.2);
 
-// ── 1. CINEMA OLED THEME: Vivid TV Screen Blue & Deep Glow Purple Swirl ──
+// ── 1. CINEMA VIP THEME: Midnight Obsidian & Molten Imperial Gold (Option 1) ──
 const SWIRL_SPECTRUM_1 = [
-  'rgba(0, 230, 255, 0.72)',   // Electric Neon Cyan / TV Blue (#00E6FF)
-  'rgba(99, 102, 241, 0.45)',  // Indigo Flow
-  'rgba(217, 70, 239, 0.65)',  // Vivid Glow Purple / Fuchsia (#D946EF)
-  'rgba(147, 51, 234, 0.48)',  // Deep Violet
-  'rgba(0, 230, 255, 0.72)',   // Loop
+  'rgba(234, 179, 8, 0.85)',   // Molten Imperial Gold (#EAB308)
+  'rgba(202, 138, 4, 0.70)',   // Rich Honey Bronze (#CA8A04)
+  'rgba(120, 53, 15, 0.82)',   // Deep Smoked Amber (#78350F)
+  'rgba(250, 204, 21, 0.78)',  // Vivid 24k Gold Glow (#FACC15)
+  'rgba(234, 179, 8, 0.85)',   // Loop
 ];
 
 const SWIRL_SPECTRUM_2 = [
-  'rgba(168, 85, 247, 0.68)',  // Deep Glow Purple (#A855F7)
-  'rgba(124, 58, 237, 0.48)',  // Electric Violet
-  'rgba(0, 210, 255, 0.66)',   // TV Screen Blue
-  'rgba(59, 130, 246, 0.45)',  // Royal Cobalt
-  'rgba(168, 85, 247, 0.68)',  // Loop
+  'rgba(180, 83, 9, 0.80)',    // Deep Warm Bronze (#B45309)
+  'rgba(253, 224, 71, 0.68)',  // Shimmering Champagne Gold (#FDE047)
+  'rgba(69, 26, 3, 0.85)',     // Smoked Obsidian Amber (#451A03)
+  'rgba(217, 119, 6, 0.75)',   // Radiant Sunset Amber (#D97706)
+  'rgba(180, 83, 9, 0.80)',    // Loop
 ];
 
 const SWIRL_SPECTRUM_3 = [
-  'rgba(0, 240, 255, 0.60)',   // Bright Cyan Highlight
+  'rgba(254, 240, 138, 0.78)', // Brilliant Pale Champagne Gold Highlight (#FEF08A)
   'transparent',
-  'rgba(217, 70, 239, 0.60)',  // Bright Purple Highlight
+  'rgba(234, 179, 8, 0.72)',   // Molten Gold Flare (#EAB308)
   'transparent',
-];
-
-// ── 2. LIGHT FROST THEME: Soft Porcelain Sky & Lavender Aura ──
-const LIGHT_SPECTRUM_1 = [
-  'rgba(186, 230, 253, 0.75)', // Soft Sky Blue
-  'rgba(224, 231, 255, 0.55)', // Soft Lavender
-  'rgba(245, 208, 254, 0.65)', // Soft Rose/Lilac
-  'rgba(216, 180, 254, 0.55)', // Soft Purple
-  'rgba(186, 230, 253, 0.75)', // Loop
-];
-
-const LIGHT_SPECTRUM_2 = [
-  'rgba(245, 208, 254, 0.65)',
-  'rgba(216, 180, 254, 0.55)',
-  'rgba(186, 230, 253, 0.70)',
-  'rgba(199, 210, 254, 0.55)',
-  'rgba(245, 208, 254, 0.65)',
 ];
 
 const STOPS_MAIN = [0, 0.28, 0.50, 0.78, 1.0];
@@ -101,7 +84,7 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
   const masterOpacity = useSharedValue(0.90);
 
   useEffect(() => {
-    if (isMinimized || fullscreen || theme === 'dark') {
+    if (isMinimized || fullscreen || theme === 'dark' /* || (theme as any) === 'light' */) {
       cancelAnimation(rot1); cancelAnimation(driftX1); cancelAnimation(driftY1); cancelAnimation(scaleX1); cancelAnimation(scaleY1);
       cancelAnimation(rot2); cancelAnimation(driftX2); cancelAnimation(driftY2); cancelAnimation(scaleX2); cancelAnimation(scaleY2);
       cancelAnimation(rot3); cancelAnimation(driftX3); cancelAnimation(driftY3); cancelAnimation(scale3);
@@ -127,14 +110,14 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
     driftY1.value = withRepeat(
       withSequence(
         withTiming(SCREEN_HEIGHT * 0.22, { duration: 4500, easing: sinEasing }),
-        withTiming(-SCREEN_HEIGHT * 0.20, { duration: 5200, easing: sinEasing }),
+        withTiming(-SCREEN_HEIGHT * 0.25, { duration: 5200, easing: sinEasing }),
         withTiming(0, { duration: 4000, easing: sinEasing })
       ), -1, true
     );
     scaleX1.value = withRepeat(
       withSequence(
-        withTiming(1.30, { duration: 3200, easing: sinEasing }),
-        withTiming(0.85, { duration: 3600, easing: sinEasing })
+        withTiming(1.30, { duration: 3600, easing: sinEasing }),
+        withTiming(0.85, { duration: 4200, easing: sinEasing })
       ), -1, true
     );
     scaleY1.value = withRepeat(
@@ -263,48 +246,17 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // THEME 2: LIGHT FROST MODE (Clean Porcelain Pearl White)
+  // THEME 2: LIGHT MODE (Pure Solid Crisp White) - COMMENTED OUT
   // ═══════════════════════════════════════════════════════════════════════════
-  if (theme === 'light') {
+  /*
+  if ((theme as any) === 'light') {
     return (
       <View style={styles.container} pointerEvents="none">
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#F8FAFC' }]} />
-
-        {/* Soft Ambient Light Swirl */}
-        <Animated.View style={[styles.canvasWrap, style1]}>
-          <LinearGradient
-            colors={LIGHT_SPECTRUM_1}
-            locations={STOPS_MAIN}
-            start={{ x: 0.1, y: 0.1 }}
-            end={{ x: 0.9, y: 0.9 }}
-            style={styles.canvasFill}
-          />
-        </Animated.View>
-
-        <Animated.View style={[styles.canvasWrap, style2]}>
-          <LinearGradient
-            colors={LIGHT_SPECTRUM_2}
-            locations={STOPS_MAIN}
-            start={{ x: 0.9, y: 0.1 }}
-            end={{ x: 0.1, y: 0.9 }}
-            style={styles.canvasFill}
-          />
-        </Animated.View>
-
-        {/* Translucent Frosted Glass Scrim */}
-        <LinearGradient
-          colors={[
-            'rgba(248, 250, 252, 0.45)',
-            'rgba(248, 250, 252, 0.25)',
-            'rgba(248, 250, 252, 0.55)',
-            'rgba(241, 245, 249, 0.85)',
-          ]}
-          locations={[0, 0.28, 0.65, 1.0]}
-          style={StyleSheet.absoluteFill}
-        />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#ffffff' }]} />
       </View>
     );
   }
+  */
 
   // ═══════════════════════════════════════════════════════════════════════════
   // THEME 3: RAVE LIVE BLEED (100% Transparent, Video Bleed Illuminates Room)
@@ -328,14 +280,14 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // THEME 4: CINEMA OLED (Deep Smoked Glass TV Blue & Glow Purple Swirl)
+  // THEME 4: CINEMA VIP (Midnight Obsidian & Molten Imperial Gold - Option 1)
   // ═══════════════════════════════════════════════════════════════════════════
   const blendStyle = Platform.OS === 'ios' ? { mixBlendMode: 'screen' as const } : {};
 
   return (
     <View style={styles.container} pointerEvents="none">
-      {/* ── 2. ACTIVE UNDERLYING SWIRLING LIQUID LIGHT ── */}
-      {/* Layer A: Clockwise Swirling Blue-Purple Surface */}
+      {/* ── 1. ACTIVE UNDERLYING SWIRLING MOLTEN GOLD LIGHT ── */}
+      {/* Layer A: Clockwise Swirling Molten Gold Surface */}
       <Animated.View style={[styles.canvasWrap, blendStyle, style1]}>
         <LinearGradient
           colors={SWIRL_SPECTRUM_1}
@@ -346,7 +298,7 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
         />
       </Animated.View>
 
-      {/* Layer B: Counter-Clockwise Swirling Purple-Blue Surface */}
+      {/* Layer B: Counter-Clockwise Swirling Warm Bronze & Amber Surface */}
       <Animated.View style={[styles.canvasWrap, blendStyle, style2]}>
         <LinearGradient
           colors={SWIRL_SPECTRUM_2}
@@ -357,7 +309,7 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
         />
       </Animated.View>
 
-      {/* Layer C: Dynamic Highlight Current */}
+      {/* Layer C: Brilliant 24k Gold Highlight Current */}
       <Animated.View style={[styles.canvasWrap, blendStyle, style3]}>
         <LinearGradient
           colors={SWIRL_SPECTRUM_3}
@@ -368,13 +320,13 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
         />
       </Animated.View>
 
-      {/* ── 3. DEEP SMOKED VELVET DARK OVERLAY ── */}
+      {/* ── 2. DEEP SMOKED OBSIDIAN VELVET OVERLAY (IMAX VIP Lounge) ── */}
       <LinearGradient
         colors={[
-          'rgba(5, 5, 8, 0.65)',   // Top: Deep moody tint behind video player (65% Dark)
-          'rgba(5, 5, 8, 0.50)',   // Upper Center: Subtle ambient bridge (50% Dark)
-          'rgba(5, 5, 8, 0.72)',   // Lower Center: Rich dark velvet (72% Dark)
-          'rgba(5, 5, 8, 0.90)',   // Bottom: Ultra-deep pitch velvet behind chat stream (90% Dark)
+          'rgba(12, 10, 6, 0.58)',   // Top: Warm smoked obsidian behind video player (58% Dark)
+          'rgba(8, 7, 4, 0.42)',     // Upper Center: Luminous ambient bridge (42% Dark)
+          'rgba(8, 7, 4, 0.68)',     // Lower Center: Rich dark obsidian velvet (68% Dark)
+          'rgba(4, 4, 3, 0.90)',     // Bottom: Ultra-deep pitch obsidian behind chat stream (90% Dark)
         ]}
         locations={[0, 0.28, 0.65, 1.0]}
         style={StyleSheet.absoluteFill}

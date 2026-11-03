@@ -6,7 +6,7 @@ import { websocketService } from '../services/websocket';
 import fcmService from '../services/fcm';
 import { User, AuthTokens, LoginCredentials, RegisterData, OTPVerify } from '../types';
 import localDatabase from '../services/LocalDatabase';
-import { KeyManager } from '../services/e2ee';
+import { KeyManager, BackupManager } from '../services/e2ee';
 
 interface AuthContextType {
   user: User | null;
@@ -158,6 +158,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       // decrypted messages and media without re-downloading / re-decrypting.
       // The DB is only wiped when a DIFFERENT user logs into this device (see login).
       await AsyncStorage.multiRemove(['access_token', 'refresh_token', 'user']);
+      BackupManager.clearSessionKey();
       setUser(null);
     }
   };
@@ -209,6 +210,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const updatedUser = await authAPI.completeProfileSetup(formData);
       setUser(updatedUser);
       await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
+      await AsyncStorage.setItem('dme_is_fresh_signup', 'true');
     } catch (error: any) {
       let errorMessage = 'Profile setup failed';
       if (error.response?.data) {

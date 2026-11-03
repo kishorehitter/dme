@@ -89,7 +89,7 @@ export const lightTheme: ThemeColors = {
 
   // Chat
   chatBackground: '#F0F2F5',
-  myMessage:      '#243B53',   // Plain Matte Faded Navy Blue
+  myMessage:      '#0284C7',   // Musicroom Sky-600 Blue
   theirMessage:   '#EAECEF',   // elegant light grayish received bubble
 
   // Text
@@ -156,7 +156,7 @@ export const darkTheme: ThemeColors = {
 
   // Chat
   chatBackground: '#050F1E',
-  myMessage:      '#243B53',   // Plain Matte Faded Navy Blue
+  myMessage:      '#0284C7',   // Musicroom Sky-600 Blue
   theirMessage:   '#0B1B2D',   // neutral dark received bubble
 
   // Text

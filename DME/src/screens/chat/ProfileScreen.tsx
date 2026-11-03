@@ -26,11 +26,16 @@ import {
   DeviceEventEmitter,
   NativeModules,
   StatusBar,
+  Keyboard,
+  Platform,
+  Animated,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
-import { launchImageLibrary } from 'react-native-image-picker';
+import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
+import { check, request, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import Clipboard from '@react-native-clipboard/clipboard';
@@ -41,6 +46,7 @@ import { resolveImageUrl } from '../../utils/image';
 import { StatusService, UserStatusGroup, Status } from '../../services/StatusService';
 import { chatAPI } from '../../services/api';
 import localDatabase from '../../services/LocalDatabase';
+import BackupManager from '../../services/e2ee/BackupManager';
 import { MediaPickerModal } from '../../components/MediaPickerModal';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import { pinNavBarColor } from '../../utils/navBarPin';
@@ -69,25 +75,11 @@ const QUICK_REACTIONS = [
   '😂', '😍', '😮', '😢', '😡', '👍', '👎', '🎉', '🔥', '✨', '💯', '🙏', '👏', '😎', '🤔'
 ];
 
-const MALE_STICKERS = [
-  { id: 'm1', emoji: '👨', label: 'Man' },
-  { id: 'm2', emoji: '👦', label: 'Boy' },
-  { id: 'm3', emoji: '🧔', label: 'Bearded' },
-  { id: 'm4', emoji: '👨‍🎓', label: 'Graduate' },
-  { id: 'm5', emoji: '👨‍💼', label: 'Professional' },
-  { id: 'm6', emoji: '👨‍🚀', label: 'Astronaut' },
-];
-
-const FEMALE_STICKERS = [
-  { id: 'f1', emoji: '👩', label: 'Woman' },
-  { id: 'f2', emoji: '👧', label: 'Girl' },
-  { id: 'f3', emoji: '👩‍🦰', label: 'Redhead' },
-  { id: 'f4', emoji: '👩‍🎓', label: 'Graduate' },
-  { id: 'f5', emoji: '👩‍💼', label: 'Professional' },
-  { id: 'f6', emoji: '👩‍🚀', label: 'Astronaut' },
-];
+import { ALL_PRESET_AVATARS, AVATAR_FILTER_CHIPS, AvatarCategory, PresetAvatar, PRESET_AVATARS } from '../../utils/presetAvatars';
 
 import AvatarWithFallback from '../../components/AvatarWithFallback';
+
+import AvatarPickerModal from '../../components/AvatarPickerModal';
 
 const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   navigation,
@@ -95,7 +87,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { theme, isDark } = useTheme();
-  const s = React.useMemo(() => dynamicStyles(theme), [theme]);
+  const s = React.useMemo(() => dynamicStyles(theme, isDark), [theme, isDark]);
 
   useFocusEffect(
     useCallback(() => {
@@ -106,14 +98,25 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       StatusBar.setBackgroundColor('transparent');
       if (Platform.OS === 'android' && NativeModules.SystemBar) {
         NativeModules.SystemBar.setStatusBarColor('#00000000', isDark);
-        NativeModules.SystemBar.setNavigationBarColor('#00000000', isDark);
+        NativeModules.SystemBar.setNavigationBarColor(theme.surface, isDark);
       }
+
     }, [theme.surface, isDark])
   );
   const { user, logout, deleteAccount, refreshUser } = useAuth();
   const viewingOtherProfile = route?.params?.user;
   const isReadOnly = !!viewingOtherProfile;
   const [isEditingMode, setIsEditingMode] = useState(false);
+
+  useEffect(() => {
+    if (!isEditingMode) return;
+    const onBackPress = () => {
+      setIsEditingMode(false);
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [isEditingMode]);
   const [conversationId, setConversationId] = useState<number | null>(route?.params?.conversationId || null);
   const [profile, setProfile] = useState<UserProfile | null>(() => {
     if (viewingOtherProfile) return viewingOtherProfile;
@@ -145,12 +148,41 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     };
   });
   const [showStickerModal, setShowStickerModal] = useState(false);
-  const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('male');
+  const [showPhotoOptionsModal, setShowPhotoOptionsModal] = useState(false);
+
+  const handleCloseAvatarModal = useCallback(() => {
+    setShowStickerModal(false);
+  }, []);
+
+  const hasPhotoOrAvatar = Boolean(profile?.profile_picture || profile?.avatar_sticker);
+  const currentStickerImage = profile?.avatar_sticker && PRESET_AVATARS[profile.avatar_sticker]
+    ? PRESET_AVATARS[profile.avatar_sticker]
+    : ALL_PRESET_AVATARS[0]?.image;
   const [isBlocked, setIsBlocked] = useState(false);
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [friendStatus, setFriendStatus] = useState<string>(() => {
     return viewingOtherProfile?.friend_status || 'none';
   });
+
+  const editScrollViewRef = useRef<ScrollView>(null);
+  const bioYRef = useRef<number>(350);
+  const displayNameYRef = useRef<number>(250);
+  const [keyboardPadding, setKeyboardPadding] = useState(40);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      setKeyboardPadding(e.endCoordinates ? e.endCoordinates.height + 40 : 300);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setKeyboardPadding(40);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleCopyUsername = () => {
     if (profile?.username) {
@@ -265,10 +297,12 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       if (friendStatus === 'none') {
         await chatAPI.sendFriendRequest(profile.id);
         setFriendStatus('sent_pending');
+        DeviceEventEmitter.emit('friend_request_updated', { action: 'sent' });
         Toast.show({ type: 'success', text1: 'Friend request sent', position: 'bottom' });
       } else if (friendStatus === 'sent_pending') {
         await chatAPI.cancelFriendRequestByUserId(profile.id);
         setFriendStatus('none');
+        DeviceEventEmitter.emit('friend_request_updated', { action: 'cancelled' });
         Toast.show({ type: 'info', text1: 'Friend request cancelled', position: 'bottom' });
       } else if (friendStatus === 'received_pending') {
         const res = await chatAPI.getFriendRequests();
@@ -282,6 +316,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         await chatAPI.acceptFriendRequest(targetId);
         setFriendStatus('friends');
         DeviceEventEmitter.emit('friend_request_accepted');
+        DeviceEventEmitter.emit('friend_request_updated', { action: 'accepted' });
         Toast.show({ type: 'success', text1: 'Friend request accepted', position: 'bottom' });
       } else if (friendStatus === 'friends') {
         Alert.alert(
@@ -296,6 +331,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                 try {
                   await chatAPI.unfriend(profile.id);
                   setFriendStatus('none');
+                  DeviceEventEmitter.emit('friend_request_updated', { action: 'unfriend' });
                   Toast.show({ type: 'info', text1: 'Friend removed', position: 'bottom' });
                 } catch {
                   Alert.alert('Error', 'Failed to remove friend');
@@ -368,14 +404,13 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   }, [profile?.last_username_change, user?.last_username_change]);
 
   const [showPreview, setShowPreview] = useState(false);
-  const [previewContent, setPreviewContent] = useState<{ url?: string; sticker?: string }>({});
+  const [previewContent, setPreviewContent] = useState<{ url?: string; sticker?: string; displayName?: string }>({});
   const [userStatus, setUserStatus] = useState<UserStatusGroup | null>(null);
 
-  const hasStatus = !!userStatus && userStatus.statuses.length > 0 && (!isReadOnly || friendStatus === 'friends');
-  const allSeen = hasStatus ? !userStatus!.has_unseen : true;
-  const ringStyle = hasStatus 
-    ? allSeen ? s.statusViewedRing : s.statusNewRing
-    : {};
+  const isOwnProfile = !isReadOnly || (user?.id && profile?.id && Number(user.id) === Number(profile.id));
+  const hasStatus = !!userStatus && userStatus.statuses.length > 0 && (isOwnProfile || friendStatus === 'friends');
+  const allSeen = isOwnProfile ? false : (hasStatus ? !userStatus!.has_unseen : true);
+
 
   const handleAvatarPress = () => {
     if (hasStatus && userStatus) {
@@ -391,10 +426,12 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   };
 
   const handleAvatarLongPress = () => {
-    if (profile) {
+    const p = profile || user;
+    if (p) {
       setPreviewContent({
-        url: profile.profile_picture || undefined,
-        sticker: profile.avatar_sticker || undefined,
+        url: p.profile_picture || undefined,
+        sticker: p.avatar_sticker || undefined,
+        displayName: formData.display_name || formData.username || p.display_name || p.username || 'User',
       });
       setShowPreview(true);
     }
@@ -457,7 +494,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     if (!userId) return;
     try {
       const statuses = await StatusService.getStatuses();
-      const filtered = statuses.filter(s => s.user_id === userId);
+      const filtered = statuses.filter(s => Number(s.user_id) === Number(userId));
       if (filtered.length > 0) {
         const groups = StatusService.groupByUser(filtered);
         if (groups.length > 0) {
@@ -518,6 +555,12 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                 });
                 return;
               }
+
+              // 1. Immediately wipe local database messages for this conversation
+              localDatabase.clearConversationMessages(convId);
+
+              // 2. Sync clean local state to cloud backup
+              BackupManager.autoBackup().catch(err => console.warn('[ProfileScreen] autoBackup after clear failed:', err));
 
               const response = await fetch(
                 getApiUrl(`chat/conversations/${convId}/clear/`),
@@ -639,13 +682,13 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   };
 
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(async () => {
-      loadStatus();
-      if (viewingOtherProfile) {
-        loadBlockStatus();
-        fetchFriendStatus();
-        
-        if (!route?.params?.conversationId) {
+    loadStatus();
+    if (viewingOtherProfile) {
+      loadBlockStatus();
+      fetchFriendStatus();
+      
+      if (!route?.params?.conversationId) {
+        (async () => {
           try {
             const token = await AsyncStorage.getItem('access_token');
             const response = await fetch(getApiUrl('chat/conversations/'), {
@@ -661,7 +704,9 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           } catch (e) {
             console.warn('Failed to auto-resolve conversation ID:', e);
           }
-        }
+        })();
+      }
+      (async () => {
         try {
           const token = await AsyncStorage.getItem('access_token');
           const response = await fetch(getApiUrl(`accounts/users/${viewingOtherProfile.id}/`), {
@@ -696,12 +741,10 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           console.error("Error fetching full profile:", err);
           setProfile(viewingOtherProfile);
         }
-      } else {
-        loadProfile();
-      }
-    });
-
-    return () => task.cancel();
+      })();
+    } else {
+      loadProfile();
+    }
   }, []);
 
   useEffect(() => {
@@ -761,6 +804,56 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     setProfileGalleryVisible(true);
   };
 
+  const handleTakePhoto = async () => {
+    setShowPhotoOptionsModal(false);
+    try {
+      const perm = Platform.OS === 'ios' ? PERMISSIONS.IOS.CAMERA : PERMISSIONS.ANDROID.CAMERA;
+      let status = await check(perm);
+      if (status === RESULTS.DENIED) {
+        status = await request(perm);
+      }
+      if (status !== RESULTS.GRANTED) {
+        Alert.alert('Camera Permission', 'Camera access is required to take a profile picture.');
+        return;
+      }
+      const res = await launchCamera({
+        mediaType: 'photo',
+        quality: 0.85,
+        saveToPhotos: false,
+      });
+      if (res.didCancel || res.errorCode || !res.assets?.length) return;
+      const asset = res.assets[0];
+      setIsUploadingImage(true);
+      await uploadProfilePicture(asset);
+    } catch (err) {
+      console.error('Error taking photo:', err);
+      Alert.alert('Error', 'Failed to open camera');
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+
+  const handleChooseGallery = () => {
+    setShowPhotoOptionsModal(false);
+    setProfileGalleryVisible(true);
+  };
+
+  const handleConfirmRemovePhoto = () => {
+    setShowPhotoOptionsModal(false);
+    Alert.alert(
+      'Remove Photo',
+      'Are you sure you want to remove your profile photo?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => handleRemovePhoto(),
+        },
+      ]
+    );
+  };
+
   const handleRemovePhoto = async () => {
     setIsUploadingImage(true);
     try {
@@ -786,6 +879,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         setProfile(data);
         await refreshUser();
         setShowStickerModal(false);
+        setShowPhotoOptionsModal(false);
         Toast.show({ type: 'success', text1: 'Profile picture removed' });
       } else {
         Alert.alert('Error', data.message || 'Failed to remove profile picture');
@@ -825,6 +919,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         const freshData = { ...data, profile_picture: data.profile_picture ? `${resolveImageUrl(data.profile_picture)}?t=${Date.now()}` : null };
         setProfile(freshData);
         await refreshUser();
+        setShowPhotoOptionsModal(false);
         Toast.show({ type: 'success', text1: 'Profile picture updated' });
       } else {
         Alert.alert('Error', data.message || 'Failed to update profile picture');
@@ -860,6 +955,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         setProfile(data);
         await refreshUser();
         setShowStickerModal(false);
+        setShowPhotoOptionsModal(false);
         Alert.alert('Success', 'Avatar sticker updated successfully');
       } else {
         const errorData = await response.json().catch(() => ({}));
@@ -971,16 +1067,6 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     );
   };
 
-  const renderStickerItem = ({ item }: { item: { id: string; emoji: string; label: string } }) => (
-    <TouchableOpacity
-      style={s.stickerItem}
-      onPress={() => selectSticker(item.emoji)}
-    >
-      <Text style={s.stickerEmoji}>{item.emoji}</Text>
-      <Text style={s.stickerLabel}>{item.label}</Text>
-    </TouchableOpacity>
-  );
-
   if ((isReadOnly || !isEditingMode) && profile) {
     const displayName = profile.display_name || profile.username || profile.email || 'User';
     const bio = profile.bio || 'No bio available'; 
@@ -1032,20 +1118,18 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                 <View style={s.ringViewed90} />
               ) : (
                 <LinearGradient
-                  colors={['#ff4d6d', '#4597f5f6']}
+                  colors={['#0F62FE', '#00E5FF', '#10B981']}
                   start={{ x: 0, y: 1 }}
                   end={{ x: 1, y: 0 }}
                   style={s.gradientRing90}
-                >
-                  <View style={s.gradientRingInner90} />
-                </LinearGradient>
+                />
               )
             )}
             <AvatarWithFallback 
               uri={profile.profile_picture} 
               displayName={displayName} 
               sticker={profile.avatar_sticker} 
-              style={s.friendAvatar} 
+              style={[s.friendAvatar, { borderWidth: 0 }]} 
             />
           </TouchableOpacity>
 
@@ -1345,41 +1429,36 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           </TouchableWithoutFeedback>
         </Modal>
 
-        {mediaPickerVisible && (
-          <MediaPickerModal 
-            visible={mediaPickerVisible} 
-            onClose={() => setMediaPickerVisible(false)}
-            onMediaSelected={handleMediaSelected}
-          />
-        )}
-
-        {statusGalleryVisible && (
-          <CustomGalleryPicker
-            visible={statusGalleryVisible}
-            onClose={() => setStatusGalleryVisible(false)}
-            onSelect={handleStatusGallerySelect}
-            maxSelect={1}
-            assetType="All"
-            maxDuration={61}
-          />
-        )}
-
-        {profileGalleryVisible && (
-          <CustomGalleryPicker
-            visible={profileGalleryVisible}
-            onClose={() => setProfileGalleryVisible(false)}
-            onSelect={handleProfileGallerySelect}
-            maxSelect={1}
-            assetType="Photos"
-          />
-        )}
       </ScrollView>
+
+      <MediaPickerModal 
+        visible={mediaPickerVisible} 
+        onClose={() => setMediaPickerVisible(false)}
+        onMediaSelected={handleMediaSelected}
+      />
+
+      <CustomGalleryPicker
+        visible={statusGalleryVisible}
+        onClose={() => setStatusGalleryVisible(false)}
+        onSelect={handleStatusGallerySelect}
+        maxSelect={1}
+        assetType="All"
+        maxDuration={61}
+      />
+
+      <CustomGalleryPicker
+        visible={profileGalleryVisible}
+        onClose={() => setProfileGalleryVisible(false)}
+        onSelect={handleProfileGallerySelect}
+        maxSelect={1}
+        assetType="Photos"
+      />
     </View>
     );
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.background }}>
+    <View style={{ flex: 1, backgroundColor: theme.background, paddingBottom: insets.bottom }}>
       {/* Clean In-Screen Header */}
       <View style={[s.customHeader, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}>
         <Pressable
@@ -1395,7 +1474,14 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         </Text>
       </View>
 
-      <ScrollView style={s.container}>
+      <ScrollView
+        ref={editScrollViewRef}
+        style={s.container}
+        contentContainerStyle={{ paddingBottom: keyboardPadding }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        pointerEvents={showStickerModal || profileGalleryVisible ? 'none' : 'auto'}
+      >
       <View style={s.profilePictureSection}>
         {isUploadingImage && (
           <View style={[s.profilePicture, s.profilePicturePlaceholder, s.uploadingContainer]}>
@@ -1403,36 +1489,114 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           </View>
         )}
         {!isUploadingImage && !isReadOnly && (
-          <TouchableOpacity
-            onPress={handleAvatarPress}
-            onLongPress={handleAvatarLongPress}
-            style={s.avatarWrapper120}
-            disabled={isUploadingImage}
-          >
-            {hasStatus && (
-              allSeen ? (
-                <View style={s.ringViewed120} />
-              ) : (
-                <LinearGradient
-                  colors={['#ff4d6d', '#4597f5f6']}
-                  start={{ x: 0, y: 1 }}
-                  end={{ x: 1, y: 0 }}
-                  style={s.gradientRing120}
-                >
-                  <View style={s.gradientRingInner120} />
-                </LinearGradient>
-              )
-            )}
-            <AvatarWithFallback 
-              uri={profile?.profile_picture} 
-              displayName={formData.display_name || formData.username || 'User'} 
-              sticker={profile?.avatar_sticker}
-              style={s.profilePicture} 
-            />
-            <TouchableOpacity style={s.cameraIcon} onPress={() => setShowStickerModal(true)}>
-              <Text style={s.cameraIconText}><Icon name="camera" size={18} color={theme.textPrimary} /></Text>
+          <View style={s.avatarEditRow}>
+            {/* Avatar Circle with Camera Badge */}
+            <View style={s.avatarWrapper120}>
+              <TouchableOpacity
+                onPress={() => setShowPhotoOptionsModal(true)}
+                onLongPress={handleAvatarLongPress}
+                disabled={isUploadingImage || showPhotoOptionsModal || showStickerModal || profileGalleryVisible}
+                activeOpacity={0.88}
+                style={StyleSheet.absoluteFillObject}
+              >
+                {hasStatus && (
+                  allSeen ? (
+                    <View style={s.ringViewed120} />
+                  ) : (
+                    <LinearGradient
+                      colors={['#0F62FE', '#00E5FF', '#10B981']}
+                      start={{ x: 0, y: 1 }}
+                      end={{ x: 1, y: 0 }}
+                      style={s.gradientRing120}
+                    />
+                  )
+                )}
+                <AvatarWithFallback 
+                  uri={profile?.profile_picture} 
+                  displayName={formData.display_name || formData.username || 'User'} 
+                  sticker={profile?.avatar_sticker}
+                  style={[s.profilePicture, { borderWidth: 0 }]} 
+                />
+                {!showPhotoOptionsModal && (
+                  <TouchableOpacity
+                    style={s.cameraIcon}
+                    onPress={() => setShowPhotoOptionsModal(true)}
+                    activeOpacity={0.8}
+                  >
+                    <Icon name="camera" size={17} color="#000000" />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+
+              {/* Overlay covering the avatar container with Gallery, Remove & Close buttons */}
+              {showPhotoOptionsModal && (
+                <View style={s.avatarOptionsOverlay}>
+                  {/* Close button at top */}
+                  <TouchableOpacity
+                    style={s.avatarOverlayCloseBtn}
+                    onPress={() => setShowPhotoOptionsModal(false)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    activeOpacity={0.7}
+                  >
+                    <Icon name="close" size={14} color="#FFFFFF" />
+                  </TouchableOpacity>
+
+                  {/* Two buttons row in center */}
+                  <View style={s.avatarOverlayBtnRow}>
+                    <TouchableOpacity
+                      style={s.avatarOverlayBtn}
+                      onPress={handleChooseGallery}
+                      activeOpacity={0.75}
+                    >
+                      <View style={[s.avatarOverlayIconCircle, { backgroundColor: '#10B981' }]}>
+                        <Icon name="images" size={20} color="#FFFFFF" />
+                      </View>
+                    </TouchableOpacity>
+
+                    {hasPhotoOrAvatar && (
+                      <TouchableOpacity
+                        style={s.avatarOverlayBtn}
+                        onPress={handleConfirmRemovePhoto}
+                        activeOpacity={0.75}
+                      >
+                        <View style={[s.avatarOverlayIconCircle, { backgroundColor: '#EF4444' }]}>
+                          <Icon name="trash" size={19} color="#FFFFFF" />
+                        </View>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+              )}
+            </View>
+
+            {/* Dedicated 3D Avatar Button next to Profile Circle */}
+            <TouchableOpacity
+              style={s.avatarStickerButton}
+              onPress={() => { console.log('[DEBUG_AVATAR] 3D Avatar button PRESSED'); setShowStickerModal(true); }}
+              disabled={showStickerModal || profileGalleryVisible || showPhotoOptionsModal || isUploadingImage}
+              activeOpacity={0.78}
+            >
+              <View style={s.avatarStickerIconWrap}>
+                <Image
+                  source={currentStickerImage || ALL_PRESET_AVATARS[0].image}
+                  style={s.avatarStickerPreviewImg}
+                  resizeMode="contain"
+                />
+                <View style={s.avatarStickerSparkleBadge}>
+                  <Icon name="sparkles" size={10} color="#FFFFFF" />
+                </View>
+              </View>
+              <View style={s.avatarStickerTextCol}>
+                <Text style={s.avatarStickerTitle} numberOfLines={1}>3D Avatar</Text>
+                <Text style={s.avatarStickerSub} numberOfLines={1}>
+                  {profile?.avatar_sticker ? 'Change 3D' : 'Choose 3D'}
+                </Text>
+              </View>
+              <View style={s.avatarStickerArrowWrap}>
+                <Icon name="chevron-forward" size={15} color={theme.primary} />
+              </View>
             </TouchableOpacity>
-          </TouchableOpacity>
+          </View>
         )}
         {!isUploadingImage && isReadOnly && (
           <TouchableOpacity 
@@ -1445,42 +1609,50 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                 <View style={s.ringViewed120} />
               ) : (
                 <LinearGradient
-                  colors={['#ff4d6d', '#4597f5f6']}
+                  colors={['#0F62FE', '#00E5FF', '#10B981']}
                   start={{ x: 0, y: 1 }}
                   end={{ x: 1, y: 0 }}
                   style={s.gradientRing120}
-                >
-                  <View style={s.gradientRingInner120} />
-                </LinearGradient>
+                />
               )
             )}
             <AvatarWithFallback 
               uri={profile?.profile_picture} 
               displayName={formData.display_name || formData.username || 'User'} 
               sticker={profile?.avatar_sticker}
-              style={s.profilePicture} 
+              style={[s.profilePicture, { borderWidth: 0 }]} 
             />
           </TouchableOpacity>
         )}
-        <Text style={s.changePhotoText}>
-          {isReadOnly ? (hasStatus ? 'Tap to view status' : 'Profile Picture') : (hasStatus ? 'Tap for status, long press for preview' : 'Tap for status, long press to preview')}
-        </Text>
       </View>
 
       <View style={s.section}>
         <Text style={s.sectionTitle}>{isReadOnly ? 'User Information' : 'Profile Information'}</Text>
-        <View style={s.inputContainer}>
-          <Text style={s.label}>Email</Text>
-          <TextInput style={[s.input, s.inputDisabled]} value={profile?.email || user?.email || ''} editable={false} />
-          <Text style={s.hint}>Email cannot be changed</Text>
+
+        {/* Email field */}
+        <View style={s.fieldCard}>
+          <Text style={s.label}>
+            Email <Text style={s.labelHint}>(cannot be changed)</Text>
+          </Text>
+          <TextInput style={[s.fieldInput, s.inputDisabled]} value={profile?.email || user?.email || ''} editable={false} />
         </View>
-        <View style={s.inputContainer}>
-          <Text style={s.label}>Username</Text>
+
+        {/* Username field */}
+        <View style={[s.fieldCard, usernameError && s.fieldCardError]}>
+          <Text style={s.label}>
+            Username{' '}
+            {!isReadOnly && (
+              <Text style={[s.labelHint, !usernameEditable && { color: theme.error || 'red' }]}>
+                ({usernameEditable 
+                  ? 'Must be unique. Changeable once every 14 days.' 
+                  : 'Username can only be changed once every 14 days.'})
+              </Text>
+            )}
+          </Text>
           <TextInput
             style={[
-              s.input, 
-              (isReadOnly || !usernameEditable) && s.inputDisabled, 
-              usernameError && s.inputError
+              s.fieldInput,
+              (isReadOnly || !usernameEditable) && s.inputDisabled,
             ]}
             value={formData.username}
             onChangeText={value => {
@@ -1499,32 +1671,46 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
             placeholderTextColor={colors.textSecondary}
             editable={!isReadOnly && usernameEditable}
           />
-          {usernameError ? (
+          {usernameError && (
             <Text style={s.errorText}>{usernameError}</Text>
-          ) : !isReadOnly && (
-            <Text style={[s.hint, !usernameEditable && { color: 'red' }]}>
-              {usernameEditable 
-                ? 'Must be unique. Can only be changed once every 14 days.' 
-                : 'Username can only be changed once every 14 days.'}
-            </Text>
           )}
         </View>
-        <View style={s.inputContainer}>
-          <Text style={s.label}>Display Name</Text>
+
+        {/* Display Name field */}
+        <View 
+          style={s.fieldCard}
+          onLayout={e => { displayNameYRef.current = e.nativeEvent.layout.y; }}
+        >
+          <Text style={s.label}>
+            Display Name{' '}
+            {!isReadOnly && <Text style={s.labelHint}>(your public name)</Text>}
+          </Text>
           <TextInput
-            style={[s.input, isReadOnly && s.inputDisabled]}
+            style={[s.fieldInput, isReadOnly && s.inputDisabled]}
             value={formData.display_name}
             onChangeText={value => setFormData({ ...formData, display_name: value })}
             placeholder="How others see you (optional)"
             placeholderTextColor={colors.textSecondary}
             editable={!isReadOnly}
+            onFocus={() => {
+              setTimeout(() => {
+                editScrollViewRef.current?.scrollTo({ y: Math.max(0, displayNameYRef.current - 30), animated: true });
+              }, 120);
+            }}
           />
-          {!isReadOnly && <Text style={s.hint}>This is your public display name.</Text>}
         </View>
-        <View style={s.inputContainer}>
-          <Text style={s.label}>Bio</Text>
+
+        {/* Bio field */}
+        <View 
+          style={s.fieldCard}
+          onLayout={e => { bioYRef.current = e.nativeEvent.layout.y; }}
+        >
+          <Text style={s.label}>
+            Bio{' '}
+            {!isReadOnly && <Text style={s.labelHint}>({(formData.bio || '').length}/139)</Text>}
+          </Text>
           <TextInput
-            style={[s.input, s.multilineInput, isReadOnly && s.inputDisabled]}
+            style={[s.fieldInput, s.multilineInput, isReadOnly && s.inputDisabled]}
             value={formData.bio}
             onChangeText={value => setFormData({ ...formData, bio: value })}
             placeholder="Your bio"
@@ -1532,30 +1718,46 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
             multiline
             maxLength={139}
             editable={!isReadOnly}
+            onFocus={() => {
+              setTimeout(() => {
+                editScrollViewRef.current?.scrollTo({ y: Math.max(0, bioYRef.current - 30), animated: true });
+              }, 120);
+            }}
           />
-          {!isReadOnly && <Text style={s.hint}>{(formData.bio || '').length}/139 characters</Text>}
         </View>
 
         {!isReadOnly && (
-          <View style={s.inputContainer}>
-            <Text style={s.label}>Double-Tap Reaction</Text>
+          <View style={s.fieldCard}>
+            <Text style={s.label}>
+              Double-Tap Reaction{' '}
+              <Text style={s.labelHint}>(emoji shown on double-tap)</Text>
+            </Text>
             <View style={s.emojiSelectionRow}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {QUICK_REACTIONS.map(emoji => (
-                  <TouchableOpacity
-                    key={emoji}
-                    style={[
-                      s.emojiSelectItem,
-                      formData.quick_reaction === emoji && s.emojiSelectItemActive,
-                    ]}
-                    onPress={() => setFormData({ ...formData, quick_reaction: emoji })}
-                  >
-                    <Text style={s.emojiSelectText}>{emoji}</Text>
-                  </TouchableOpacity>
-                ))}
+              <ScrollView 
+                horizontal 
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingVertical: 8, alignItems: 'center' }}
+              >
+                {QUICK_REACTIONS.map(emoji => {
+                  const isActive = formData.quick_reaction === emoji;
+                  return (
+                    <TouchableOpacity
+                      key={emoji}
+                      style={[s.emojiSelectItem, isActive && s.emojiSelectItemActive]}
+                      onPress={() => setFormData({ ...formData, quick_reaction: emoji })}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.emojiSelectText, isActive && s.emojiSelectTextActive]}>{emoji}</Text>
+                      {isActive && (
+                        <View style={s.emojiCheckBadge}>
+                          <Icon name="checkmark" size={8} color="#FFFFFF" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
               </ScrollView>
             </View>
-            <Text style={s.hint}>Choose the emoji that appears when you double-tap a message.</Text>
           </View>
         )}
 
@@ -1574,8 +1776,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       </View>
 
       {!isReadOnly && (
-        <View style={s.section}>
-          <Text style={s.sectionTitle}>Account</Text>
+        <View style={[s.section, { marginTop: 2 }]}>  
           <View style={s.accountButtonsRow}>
             <TouchableOpacity style={[s.accountButton, s.logoutButtonBorder]} onPress={handleLogout}>
               <Text style={s.logoutButtonText}>Logout</Text>
@@ -1586,83 +1787,54 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           </View>
         </View>
       )}
+    </ScrollView>
 
       <Modal visible={showPreview} transparent={true} animationType="fade" onRequestClose={() => setShowPreview(false)}>
         <TouchableOpacity style={s.previewModalOverlay} activeOpacity={1} onPress={() => setShowPreview(false)}>
           <View style={s.previewModalContent}>
-            {previewContent.sticker ? (
-              <View style={s.previewStickerContainer}>
-                <Text style={s.previewStickerText}>{previewContent.sticker}</Text>
-              </View>
-            ) : previewContent.url ? (
-              <Image source={{ uri: resolveImageUrl(previewContent.url) }} style={s.previewImage} />
-            ) : (
-              <View style={s.previewPlaceholder}>
-                <Icon name="person" size={80} color={theme.textPrimary} />
-              </View>
-            )}
+            <AvatarWithFallback
+              uri={previewContent.url}
+              sticker={previewContent.sticker}
+              displayName={previewContent.displayName || profile?.display_name || profile?.username || formData.display_name || formData.username || user?.display_name || user?.username || 'User'}
+              style={{
+                width: 240,
+                height: 240,
+                borderRadius: 120,
+                borderWidth: 0,
+              }}
+              initialSize={96}
+              iconSize={110}
+            />
           </View>
         </TouchableOpacity>
       </Modal>
 
-      {!isReadOnly && (
-        <Modal
-          visible={showStickerModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowStickerModal(false)}
-        >
-          <View style={s.modalOverlay}>
-            <View style={s.modalContent}>
-              <View style={s.modalHeader}>
-                <Text style={s.modalTitle}>Choose Avatar</Text>
-                <TouchableOpacity onPress={() => setShowStickerModal(false)}><Text style={s.modalClose}>✕</Text></TouchableOpacity>
-              </View>
-              <View style={{ alignItems: 'center', marginVertical: 12 }}>
-                <AvatarWithFallback 
-                  uri={profile?.profile_picture} 
-                  displayName={profile?.display_name || profile?.username || user?.display_name || user?.username || 'User'} 
-                  sticker={profile?.avatar_sticker}
-                  style={{ width: 80, height: 80, borderRadius: 40 }} 
-                />
-                <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 6, fontFamily: 'Kalam-Regular' }}>Current Avatar</Text>
-              </View>
-              <View style={s.stickerOptions}>
-                <TouchableOpacity style={[s.genderTab, selectedGender === 'male' && s.genderTabActive]} onPress={() => setSelectedGender('male')}><Text style={[s.genderTabText, selectedGender === 'male' && s.genderTabTextActive]}>Male</Text></TouchableOpacity>
-                <TouchableOpacity style={[s.genderTab, selectedGender === 'female' && s.genderTabActive]} onPress={() => setSelectedGender('female')}><Text style={[s.genderTabText, selectedGender === 'female' && s.genderTabTextActive]}>Female</Text></TouchableOpacity>
-              </View>
-              <FlatList
-                data={selectedGender === 'male' ? MALE_STICKERS : FEMALE_STICKERS}
-                renderItem={renderStickerItem}
-                keyExtractor={item => item.id}
-                numColumns={3}
-                contentContainerStyle={s.stickerGrid}
-              />
-              <View style={s.imageActionRow}>
-                <TouchableOpacity style={s.actionButton} onPress={() => { setShowStickerModal(false); setTimeout(pickImage, 300); }}><Text style={s.actionButtonText}>📸 Upload</Text></TouchableOpacity>
-                <TouchableOpacity style={[s.actionButton, s.removeButton]} onPress={handleRemovePhoto}><Text style={[s.actionButtonText, s.removeButtonText]}>🗑️ Remove</Text></TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      )}
 
-      {profileGalleryVisible && (
-        <CustomGalleryPicker
-          visible={profileGalleryVisible}
-          onClose={() => setProfileGalleryVisible(false)}
-          onSelect={handleProfileGallerySelect}
-          maxSelect={1}
-          assetType="Photos"
+
+      <CustomGalleryPicker
+        visible={profileGalleryVisible}
+        onClose={() => setProfileGalleryVisible(false)}
+        onSelect={handleProfileGallerySelect}
+        maxSelect={1}
+        assetType="Photos"
+      />
+
+      {!isReadOnly && (
+        <AvatarPickerModal
+          visible={showStickerModal}
+          onClose={handleCloseAvatarModal}
+          onSelect={selectSticker}
+          currentSticker={profile?.avatar_sticker}
+          profilePicture={profile?.profile_picture}
+          displayName={formData.display_name || formData.username || 'User'}
         />
       )}
 
-    </ScrollView>
   </View>
   );
 };
 
-const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleSheet.create({
+const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = false) => StyleSheet.create({
   customHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1685,36 +1857,33 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
   },
   container: { flex: 1, backgroundColor: theme.background },
-  profilePictureSection: { alignItems: 'center', paddingVertical: spacing.lg, backgroundColor: theme.surface },
+  profilePictureSection: { alignItems: 'center', paddingVertical: 12, backgroundColor: theme.surface },
   profilePictureContainer: { position: 'relative' },
   profilePicture: { width: 120, height: 120, borderRadius: 60 },
   avatarWrapper90: {
-    width: 100,
-    height: 100,
+    width: 96,
+    height: 96,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
   },
   avatarWrapper120: {
-    width: 130,
-    height: 130,
+    width: 128,
+    height: 128,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
   },
   gradientRing90: {
     position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 96,
+    height: 96,
+    borderRadius: 48,
   },
   gradientRingInner90: {
-    width: 94,
-    height: 94,
-    borderRadius: 47,
-    backgroundColor: theme.background,
+    width: 90,
+    height: 90,
+    borderRadius: 45,
   },
   ringViewed90: {
     position: 'absolute',
@@ -1722,21 +1891,18 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     height: 96,
     borderRadius: 48,
     borderWidth: 2,
-    borderColor: theme.textMuted,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.25)' : '#D1D5DB',
   },
   gradientRing120: {
     position: 'absolute',
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 127,
+    height: 127,
+    borderRadius: 63.5,
   },
   gradientRingInner120: {
-    width: 124,
-    height: 124,
-    borderRadius: 62,
-    backgroundColor: theme.background,
+    width: 120,
+    height: 120,
+    borderRadius: 60,
   },
   ringViewed120: {
     position: 'absolute',
@@ -1744,24 +1910,141 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     height: 126,
     borderRadius: 63,
     borderWidth: 2,
-    borderColor: theme.textMuted,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.25)' : '#D1D5DB',
   },
   profilePicturePlaceholder: { backgroundColor: theme.background, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: theme.border },
   stickerAvatar: { fontSize: 72 },
-  cameraIcon: { position: 'absolute', bottom: 10, right: 8, backgroundColor: theme.surface, width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: theme.primary },
-  cameraIconText: { fontSize: 18 },
+  cameraIcon: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    backgroundColor: '#FFFFFF',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: theme.surface,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  cameraIconText: { fontSize: 16 },
+  avatarEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 16,
+    width: '100%',
+  },
+  avatarStickerButton: {
+    flex: 1,
+    maxWidth: 205,
+    height: 106,
+    borderRadius: 20,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent',
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  avatarStickerIconWrap: {
+    position: 'relative',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: isDark ? 'rgba(15, 98, 254, 0.25)' : '#E0EDFE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#BAD7FE',
+  },
+  avatarStickerPreviewImg: {
+    width: 40,
+    height: 40,
+  },
+  avatarStickerSparkleBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    backgroundColor: '#0F62FE',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    elevation: 3,
+  },
+  avatarStickerTextCol: {
+    flex: 1,
+    marginLeft: 10,
+    justifyContent: 'center',
+  },
+  avatarStickerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.textPrimary,
+    letterSpacing: -0.2,
+  },
+  avatarStickerSub: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: theme.primary,
+    marginTop: 2,
+  },
+  avatarStickerArrowWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 2,
+  },
   changePhotoText: { marginTop: spacing.sm, fontSize: fontSize.md, color: theme.primary, fontWeight: '600' },
-  section: { backgroundColor: theme.surface, marginTop: spacing.sm, padding: spacing.lg },
-  sectionTitle: { fontSize: fontSize.lg, fontWeight: 'bold', color: theme.textPrimary, marginBottom: spacing.lg },
-  inputContainer: { marginBottom: spacing.lg },
-  label: { fontSize: fontSize.sm, color: theme.textSecondary, marginBottom: spacing.xs },
+  section: { backgroundColor: theme.surface, marginTop: spacing.sm, padding: spacing.md },
+  sectionTitle: { fontSize: fontSize.md, fontWeight: 'bold', color: theme.textPrimary, marginBottom: spacing.sm },
+  inputContainer: { marginBottom: spacing.md },
+  label: { fontSize: 13, color: theme.textSecondary, marginBottom: 2 },
+  labelHint: { fontSize: 11, color: theme.textMuted, fontWeight: 'normal' },
+  /* Instagram-style bordered field card */
+  fieldCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingTop: 8,
+    paddingBottom: 6,
+    marginBottom: 10,
+    backgroundColor: theme.background,
+    overflow: 'hidden',
+  },
+  fieldCardError: { borderColor: theme.error || 'red' },
+  fieldInput: {
+    color: theme.textPrimary,
+    fontSize: fontSize.lg,
+    fontWeight: '600',
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    marginTop: 1,
+  },
   input: { backgroundColor: theme.background, padding: spacing.md, borderRadius: borderRadius.md, color: theme.textPrimary, fontSize: fontSize.md },
   inputError: { borderColor: 'red', borderWidth: 1 },
+  errorText: { fontSize: fontSize.xs, color: theme.error, marginTop: 2 },
   inputDisabled: { opacity: 0.6 },
-  multilineInput: { height: 80, textAlignVertical: 'top' },
+  multilineInput: { height: 72, textAlignVertical: 'top' },
   hint: { fontSize: fontSize.xs, color: theme.textSecondary, marginTop: spacing.xs },
-  saveButton: { backgroundColor: theme.primary, padding: spacing.md, borderRadius: borderRadius.md, alignItems: 'center', marginTop: spacing.md },
-  saveButtonText: { color: theme.textPrimary, fontWeight: 'bold' },
+  saveButton: { backgroundColor: '#3B82F6', padding: spacing.md, borderRadius: borderRadius.md, alignItems: 'center', marginTop: spacing.sm },
+  saveButtonText: { color: '#FFFFFF', fontWeight: 'bold' },
   saveButtonDisabled: { opacity: 0.5 },
   menuItem: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.md },
   menuItemText: { fontSize: fontSize.md, color: theme.textPrimary },
@@ -1828,18 +2111,122 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   actionIconContainerActive: { backgroundColor: theme.border },
   blockActionActive: {},
   actionTitleActive: { color: theme.primary },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: theme.surface, borderTopLeftRadius: borderRadius.lg, borderTopRightRadius: borderRadius.lg, padding: spacing.lg, maxHeight: '80%' },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    width: '100%',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  modalContent: {
+    width: '100%',
+    backgroundColor: theme.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderColor: theme.border,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    height: Dimensions.get('window').height * 0.62,
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 20,
+  },
+  modalDragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.border,
+    alignSelf: 'center',
+    marginBottom: spacing.sm,
+  },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   modalTitle: { fontSize: fontSize.lg, fontWeight: 'bold' },
   modalClose: { fontSize: fontSize.lg, color: theme.textSecondary },
-  stickerOptions: { flexDirection: 'row', marginBottom: spacing.md },
-  genderTab: { flex: 1, paddingVertical: spacing.sm, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: theme.background },
-  genderTabActive: { borderBottomColor: theme.primary },
-  genderTabText: { fontSize: fontSize.md, color: theme.textSecondary },
-  genderTabTextActive: { color: theme.primary, fontWeight: 'bold' },
-  stickerGrid: { justifyContent: 'center' },
-  stickerItem: { width: '33%', alignItems: 'center', padding: spacing.sm },
+  avatarFilterRow: {
+    marginBottom: spacing.md,
+  },
+  filterScroll: {
+    paddingHorizontal: 2,
+    gap: 8,
+  },
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: theme.background,
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
+  filterChipActive: {
+    backgroundColor: theme.primary,
+    borderColor: theme.primary,
+  },
+  filterChipText: {
+    fontSize: 13,
+    color: theme.textSecondary,
+    fontWeight: '500',
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  stickerGrid: {
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+  },
+  stickerItem: {
+    width: '25%',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+    marginVertical: 4,
+  },
+  stickerItemActive: {
+    backgroundColor: theme.primary + '15',
+    borderRadius: 16,
+  },
+  stickerWrapperOuter: {
+    position: 'relative',
+    width: 60,
+    height: 60,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stickerImageWrapper: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    overflow: 'hidden',
+  },
+  stickerImage: {
+    width: 54,
+    height: 54,
+  },
+  stickerCheckBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#10B981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    elevation: 4,
+    zIndex: 10,
+  },
   stickerEmoji: { fontSize: 40 },
   stickerLabel: { fontSize: fontSize.xs, color: theme.textSecondary, marginTop: spacing.xs },
   imageActionRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: spacing.lg },
@@ -1847,6 +2234,56 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   actionButtonText: { fontSize: fontSize.md, color: theme.textPrimary },
   removeButton: { backgroundColor: theme.error + '20' },
   removeButtonText: { color: theme.error },
+  stickerModalFooter: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: theme.border,
+    marginTop: 8,
+  },
+  // ─── Avatar options overlay directly covering the avatar circle ───────────
+  avatarOptionsOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 64,
+    backgroundColor: 'rgba(10, 15, 30, 0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+    elevation: 10,
+  },
+  avatarOverlayCloseBtn: {
+    position: 'absolute',
+    top: 10,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  avatarOverlayBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 14,
+  },
+  avatarOverlayBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarOverlayIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+  },
   previewModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -1854,13 +2291,13 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
   },
   previewModalContent: {
-    width: 250,
-    height: 250,
-    backgroundColor: theme.background,
-    borderRadius: 12,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'transparent',
   },
   previewImage: {
     width: 250,
@@ -1884,12 +2321,12 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
   },
   statusViewedRing: { borderWidth: 3, borderColor: theme.textMuted },
+  statusNewRing: { borderWidth: 3, borderColor: theme.primary },
+  uploadingContainer: { justifyContent: 'center', alignItems: 'center' },
   emojiSelectionRow: {
     flexDirection: 'row',
-    marginTop: spacing.xs,
-    backgroundColor: theme.background,
-    borderRadius: borderRadius.md,
-    padding: spacing.xs,
+    marginTop: 2,
+    overflow: 'hidden',
   },
   emojiSelectItem: {
     width: 44,
@@ -1898,14 +2335,27 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     alignItems: 'center',
     marginHorizontal: 4,
     borderRadius: 22,
+    overflow: 'visible',
   },
   emojiSelectItemActive: {
-    backgroundColor: theme.primary + '20',
-    borderWidth: 1,
-    borderColor: theme.primary,
+    transform: [{ scale: 1.15 }],
   },
   emojiSelectText: {
     fontSize: 24,
+  },
+  emojiSelectTextActive: {
+    fontSize: 24,
+  },
+  emojiCheckBadge: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#22C55E',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileButtonsRow: {
     flexDirection: 'row',
@@ -2054,3 +2504,4 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
 });
 
 export const ProfileScreen = React.memo(ProfileScreenComponent);
+ 

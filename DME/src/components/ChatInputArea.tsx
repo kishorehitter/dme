@@ -9,8 +9,10 @@ import {
   Platform,
   Keyboard,
   DeviceEventEmitter,
+  LayoutAnimation,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { KeyboardController } from 'react-native-keyboard-controller';
 import RichTextInput, { RichTextInputRef } from '../components/RichTextInput';
 import { spacing, borderRadius, fontSize } from '../utils/theme';
 import { useTheme } from '../context/ThemeContext';
@@ -32,6 +34,7 @@ const ChatInputArea = memo(({
     inputClearKey,
     isDisabled,
     onRegisterClear,
+    onRegisterBlur,
     onOpenStickerPicker,
     isStickerPickerVisible,
     onCloseStickerPicker,
@@ -61,16 +64,10 @@ const ChatInputArea = memo(({
     ).current;
 
     const handleTypingInternal = useCallback((text: string) => {
-      const t0 = performance.now();
       localInputTextRef.current = text;
       // Native instant toggle — no React re-render needed for button switch
       hasTextAnim.setValue(text.length > 0 ? 1 : 0);
-      setLocalInputText(text);
       handleTyping?.(text);
-      const dt = (performance.now() - t0).toFixed(2);
-      if (text.length === 1) {
-        console.log(`⏱️ [PERF: TYPING] Native button switch in: ${dt}ms`);
-      }
     }, [handleTyping, hasTextAnim]);
 
     const handleSend = useCallback(() => {
@@ -81,6 +78,10 @@ const ChatInputArea = memo(({
       hasTextAnim.setValue(0);
       localInputTextRef.current = '';
       setLocalInputText('');
+      LayoutAnimation.configureNext({
+        duration: 100,
+        update: { type: LayoutAnimation.Types.easeOut },
+      });
       setInputHeight(MIN_HEIGHT);
       inputRef.current?.clear();
       const resetTime = (performance.now() - sendStartTime).toFixed(2);
@@ -119,6 +120,13 @@ const ChatInputArea = memo(({
       });
     }, [onRegisterClear, hasTextAnim]);
 
+    // Register blur function with parent so tapping chat immediately blurs input
+    useEffect(() => {
+      onRegisterBlur?.(() => {
+        inputRef.current?.blur();
+      });
+    }, [onRegisterBlur]);
+
     useEffect(() => {
       return () => {
         inputRef.current?.blur();
@@ -145,7 +153,16 @@ const ChatInputArea = memo(({
       const h = event.nativeEvent?.contentSize?.height;
       if (h) {
         const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(h)));
-        setInputHeight(prev => (Math.abs(prev - next) >= 4 ? next : prev));
+        setInputHeight(prev => {
+          if (Math.abs(prev - next) >= 4) {
+            LayoutAnimation.configureNext({
+              duration: 100,
+              update: { type: LayoutAnimation.Types.easeOut },
+            });
+            return next;
+          }
+          return prev;
+        });
       }
     }, []);
 
@@ -229,10 +246,12 @@ const ChatInputArea = memo(({
                 <RichTextInput
                   ref={inputRef}
                   onFocus={onFocus}
+                  onTouchStart={onFocus}
                   style={[
                     styles.input,
                     {
                       height: inputHeight,
+                      textAlignVertical: inputHeight > 50 ? 'top' : 'center',
                       color: isCustomTheme ? '#FFFFFF' : theme.textPrimary,
                     },
                     showStickerButton ? { paddingLeft: 42 } : { paddingLeft: 12 },
@@ -288,16 +307,8 @@ const ChatInputArea = memo(({
                 isRecording && styles.actionButtonRecording,
               ]}
             >
-              <TouchableOpacity
+              <View
                 style={StyleSheet.absoluteFill}
-                onPressIn={() => {
-                  const text = (localInputTextRef.current || '').trim();
-                  if (text.length > 0) {
-                    handleSend();
-                  }
-                }}
-                activeOpacity={0.8}
-                delayPressIn={0}
                 {...micPanResponder.panHandlers}
               >
                 {/* 1. Send Icon (Cross-fades in instantly on typing) */}
@@ -354,7 +365,7 @@ const ChatInputArea = memo(({
                     color={isCustomTheme ? '#FFFFFF' : theme.textPrimary}
                   />
                 </Animated.View>
-              </TouchableOpacity>
+              </View>
             </Animated.View>
           )}
         </View>
@@ -388,7 +399,7 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
   innerStickerButton: {
     position: 'absolute',
     left: 8,
-    bottom: 5,
+    bottom: 6.5,
     width: 32,
     height: 32,
     justifyContent: 'center',
@@ -402,11 +413,12 @@ const dynamicStyles = (theme: import('../utils/theme').ThemeColors) => StyleShee
     flex: 1,
     backgroundColor: 'transparent',
     paddingRight: 12,
-    paddingTop: Platform.OS === 'ios' ? 8 : 6,
-    paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+    paddingTop: Platform.OS === 'ios' ? 8 : 10,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 10,
     fontSize: 17.8,
     // color applied via inline theme
-    textAlignVertical: 'top',
+    textAlignVertical: 'center',
+    includeFontPadding: false,
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
   },

@@ -235,19 +235,15 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
               onLongPress={handleAvatarLongPress}
               activeOpacity={0.8}
             >
-              {conversation?.profile_picture ? (
-                <Image 
-                  source={{ uri: resolveImageUrl(conversation.profile_picture) }} 
-                  style={s.avatar} 
-                />
-              ) : (
-                <View style={s.avatarPlaceholder}>
-                  <Icon name="people" size={40} color={colors.primary} />
-                </View>
-              )}
+              <AvatarWithFallback
+                uri={conversation?.profile_picture}
+                displayName={conversation?.name || 'Group'}
+                isGroup={true}
+                style={s.avatar}
+              />
               {isAdmin && (
                 <View style={s.editBadge}>
-                  <Icon name="camera" size={18} color={theme.textPrimary} />
+                  <Icon name="camera" size={16} color={theme.textPrimary} />
                 </View>
               )}
             </TouchableOpacity>
@@ -351,17 +347,12 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
               style={s.participantItem}
               onPress={() => navigation.navigate('Profile', { user: p.user, conversationId })}
             >
-              <View style={[s.participantAvatar, { backgroundColor: '#E8DEF8' }]}>
-                {p.user.avatar_sticker ? (
-                  <Text style={{ fontSize: 20 }}>{p.user.avatar_sticker}</Text>
-                ) : (
-                  <AvatarWithFallback
-                    uri={p.user.profile_picture}
-                    displayName={p.user.display_name || p.user.username || p.user.email}
-                    style={{ width: 40, height: 40, borderRadius: 20 }}
-                  />
-                )}
-              </View>
+              <AvatarWithFallback
+                uri={p.user.profile_picture}
+                displayName={p.user.display_name || p.user.username || p.user.email}
+                sticker={p.user.avatar_sticker}
+                style={{ width: 42, height: 42, borderRadius: 21, marginRight: spacing.md }}
+              />
               <View style={s.participantInfo}>
                 <Text style={s.participantName}>
                   {p.user.id === currentUser?.id ? 'You' : (p.user.display_name || p.user.username || p.user.email)}
@@ -439,15 +430,12 @@ export const GroupInfoScreen: React.FC<any> = ({ navigation, route }) => {
                 ]}
               >
                 <View style={{ marginRight: 12 }}>
-                  {memberToRemove.sticker ? (
-                    <Text style={{ fontSize: 26 }}>{memberToRemove.sticker}</Text>
-                  ) : (
-                    <AvatarWithFallback
-                      uri={memberToRemove.avatar}
-                      displayName={memberToRemove.name}
-                      style={{ width: 44, height: 44, borderRadius: 22 }}
-                    />
-                  )}
+                  <AvatarWithFallback
+                    uri={memberToRemove.avatar}
+                    displayName={memberToRemove.name}
+                    sticker={memberToRemove.sticker}
+                    style={{ width: 44, height: 44, borderRadius: 22 }}
+                  />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[s.memberSnippetName, { color: theme.textPrimary }]} numberOfLines={1}>
@@ -606,8 +594,22 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
   avatarContainer: { marginBottom: spacing.md },
   avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: theme.surface, borderWidth: 2, borderColor: theme.border },
   editBadge: {
-    position: 'absolute', bottom: 8, right: 0,
-    backgroundColor: theme.surface, padding: 1, borderRadius: 2, borderColor: theme.primary, borderWidth: 1
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderColor: theme.border,
+    borderWidth: 2,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
   },
   editBadgeText: { color: theme.surface, fontSize: 10, fontWeight: 'bold' },
   avatarPlaceholder: { 

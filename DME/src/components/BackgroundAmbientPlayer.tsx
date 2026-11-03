@@ -2,7 +2,7 @@ import React, { memo, useRef, useEffect, useMemo } from 'react';
 import { StyleSheet, View, Image, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-export type RoomTheme = 'cinema' | 'rave' | 'dark' | 'light';
+export type RoomTheme = 'cinema' | 'rave' | 'dark'; // | 'light';
 
 interface BackgroundAmbientPlayerProps {
   videoId?: string | null;

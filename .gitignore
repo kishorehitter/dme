@@ -96,4 +96,5 @@ scratch/find_caller_method.py
 scratch/debug_vm.js
 scratch/session_manager.ts
 er.md
+run-release.ps1
         

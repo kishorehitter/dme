@@ -33,30 +33,55 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
     var videoAspectRatio: Float = 16f / 9f
         private set
 
-    fun getVideoRectOnScreen(): android.graphics.Rect {
-        val cr = renderer.contentRect
-        val loc = IntArray(2)
-        getLocationOnScreen(loc)
-        if (cr != null && cr.width() > 0 && cr.height() > 0) {
-            return android.graphics.Rect(
-                loc[0] + cr.left.toInt(),
-                loc[1] + cr.top.toInt(),
-                loc[0] + cr.right.toInt(),
-                loc[1] + cr.bottom.toInt()
-            )
-        }
+    fun getVideoRectInWindow(): android.graphics.Rect {
+        val windowRect = android.graphics.Rect()
+        getGlobalVisibleRect(windowRect)
         val dm = resources.displayMetrics
-        val w = if (width > 50) width else dm.widthPixels
-        val ar = if (videoAspectRatio > 0f) videoAspectRatio else (16f / 9f)
-        val h = if (height > 50) Math.min(height, Math.round(w / ar)) else Math.round(w / ar)
-        val left = if (width > 50) loc[0] else 0
-        val top = if (height > 50) loc[1] else run {
+        val decorW = dm.widthPixels
+        val decorH = dm.heightPixels
+
+        if (windowRect.width() <= 50 || windowRect.height() <= 50) {
+            val ar = if (videoAspectRatio > 0f) videoAspectRatio else (16f / 9f)
+            val h = Math.round(decorW.toFloat() / ar)
             val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
             val sb = if (resId > 0) resources.getDimensionPixelSize(resId) else 0
-            sb + Math.round(58f * dm.density)
+            val top = sb + Math.round(58f * dm.density)
+            return android.graphics.Rect(0, top, decorW, top + h)
         }
-        return android.graphics.Rect(left, top, left + w, top + h)
+
+        // Only use contentRect if bleed is enabled AND the view is actually fullscreen (rave mode)
+        if (renderer.bleedEnabled && windowRect.height() > decorH * 0.75f) {
+            val cr = renderer.contentRect
+            if (cr != null && cr.width() > 0 && cr.height() > 0) {
+                val left = Math.max(windowRect.left, windowRect.left + cr.left.toInt())
+                val top = Math.max(windowRect.top, windowRect.top + cr.top.toInt())
+                val right = Math.min(windowRect.right, windowRect.left + cr.right.toInt())
+                val bottom = Math.min(windowRect.bottom, windowRect.top + cr.bottom.toInt())
+                if (right > left && bottom > top) {
+                    return android.graphics.Rect(left, top, right, bottom)
+                }
+            }
+        }
+
+        val ar = if (videoAspectRatio > 0f) videoAspectRatio else (16f / 9f)
+        val viewW = windowRect.width()
+        val viewH = windowRect.height()
+        val viewAr = viewW.toFloat() / viewH.toFloat()
+
+        return if (Math.abs(viewAr - ar) < 0.02f) {
+            windowRect
+        } else if (viewAr > ar) {
+            val targetW = Math.round(viewH.toFloat() * ar)
+            val diffX = (viewW - targetW) / 2
+            android.graphics.Rect(windowRect.left + diffX, windowRect.top, windowRect.left + diffX + targetW, windowRect.bottom)
+        } else {
+            val targetH = Math.round(viewW.toFloat() / ar)
+            val diffY = (viewH - targetH) / 2
+            android.graphics.Rect(windowRect.left, windowRect.top + diffY, windowRect.right, windowRect.top + diffY + targetH)
+        }
     }
+
+    fun getVideoRectOnScreen(): android.graphics.Rect = getVideoRectInWindow()
 
     private val glSurfaceView: GLSurfaceView = GLSurfaceView(context)
     private val renderer: DualSurfaceVideoRenderer
@@ -81,10 +106,45 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         glSurfaceView.setRenderer(renderer)
         glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
+        renderer.onBbdResultListener = { ar, cropPct, horizCropPct ->
+            val event = Arguments.createMap().apply {
+                putDouble("aspectRatio", ar.toDouble())
+                putDouble("verticalPercent", cropPct.toDouble())
+                putDouble("horizontalPercent", horizCropPct.toDouble())
+            }
+            sendEvent("onBlackBarDetected", event)
+        }
+
         addView(
             glSurfaceView,
             LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        glSurfaceView.requestRender()
+        if (w > 0 && h > 0) {
+            post {
+                com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+            }
+        }
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (translationY != 0f) {
+            val loc = IntArray(2)
+            getLocationInWindow(loc)
+            if (loc[1] <= 0) {
+                translationY = 0f
+            }
+        }
+        if (changed && com.DME.MainActivity.isPipEnabled) {
+            post {
+                com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+            }
+        }
     }
 
     private fun getOrCreatePlayer(mediaSourceFactory: DefaultMediaSourceFactory): ExoPlayer {
@@ -112,7 +172,7 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         }
     }
 
-    fun setSource(uri: String?, headers: Map<String, String>? = null) {
+    fun setSource(uri: String?, headers: Map<String, String>? = null, startPositionSeconds: Double? = null) {
         if (uri.isNullOrEmpty()) {
             stopPlayback()
             return
@@ -121,18 +181,70 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         currentUri = uri
         customHeaders = headers
         hasFiredReady = false
+        renderer.resetBbd()
         renderer.isPlaybackActive = false
         glSurfaceView.requestRender()
 
-        // 1. Build HTTP data source with custom headers
+        // 1. Build HTTP data source with custom headers and cookie authentication
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(10000)
             .setReadTimeoutMs(10000)
 
-        customHeaders?.let { h ->
-            httpDataSourceFactory.setDefaultRequestProperties(h)
+        val mergedHeaders = mutableMapOf<String, String>()
+
+        val isYouTube = uri.contains("googlevideo.com") || uri.contains("youtube") || uri.endsWith(".mpd")
+        if (isYouTube) {
+            try {
+                val cm = android.webkit.CookieManager.getInstance()
+                val rawCookie = cm.getCookie("https://www.youtube.com") ?: cm.getCookie("https://m.youtube.com")
+                if (!rawCookie.isNullOrEmpty()) {
+                    // Only retain visitor-session cookies (VISITOR_INFO1_LIVE, YSC, PREF)
+                    // Never inject user account cookies (LOGIN_INFO, SAPISID, SSID, HSID, SID, APISID)
+                    // into visitor/PO-token chunk streams — Google CDN rejects the mismatch at 59s!
+                    val safeCookies = rawCookie.split(";")
+                        .map { it.trim() }
+                        .filter { c ->
+                            c.startsWith("VISITOR_INFO1_LIVE=") ||
+                            c.startsWith("YSC=") ||
+                            c.startsWith("PREF=")
+                        }
+                        .joinToString("; ")
+                    if (safeCookies.isNotEmpty()) {
+                        mergedHeaders["Cookie"] = safeCookies
+                    }
+                }
+            } catch (_: Exception) {}
+            mergedHeaders["Referer"] = "https://m.youtube.com/"
+            mergedHeaders["Origin"] = "https://m.youtube.com"
         }
+
+        // Apply custom headers passed from React Native (can override default headers)
+        customHeaders?.let { h ->
+            mergedHeaders.putAll(h)
+        }
+
+        // Ensure visitor cookie is synced into CookieManager for both logged-in and logged-out states
+        val effectiveCookie = mergedHeaders["Cookie"]
+        if (!effectiveCookie.isNullOrEmpty() && effectiveCookie.contains("VISITOR_INFO1_LIVE")) {
+            try {
+                val cm = android.webkit.CookieManager.getInstance()
+                cm.setCookie("https://www.youtube.com", effectiveCookie)
+                cm.setCookie("https://m.youtube.com", effectiveCookie)
+                cm.setCookie(".youtube.com", effectiveCookie)
+                cm.flush()
+            } catch (_: Exception) {}
+        }
+
+        // MWEB DASH formats require mobile Safari User-Agent to match BotGuard Web PO-tokens
+        val defaultUa = if (isYouTube) {
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        } else {
+            "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
+        }
+        val ua = mergedHeaders["User-Agent"] ?: defaultUa
+        httpDataSourceFactory.setUserAgent(ua)
+        httpDataSourceFactory.setDefaultRequestProperties(mergedHeaders)
 
         // 2. Wrap in DefaultDataSource so file:// (local MPD manifests), content://, and https:// streams all work!
         val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
@@ -166,7 +278,11 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             .build()
 
         val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
-        p.setMediaSource(mediaSource, true)
+        val shouldReset = (startPositionSeconds == null || startPositionSeconds <= 0.0)
+        p.setMediaSource(mediaSource, shouldReset)
+        if (startPositionSeconds != null && startPositionSeconds > 0.0) {
+            p.seekTo((startPositionSeconds * 1000).toLong())
+        }
         p.prepare()
         p.setPlaybackSpeed(currentPlaybackRateProp)
         p.playWhenReady = isPlayingProp
@@ -207,6 +323,7 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         }
         val ms = (seconds * 1000).toLong()
         p.seekTo(ms)
+        renderer.onSeek()
     }
 
     fun stopPlayback() {
@@ -216,6 +333,7 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         currentPlaybackRateProp = 1.0f
         currentUri = null
         hasFiredReady = false
+        renderer.resetBbd()
         renderer.isPlaybackActive = false
         glSurfaceView.requestRender()
     }
@@ -321,6 +439,11 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         glSurfaceView.requestRender()
     }
 
+    fun setBbdHorizCropPercent(cropPercent: Float) {
+        renderer.bbdHorizCropPercent = cropPercent
+        glSurfaceView.requestRender()
+    }
+
     fun setBlurSigma(sigma: Float) {
         renderer.blurSigma = sigma
         glSurfaceView.requestRender()
@@ -328,6 +451,14 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
 
     fun setContentRect(rect: android.graphics.RectF?) {
         renderer.contentRect = rect
+        glSurfaceView.requestRender()
+        post {
+            com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+        }
+    }
+
+    fun setDisplayMode(mode: Int) {
+        renderer.displayMode = mode
         glSurfaceView.requestRender()
     }
 
@@ -355,6 +486,9 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             }
             sendEvent("onReady", event)
         }
+        post {
+            com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+        }
     }
 
     override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -362,7 +496,14 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             val ar = videoSize.width.toFloat() / videoSize.height.toFloat()
             videoAspectRatio = ar
             renderer.videoAspectRatio = ar
+            if (ar >= 1.82f) {
+                // Native widescreen stream (>= 1.82) has no baked black bars
+                renderer.resetBbd()
+            }
             glSurfaceView.requestRender()
+            post {
+                com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+            }
 
             val event = Arguments.createMap().apply {
                 putDouble("aspectRatio", ar.toDouble())

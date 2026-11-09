@@ -83,12 +83,18 @@ class PipModule(reactContext: ReactApplicationContext) :
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       activity.runOnUiThread {
         try {
-          val num = if (aspectRatioNumerator > 0) aspectRatioNumerator else MainActivity.pipAspectRatioNumerator
-          val den = if (aspectRatioDenominator > 0) aspectRatioDenominator else MainActivity.pipAspectRatioDenominator
-          val rational = activity.getSafeRational(num, den)
-          val params = PictureInPictureParams.Builder()
-            .setAspectRatio(rational)
-            .build()
+          if (aspectRatioNumerator > 0 && aspectRatioDenominator > 0) {
+            MainActivity.pipAspectRatioNumerator = aspectRatioNumerator
+            MainActivity.pipAspectRatioDenominator = aspectRatioDenominator
+          }
+          val params = activity.buildPipParams() ?: run {
+            val num = if (aspectRatioNumerator > 0) aspectRatioNumerator else MainActivity.pipAspectRatioNumerator
+            val den = if (aspectRatioDenominator > 0) aspectRatioDenominator else MainActivity.pipAspectRatioDenominator
+            val rational = activity.getSafeRational(num, den)
+            PictureInPictureParams.Builder()
+              .setAspectRatio(rational)
+              .build()
+          }
           val entered = activity.enterPictureInPictureMode(params)
           promise.resolve(entered)
         } catch (e: Exception) {

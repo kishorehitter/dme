@@ -72,6 +72,10 @@ class DualSurfaceVideoRenderer(
     private var blitSTMatrixHandle = 0
     private var blitTextureHandle = 0
     private var blitCropHandle = 0
+    private var blitHorizCropHandle = 0
+    private var blitHalfSizeHandle = 0
+    private var blitRadiusHandle = 0
+    private var blitDisplayModeHandle = 0
 
     // 2. Rave Pass 1: BackgroundResizeShader (Horizontal Gaussian downsample to FBO)
     private var resizeProgram = 0
@@ -100,10 +104,47 @@ class DualSurfaceVideoRenderer(
     @Volatile var bleedEnabled: Boolean = true
     @Volatile var bleedDarkness: Float = 0.55f
     @Volatile var bbdCropPercent: Float = 0.0f
+    @Volatile var bbdHorizCropPercent: Float = 0.0f
+    @Volatile var displayMode: Int = 0 // 0 = Fit Dynamic (Shrink/Expand Container), 1 = Zoom to Fill
     @Volatile var videoAspectRatio: Float = 16f / 9f
     @Volatile var blurSigma: Float = 48.0f
     @Volatile var contentRect: android.graphics.RectF? = null
     @Volatile var isPlaybackActive: Boolean = false
+
+    // Smooth crop interpolation state (slow fluid filling animation without jump)
+    private var currentCropPercent: Float = 0.0f
+    private var currentHorizCropPercent: Float = 0.0f
+    private var lastFrameTimeNs: Long = 0L
+
+    // Live Frame Black Bar Detection (Rave post-playback BBD: Letterbox & Pillarbox)
+    private var bbdFrameCounter = 0
+    private var bbdDetectionDone = false
+    private val bbdLetterboxSamples = ArrayList<Float>()
+    private val bbdPillarboxSamples = ArrayList<Float>()
+    private var bbdFullFrameCount = 0
+    private var bbdPixelBuffer: ByteBuffer? = null
+    var onBbdResultListener: ((aspectRatio: Float, verticalPercent: Float, horizontalPercent: Float) -> Unit)? = null
+
+    fun resetBbd() {
+        bbdDetectionDone = false
+        bbdFrameCounter = 0
+        bbdLetterboxSamples.clear()
+        bbdPillarboxSamples.clear()
+        bbdFullFrameCount = 0
+        bbdCropPercent = 0.0f
+        bbdHorizCropPercent = 0.0f
+        currentCropPercent = 0.0f
+        currentHorizCropPercent = 0.0f
+        lastFrameTimeNs = 0L
+    }
+
+    fun onSeek() {
+        // If detection has not completed yet, reset counter to sample at new position
+        if (!bbdDetectionDone && bbdLetterboxSamples.isEmpty() && bbdPillarboxSamples.isEmpty()) {
+            bbdFrameCounter = 0
+            bbdFullFrameCount = 0
+        }
+    }
 
     private var surfaceWidth = 0
     private var surfaceHeight = 0
@@ -219,6 +260,9 @@ class DualSurfaceVideoRenderer(
             GLES20.GL_TEXTURE_2D, fboTextureId, 0
         )
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
+        // Preallocate reusable direct byte buffer for BBD pixel reading
+        bbdPixelBuffer = ByteBuffer.allocateDirect(fboWidth * fboHeight * 4).order(ByteOrder.nativeOrder())
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
@@ -235,16 +279,18 @@ class DualSurfaceVideoRenderer(
         if (!isPlaybackActive) {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
-            GLES20.glClearColor(0f, 0f, 0f, 0f)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
             return
         }
 
+        var hasNewFrame = false
         synchronized(this) {
             if (updateSurface && !isReleased) {
                 try {
                     surfaceTexture?.updateTexImage()
                     surfaceTexture?.getTransformMatrix(stMatrix)
+                    hasNewFrame = true
                 } catch (e: Throwable) {
                     android.util.Log.w("DualSurfaceRenderer", "Failed to update texture image: ${e.message}")
                 }
@@ -254,8 +300,42 @@ class DualSurfaceVideoRenderer(
 
         if (isReleased) return
 
+        // ── Smooth crop interpolation (slow, fluid filling animation without jump) ──
+        val now = System.nanoTime()
+        val dt = if (lastFrameTimeNs > 0L) {
+            ((now - lastFrameTimeNs) / 1_000_000_000.0f).coerceIn(0.001f, 0.05f)
+        } else {
+            0.016f
+        }
+        lastFrameTimeNs = now
+
+        val targetCrop = if (videoAspectRatio < 1.82f) bbdCropPercent.coerceIn(0.0f, 0.26f) else 0.0f
+        val targetHorizCrop = if (videoAspectRatio < 1.82f) bbdHorizCropPercent.coerceIn(0.0f, 0.38f) else 0.0f
+
+        // Exponential smoothing: factor 4.5f gives a ~550ms smooth ease-out "filling" transition
+        val lerpFactor = (1.0f - Math.exp(-dt * 4.5).toFloat()).coerceIn(0.01f, 1.0f)
+
+        var isAnimating = false
+        if (Math.abs(currentCropPercent - targetCrop) > 0.0003f) {
+            currentCropPercent += (targetCrop - currentCropPercent) * lerpFactor
+            isAnimating = true
+        } else {
+            currentCropPercent = targetCrop
+        }
+
+        if (Math.abs(currentHorizCropPercent - targetHorizCrop) > 0.0003f) {
+            currentHorizCropPercent += (targetHorizCrop - currentHorizCropPercent) * lerpFactor
+            isAnimating = true
+        } else {
+            currentHorizCropPercent = targetHorizCrop
+        }
+
+        if (isAnimating) {
+            glSurfaceView.requestRender()
+        }
+
         val rect = contentRect
-        val isInvalidRect = rect != null && (rect.right > surfaceWidth || rect.bottom > surfaceHeight || rect.width() > surfaceWidth || rect.height() > surfaceHeight)
+        val isInvalidRect = rect != null && (rect.right > surfaceWidth + 5f || rect.bottom > surfaceHeight + 5f || rect.width() > surfaceWidth + 5f || rect.height() > surfaceHeight + 5f)
         val isSmallOrPipSurface = (surfaceWidth < 700 && surfaceHeight < 700) || isInvalidRect
 
         // ── PASS 1 & 2: RAVE 2-PASS DOWNSAMPLED SEPARABLE GAUSSIAN BLEED ──
@@ -267,17 +347,217 @@ class DualSurfaceVideoRenderer(
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         }
 
+        // Live Frame Black Bar Detection (Rave post-playback BBD on actual decoded video frames)
+        if (hasNewFrame && !bbdDetectionDone && videoAspectRatio < 1.82f) {
+            checkBlackBarDetection()
+        }
+
         // ── PASS 3: FOREGROUND SHARP CONTENT SHADER (Aspect-fit with BBD crop) ──
         renderForegroundPass(isInvalidRect)
     }
 
-    private fun renderBackgroundPass() {
-        if (fboId == 0 || fboTextureId == 0) {
-            initFbo(surfaceWidth, surfaceHeight)
-            if (fboId == 0) return
+    private fun checkBlackBarDetection() {
+        bbdFrameCounter++
+
+        // Sample every 25 frames (~0.8s) during playback while detection is not done.
+        // Check up to frame 900 (~30 seconds) so even songs with a dark/fade-in intro
+        // (like Pokkisham - Nila nee vaanam) automatically get detected after the intro ends!
+        if (bbdFrameCounter % 25 == 0 && bbdFrameCounter <= 900) {
+            if (fboId == 0 || fboTextureId == 0) {
+                initFbo(surfaceWidth, surfaceHeight)
+                if (fboId == 0) return
+            }
+
+            // Always ensure FBO has the uncropped downscaled frame for BBD analysis
+            renderResizePassOnly(0.0f)
+
+            // Read pixels from FBO (size: fboWidth x fboHeight) using reusable buffer
+            val buffer = bbdPixelBuffer ?: ByteBuffer.allocateDirect(fboWidth * fboHeight * 4).order(ByteOrder.nativeOrder()).also { bbdPixelBuffer = it }
+            buffer.position(0)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboId)
+            GLES20.glReadPixels(0, 0, fboWidth, fboHeight, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer)
+            // Immediately restore default screen framebuffer (0) so next pass does not render offscreen
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            buffer.position(0)
+
+            analyzeBbdFrame(buffer)
+        }
+    }
+
+    private fun isBlackRow(buffer: ByteBuffer, y: Int, width: Int): Boolean {
+        var darkCount = 0
+        var totalCount = 0
+        // Sample middle 70% of columns (x from 15% to 85%) to avoid curved edge artifacts
+        val startX = (width * 0.15f).toInt()
+        val endX = (width * 0.85f).toInt()
+        for (x in startX until endX step 2) {
+            val idx = (y * width + x) * 4
+            if (idx + 2 < buffer.capacity()) {
+                val r = buffer.get(idx).toInt() and 0xFF
+                val g = buffer.get(idx + 1).toInt() and 0xFF
+                val b = buffer.get(idx + 2).toInt() and 0xFF
+                // Rave BBD threshold: RGB all <= 22 (accommodates subtle video compression artifacts)
+                if (r <= 22 && g <= 22 && b <= 22) {
+                    darkCount++
+                }
+                totalCount++
+            }
+        }
+        return totalCount > 0 && (darkCount.toFloat() / totalCount.toFloat()) >= 0.85f
+    }
+
+    private fun isBlackColumn(buffer: ByteBuffer, x: Int, width: Int, height: Int): Boolean {
+        var darkCount = 0
+        var totalCount = 0
+        // Sample middle 70% of rows (y from 15% to 85%) to avoid curved edge artifacts
+        val startY = (height * 0.15f).toInt()
+        val endY = (height * 0.85f).toInt()
+        for (y in startY until endY step 1) {
+            val idx = (y * width + x) * 4
+            if (idx + 2 < buffer.capacity()) {
+                val r = buffer.get(idx).toInt() and 0xFF
+                val g = buffer.get(idx + 1).toInt() and 0xFF
+                val b = buffer.get(idx + 2).toInt() and 0xFF
+                // Rave BBD threshold: RGB all <= 22
+                if (r <= 22 && g <= 22 && b <= 22) {
+                    darkCount++
+                }
+                totalCount++
+            }
+        }
+        return totalCount > 0 && (darkCount.toFloat() / totalCount.toFloat()) >= 0.85f
+    }
+
+    private fun analyzeBbdFrame(buffer: ByteBuffer) {
+        if (fboHeight <= 10 || fboWidth <= 10) return
+
+        // 1. Check if the frame itself is all-black (intro / dark transition / fade)
+        // Sample center region: from y = 35% to 65%
+        var centerDarkCount = 0
+        var centerTotalCount = 0
+        val centerStartY = (fboHeight * 0.35f).toInt()
+        val centerEndY = (fboHeight * 0.65f).toInt()
+        val scanStartX = (fboWidth * 0.20f).toInt()
+        val scanEndX = (fboWidth * 0.80f).toInt()
+        for (y in centerStartY until centerEndY step 2) {
+            for (x in scanStartX until scanEndX step 2) {
+                val idx = (y * fboWidth + x) * 4
+                if (idx + 2 < buffer.capacity()) {
+                    val r = buffer.get(idx).toInt() and 0xFF
+                    val g = buffer.get(idx + 1).toInt() and 0xFF
+                    val b = buffer.get(idx + 2).toInt() and 0xFF
+                    if (r <= 22 && g <= 22 && b <= 22) {
+                        centerDarkCount++
+                    }
+                    centerTotalCount++
+                }
+            }
+        }
+        val isAllBlackFrame = centerTotalCount > 0 && (centerDarkCount.toFloat() / centerTotalCount.toFloat()) >= 0.85f
+        if (isAllBlackFrame) {
+            // Entire screen (including center) is dark or black (e.g. intro/fade)!
+            // Rave rule: Ignore all-black frames and CONTINUE waiting for visual scenes!
+            return
         }
 
-        // ── PASS 1: BackgroundResizeShader (Horizontal Gaussian Downsample into FBO) ──
+        // 2. Count black rows from top and bottom (Letterbox)
+        // In OpenGL, row 0 is the bottom, and row (fboHeight - 1) is the top
+        var topBlackRows = 0
+        for (y in (fboHeight - 1) downTo 0) {
+            if (isBlackRow(buffer, y, fboWidth)) {
+                topBlackRows++
+            } else {
+                break
+            }
+        }
+
+        var bottomBlackRows = 0
+        for (y in 0 until fboHeight) {
+            if (isBlackRow(buffer, y, fboWidth)) {
+                bottomBlackRows++
+            } else {
+                break
+            }
+        }
+
+        val cropRows = Math.min(topBlackRows, bottomBlackRows)
+        val vertPct = cropRows.toFloat() / fboHeight.toFloat()
+
+        // 3. Count black columns from left and right (Pillarbox)
+        var leftBlackCols = 0
+        for (x in 0 until fboWidth) {
+            if (isBlackColumn(buffer, x, fboWidth, fboHeight)) {
+                leftBlackCols++
+            } else {
+                break
+            }
+        }
+
+        var rightBlackCols = 0
+        for (x in (fboWidth - 1) downTo 0) {
+            if (isBlackColumn(buffer, x, fboWidth, fboHeight)) {
+                rightBlackCols++
+            } else {
+                break
+            }
+        }
+
+        val cropCols = Math.min(leftBlackCols, rightBlackCols)
+        val horizPct = cropCols.toFloat() / fboWidth.toFloat()
+
+        val isLetterboxed = vertPct >= 0.035f && vertPct <= 0.26f
+        val isPillarboxed = horizPct >= 0.045f && horizPct <= 0.38f
+
+        // Critical safety: If a frame has black borders on ALL FOUR SIDES, it is a centered floating logo or intro card
+        // (like Haarika & Hassine in Ramuloo Ramulaa). It is NOT a real full-screen visual scene.
+        // Skip this frame and continue waiting for the actual movie scenes!
+        if (isLetterboxed && isPillarboxed) {
+            return
+        }
+
+        if (isLetterboxed || isPillarboxed) {
+            val safeVertPct = if (isLetterboxed) vertPct else 0.0f
+            val safeHorizPct = if (isPillarboxed) horizPct else 0.0f
+
+            bbdLetterboxSamples.add(safeVertPct)
+            bbdPillarboxSamples.add(safeHorizPct)
+
+            // Require 3 consistent samples before locking (prevents premature locking on intro scene cuts):
+            if (bbdLetterboxSamples.size >= 3) {
+                val sortedVert = bbdLetterboxSamples.sorted()
+                val sortedHoriz = bbdPillarboxSamples.sorted()
+                val medianVertCrop = sortedVert[sortedVert.size / 2]
+                val medianHorizCrop = sortedHoriz[sortedHoriz.size / 2]
+
+                val effectiveW = (1.0f - 2.0f * medianHorizCrop).coerceAtLeast(0.2f)
+                val effectiveH = (1.0f - 2.0f * medianVertCrop).coerceAtLeast(0.2f)
+                val detectedAr = videoAspectRatio * (effectiveW / effectiveH)
+
+                bbdDetectionDone = true // Lock immediately so detection never re-evaluates on resized layout
+                bbdCropPercent = medianVertCrop
+                bbdHorizCropPercent = medianHorizCrop
+                glSurfaceView.requestRender() // Trigger smooth filling animation immediately
+
+                mainHandler.post {
+                    onBbdResultListener?.invoke(detectedAr, medianVertCrop, medianHorizCrop)
+                }
+            }
+        } else {
+            // Full frame video with active visuals reaching the edges (e.g. "Ala Bolelo")
+            bbdFullFrameCount++
+            // If we have verified 4 separate valid non-black frames with 0% black bars:
+            if (bbdFullFrameCount >= 4 && bbdLetterboxSamples.isEmpty() && bbdPillarboxSamples.isEmpty()) {
+                bbdDetectionDone = true // Lock immediately as full frame native aspect ratio
+                bbdCropPercent = 0.0f
+                bbdHorizCropPercent = 0.0f
+                mainHandler.post {
+                    onBbdResultListener?.invoke(videoAspectRatio, 0.0f, 0.0f)
+                }
+            }
+        }
+    }
+
+    private fun renderResizePassOnly(cropPercent: Float) {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboId)
         GLES20.glViewport(0, 0, fboWidth, fboHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -296,17 +576,9 @@ class DualSurfaceVideoRenderer(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
         GLES20.glUniform1i(resizeTextureHandle, 0)
 
-        // Native widescreen streams (>= 1.82, e.g. 21:9 or 2.39:1) do NOT have baked black bars.
-        // Applying bbdCropPercent to an already widescreen stream would cut into real video content!
-        val safeCropPercent = if (videoAspectRatio < 1.82f) {
-            bbdCropPercent.coerceIn(0.0f, 0.22f)
-        } else {
-            0.0f
-        }
-
         GLES20.glUniformMatrix4fv(resizeMVPMatrixHandle, 1, false, identityMatrix, 0)
         GLES20.glUniformMatrix4fv(resizeSTMatrixHandle, 1, false, stMatrix, 0)
-        GLES20.glUniform1f(resizeLetterboxHandle, safeCropPercent)
+        GLES20.glUniform1f(resizeLetterboxHandle, cropPercent)
         GLES20.glUniform1f(resizeAspectRatioHandle, videoAspectRatio)
         GLES20.glUniform2f(resizeFboSizeHandle, fboWidth.toFloat(), fboHeight.toFloat())
 
@@ -314,6 +586,25 @@ class DualSurfaceVideoRenderer(
 
         GLES20.glDisableVertexAttribArray(resizePositionHandle)
         GLES20.glDisableVertexAttribArray(resizeTexCoordHandle)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun renderBackgroundPass() {
+        if (fboId == 0 || fboTextureId == 0) {
+            initFbo(surfaceWidth, surfaceHeight)
+            if (fboId == 0) return
+        }
+
+        // Native widescreen streams (>= 1.82, e.g. 21:9 or 2.39:1) do NOT have baked black bars.
+        // Applying bbdCropPercent to an already widescreen stream would cut into real video content!
+        val safeCropPercent = if (videoAspectRatio < 1.82f) {
+            currentCropPercent
+        } else {
+            0.0f
+        }
+
+        // ── PASS 1: BackgroundResizeShader (Horizontal Gaussian Downsample into FBO) ──
+        renderResizePassOnly(safeCropPercent)
 
         // ── PASS 2: BackgroundBlurYShader (Vertical Gaussian Upscale into Screen Framebuffer) ──
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -347,14 +638,16 @@ class DualSurfaceVideoRenderer(
     }
 
     private fun renderForegroundPass(forceFullScreenViewport: Boolean = false) {
+        // Explicitly bind the default screen framebuffer (0) to ensure foreground draws to screen
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glUseProgram(blitProgram)
 
         val rect = if (forceFullScreenViewport) null else contentRect
         if (rect != null && rect.width() > 0 && rect.height() > 0) {
-            val vpX = rect.left.toInt()
-            val vpY = (surfaceHeight - rect.bottom).toInt()
-            val vpW = rect.width().toInt()
-            val vpH = rect.height().toInt()
+            val vpX = Math.max(0, rect.left.toInt())
+            val vpY = Math.max(0, (surfaceHeight - rect.bottom).toInt())
+            val vpW = Math.min(rect.width().toInt(), surfaceWidth - vpX)
+            val vpH = Math.min(rect.height().toInt(), surfaceHeight - vpY)
             GLES20.glViewport(vpX, vpY, vpW, vpH)
         } else {
             GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
@@ -364,26 +657,83 @@ class DualSurfaceVideoRenderer(
         val curH = rect?.height() ?: surfaceHeight.toFloat()
         val containerAspect = if (curH > 0) curW / curH else 1.777f
 
-        // Only apply BBD crop if the underlying video stream is 16:9 (< 1.82).
+        // Only apply BBD crop if the underlying video stream has baked black bars (videoAspectRatio < 1.82).
         // If the stream is natively widescreen (>= 1.82), it has no baked black bars.
         val safeCropPercent = if (videoAspectRatio < 1.82f) {
-            bbdCropPercent.coerceIn(0.0f, 0.22f)
+            currentCropPercent
+        } else {
+            0.0f
+        }
+        val safeHorizCropPercent = if (videoAspectRatio < 1.82f) {
+            currentHorizCropPercent
         } else {
             0.0f
         }
 
-        val effectiveVideoAspect = if (safeCropPercent > 0.005f) {
-            videoAspectRatio / (1.0f - (2.0f * safeCropPercent))
+        // True visual aspect ratio of the stream content with baked black bars removed:
+        val baseVisualAspect = if (safeCropPercent > 0.001f || safeHorizCropPercent > 0.001f) {
+            videoAspectRatio * ((1f - 2f * safeHorizCropPercent) / (1f - 2f * safeCropPercent))
         } else {
             videoAspectRatio
         }
 
+        val effectiveCropPercent: Float
+        val effectiveHorizCropPercent: Float
+
+        if (displayMode == 0) {
+            // ── FIT MODE (displayMode == 0) ──
+            // Container height/width in React Native animates to match baseVisualAspect.
+            // As container resizes, we dynamically crop the baked black bars strictly proportional
+            // to the live container aspect ratio so visual pixels are 1:1 at every frame!
+            effectiveCropPercent = if (containerAspect > 1.78f && bbdCropPercent > 0.001f) {
+                val neededCrop = (1.0f - (videoAspectRatio / containerAspect)) * 0.5f
+                neededCrop.coerceIn(0.0f, bbdCropPercent)
+            } else {
+                0.0f
+            }
+            effectiveHorizCropPercent = if (containerAspect < 1.77f && bbdHorizCropPercent > 0.001f) {
+                val neededCrop = (1.0f - (containerAspect / videoAspectRatio)) * 0.5f
+                neededCrop.coerceIn(0.0f, bbdHorizCropPercent)
+            } else {
+                0.0f
+            }
+        } else {
+            // ── ZOOM TO FILL MODE (displayMode == 1) ──
+            // Container is fixed at standard 16:9 thumbnail frame.
+            // Smoothly and uniformly zoom into center to fill the 16:9 container, eliminating ALL black bars:
+            // 1) First remove any baked black bars (safeCropPercent, safeHorizCropPercent)
+            // 2) Then zoom the remaining visual content to fill containerAspect without distortion!
+            if (baseVisualAspect > containerAspect + 0.01f) {
+                // Video is wider than 16:9 (e.g. 2.39:1 widescreen or 21:9):
+                // Height fills container, crop sides horizontally:
+                val extraHoriz = ((1.0f - (containerAspect / baseVisualAspect)) * 0.5f).coerceIn(0.0f, 0.40f)
+                effectiveCropPercent = safeCropPercent
+                effectiveHorizCropPercent = (safeHorizCropPercent + extraHoriz * (1.0f - 2.0f * safeHorizCropPercent)).coerceIn(0.0f, 0.45f)
+            } else if (baseVisualAspect < containerAspect - 0.01f) {
+                // Video is taller than 16:9 (e.g. 4:3 or portrait):
+                // Width fills container, crop top/bottom vertically:
+                val extraVert = ((1.0f - (baseVisualAspect / containerAspect)) * 0.5f).coerceIn(0.0f, 0.40f)
+                effectiveCropPercent = (safeCropPercent + extraVert * (1.0f - 2.0f * safeCropPercent)).coerceIn(0.0f, 0.45f)
+                effectiveHorizCropPercent = safeHorizCropPercent
+            } else {
+                effectiveCropPercent = safeCropPercent
+                effectiveHorizCropPercent = safeHorizCropPercent
+            }
+        }
+
         var scaleX = 1.0f
         var scaleY = 1.0f
-        if (effectiveVideoAspect > containerAspect) {
-            scaleY = containerAspect / effectiveVideoAspect
-        } else {
-            scaleX = effectiveVideoAspect / containerAspect
+        if (rect != null && displayMode == 0) {
+            val visualAspect = if (effectiveCropPercent > 0.001f || effectiveHorizCropPercent > 0.001f) {
+                videoAspectRatio * ((1f - 2f * effectiveHorizCropPercent) / (1f - 2f * effectiveCropPercent))
+            } else {
+                videoAspectRatio
+            }
+            if (visualAspect > containerAspect + 0.02f) {
+                scaleY = containerAspect / visualAspect
+            } else if (visualAspect < containerAspect - 0.02f) {
+                scaleX = visualAspect / containerAspect
+            }
         }
 
         val fgMatrix = FloatArray(16)
@@ -402,9 +752,20 @@ class DualSurfaceVideoRenderer(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
         GLES20.glUniform1i(blitTextureHandle, 0)
 
+        val density = glSurfaceView.context.resources.displayMetrics.density
+        val radius = if (rect != null && bleedEnabled && !forceFullScreenViewport) 16.0f * density else 0.0f
+        val quadW = curW * scaleX
+        val quadH = curH * scaleY
+        val halfW = quadW * 0.5f
+        val halfH = quadH * 0.5f
+
         GLES20.glUniformMatrix4fv(blitMVPMatrixHandle, 1, false, fgMatrix, 0)
         GLES20.glUniformMatrix4fv(blitSTMatrixHandle, 1, false, stMatrix, 0)
-        GLES20.glUniform1f(blitCropHandle, safeCropPercent)
+        GLES20.glUniform1f(blitCropHandle, effectiveCropPercent)
+        GLES20.glUniform1f(blitHorizCropHandle, effectiveHorizCropPercent)
+        GLES20.glUniform2f(blitHalfSizeHandle, halfW, halfH)
+        GLES20.glUniform1f(blitRadiusHandle, radius)
+        GLES20.glUniform1i(blitDisplayModeHandle, displayMode)
 
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -422,15 +783,13 @@ class DualSurfaceVideoRenderer(
             uniform mat4 uSTMatrix;
             attribute vec4 aPosition;
             attribute vec4 aTextureCoord;
-            uniform float uCropPercent;
+            uniform vec2 uHalfSize;
             varying vec2 vTextureCoord;
+            varying vec2 vLocalPos;
             void main() {
                 gl_Position = uMVPMatrix * aPosition;
-                vec4 coord = aTextureCoord;
-                if (uCropPercent > 0.001) {
-                    coord.y = uCropPercent + aTextureCoord.y * (1.0 - 2.0 * uCropPercent);
-                }
-                vTextureCoord = (uSTMatrix * coord).xy;
+                vTextureCoord = (uSTMatrix * aTextureCoord).xy;
+                vLocalPos = aPosition.xy * uHalfSize;
             }
         """.trimIndent()
 
@@ -438,9 +797,31 @@ class DualSurfaceVideoRenderer(
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             varying vec2 vTextureCoord;
+            varying vec2 vLocalPos;
             uniform samplerExternalOES sTexture;
+            uniform vec2 uHalfSize;
+            uniform float uRadius;
+            uniform float uCropPercent;
+            uniform float uHorizCropPercent;
+            uniform int uDisplayMode;
             void main() {
-                gl_FragColor = texture2D(sTexture, vTextureCoord);
+                // Texture coordinates are mathematically calculated in Java for both Fit and Zoom modes:
+                // Fit mode: uCropPercent tracks live container boundary as height animates
+                // Zoom mode: uCropPercent / uHorizCropPercent crops black bars AND fills containerAspect
+                vec2 coord;
+                coord.y = uCropPercent + vTextureCoord.y * (1.0 - 2.0 * uCropPercent);
+                coord.x = uHorizCropPercent + vTextureCoord.x * (1.0 - 2.0 * uHorizCropPercent);
+                coord = clamp(coord, 0.0, 1.0);
+
+                vec4 color = texture2D(sTexture, coord);
+                if (uRadius > 0.5) {
+                    vec2 q = abs(vLocalPos) - uHalfSize + vec2(uRadius);
+                    float d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - uRadius;
+                    float alpha = clamp(0.5 - d, 0.0, 1.0);
+                    gl_FragColor = vec4(color.rgb, color.a * alpha);
+                } else {
+                    gl_FragColor = color;
+                }
             }
         """.trimIndent()
 
@@ -451,6 +832,10 @@ class DualSurfaceVideoRenderer(
         blitSTMatrixHandle = GLES20.glGetUniformLocation(blitProgram, "uSTMatrix")
         blitTextureHandle = GLES20.glGetUniformLocation(blitProgram, "sTexture")
         blitCropHandle = GLES20.glGetUniformLocation(blitProgram, "uCropPercent")
+        blitHorizCropHandle = GLES20.glGetUniformLocation(blitProgram, "uHorizCropPercent")
+        blitHalfSizeHandle = GLES20.glGetUniformLocation(blitProgram, "uHalfSize")
+        blitRadiusHandle = GLES20.glGetUniformLocation(blitProgram, "uRadius")
+        blitDisplayModeHandle = GLES20.glGetUniformLocation(blitProgram, "uDisplayMode")
     }
 
     /**

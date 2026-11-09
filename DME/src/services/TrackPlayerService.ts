@@ -825,6 +825,35 @@ export const extractVideoStreamUrlClientSide = async (
 
                 console.log(`✅ [DirectExtract] ${dashStreams.length} DASH qualities (Max: ${dashStreams[0]?.height}p), progressive: ${progressiveMuxed ? (progressiveMuxed as ExtractedVideoStream).height + 'p' : 'none'}`);
 
+                const progUrl = (progressiveMuxed as ExtractedVideoStream | null)?.url || workerResult.androidProgressiveUrl || null;
+                const canUseDash = Boolean(workerResult.hasAuthenticPoToken && dashStreams.length > 0 && bestAudio);
+
+                if (!canUseDash) {
+                    console.log(`🛡️ [DirectExtract] Authentic PO-Token absent for ${videoId} (rare edge case) — streaming directly via non-throttled progressive stream (360p)`);
+                    const progStream: ExtractedVideoStream = {
+                        url: progUrl || (dashStreams[0]?.url || ''),
+                        height: 360,
+                        width: 640,
+                        quality: '360p',
+                        qualityKey: '360p',
+                        has_audio: true,
+                        streamType: 'mp4',
+                    } as any;
+                    return cacheAndReturnVideo(videoId, {
+                        url: progUrl || (dashStreams[0]?.url || ''),
+                        quality: '360p',
+                        duration,
+                        title: workerResult.title,
+                        channelTitle: workerResult.channelTitle,
+                        streamType: 'mp4',
+                        streams: [progStream],
+                        audioUrl: null,
+                        dashUrl: null,
+                        fallbackProgressiveUrl: progUrl,
+                        headers: workerResult.headers,
+                    });
+                }
+
                 let dashMpdUri: string | null = null;
                 try {
                     // Audio is included in the DASH manifest so ExoPlayer handles both video
@@ -838,7 +867,7 @@ export const extractVideoStreamUrlClientSide = async (
                         const filePath = `${RNFS.CachesDirectoryPath}/dash_${videoId}_${ts}.mpd`;
                         await RNFS.writeFile(filePath, mpdXml, 'utf8');
                         dashMpdUri = `file://${filePath}`;
-                        console.log(`✅ [DirectExtract] DASH MPD written → ExoPlayer quality switching ready`);
+                        console.log(`✅ [DirectExtract] DASH MPD written → ExoPlayer quality switching ready (authentic PO-token validated)`);
                     } else {
                         console.warn(`⚠️ [DirectExtract] buildDashMpdXml returned null — falling back to progressive.`);
                     }
@@ -855,7 +884,6 @@ export const extractVideoStreamUrlClientSide = async (
                     }
                 }
 
-                const progUrl = (progressiveMuxed as ExtractedVideoStream | null)?.url || workerResult.androidProgressiveUrl || null;
                 const finalStreams = [...uniqueStreams];
                 if (progUrl && !finalStreams.some(s => s.has_audio)) {
                     finalStreams.push({
@@ -880,6 +908,7 @@ export const extractVideoStreamUrlClientSide = async (
                     audioUrl: bestAudio?.url || null,
                     dashUrl: dashMpdUri,
                     fallbackProgressiveUrl: workerResult.androidProgressiveUrl || progUrl,
+                    headers: workerResult.headers,
                 });
             }
         }

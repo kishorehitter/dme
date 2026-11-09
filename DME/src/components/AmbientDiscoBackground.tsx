@@ -27,27 +27,27 @@ interface AmbientDiscoBackgroundProps {
 // 2.2x canvas size for generous visible motion range
 const CANVAS_SIZE = Math.round(Math.max(SCREEN_WIDTH, SCREEN_HEIGHT) * 2.2);
 
-// ── 1. CINEMA VIP THEME: Midnight Obsidian & Molten Imperial Gold (Option 1) ──
+// ── 1. CINEMA VIP THEME: Electric Aqua & Jelly Ocean ──
 const SWIRL_SPECTRUM_1 = [
-  'rgba(234, 179, 8, 0.85)',   // Molten Imperial Gold (#EAB308)
-  'rgba(202, 138, 4, 0.70)',   // Rich Honey Bronze (#CA8A04)
-  'rgba(120, 53, 15, 0.82)',   // Deep Smoked Amber (#78350F)
-  'rgba(250, 204, 21, 0.78)',  // Vivid 24k Gold Glow (#FACC15)
-  'rgba(234, 179, 8, 0.85)',   // Loop
+  'rgba(0, 242, 254, 0.85)',   // Electric Aqua (#00F2FE)
+  'rgba(0, 119, 255, 0.72)',   // Jelly Royal Blue (#0077FF)
+  'rgba(2, 40, 80, 0.82)',     // Deep Oceanic Abyss (#022850)
+  'rgba(56, 189, 248, 0.80)',  // Radiant Ice Sky Cyan (#38BDF8)
+  'rgba(0, 242, 254, 0.85)',   // Loop
 ];
 
 const SWIRL_SPECTRUM_2 = [
-  'rgba(180, 83, 9, 0.80)',    // Deep Warm Bronze (#B45309)
-  'rgba(253, 224, 71, 0.68)',  // Shimmering Champagne Gold (#FDE047)
-  'rgba(69, 26, 3, 0.85)',     // Smoked Obsidian Amber (#451A03)
-  'rgba(217, 119, 6, 0.75)',   // Radiant Sunset Amber (#D97706)
-  'rgba(180, 83, 9, 0.80)',    // Loop
+  'rgba(0, 194, 255, 0.78)',   // Vivid Jelly Cyan (#00C2FF)
+  'rgba(125, 249, 255, 0.68)', // Shimmering Crystalline Aqua (#7DF9FF)
+  'rgba(3, 25, 52, 0.85)',     // Midnight Abyssal Indigo (#031934)
+  'rgba(14, 165, 233, 0.75)',  // Deep Azure Ribbon (#0EA5E9)
+  'rgba(0, 194, 255, 0.78)',   // Loop
 ];
 
 const SWIRL_SPECTRUM_3 = [
-  'rgba(254, 240, 138, 0.78)', // Brilliant Pale Champagne Gold Highlight (#FEF08A)
+  'rgba(186, 250, 255, 0.80)', // Brilliant Aqua-White Diamond Highlight (#BAFAFF)
   'transparent',
-  'rgba(234, 179, 8, 0.72)',   // Molten Gold Flare (#EAB308)
+  'rgba(0, 242, 254, 0.72)',   // Electric Aqua Flare (#00F2FE)
   'transparent',
 ];
 
@@ -320,13 +320,13 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
         />
       </Animated.View>
 
-      {/* ── 2. DEEP SMOKED OBSIDIAN VELVET OVERLAY (IMAX VIP Lounge) ── */}
+      {/* ── 2. DEEP OCEAN VELVET OVERLAY (Aqua & Jelly Blue VIP Cinema) ── */}
       <LinearGradient
         colors={[
-          'rgba(12, 10, 6, 0.58)',   // Top: Warm smoked obsidian behind video player (58% Dark)
-          'rgba(8, 7, 4, 0.42)',     // Upper Center: Luminous ambient bridge (42% Dark)
-          'rgba(8, 7, 4, 0.68)',     // Lower Center: Rich dark obsidian velvet (68% Dark)
-          'rgba(4, 4, 3, 0.90)',     // Bottom: Ultra-deep pitch obsidian behind chat stream (90% Dark)
+          'rgba(4, 14, 24, 0.58)',   // Top: Cool deep navy behind video player (58% Dark)
+          'rgba(2, 10, 18, 0.40)',   // Upper Center: Luminous ambient bridge (40% Dark)
+          'rgba(2, 8, 16, 0.68)',    // Lower Center: Rich dark oceanic velvet (68% Dark)
+          'rgba(1, 4, 10, 0.92)',    // Bottom: Ultra-deep pitch navy behind chat stream (92% Dark)
         ]}
         locations={[0, 0.28, 0.65, 1.0]}
         style={StyleSheet.absoluteFill}

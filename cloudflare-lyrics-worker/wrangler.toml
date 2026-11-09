@@ -1,0 +1,8 @@
+name = "dme-genius-lyrics-worker"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# Free tier usage: 100,000 requests/day
+# Optional: add your free Genius client token here, or leave default
+# [vars]
+# GENIUS_ACCESS_TOKEN = "your_genius_client_token"

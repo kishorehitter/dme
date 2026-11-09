@@ -11,7 +11,7 @@ import {
   StatusBar, Text, DeviceEventEmitter,
   TextInput, Keyboard, BackHandler,
   Platform, Dimensions, Image, FlatList, ActivityIndicator,
-  KeyboardAvoidingView, Animated, Easing, PanResponder,
+  KeyboardAvoidingView, Animated, Easing, NativeModules, PanResponder,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
@@ -55,7 +55,7 @@ export const YOUTUBE_CATEGORIES = [
 const OfflineErrorView = ({
   onRetry,
   isRetrying,
-  isDark = true,
+  isDark = false,
   title = 'Unable to Load Content',
   message = 'Something went wrong while loading. Please tap Try Again to reload.',
 }: {
@@ -103,7 +103,7 @@ const OfflineErrorView = ({
   </View>
 );
 
-const DiscoBallLoadingView = ({ isDark = true, bgColor }: { isDark?: boolean; bgColor?: string }) => {
+const DiscoBallLoadingView = ({ isDark = false, bgColor }: { isDark?: boolean; bgColor?: string }) => {
   return (
     <View style={[styles.loadingContainer, { backgroundColor: bgColor || (isDark ? '#0F0F0F' : '#FFFFFF') }]}>
       <View style={styles.glowBallWrapper}>
@@ -159,10 +159,80 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
+  const [isSelectingMedia, setIsSelectingMedia] = useState(false);
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [touchingCardId, setTouchingCardId] = useState<string | null>(null);
+  const selectedPlayingVideoIdRef = useRef<string | null>(null);
+
+  // Helper to skip ad and stop background YouTube playback immediately
+  const stopWebViewPlaybackAndSkip = useCallback(() => {
+    try {
+      youtubeWebViewRef.current?.injectJavaScript(`
+        (function() {
+          try {
+            var skipBtn = document.querySelector('.ytp-ad-skip-button, .videoAdUiSkipButton, button.ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-slot button, [class*="skip-button"]');
+            if (skipBtn && typeof skipBtn.click === 'function') skipBtn.click();
+            var vids = document.querySelectorAll('video');
+            for (var i = 0; i < vids.length; i++) {
+              vids[i].pause();
+              vids[i].muted = true;
+            }
+          } catch(e) {}
+        })(); true;
+      `);
+    } catch (e) {}
+  }, []);
+
+  // Guarantee native transparent status bar so dimmed overlays cover the status bar completely
+  useFocusEffect(
+    useCallback(() => {
+      StatusBar.setTranslucent(true);
+      StatusBar.setBackgroundColor('transparent');
+      if (Platform.OS === 'android' && NativeModules.SystemBar) {
+        NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
+      }
+      return () => {
+        stopWebViewPlaybackAndSkip();
+      };
+    }, [stopWebViewPlaybackAndSkip, isDark])
+  );
+
+  useEffect(() => {
+    StatusBar.setTranslucent(true);
+    StatusBar.setBackgroundColor('transparent');
+    if (Platform.OS === 'android' && NativeModules.SystemBar) {
+      NativeModules.SystemBar.setStatusBarColor('#00000000', !isDark);
+    }
+  }, [isSelectingMedia, showOverlay, isDark]);
+
+  // Stop background YouTube audio if user switches tabs away from YouTube
+  useEffect(() => {
+    if (activeTab !== 'youtube') {
+      stopWebViewPlaybackAndSkip();
+    }
+  }, [activeTab, stopWebViewPlaybackAndSkip]);
+
+  // Auto-recovery state for YouTube net::ERR_CONNECTION_RESET
+  const ytRecoveryCount = useRef(0);
+  const hasLoadedRef = useRef(false);
+
+  const handleAutoRecover = useCallback(() => {
+    if (hasLoadedRef.current) return;
+    if (ytRecoveryCount.current >= 2) {
+      setYtError(true);
+      return;
+    }
+    ytRecoveryCount.current += 1;
+
+    setTimeout(() => {
+      youtubeWebViewRef.current?.reload();
+    }, 600);
+  }, []);
 
   useEffect(() => {
     if (initialUrl) {
       setActiveTab('youtube');
+      hasLoadedRef.current = false;
       youtubeWebViewRef.current?.injectJavaScript(
         `if (window.location.href !== "${initialUrl}") { window.location.href = "${initialUrl}"; } true;`
       );
@@ -180,45 +250,44 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     setActiveTab(tab);
   }, []);
 
-  // Edge-to-edge toggle: swipe up expands content to full screen (hides header + tabs);
-  // swipe down restores the chrome.
-  const [hideChrome, setHideChrome] = useState(false);
-  const panY = useRef(new Animated.Value(0)).current;
-  const headerHeight = useRef(0);
-  const chromeAnim = useRef(new Animated.Value(1)).current;
+  // Dropdown state for tab selector
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownDimAnim = useRef(new Animated.Value(0)).current;
 
-  const toggleChrome = useCallback((expand: boolean) => {
-    if (hideChrome === expand) return;
-    setHideChrome(expand);
-    Animated.timing(chromeAnim, {
-      toValue: expand ? 0 : 1,
-      duration: 260,
-      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+  useEffect(() => {
+    Animated.timing(dropdownDimAnim, {
+      toValue: isDropdownOpen ? 1 : 0,
+      duration: isDropdownOpen ? 220 : 180,
       useNativeDriver: true,
     }).start();
-  }, [hideChrome, chromeAnim]);
+  }, [isDropdownOpen, dropdownDimAnim]);
 
-  const CHROME_HEIGHT = 128;
-
-  const panResponder = useRef(
+  // Swipe Down gesture to Open dropdown
+  const openPanResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: (e) => {
-        const ne = e.nativeEvent as any;
-        return Math.abs(ne.translationY || 0) < 6 && (ne.locationY || ne.y || 0) < 140;
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        return gestureState.dy > 10 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
       },
-      onPanResponderGrant: () => { panY.setValue(0); },
-      onPanResponderMove: (_, g) => {
-        if (hideChrome && g.dy > 0) panY.setValue(g.dy);
-        if (!hideChrome && g.dy < 0) panY.setValue(g.dy);
-      },
-      onPanResponderRelease: (_, g) => {
-        const threshold = CHROME_HEIGHT * 0.35;
-        if (g.dy > threshold) {
-          toggleChrome(true);
-        } else if (g.dy < -threshold) {
-          toggleChrome(false);
+      onPanResponderRelease: (_evt, gestureState) => {
+        if (gestureState.dy > 10 || gestureState.vy > 0.25) {
+          setIsDropdownOpen(true);
         }
-        Animated.timing(panY, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+      },
+    })
+  ).current;
+
+  // Swipe Up gesture to Close dropdown
+  const closePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        return gestureState.dy < -10 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
+      },
+      onPanResponderRelease: (_evt, gestureState) => {
+        if (gestureState.dy < -10 || gestureState.vy < -0.25) {
+          setIsDropdownOpen(false);
+        }
       },
     })
   ).current;
@@ -240,9 +309,19 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (showOverlay) {
+      if (isDropdownOpen) {
+        setIsDropdownOpen(false);
+        return true;
+      }
+      if (isSelectingMedia || showOverlay) {
         Keyboard.dismiss();
+        setIsSelectingMedia(false);
         setShowOverlay(false);
+        selectedPlayingVideoIdRef.current = null;
+        stopWebViewPlaybackAndSkip();
+        if (ytCanGoBackRef.current) {
+          youtubeWebViewRef.current?.goBack();
+        }
         return true;
       }
       if (activeTab === 'youtube' && ytCanGoBackRef.current) {
@@ -252,7 +331,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       return false;
     });
     return () => sub.remove();
-  }, [showOverlay, activeTab]);
+  }, [showOverlay, activeTab, isSelectingMedia, isDropdownOpen]);
 
   useEffect(() => {
     if (!showOverlay) {
@@ -283,12 +362,14 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
   useFocusEffect(
     useCallback(() => {
-      pinNavBarColor('#00000000', isDark);
-    }, [isDark])
+      pinNavBarColor('#00000000', true);
+    }, [])
   );
 
   const handleRetry = () => {
     setIsRetrying(true);
+    hasLoadedRef.current = false;
+    ytRecoveryCount.current = 0;
     setYtError(false);
     setDriveError(false);
     setLikesError(false);
@@ -330,42 +411,75 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   };
 
   // ─── YouTube Video Selection (Rave Architecture) ──────────────────────────
-  const handleSelectYouTubeVideo = useCallback((vId: string, title?: string, thumb?: string, channel?: string) => {
+  const handleSelectYouTubeVideo = useCallback(async (vId: string, initialTitle?: string, thumb?: string, channel?: string) => {
+    if (isSelectingMedia) return;
+    setIsSelectingMedia(true);
+    selectedPlayingVideoIdRef.current = vId;
+    selectedSource = 'youtube';
+    setSelectedVideoId(vId);
+    setShowOverlay(true);
+
+    // Command the YouTube WebView to navigate to watch page so the video & ads play in background at lowest volume
+    try {
+      youtubeWebViewRef.current?.injectJavaScript(`
+        (function() {
+          try {
+            if (window.location.href.indexOf("${vId}") === -1) {
+              window.location.href = "https://m.youtube.com/watch?v=${vId}";
+            }
+          } catch(e) {}
+        })(); true;
+      `);
+    } catch (e) {}
+
+    let resolvedTitle = (initialTitle || '').trim();
+    let resolvedThumbnail = thumb || `https://img.youtube.com/vi/${vId}/hqdefault.jpg`;
+    let resolvedChannel = (channel || 'YouTube').trim();
+
+    // Fetch official metadata before showing the start watching overlay so the user never sees
+    // a placeholder or title replacement jumping on the screen
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1600);
+
+      const resp = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vId}&format=json`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timeoutId);
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.title) {
+          resolvedTitle = data.title;
+        }
+        if (data?.thumbnail_url) {
+          resolvedThumbnail = data.thumbnail_url;
+        }
+        if (data?.author_name) {
+          resolvedChannel = data.author_name;
+        }
+      }
+    } catch (_e) {
+      // Abort or network failure; continue with resolvedTitle
+    }
+
+    if (!resolvedTitle) {
+      resolvedTitle = 'YouTube Video';
+    }
+
     const clickedItem = {
       videoId: vId,
       video_id: vId,
-      title: title || '',
-      thumbnail: thumb || `https://img.youtube.com/vi/${vId}/hqdefault.jpg`,
-      channelTitle: channel || 'YouTube',
+      title: resolvedTitle,
+      thumbnail: resolvedThumbnail,
+      channelTitle: resolvedChannel,
     };
 
-    selectedSource = 'youtube';
-    setSelectedVideoId(vId);
     setSelectedItem(clickedItem);
     DeviceEventEmitter.emit('PREVIEW_VIDEO', { videoId: vId });
-    setShowOverlay(true);
-
-    // Fast oEmbed lookup to obtain official title & author if needed
-    fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vId}&format=json`)
-      .then(r => r.json())
-      .then(data => {
-        if (data?.title) {
-          setSelectedItem((prev: any) => (prev ? {
-            ...prev,
-            title: data.title,
-            thumbnail: data.thumbnail_url || `https://img.youtube.com/vi/${vId}/hqdefault.jpg`,
-            channelTitle: data.author_name || prev.channelTitle || 'YouTube',
-          } : {
-            videoId: vId,
-            video_id: vId,
-            title: data.title,
-            thumbnail: data.thumbnail_url || `https://img.youtube.com/vi/${vId}/hqdefault.jpg`,
-            channelTitle: data.author_name || 'YouTube',
-          }));
-        }
-      })
-      .catch(() => {});
-  }, []);
+    setIsSelectingMedia(false);
+  }, [isSelectingMedia]);
 
   const handleYouTubeMessage = useCallback((event: any) => {
     try {
@@ -386,21 +500,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     } catch (e) {}
   }, [handleSelectYouTubeVideo]);
 
-  const handleYouTubeNavChange = (navState: any) => {
-    const { url, title: navTitle } = navState;
-
-    const videoIdMatch =
-      url.match(/[?&]v=([^&]+)/) ||
-      url.match(/shorts\/([^?&/]+)/);
-
-    if (videoIdMatch?.[1]) {
-      const vId = videoIdMatch[1];
-      const cleanTitle = (navTitle && !navTitle.includes('m.youtube.com') && !navTitle.includes('YouTube') && !navTitle.startsWith('http'))
-        ? navTitle.replace(/ - YouTube$/, '').trim()
-        : '';
-
-      handleSelectYouTubeVideo(vId, cleanTitle);
-    }
+  const handleYouTubeNavChange = (_navState: any) => {
+    // Navigation state changes should NEVER auto-select a video
+    // Video selection is strictly driven by explicit user clicks on video cards
   };
 
   // ─── Drive WebView — intercept file selection ─────────────────────────────
@@ -440,29 +542,45 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
   // ─── History / Likes grid item selection ──────────────────────────────────
   const handleSelectMedia = async (item: any, source: 'youtube' | 'drive', skipAuthCheck: boolean = false) => {
-    if (source === 'drive') {
-      const isAuth = await checkGoogleDriveAuth();
-      if (!isAuth) {
-        pendingDriveVideoRef.current = item;
-        setActiveTab('drive');
-        Toast.show({
-          type: 'info',
-          text1: 'Sign in required',
-          text2: 'Please sign in to Google Drive to play this video.',
-        });
-        return;
-      }
-    }
+    if (isSelectingMedia) return;
+    setIsSelectingMedia(true);
 
-    selectedSource = source;
     const targetVid = source === 'youtube' ? (item.video_id || item.videoId) : (item.video_id || item.id);
+    setSelectedCardId(targetVid);
+    selectedSource = source;
     setSelectedVideoId(targetVid);
     setSelectedItem(item);
-    if (targetVid && source === 'youtube') {
-      DeviceEventEmitter.emit('PREVIEW_VIDEO', { videoId: targetVid });
-    }
-    
     setShowOverlay(true);
+
+    try {
+      if (source === 'drive' && !skipAuthCheck) {
+        const isAuth = await checkGoogleDriveAuth();
+        if (!isAuth) {
+          setShowOverlay(false);
+          setSelectedVideoId(null);
+          setSelectedCardId(null);
+          pendingDriveVideoRef.current = item;
+          setActiveTab('drive');
+          Toast.show({
+            type: 'info',
+            text1: 'Sign in required',
+            text2: 'Please sign in to Google Drive to play this video.',
+          });
+          return;
+        }
+      }
+
+      if (targetVid && source === 'youtube') {
+        DeviceEventEmitter.emit('PREVIEW_VIDEO', { videoId: targetVid });
+      }
+    } catch (e) {
+      console.error('Error selecting media:', e);
+      setShowOverlay(false);
+    } finally {
+      setIsSelectingMedia(false);
+      setSelectedCardId(null);
+      setTouchingCardId(null);
+    }
   };
 
   // ─── Remove items ──────────────────────────────────────────────────────────
@@ -489,6 +607,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   };
 
   const [isStartingParty, setIsStartingParty] = useState(false);
+  const [isPartyActionLoading, setIsPartyActionLoading] = useState(false);
 
   const handleStartParty = async () => {
     if (!selectedVideoId) return;
@@ -496,7 +615,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     isNavigating.current = true;
     setIsStartingParty(true);
 
+    // Skip/stop background WebView playback immediately
+    stopWebViewPlaybackAndSkip();
+
     const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
+    const finalChannel = selectedItem?.channelTitle || selectedItem?.channel_title || (selectedSource === 'drive' ? 'Google Drive' : 'YouTube');
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const initThumbnail = selectedSource === 'drive'
       ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
@@ -516,6 +639,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       initialSource: selectedSource,
       initialTitle: finalTitle,
       initialThumbnail: initThumbnail,
+      initialChannelTitle: finalChannel,
     });
 
     if (typeof navigation?.setOptions === 'function') {
@@ -530,7 +654,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     if (isNavigating.current) return;
     isNavigating.current = true;
 
+    // Skip/stop background WebView playback immediately
+    stopWebViewPlaybackAndSkip();
+
     const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
+    const finalChannel = selectedItem?.channelTitle || selectedItem?.channel_title || (selectedSource === 'drive' ? 'Google Drive' : 'YouTube');
     const initThumbnail = selectedSource === 'drive'
       ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
       : (selectedItem?.thumbnail
@@ -555,12 +683,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       source:  selectedSource,
       title: finalTitle,
       thumbnail: initThumbnail,
-      channelTitle: selectedItem?.channelTitle,
+      channelTitle: finalChannel,
       isQueueOnly: true,
     });
 
     setTimeout(() => {
       isNavigating.current = false;
+      setIsPartyActionLoading(false);
     }, 400);
   };
 
@@ -568,8 +697,13 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     if (!selectedVideoId) return;
     if (isNavigating.current) return;
     isNavigating.current = true;
+    setIsPartyActionLoading(true);
+
+    // Skip/stop background WebView playback immediately
+    stopWebViewPlaybackAndSkip();
 
     const finalTitle = selectedItem?.title || (selectedSource === 'drive' ? 'Drive Video' : '');
+    const finalChannel = selectedItem?.channelTitle || selectedItem?.channel_title || (selectedSource === 'drive' ? 'Google Drive' : 'YouTube');
     const initThumbnail = selectedSource === 'drive'
       ? `https://drive.google.com/thumbnail?id=${selectedVideoId}&sz=w1280`
       : (selectedItem?.thumbnail
@@ -585,17 +719,20 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }
     navigation?.goBack?.();
 
+    // Immediately dispatch selection without 200ms lag
+    DeviceEventEmitter.emit('VIDEO_SELECTED', {
+      roomCode,
+      videoId: selectedVideoId,
+      source:  selectedSource,
+      title: finalTitle,
+      thumbnail: initThumbnail,
+      channelTitle: finalChannel,
+      isQueueOnly: false,
+    });
     setTimeout(() => {
-      DeviceEventEmitter.emit('VIDEO_SELECTED', {
-        roomCode,
-        videoId: selectedVideoId,
-        source:  selectedSource,
-        title: finalTitle,
-        thumbnail: initThumbnail,
-        channelTitle: selectedItem?.channelTitle,
-        isQueueOnly: false,
-      });
-    }, 200);
+      isNavigating.current = false;
+      setIsPartyActionLoading(false);
+    }, 400);
   };
 
   // ─── Grid item renderer (History & Likes & YouTube) ───────────────────────
@@ -627,14 +764,45 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     // We can't remove items from youtube search
     const canRemove = type === 'history' || type === 'likes';
 
+    const isSpinnerActive = selectedCardId === videoId || touchingCardId === videoId;
+
     return (
-      <View style={[styles.gridItem, { backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.03)', borderColor: isDark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.06)' }]}>
+      <View style={[styles.gridItem, {
+        backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.03)',
+        borderColor: isDark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.06)',
+      }]}>
         <TouchableOpacity
           style={styles.gridItemClick}
-          onPress={() => handleSelectMedia(
-            type === 'youtube' ? { video_id: videoId, videoId, title, thumbnail: thumb, channel_title: channel, channelTitle: channel } : item,
-            source
-          )}
+          disabled={isSelectingMedia || !!selectedCardId}
+          activeOpacity={0.7}
+          onPressIn={() => {
+            // Spinner appears the EXACT millisecond touch down & dimming effect starts!
+            setTouchingCardId(videoId);
+          }}
+          onPressOut={() => {
+            // If user dragged to scroll instead of selecting, clear touch state after short debounce
+            setTimeout(() => {
+              setTouchingCardId(prev => (prev === videoId && selectedCardId !== videoId ? null : prev));
+            }, 120);
+          }}
+          onPress={() => {
+            const vid = videoId;
+            setSelectedCardId(vid);
+            setTouchingCardId(vid);
+            handleSelectMedia(
+              {
+                ...item,
+                videoId: vid,
+                video_id: vid,
+                title,
+                thumbnail: thumb,
+                channelTitle: channel,
+                channel_title: channel,
+                source,
+              },
+              source
+            );
+          }}
         >
           <View style={styles.gridThumb}>
             <Image source={{ uri: thumb }} style={styles.gridThumbImage} resizeMode="cover" />
@@ -642,6 +810,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               colors={['transparent', 'rgba(0,0,0,0.85)']}
               style={styles.thumbGradient}
             />
+            {isSpinnerActive && (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
+                <ActivityIndicator size="small" color="#FF007F" />
+              </View>
+            )}
             <View style={styles.thumbInfo}>
               <Text style={styles.thumbTitle} numberOfLines={2}>
                 {title}
@@ -685,44 +858,167 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
 // ─── Render ────────────────────────────────────────────────────────────────
   return (
-    <View style={[styles.container, { backgroundColor: isDark ? '#0F0F0F' : theme.background }]}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent={true} />
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF',
+        },
+      ]}
+    >
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor="transparent"
+        translucent={true}
+      />
 
-{/* ── Top Tab Bar ── */}
-        <View style={[styles.topTabBar, { height: 64 + (insets.top || 28), paddingTop: (insets.top || 28) + 14 }]}>
-          <View style={styles.topTabRow}>
-            {TABS.map((tab) => {
-              const m = TAB_META[tab];
-              const isActive = activeTab === tab;
-              return (
-                <TouchableOpacity
-                  key={tab}
-                  style={[
-                    styles.topTabBox,
-                    { backgroundColor: isActive ? m.color + '18' : 'transparent' },
-                  ]}
-                  activeOpacity={0.7}
-                  onPress={() => switchTab(tab)}
-                >
-                  <Icon
-                    name={m.icon}
-                    size={isActive ? 24 : 22}
-                    color={isActive ? m.color : '#AAAAAA'}
-                  />
-                  <Text style={[styles.topTabLabel, { color: isActive ? m.color : '#999999' }]}>
-                    {m.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+      {/* ── Content Card (full screen below status bar) ── */}
+      <View
+        style={[
+          styles.cardWrapper,
+          {
+            flex: 1,
+            marginTop: insets.top,
+            marginBottom: activeTab === 'youtube' ? 0 : insets.bottom,
+            marginHorizontal: 0,
+          },
+        ]}
+      >
+
+        {/* ── Center Curved Toggle Button (closed state with Swipe Down support) ── */}
+        {!isDropdownOpen && (
+          <View
+            style={styles.topToggleHitZone}
+            {...openPanResponder.panHandlers}
+          >
+            <TouchableOpacity
+              style={[
+                styles.centerCurvedBtn,
+                {
+                  backgroundColor: isDark ? 'rgba(20, 20, 25, 0.94)' : 'rgba(255, 255, 255, 0.96)',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)',
+                },
+              ]}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 16, left: 24, right: 24 }}
+              onPress={() => setIsDropdownOpen(true)}
+            >
+              <Icon
+                name="chevron-down"
+                size={17}
+                color={isDark ? '#FFF' : '#333'}
+              />
+            </TouchableOpacity>
           </View>
-        </View>
+        )}
 
-      {/* ── Content Card (full screen) ── */}
-      <View style={[styles.cardWrapper, { flex: 1, marginBottom: 0 }]} {...(panResponder as any).panHandlers}>
+        {/* ── Single-Row Tabs Dropdown (open state with Swipe Up support) ── */}
+        {isDropdownOpen && (
+          <>
+            <Animated.View
+              style={[
+                styles.dropdownBackdrop,
+                {
+                  opacity: dropdownDimAnim,
+                  backgroundColor: isDark ? 'rgba(0, 0, 0, 0.50)' : 'rgba(0, 0, 0, 0.32)',
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={StyleSheet.absoluteFill}
+                activeOpacity={1}
+                onPress={() => setIsDropdownOpen(false)}
+              />
+            </Animated.View>
+            <View
+              style={[
+                styles.floatingTabRowCard,
+                {
+                  backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.10)',
+                },
+              ]}
+              {...closePanResponder.panHandlers}
+            >
+              <View style={styles.topTabRow}>
+                {TABS.map((tab) => {
+                  const m = TAB_META[tab];
+                  const isActive = activeTab === tab;
+                  return (
+                    <TouchableOpacity
+                      key={tab}
+                      style={[
+                        styles.topTabBox,
+                        { backgroundColor: isActive ? m.color + '22' : 'transparent' },
+                      ]}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        switchTab(tab);
+                        setIsDropdownOpen(false);
+                      }}
+                    >
+                      <Icon
+                        name={m.icon}
+                        size={isActive ? 24 : 22}
+                        color={isActive ? m.color : (isDark ? '#94A3B8' : '#64748B')}
+                      />
+                      <Text
+                        style={[
+                          styles.topTabLabel,
+                          { color: isActive ? m.color : (isDark ? '#94A3B8' : '#64748B') },
+                        ]}
+                      >
+                        {m.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
 
-        {/* Content Card */}
-        <View style={[styles.contentCard, { flex: 1, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF', borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', marginTop: (insets.top || 28) + 64, marginHorizontal: 0 }]}>
+              {/* Seamless Attached Semi-Rounded Close Button */}
+              <TouchableOpacity
+                style={[
+                  styles.closeCurveHandle,
+                  {
+                    backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)',
+                    borderColor: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.10)',
+                  },
+                ]}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 16, left: 24, right: 24 }}
+                onPress={() => setIsDropdownOpen(false)}
+              >
+                {/* Seamless bridge mask: hides/removes the tab container border line right above the button */}
+                <View
+                  style={[
+                    styles.handleBridgeMask,
+                    { backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)' },
+                  ]}
+                />
+                <Icon
+                  name="chevron-up"
+                  size={16}
+                  color={isDark ? '#FFF' : '#333'}
+                />
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {/* Content Card (Full Screen Height below Notch) */}
+        <View
+          style={[
+            styles.contentCard,
+            {
+              flex: 1,
+              backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF',
+              borderColor: 'transparent',
+              marginHorizontal: 0,
+              marginTop: 0,
+              borderRadius: 0,
+              borderWidth: 0,
+            },
+          ]}>
 
           {/* YouTube Tab — Mobile YouTube Interface (Rave Architecture) */}
           {activeTab === 'youtube' && (
@@ -738,7 +1034,20 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               <WebView
                 ref={youtubeWebViewRef}
                 source={{ uri: initialUrl || 'https://m.youtube.com' }}
-                onLoadEnd={dismissSplash}
+                onLoadEnd={() => {
+                  hasLoadedRef.current = true;
+                  ytRecoveryCount.current = 0;
+                  dismissSplash();
+                }}
+                cacheMode="LOAD_DEFAULT"
+                onError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  if (!hasLoadedRef.current && (nativeEvent.code === -101 || nativeEvent.description?.includes('ERR_CONNECTION_RESET'))) {
+                    handleAutoRecover();
+                  } else if (!hasLoadedRef.current) {
+                    setYtError(true);
+                  }
+                }}
                 renderError={() => (
                   <OfflineErrorView
                     onRetry={handleRetry}
@@ -756,32 +1065,40 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 }}
                 onShouldStartLoadWithRequest={(request) => {
                   const url = request.url;
-                  const videoMatch = url.match(/[?&]v=([^&]+)/) || url.match(/\/shorts\/([^/?#]+)/);
-                  if (videoMatch?.[1]) {
-                    handleSelectYouTubeVideo(videoMatch[1]);
+                  // Block deep links/external app intents so playback stays in WebView
+                  if (url.startsWith('intent:') || url.startsWith('vnd.youtube:')) {
                     return false;
                   }
+                  // Allow watch page to load so video & ads play inside WebView
+                  if (url.includes('/watch') || url.includes('v=')) {
+                    const videoMatch = url.match(/[?&]v=([^&]+)/) || url.match(/\/shorts\/([^/?#]+)/);
+                    if (videoMatch?.[1] && selectedPlayingVideoIdRef.current !== videoMatch[1]) {
+                      handleSelectYouTubeVideo(videoMatch[1]);
+                    }
+                    return true;
+                  }
+                  // Allow home, browse, trending, channel, and root shorts navigation
                   return true;
                 }}
-                userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+                userAgent="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
                 javaScriptEnabled={true}
                 domStorageEnabled={true}
                 thirdPartyCookiesEnabled={true}
                 sharedCookiesEnabled={true}
-                allowsInlineMediaPlayback={false}
-                mediaPlaybackRequiresUserAction={true}
-                style={{ flex: 1, backgroundColor: isDark ? "#0F0F0F" : "#FFFFFF" }}
+                allowsInlineMediaPlayback={true}
+                mediaPlaybackRequiresUserAction={false}
+                style={{ flex: 1 }}
                 injectedJavaScript={`
                   (function() {
                     function extractCardMeta(el, videoId) {
                       try {
                         var container = el.closest('ytm-compact-video-renderer, ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-item-section-renderer, .compact-media-item, .media-item, [class*="media-item"]') || el;
-                        var titleEl = container.querySelector('h3, h4, [class*="headline"], [class*="title"], .media-item-headline');
-                        var title = (titleEl ? titleEl.textContent : '') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                        var titleEl = container.querySelector('h3, h4, [class*="headline"], [class*="title"], .media-item-headline, .compact-media-item-headline');
+                        var title = (titleEl ? (titleEl.innerText || titleEl.textContent) : '') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
                         title = title.replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
 
                         var channelEl = container.querySelector('[class*="channel"], [class*="byline"], [class*="subhead"], [class*="subtitle"], ytm-badge-and-byline-renderer');
-                        var channel = (channelEl ? channelEl.textContent : '') || '';
+                        var channel = (channelEl ? (channelEl.innerText || channelEl.textContent) : '') || '';
                         channel = channel.replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
 
                         var img = container.querySelector('img[src*="ytimg"], img[src*="googleusercontent"], img[src*="ggpht"], img');
@@ -793,22 +1110,29 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                       }
                     }
 
-                    function checkUrl(url) {
-                      if (!url) return;
-                      var m = url.match(/[?&]v=([^&]+)/) || url.match(/\\/shorts\\/([^/?#]+)/);
-                      if (m && m[1]) {
-                        window.ReactNativeWebView.postMessage(JSON.stringify({
-                          type: 'youtubeVideoClicked',
-                          videoId: m[1]
-                        }));
-                      }
-                    }
-
                     document.addEventListener('click', function(e) {
+                      // Only real user clicks - never automated/script clicks
+                      if (!e.isTrusted) return;
+
                       var el = e.target.closest('a');
-                      if (el && el.href) {
-                        var m = el.href.match(/[?&]v=([^&]+)/) || el.href.match(/\\/shorts\\/([^/?#]+)/);
-                        if (m && m[1]) {
+                      if (!el || !el.href) return;
+
+                      // Never intercept clicks on bottom pivot bar (Home, Shorts, Subscriptions) or header
+                      if (el.closest('ytm-pivot-bar-renderer, ytm-pivot-bar-item-renderer, .pivot-bar, ytm-app-bar-renderer, header')) {
+                        return;
+                      }
+
+                      var href = el.href;
+                      // Do not intercept root /shorts tab navigation
+                      if (href.endsWith('/shorts') || href.endsWith('/shorts/')) {
+                        return;
+                      }
+
+                      var m = href.match(/[?&]v=([^&]+)/) || href.match(/\\/shorts\\/([^/?#]+)/);
+                      if (m && m[1]) {
+                        // Only select if it came from an actual video card in the feed
+                        var isCard = el.closest('ytm-compact-video-renderer, ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-item-section-renderer, .compact-media-item, .media-item, [class*="media-item"]') || el.classList.contains('media-item-thumbnail-container');
+                        if (isCard) {
                           e.preventDefault();
                           e.stopPropagation();
                           var meta = extractCardMeta(el, m[1]);
@@ -819,9 +1143,34 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                             channelTitle: meta.channelTitle,
                             thumbnail: meta.thumbnail
                           }));
+                          // Immediately navigate to watch page so video and ads start playing in background at lowest volume
+                          window.location.href = 'https://m.youtube.com/watch?v=' + m[1];
                         }
                       }
                     }, true);
+
+                    function enforcePlaybackAndLowestVolume() {
+                      try {
+                        if (window.location.href.indexOf('/watch') !== -1 || window.location.href.indexOf('v=') !== -1) {
+                          var vids = document.querySelectorAll('video');
+                          for (var i = 0; i < vids.length; i++) {
+                            var v = vids[i];
+                            if (v) {
+                              v.muted = false;
+                              v.volume = 0.05;
+                              if (v.paused) {
+                                v.play().catch(function() {});
+                              }
+                            }
+                          }
+                          var unmuteBtn = document.querySelector('.ytp-unmute, .ytp-mute-button[title*="unmute" i], button[aria-label*="unmute" i]');
+                          if (unmuteBtn && typeof unmuteBtn.click === 'function') unmuteBtn.click();
+                          var bigPlayBtn = document.querySelector('.ytp-large-play-button, button.slim-video-action-bar-actions');
+                          if (bigPlayBtn && typeof bigPlayBtn.click === 'function') bigPlayBtn.click();
+                        }
+                      } catch(e) {}
+                    }
+                    setInterval(enforcePlaybackAndLowestVolume, 300);
 
                     function harvestVideos() {
                       try {
@@ -855,27 +1204,35 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                       } catch(e) {}
                     }
 
-                    setTimeout(harvestVideos, 1500);
-                    setTimeout(harvestVideos, 3500);
-                    setTimeout(harvestVideos, 6000);
+                    function dismissConsent() {
+                      try {
+                        var consentBtn = document.querySelector('form[action*="consent"] button, button[aria-label*="Accept" i], button[aria-label*="Agree" i], .eom-button-accept button, ytm-consent-bump-renderer button, [aria-label*="Reject all" i], button.c-button');
+                        if (consentBtn && typeof consentBtn.click === 'function') {
+                          consentBtn.click();
+                        }
+                      } catch(e) {}
+                    }
+
+                    dismissConsent();
+                    setTimeout(dismissConsent, 800);
+                    setTimeout(dismissConsent, 2000);
+
+                    setTimeout(harvestVideos, 1200);
+                    setTimeout(harvestVideos, 2500);
+                    setTimeout(harvestVideos, 5000);
+
                     window.addEventListener('scroll', function() {
                       if (window._harvestTimeout) clearTimeout(window._harvestTimeout);
-                      window._harvestTimeout = setTimeout(harvestVideos, 1200);
+                      window._harvestTimeout = setTimeout(harvestVideos, 800);
                     }, { passive: true });
 
-                    var origPush = history.pushState;
-                    history.pushState = function() {
-                      origPush.apply(this, arguments);
-                      checkUrl(location.href);
-                    };
-                    var origReplace = history.replaceState;
-                    history.replaceState = function() {
-                      origReplace.apply(this, arguments);
-                      checkUrl(location.href);
-                    };
-                    window.addEventListener('popstate', function() {
-                      checkUrl(location.href);
-                    });
+                    try {
+                      var harvestObs = new MutationObserver(function() {
+                        if (window._harvestObsTimeout) clearTimeout(window._harvestObsTimeout);
+                        window._harvestObsTimeout = setTimeout(harvestVideos, 1200);
+                      });
+                      harvestObs.observe(document.body, { childList: true, subtree: true });
+                    } catch(e) {}
                   })(); true;
                 `}
                 onNavigationStateChange={(navState) => {
@@ -927,7 +1284,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               sharedCookiesEnabled={true}
               allowsInlineMediaPlayback={true}
               mediaPlaybackRequiresUserAction={false}
-              style={{ flex: 1, backgroundColor: isDark ? "#121212" : "#FFFFFF" }}
+              style={{ flex: 1, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }}
               onNavigationStateChange={(navState) => handleDriveNavChange(navState)}
               onMessage={(event) => {
                 try {
@@ -976,13 +1333,16 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               title="Unable to Load Likes"
               message="Connect to the internet to view and sync your liked videos." />
           ) : (
-            <View style={styles.listContent}>
-              <View style={[styles.searchBar, { backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.04)', borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }]}>
-                <Icon name="search" size={16} color={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.4)"} />
+            <View style={[styles.listContent, { paddingTop: 6, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }]}>
+              <View style={[styles.searchBar, {
+                backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+                borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
+              }]}>
+                <Icon name="search" size={16} color={isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)'} />
                 <TextInput
-                  style={[styles.searchInput, { color: theme.textPrimary }]}
+                  style={[styles.searchInput, { color: isDark ? '#fff' : '#111' }]}
                   placeholder="Search liked videos..."
-                  placeholderTextColor={isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.4)"}
+                  placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.38)' : 'rgba(0, 0, 0, 0.4)'}
                   value={likesQuery}
                   onChangeText={setLikesQuery}
                 />
@@ -995,9 +1355,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 contentContainerStyle={styles.gridContent}
                 ListEmptyComponent={
                   <View style={styles.emptyState}>
-                    <Icon name="heart-outline" size={48} color={isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"} />
-                    <Text style={[styles.emptyText, { color: theme.textSecondary }]}>No liked videos yet</Text>
-                    <Text style={[styles.emptySubText, { color: isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.3)" }]}>Videos you like will appear here</Text>
+                    <Icon name="heart-outline" size={48} color={isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.2)'} />
+                    <Text style={[styles.emptyText, { color: isDark ? '#fff' : '#111' }]}>No liked videos yet</Text>
+                    <Text style={[styles.emptySubText, { color: isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.5)' }]}>Videos you like will appear here</Text>
                   </View>
                 }
               />
@@ -1012,13 +1372,16 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               title="Unable to Load Watch History"
               message="Connect to the internet to view and sync your watch history." />
           ) : (
-            <View style={styles.listContent}>
-              <View style={[styles.searchBar, { backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.04)', borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }]}>
-                <Icon name="search" size={16} color={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.4)"} />
+            <View style={[styles.listContent, { paddingTop: 6, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }]}>
+              <View style={[styles.searchBar, {
+                backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+                borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
+              }]}>
+                <Icon name="search" size={16} color={isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)'} />
                 <TextInput
-                  style={[styles.searchInput, { color: theme.textPrimary }]}
+                  style={[styles.searchInput, { color: isDark ? '#fff' : '#111' }]}
                   placeholder="Search watch history..."
-                  placeholderTextColor={isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.4)"}
+                  placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.38)' : 'rgba(0, 0, 0, 0.4)'}
                   value={historyQuery}
                   onChangeText={setHistoryQuery}
                 />
@@ -1031,9 +1394,9 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 contentContainerStyle={styles.gridContent}
                 ListEmptyComponent={
                   <View style={styles.emptyState}>
-                    <Icon name="time-outline" size={48} color={isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"} />
-                    <Text style={[styles.emptyText, { color: theme.textSecondary }]}>No watch history yet</Text>
-                    <Text style={[styles.emptySubText, { color: isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.3)" }]}>Videos you watch will appear here</Text>
+                    <Icon name="time-outline" size={48} color={isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.2)'} />
+                    <Text style={[styles.emptyText, { color: isDark ? '#fff' : '#111' }]}>No watch history yet</Text>
+                    <Text style={[styles.emptySubText, { color: isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.5)' }]}>Videos you watch will appear here</Text>
                   </View>
                 }
               />
@@ -1044,100 +1407,162 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         </View>
         {/* end contentCard */}
 
-        {/* ── Overlay: absoluteFillObject inside cardWrapper = exact card size ── */}
-        {showOverlay && selectedVideoId && (
-          <View style={[styles.overlayBackdrop, { backgroundColor: isDark ? '#121212' : '#FFFFFF', borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)' }]}>
+      </View>
+      {/* end cardWrapper */}
 
-            {/* Close button — always top-right, never moves */}
-            <TouchableOpacity
-              style={[styles.overlayCloseBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}
-              onPress={() => { Keyboard.dismiss(); setShowOverlay(false); }}
-            >
-              <Icon name="close" size={18} color={isDark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.6)"} />
-            </TouchableOpacity>
+      {/* ── Overlay: Start Watching full-screen backdrop ── */}
+      {showOverlay && selectedVideoId && (
+        <View
+          style={[
+            styles.overlayBackdrop,
+            {
+              backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF',
+              paddingTop: (insets.top || 0) + 24,
+              paddingBottom: 24 + (activeTab === 'youtube' ? insets.bottom : 0),
+            },
+          ]}
+        >
 
-            {/* Source badge */}
-            <View style={[styles.overlaySourceRow, { justifyContent: 'center' }]}>
-              <View style={[
-                styles.overlaySourceBadge,
-                { backgroundColor: selectedSource === 'drive' ? '#4285F418' : '#FF000018',
-                  borderColor:      selectedSource === 'drive' ? '#4285F455' : '#FF000055' }
-              ]}>
+          {/* Close button — always top-right, below status bar */}
+          <TouchableOpacity
+            style={[
+              styles.overlayCloseBtn,
+              {
+                top: (insets.top || 0) + 14,
+                backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)',
+              },
+            ]}
+            onPress={() => {
+              Keyboard.dismiss();
+              setShowOverlay(false);
+              setIsSelectingMedia(false);
+              setIsStartingParty(false);
+              setIsPartyActionLoading(false);
+              setSelectedCardId(null);
+              selectedPlayingVideoIdRef.current = null;
+              stopWebViewPlaybackAndSkip();
+              if (ytCanGoBackRef.current) {
+                youtubeWebViewRef.current?.goBack();
+              }
+            }}
+          >
+            <Icon name="close" size={18} color={isDark ? '#ffffff' : '#111111'} />
+          </TouchableOpacity>
+
+          {isSelectingMedia && !selectedItem?.title ? (
+            <View style={styles.overlayLoadingContainer}>
+              <ActivityIndicator size="large" color="#FF007F" />
+            </View>
+          ) : (
+            <>
+              {/* Plain Brand Icon without badge container */}
+              <View style={styles.overlayIconWrap}>
                 <Icon
                   name={selectedSource === 'drive' ? 'logo-google' : 'logo-youtube'}
-                  size={14}
-                  color={selectedSource === 'drive' ? '#4DA3FF' : '#FF4444'}
-                  style={{ marginRight: 6 }}
+                  size={36}
+                  color={selectedSource === 'drive' ? '#4285F4' : '#FF0000'}
                 />
-                <Text style={[styles.overlaySourceLabel, { color: selectedSource === 'drive' ? '#4DA3FF' : '#FF5555' }]}>
-                  {selectedSource === 'drive' ? 'Google Drive' : 'YouTube'}
-                </Text>
               </View>
-            </View>
 
-            <Text style={[styles.overlayTitle, { textAlign: 'center', color: theme.textPrimary }]} numberOfLines={2}>
-              {selectedItem?.title || 'Video Selected ✓'}
-            </Text>
-            <Text style={[styles.overlaySubtitle, { textAlign: 'center', color: theme.textSecondary }]}>
-              {isFlow2 ? 'Add this video to the party queue?' : 'Start a new watch party with this video!'}
-            </Text>
+              <Text style={[styles.overlayTitle, { color: isDark ? '#fff' : '#111' }]} numberOfLines={2}>
+                {selectedItem?.title || 'YouTube Video'}
+              </Text>
+              <Text style={[styles.overlaySubtitle, { color: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)' }]}>
+                {isFlow2 ? 'Add this video to the lobby queue?' : 'Start a new lobby with this video!'}
+              </Text>
 
-            {/* Flow 1 — name & play */}
-            {!isFlow2 && (
-              <>
+              {/* Short Plain Text Note over the button */}
+              {selectedSource === 'youtube' && (
+                <View style={styles.skipAdPlainNoteRow}>
+                  <Icon
+                    name="play-forward"
+                    size={11}
+                    color={isDark ? '#FF6584' : '#E60067'}
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text style={[styles.skipAdPlainNoteText, { color: isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)' }]}>
+                    Auto-skips ads
+                  </Text>
+                </View>
+              )}
+
+              {/* Flow 1 — Start Watching (reduced size, clean horizontal button) */}
+              {!isFlow2 && (
                 <TouchableOpacity
                   style={[styles.overlayActionBtn, isStartingParty && { opacity: 0.7 }]}
                   onPress={handleStartParty}
                   disabled={isStartingParty}
+                  activeOpacity={0.85}
                 >
                   <LinearGradient
                     colors={['#b10000', '#FF007F']}
                     start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                     style={styles.overlayActionBtnGrad}
                   >
-                    {isStartingParty ? (
-                      <ActivityIndicator size={18} color="#fff" style={{ marginRight: 8 }} />
-                    ) : (
-                      <Icon name="play" size={18} color="#fff" style={{ marginRight: 8 }} />
-                    )}
-                    <Text style={styles.overlayActionBtnText}>{isStartingParty ? 'Preparing...' : 'Start Watching'}</Text>
+                    <View style={styles.actionBtnRow}>
+                      {isStartingParty ? (
+                        <ActivityIndicator size={16} color="#fff" style={{ marginRight: 6 }} />
+                      ) : (
+                        <Icon name="play" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      )}
+                      <Text style={styles.overlayActionBtnText}>
+                        {isStartingParty ? 'Preparing...' : 'Start Watching'}
+                      </Text>
+                    </View>
                   </LinearGradient>
                 </TouchableOpacity>
-              </>
-            )}
+              )}
 
-            {/* Flow 2 — add to queue / play now */}
-            {isFlow2 && (
-              <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 4 }}>
-                <TouchableOpacity style={[styles.overlayActionBtn, { flex: 1 }]} onPress={handleAddToQueue}>
-                  <LinearGradient
-                    colors={['#1a6ef5', '#0d4ec7']}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                    style={styles.overlayActionBtnGrad}
+              {/* Flow 2 — Add to Queue / Play Now (reduced size, clean horizontal buttons) */}
+              {isFlow2 && (
+                <View style={styles.flow2BtnRow}>
+                  <TouchableOpacity
+                    style={[styles.overlayActionBtn, { flex: 1, marginTop: 0 }]}
+                    onPress={handleAddToQueue}
+                    disabled={isPartyActionLoading}
                   >
-                    <Icon name="add-circle" size={17} color="#fff" style={{ marginRight: 6 }} />
-                    <Text style={styles.overlayActionBtnText}>Add to Queue</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
+                    <LinearGradient
+                      colors={['#1a6ef5', '#0d4ec7']}
+                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                      style={styles.overlayActionBtnGrad}
+                    >
+                      <View style={styles.actionBtnRow}>
+                        <Icon name="add-circle" size={16} color="#fff" style={{ marginRight: 6 }} />
+                        <Text style={styles.overlayActionBtnText}>Add to Queue</Text>
+                      </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
 
-                <TouchableOpacity style={[styles.overlayActionBtn, { flex: 1 }]} onPress={handlePlayNowInFlow2}>
-                  <LinearGradient
-                    colors={['#b10000', '#FF007F']}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                    style={styles.overlayActionBtnGrad}
+                  <TouchableOpacity
+                    style={[styles.overlayActionBtn, { flex: 1, marginTop: 0 }]}
+                    onPress={handlePlayNowInFlow2}
+                    disabled={isPartyActionLoading}
+                    activeOpacity={0.85}
                   >
-                    <Icon name="play" size={17} color="#fff" style={{ marginRight: 6 }} />
-                    <Text style={styles.overlayActionBtnText}>Play Now</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              </View>
-            )}
+                    <LinearGradient
+                      colors={['#b10000', '#FF007F']}
+                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                      style={styles.overlayActionBtnGrad}
+                    >
+                      <View style={styles.actionBtnRow}>
+                        {isPartyActionLoading ? (
+                          <ActivityIndicator size={16} color="#fff" style={{ marginRight: 6 }} />
+                        ) : (
+                          <Icon name="play" size={16} color="#fff" style={{ marginRight: 6 }} />
+                        )}
+                        <Text style={styles.overlayActionBtnText}>
+                          {isPartyActionLoading ? 'Starting...' : 'Play Now'}
+                        </Text>
+                      </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
+          )}
 
-          </View>
-        )}
-
-      </View>
-      {/* end cardWrapper */}
+        </View>
+      )}
 
       {/* 2-Second Initial Splash Overlay that Fades Out Slowly */}
       {showSplash && (
@@ -1145,11 +1570,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
           style={[
             StyleSheet.absoluteFillObject,
             styles.splashOverlay,
-            { opacity: splashFadeAnim, backgroundColor: isDark ? '#0F0F0F' : theme.background },
+            { opacity: splashFadeAnim, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' },
           ]}
           pointerEvents="none"
         >
-          <DiscoBallLoadingView isDark={isDark} bgColor={isDark ? '#0F0F0F' : theme.background} />
+          <DiscoBallLoadingView isDark={isDark} bgColor={isDark ? '#0F0F0F' : '#FFFFFF'} />
         </Animated.View>
       )}
 
@@ -1158,16 +1583,16 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020912' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   splashOverlay: {
-    backgroundColor: '#020912',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 999,
   },
   loadingContainer: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#020912',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
@@ -1191,20 +1616,59 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', marginRight: 8,
   },
 
-  // Top Tab Bar
-  topTabBar: {
-    flexDirection: 'row',
+  // Center Curved Toggle Button (closed state)
+  topToggleHitZone: {
+    position: 'absolute',
+    top: 0,
+    alignSelf: 'center',
+    width: 120,
+    height: 42,
+    zIndex: 100,
     alignItems: 'center',
-    position: 'absolute', top: 0, left: 0, right: 0,
-    borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.08)',
-    backgroundColor: '#FFFFFF',
-    zIndex: 60,
-    height: 64,
-    paddingTop: 8,
-    paddingBottom: 8,
+    justifyContent: 'flex-start',
+  },
+  centerCurvedBtn: {
+    position: 'absolute',
+    top: 0,
+    alignSelf: 'center',
+    width: 52,
+    height: 26,
+    borderBottomLeftRadius: 26,
+    borderBottomRightRadius: 26,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+  },
+
+  // Floating Single-Row Tab Bar (open state)
+  floatingTabRowCard: {
+    position: 'absolute',
+    top: 0,
+    left: 12,
+    right: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    zIndex: 101,
+    elevation: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    alignItems: 'center',
   },
   topTabRow: {
-    flex: 1,
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
@@ -1213,27 +1677,59 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 18,
-    marginHorizontal: 6,
-    overflow: 'hidden',
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginHorizontal: 4,
   },
-  topTabLabel: { fontSize: 11, fontWeight: '700', color: '#999999' },
+  topTabLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  closeCurveHandle: {
+    position: 'absolute',
+    bottom: -25,
+    alignSelf: 'center',
+    width: 52,
+    height: 26,
+    borderBottomLeftRadius: 26,
+    borderBottomRightRadius: 26,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderTopWidth: 0,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 102,
+    elevation: 26,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  handleBridgeMask: {
+    position: 'absolute',
+    top: -2,
+    left: 0.5,
+    right: 0.5,
+    height: 3.5,
+    zIndex: 10,
+  },
+  dropdownBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 99,
+  },
 
   // Card wrapper — shared container for contentCard + overlay
   cardWrapper: {
     flex: 1,
-    marginHorizontal: 12,
     position: 'relative',
   },
 
   // Content Card (visual shell only — sizing comes from cardWrapper)
   contentCard: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 24,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
   },
   webview: { flex: 1 },
   listContent: { flex: 1 },
@@ -1242,8 +1738,8 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.07)',
-    margin: 12, paddingHorizontal: 14, height: 42,
-    borderRadius: 21, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    marginHorizontal: 6, marginTop: 4, marginBottom: 6, paddingHorizontal: 12, height: 40,
+    borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
   },
   searchInput: { flex: 1, marginLeft: 8, fontSize: 14, color: '#fff' },
 
@@ -1267,17 +1763,17 @@ const styles = StyleSheet.create({
   },
 
   // Grid
-  gridContent: { padding: 8 },
+  gridContent: { paddingHorizontal: 3, paddingTop: 2, paddingBottom: 28 },
   gridItem: {
-    flex: 0.5, margin: 5,
+    flex: 0.5, margin: 3,
     backgroundColor: 'rgba(255,255,255,0.07)',
-    borderRadius: 14, overflow: 'hidden',
+    borderRadius: 10, overflow: 'hidden',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.09)',
     position: 'relative',
   },
   gridItemClick: { flex: 1 },
   gridThumb: {
-    width: '100%', height: 96,
+    width: '100%', height: 104,
     backgroundColor: 'rgba(255,255,255,0.05)',
     position: 'relative',
     overflow: 'hidden',
@@ -1323,17 +1819,19 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 15, fontWeight: '600', color: 'rgba(255,255,255,0.3)', marginTop: 12 },
   emptySubText: { fontSize: 12, color: 'rgba(255,255,255,0.18)', marginTop: 4 },
 
-  // Overlay — absoluteFillObject scoped inside cardWrapper, content anchored to top
+  // Overlay — full screen solid backdrop over playing video
   overlayBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 10,
-    backgroundColor: '#121212',
-    borderRadius: 24,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    zIndex: 9999,
+    elevation: 50,
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     padding: 24,
+  },
+  overlayLoadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 50,
   },
   overlayCard: {
     // inner layout container — no background, overlay bg handles it
@@ -1345,15 +1843,28 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
     zIndex: 10,
   },
-  overlaySourceRow: { flexDirection: 'row', marginBottom: 12 },
-  overlaySourceBadge: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: 20, borderWidth: 1,
+  overlayIconWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
   },
-  overlaySourceLabel: { fontSize: 13, fontWeight: '600' },
-  overlayTitle: { fontSize: 22, fontWeight: '800', color: '#fff', marginBottom: 6 },
-  overlaySubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.45)', marginBottom: 20 },
+  overlayTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#fff',
+    marginBottom: 8,
+    minHeight: 56,
+    textAlign: 'center',
+    paddingHorizontal: 16,
+    lineHeight: 28,
+  },
+  overlaySubtitle: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.7)',
+    marginBottom: 18,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+  },
   namingInput: {
     width: '100%', height: 48,
     backgroundColor: 'rgba(255,255,255,0.07)',
@@ -1362,12 +1873,55 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
     marginBottom: 16,
   },
-  overlayActionBtn: { borderRadius: 25, overflow: 'hidden', marginTop: 4, alignSelf: 'center' },
-  overlayActionBtnGrad: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 15, paddingHorizontal: 24,
+  skipAdPlainNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    alignSelf: 'center',
   },
-  overlayActionBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  skipAdPlainNoteText: {
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  overlayActionBtn: {
+    borderRadius: 22,
+    overflow: 'hidden',
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 200,
+    shadowColor: '#FF007F',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  flow2BtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    maxWidth: 300,
+    alignSelf: 'center',
+  },
+  overlayActionBtnGrad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13.5,
+    paddingHorizontal: 16,
+    width: '100%',
+  },
+  actionBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  overlayActionBtnText: {
+    color: '#fff',
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
 
   // Offline View Styles
   offlineContainer: {

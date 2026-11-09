@@ -35,6 +35,7 @@ class DriveStreamService {
         method: 'GET',
         headers: {
           'User-Agent': this.USER_AGENT,
+          'Range': 'bytes=0-1024',
         },
       });
 

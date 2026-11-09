@@ -65,7 +65,16 @@ class MainActivity : ReactActivity() {
       WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
       WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
     )
+    window.decorView.addOnLayoutChangeListener(decorLayoutListener)
     handleMusicRoomNotificationIntent(intent)
+  }
+
+  private val decorLayoutListener = View.OnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
+    if (l != ol || t != ot || r != or || b != ob) {
+      if (isPipEnabled && !isPipMinimized && !isInPictureInPictureMode) {
+        refreshPipParams()
+      }
+    }
   }
 
   private var observedVideoView: View? = null
@@ -79,6 +88,7 @@ class MainActivity : ReactActivity() {
 
   override fun onDestroy() {
     super.onDestroy()
+    window.decorView.removeOnLayoutChangeListener(decorLayoutListener)
     observedVideoView?.removeOnLayoutChangeListener(videoLayoutListener)
     observedVideoView = null
     if (currentActivityInstance == this) {
@@ -98,11 +108,17 @@ class MainActivity : ReactActivity() {
   }
 
   private fun findVideoView(view: View): View? {
+    if (view is DualSurfaceVideoView) {
+      if (view.width > 0 && view.height > 0) {
+        return view
+      }
+    }
     val className = view.javaClass.name
-    if (className.contains("ReactExoplayerView", ignoreCase = true) ||
+    if (className.contains("DualSurfaceVideoView", ignoreCase = true) ||
+        className.contains("ReactExoplayerView", ignoreCase = true) ||
         className.contains("SurfaceView", ignoreCase = true) ||
         className.contains("TextureView", ignoreCase = true)) {
-      if (view.isShown && view.width > 0 && view.height > 0) {
+      if (view.width > 0 && view.height > 0) {
         return view
       }
     }
@@ -129,32 +145,85 @@ class MainActivity : ReactActivity() {
   }
 
   private var lastFullScreenVideoRect: Rect? = null
+  private val hiddenViewsDuringPip = ArrayList<View>()
+  private var translatedVideoView: View? = null
 
-  private fun buildPipParams(autoEnter: Boolean? = null): PictureInPictureParams? {
+  private fun applyNativePipLayout(inPip: Boolean) {
+    if (inPip) {
+      hiddenViewsDuringPip.clear()
+      val videoView = findVideoView(window.decorView) ?: return
+      val dsv = if (videoView is DualSurfaceVideoView) videoView
+                else (videoView.parent as? DualSurfaceVideoView) ?: videoView
+
+      val loc = IntArray(2)
+      dsv.getLocationInWindow(loc)
+      val videoTopInWindow = loc[1]
+
+      if (videoTopInWindow > 0) {
+        dsv.translationY = -videoTopInWindow.toFloat()
+        translatedVideoView = dsv
+      }
+
+      hideNonVideoViews(window.decorView, dsv)
+    } else {
+      translatedVideoView?.translationY = 0f
+      translatedVideoView = null
+      for (v in hiddenViewsDuringPip) {
+        v.alpha = 1f
+      }
+      hiddenViewsDuringPip.clear()
+    }
+  }
+
+  private fun hideNonVideoViews(root: View, videoView: View) {
+    if (root == videoView) return
+    if (root is ViewGroup) {
+      for (i in 0 until root.childCount) {
+        val child = root.getChildAt(i)
+        if (isAncestorOf(child, videoView) || child == videoView) {
+          hideNonVideoViews(child, videoView)
+        } else {
+          if (child.visibility == View.VISIBLE && child.alpha > 0f) {
+            child.alpha = 0f
+            hiddenViewsDuringPip.add(child)
+          }
+        }
+      }
+    }
+  }
+
+  private fun isAncestorOf(parent: View, target: View): Boolean {
+    if (parent !is ViewGroup) return false
+    var curr: View? = target.parent as? View
+    while (curr != null) {
+      if (curr == parent) return true
+      curr = curr.parent as? View
+    }
+    return false
+  }
+
+  fun buildPipParams(autoEnter: Boolean? = null): PictureInPictureParams? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
     val rational = getSafeRational(pipAspectRatioNumerator, pipAspectRatioDenominator)
     val builder = PictureInPictureParams.Builder().setAspectRatio(rational)
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && autoEnter != null) {
-      builder.setAutoEnterEnabled(autoEnter)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      if (autoEnter != null) {
+        builder.setAutoEnterEnabled(autoEnter)
+      }
+      builder.setSeamlessResizeEnabled(true)
     }
 
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        val rectToUse: Rect? = if (isInPictureInPictureMode) {
-          lastFullScreenVideoRect ?: run {
-            val dm = resources.displayMetrics
-            val ar = rational.numerator.toFloat() / rational.denominator.toFloat()
-            val w = dm.widthPixels
-            val h = Math.round(w.toFloat() / ar)
-            val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
-            val sb = if (resId > 0) resources.getDimensionPixelSize(resId) else 0
-            val top = sb + Math.round(58f * dm.density)
-            Rect(0, top, w, top + h)
-          }
+        val decorW = window.decorView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val decorH = window.decorView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+
+        val rectToUse: Rect = if (isInPictureInPictureMode) {
+          lastFullScreenVideoRect ?: Rect(0, 0, decorW, decorH)
         } else {
           val videoView = findVideoView(window.decorView)
-          if (videoView != null) {
+          val rawRect = if (videoView != null) {
             if (observedVideoView != videoView) {
               observedVideoView?.removeOnLayoutChangeListener(videoLayoutListener)
               videoView.addOnLayoutChangeListener(videoLayoutListener)
@@ -162,46 +231,55 @@ class MainActivity : ReactActivity() {
             }
             val dsv = if (videoView is DualSurfaceVideoView) videoView
                       else (videoView.parent as? DualSurfaceVideoView)
-            val rect = if (dsv != null) {
-              dsv.getVideoRectOnScreen()
+            if (dsv != null) {
+              dsv.getVideoRectInWindow()
             } else {
               val r = Rect()
               videoView.getGlobalVisibleRect(r)
               r
             }
-            if (rect.width() > 50 && rect.height() > 50) {
-              val num = rational.numerator
-              val den = rational.denominator
-              val targetRatio = num.toFloat() / den.toFloat()
-              val viewW = rect.width()
-              val viewH = rect.height()
-              val currentRatio = viewW.toFloat() / viewH.toFloat()
+          } else {
+            val ar = rational.numerator.toFloat() / rational.denominator.toFloat()
+            val h = Math.round(decorW.toFloat() / ar)
+            val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
+            val sb = if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+            val top = sb + Math.round(58f * resources.displayMetrics.density)
+            Rect(0, top, decorW, top + h)
+          }
 
-              val finalRect = if (Math.abs(currentRatio - targetRatio) < 0.01f) {
-                rect
-              } else if (currentRatio > targetRatio) {
-                val targetW = Math.round(viewH.toFloat() * targetRatio)
-                val diffX = (viewW - targetW) / 2
-                Rect(rect.left + diffX, rect.top, rect.left + diffX + targetW, rect.bottom)
-              } else {
-                val targetH = Math.round(viewW.toFloat() / targetRatio)
-                val diffY = (viewH - targetH) / 2
-                Rect(rect.left, rect.top + diffY, rect.right, rect.top + diffY + targetH)
-              }
-              if (!isPipMinimized) {
-                lastFullScreenVideoRect = finalRect
-              }
-              finalRect
-            } else null
-          } else null
+          val targetRatio = rational.numerator.toFloat() / rational.denominator.toFloat()
+          val viewW = rawRect.width().coerceAtLeast(1)
+          val viewH = rawRect.height().coerceAtLeast(1)
+          val currentRatio = viewW.toFloat() / viewH.toFloat()
+
+          val finalRect = if (Math.abs(currentRatio - targetRatio) < 0.005f) {
+            Rect(rawRect)
+          } else if (currentRatio > targetRatio) {
+            val targetW = Math.round(viewH.toFloat() * targetRatio).coerceIn(1, decorW)
+            val diffX = (viewW - targetW) / 2
+            Rect(rawRect.left + diffX, rawRect.top, rawRect.left + diffX + targetW, rawRect.bottom)
+          } else {
+            val targetH = Math.round(viewW.toFloat() / targetRatio).coerceIn(1, decorH)
+            val diffY = (viewH - targetH) / 2
+            Rect(rawRect.left, rawRect.top + diffY, rawRect.right, rawRect.top + diffY + targetH)
+          }
+
+          // Strict containment inside window decor bounds
+          if (finalRect.left < 0) finalRect.offset(-finalRect.left, 0)
+          if (finalRect.top < 0) finalRect.offset(0, -finalRect.top)
+          if (finalRect.right > decorW) finalRect.offset(decorW - finalRect.right, 0)
+          if (finalRect.bottom > decorH) finalRect.offset(0, decorH - finalRect.bottom)
+
+          if (!isPipMinimized) {
+            lastFullScreenVideoRect = finalRect
+          }
+          finalRect
         }
 
-        if (rectToUse != null && rectToUse.width() > 50 && rectToUse.height() > 50) {
-          builder.setSourceRectHint(rectToUse)
-        }
+        builder.setSourceRectHint(rectToUse)
       }
     } catch (e: Exception) {
-      // Ignore if finding rect fails
+      android.util.Log.e("MainActivity", "Error in buildPipParams: ${e.message}")
     }
 
     return builder.build()
@@ -256,13 +334,15 @@ class MainActivity : ReactActivity() {
     super.onUserLeaveHint()
     if (isFinishing || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed)) return
     if (isPipEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      try {
-        val params = buildPipParams()
-        if (params != null) {
-          enterPictureInPictureMode(params)
+      if (!isInPictureInPictureMode) {
+        try {
+          val params = buildPipParams()
+          if (params != null) {
+            enterPictureInPictureMode(params)
+          }
+        } catch (e: Exception) {
+          android.util.Log.e("MainActivity", "Failed to enter PiP onUserLeaveHint: ${e.message}")
         }
-      } catch (e: Exception) {
-        android.util.Log.e("MainActivity", "Failed to enter PiP onUserLeaveHint: ${e.message}")
       }
     }
   }
@@ -285,10 +365,12 @@ class MainActivity : ReactActivity() {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
     runOnUiThread {
       try {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         window.decorView.setBackgroundColor(Color.BLACK)
+        applyNativePipLayout(isInPictureInPictureMode)
       } catch (e: Exception) {
-        // ignore
+        android.util.Log.e("MainActivity", "Error in onPictureInPictureModeChanged: ${e.message}")
       }
     }
     if (isInPictureInPictureMode) {

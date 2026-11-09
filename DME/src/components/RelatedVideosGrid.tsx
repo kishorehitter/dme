@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions, FlatList } from 'react-native';
 import { Song, QueueItem, Participant } from '../hooks/useMusicRoom';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -29,6 +29,8 @@ interface Props {
   // Pass null when video has ended so slot 1 shows a real suggested video instead.
   currentSong?: Song | null;
   scrollX?: any;
+  onScrollX?: (x: number) => void;
+  onSelectCurrent?: () => void;
 }
 
 const RelatedVideosGrid: React.FC<Props> = ({
@@ -42,6 +44,8 @@ const RelatedVideosGrid: React.FC<Props> = ({
   onUnpinVideo,
   currentSong,
   scrollX,
+  onScrollX,
+  onSelectCurrent,
 }) => {
   // One flat list of "cards": current song first (reserves PiP space while
   // playing — transparent slot overlaid by the live Animated.View player),
@@ -83,19 +87,25 @@ const RelatedVideosGrid: React.FC<Props> = ({
 
   const renderCard = (card: Card, key: string) => {
     if (card.kind === 'current') {
-      // Shows the song thumbnail. While playing, the live PiP player (Animated.View)
-      // sits on top of this slot covering it with live video. When the song ends the
-      // PiP collapses and this static thumbnail is visible in slot 1.
       return (
-        <View key={key} style={styles.videoItem}>
+        <TouchableOpacity
+          key={key}
+          style={styles.videoItem}
+          activeOpacity={0.85}
+          onPress={onSelectCurrent}
+        >
           <Image source={{ uri: card.song.thumbnail }} style={styles.thumbnail} />
+          <View style={styles.nowPlayingBadge}>
+            <View style={styles.playingDot} />
+            <Text style={styles.nowPlayingText}>PLAYING</Text>
+          </View>
           <View style={styles.titleOverlay}>
             <Text style={styles.videoTitle} numberOfLines={1}>{card.song.title}</Text>
             {card.song.channelTitle ? (
               <Text style={styles.channelTitleText} numberOfLines={1}>{card.song.channelTitle}</Text>
             ) : null}
           </View>
-        </View>
+        </TouchableOpacity>
       );
     }
 
@@ -175,10 +185,18 @@ const RelatedVideosGrid: React.FC<Props> = ({
         showsHorizontalScrollIndicator={false}
         data={pages}
         keyExtractor={(_, index) => index.toString()}
-        onScroll={scrollX ? Animated.event(
-          [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-          { useNativeDriver: false }
-        ) : undefined}
+        onScroll={(event: any) => {
+          const x = event?.nativeEvent?.contentOffset?.x || 0;
+          onScrollX?.(x);
+        }}
+        onMomentumScrollEnd={(event: any) => {
+          const x = event?.nativeEvent?.contentOffset?.x || 0;
+          onScrollX?.(x);
+        }}
+        onScrollEndDrag={(event: any) => {
+          const x = event?.nativeEvent?.contentOffset?.x || 0;
+          onScrollX?.(x);
+        }}
         scrollEventThrottle={16}
         renderItem={({ item: pageCards, index: pageIndex }) => {
           const col1 = pageCards.slice(0, 2);
@@ -243,21 +261,28 @@ const styles = StyleSheet.create({
   },
   nowPlayingBadge: {
     position: 'absolute',
-    top: 4,
-    left: 4,
-    backgroundColor: '#E53935',
+    top: 6,
+    left: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 6,
     paddingVertical: 3,
     borderRadius: 4,
-    gap: 3,
+    gap: 4,
+    zIndex: 2,
+  },
+  playingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
   },
   nowPlayingText: {
     color: '#fff',
-    fontSize: 9,
-    fontWeight: 'bold',
-    textTransform: 'uppercase',
+    fontSize: 8.5,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });
 

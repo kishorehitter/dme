@@ -37,7 +37,8 @@ class DualSurfaceViewManager : SimpleViewManager<DualSurfaceVideoView>() {
             }
             hMap
         } else null
-        view.setSource(uri, headers)
+        val startPosition = if (source.hasKey("startPosition")) source.getDouble("startPosition") else null
+        view.setSource(uri, headers, startPosition)
     }
 
     @ReactProp(name = "play")
@@ -70,6 +71,11 @@ class DualSurfaceViewManager : SimpleViewManager<DualSurfaceVideoView>() {
         view.setBbdCropPercent(cropPercent)
     }
 
+    @ReactProp(name = "bbdHorizCropPercent", defaultFloat = 0.0f)
+    fun setBbdHorizCropPercent(view: DualSurfaceVideoView, cropPercent: Float) {
+        view.setBbdHorizCropPercent(cropPercent)
+    }
+
     @ReactProp(name = "blurSigma", defaultFloat = 48.0f)
     fun setBlurSigma(view: DualSurfaceVideoView, sigma: Float) {
         view.setBlurSigma(sigma)
@@ -99,6 +105,11 @@ class DualSurfaceViewManager : SimpleViewManager<DualSurfaceVideoView>() {
         view.setQuality(quality ?: "auto")
     }
 
+    @ReactProp(name = "displayMode", defaultInt = 0)
+    fun setDisplayMode(view: DualSurfaceVideoView, mode: Int) {
+        view.setDisplayMode(mode)
+    }
+
     @ReactProp(name = "playbackRate", defaultFloat = 1.0f)
     fun setPlaybackRate(view: DualSurfaceVideoView, rate: Float) {
         view.setPlaybackRate(rate)
@@ -106,7 +117,7 @@ class DualSurfaceViewManager : SimpleViewManager<DualSurfaceVideoView>() {
 
     override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any> {
         val map = HashMap<String, Any>()
-        val events = listOf("Ready", "Progress", "End", "Buffer", "Error", "AspectRatio", "ExactResolution", "QualitiesAvailable")
+        val events = listOf("Ready", "Progress", "End", "Buffer", "Error", "AspectRatio", "ExactResolution", "QualitiesAvailable", "BlackBarDetected")
         for (event in events) {
             val topName = "top$event"
             val regName = "on$event"

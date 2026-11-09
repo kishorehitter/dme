@@ -17,7 +17,7 @@ interface Props {
   fileId: string;
   play: boolean;
   muted?: boolean;
-  onReady?: () => void;
+  onReady?: (duration?: number) => void;
   onStateChange?: (state: string) => void;
   onProgress?: (currentTime: number, duration: number) => void;
   onError?: (e: any) => void;
@@ -166,6 +166,10 @@ function attachEvents() {
     toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
   });
 
+  v.addEventListener('durationchange', function() {
+    toRN({ type: 'progress', currentTime: v.currentTime, duration: v.duration || 0 });
+  });
+
   v.addEventListener('canplay', function() {
     reportAR();
     if (!ready) {
@@ -247,7 +251,8 @@ attachEvents();
       const downloadPageUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
       const res = await fetch(downloadPageUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Range': 'bytes=0-1024',
         }
       });
       const htmlText = await res.text();
@@ -351,7 +356,7 @@ attachEvents();
         case 'playerReady':
           isReadyRef.current = true;
           durationRef.current = msg.duration || 0;
-          onReady?.();
+          onReady?.(msg.duration || 0);
           if (play) {
             inject(`(function(){ var v=document.getElementById('dmevideo'); if(v) v.play().catch(function(e){ window.ReactNativeWebView.postMessage(JSON.stringify({type:'log',msg:'play() post-ready error: '+e.message})); }); })()`);
           }

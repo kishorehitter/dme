@@ -1517,11 +1517,15 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       headerTitle: () => {
         if (selectionMode) return null;
         const brandTextStyle = {
-          fontFamily: 'ClashDisplay-Bold',
+          fontFamily: 'Poppins-Bold',
           fontSize: 22,
+          fontWeight: 900,
           color: isDark ? '#FFFFFF' : '#0F172A',
           letterSpacing: 1.2,
           includeFontPadding: false,
+          textShadowColor: 'rgba(0, 0, 0, 0.75)',
+          textShadowOffset: { width: 0, height: 1 },
+          textShadowRadius: 1,
         };
         return (
           <View
@@ -1531,7 +1535,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
             style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
           >
             <Text style={brandTextStyle}>YOUT</Text>
-            <Text style={[brandTextStyle, { marginHorizontal: 1.6 }]}>E</Text>
+            <Text style={[brandTextStyle, { marginHorizontal: 1.4 }]}>E</Text>
             <Text style={brandTextStyle}>LITE</Text>
           </View>
         );
@@ -1653,10 +1657,33 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     }
   };
 
-  const unreadChatsCount = conversations.filter(c => !c.is_group && !lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
-  const unreadGroupsCount = conversations.filter(c => c.is_group && !lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
-  const unreadLockedCount = conversations.filter(c => lockedIds.includes(c.id)).reduce((acc, c) => acc + (c.unread_count || 0), 0);
-  const unreadTotalCount = unreadChatsCount + unreadGroupsCount;
+  // Count of 1-to-1 conversations visible in "All Messages" list that have unseen messages
+  const unreadDirectChatsCount = conversations.filter(c => {
+    if (c.is_group || lockedIds.includes(c.id) || (c.unread_count || 0) <= 0) return false;
+    if (c.last_message === null) return false;
+    const reqStatus = (c as any).message_request_status;
+    const senderId = (c as any).message_request_sender_id;
+    if (reqStatus === 'pending' || reqStatus === 'rejected') {
+      const isFriend = c.other_user
+        ? friends.some((f: any) => f.id === c.other_user?.id || String(f.id) === String(c.other_user?.id))
+        : false;
+      if (senderId !== user?.id && !isFriend) return false;
+    }
+    return true;
+  }).length;
+
+  // Count of group conversations in "Groups" list that have unseen messages (how many unseen groups)
+  const unreadGroupsCount = conversations.filter(
+    c => c.is_group && !lockedIds.includes(c.id) && (c.unread_count || 0) > 0
+  ).length;
+
+  // Overall count of unseen conversation items in "All Messages" list (not sum of all messages)
+  const unreadAllCount = unreadDirectChatsCount + unreadGroupsCount;
+
+  // Count of locked conversations that have unseen messages
+  const unreadLockedCount = conversations.filter(
+    c => lockedIds.includes(c.id) && (c.unread_count || 0) > 0
+  ).length;
 
   const filteredConversations = conversations.filter(c => {
     let matchesTab = true;
@@ -2108,6 +2135,11 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                   >
                     All Messages
                   </Text>
+                  {unreadAllCount > 0 && (
+                    <View style={s.mainTabBadge}>
+                      <Text style={s.mainTabBadgeText}>{unreadAllCount}</Text>
+                    </View>
+                  )}
                 </TouchableOpacity>
 
                 {/* Groups Tab */}

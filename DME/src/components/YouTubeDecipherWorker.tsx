@@ -650,7 +650,7 @@ function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
 
       var pot = u8ToBase64(result, true);
 
-      if (pot && (pot.length < 100 || pot.length > 150)) {
+      if (pot && (pot.length < 80 || pot.length > 350)) {
 
         return reject(new Error('PO-Token length invalid: ' + pot.length + ' (expected 100-150 chars)'));
 
@@ -960,216 +960,200 @@ window.handleHostMessage = function(data) {
 
 
 
-    function scanThumb(thumbUrl, fallbackUrl) {
-
-      var img = new Image();
-
-      img.crossOrigin = 'Anonymous';
-
-      img.onload = function() {
-
-        try {
-
-          var W = 160;
-
-          var H = Math.round(W * (img.naturalHeight / img.naturalWidth));
-
-          if (!H || H <= 0) H = 90;
-
-          var cvs = document.createElement('canvas');
-
-          cvs.width = W; cvs.height = H;
-
-          var ctx = cvs.getContext('2d');
-
-          ctx.drawImage(img, 0, 0, W, H);
-
-          var imgData = ctx.getImageData(0, 0, W, H).data;
-
-
-
-          function isPixelDark(x, y) {
-
-            var idx = (y * W + x) * 4;
-
-            return imgData[idx] < 18 && imgData[idx+1] < 18 && imgData[idx+2] < 18;
-
-          }
-
-
-
-          // 1. Scan Top & Bottom Letterbox Bars (Cinema / Widescreen)
-
-          var maxTopH = Math.floor(H * 0.22);
-
-          var topBar = 0;
-
-          while (topBar < maxTopH) {
-
-            var darkCols = 0;
-
-            for (var x = 16; x < W - 16; x += 4) {
-
-              if (isPixelDark(x, topBar)) darkCols++;
-
-            }
-
-            if (darkCols / ((W - 32) / 4) > 0.96) topBar++;
-
-            else break;
-
-          }
-
-
-
-          var bottomBar = 0;
-
-          while (bottomBar < maxTopH) {
-
-            var darkCols = 0;
-
-            for (var x = 16; x < W - 16; x += 4) {
-
-              if (isPixelDark(x, H - 1 - bottomBar)) darkCols++;
-
-            }
-
-            if (darkCols / ((W - 32) / 4) > 0.96) bottomBar++;
-
-            else break;
-
-          }
-
-
-
-          var letterboxH = 0;
-
-          if (Math.abs(topBar - bottomBar) <= Math.max(2, Math.round(H * 0.03))) {
-
-            letterboxH = Math.min(topBar, bottomBar);
-
-          }
-
-
-
-          if (letterboxH >= Math.round(H * 0.04)) {
-
-            var activeH = H - (letterboxH * 2);
-
-            var contentAR = (img.naturalWidth / img.naturalHeight) * (H / activeH);
-
-            if (contentAR >= 1.82 && contentAR <= 2.65) {
-
-              window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: true, aspectRatio: contentAR, verticalPercent: letterboxH / H, source: 'thumb' }));
-
-              return;
-
-            }
-
-          }
-
-
-
-          // 2. Scan Left & Right Pillarbox Bars (Tall / 4:3 / Narrow)
-
-          var leftBar = 0;
-
-          while (leftBar < W / 3) {
-
-            var darkRows = 0;
-
-            for (var y = 10; y < H - 10; y += 4) {
-
-              if (isPixelDark(leftBar, y)) darkRows++;
-
-            }
-
-            if (darkRows / ((H - 20) / 4) > 0.85) leftBar++;
-
-            else break;
-
-          }
-
-
-
-          var rightBar = 0;
-
-          while (rightBar < W / 3) {
-
-            var darkRows = 0;
-
-            for (var y = 10; y < H - 10; y += 4) {
-
-              if (isPixelDark(W - 1 - rightBar, y)) darkRows++;
-
-            }
-
-            if (darkRows / ((H - 20) / 4) > 0.85) rightBar++;
-
-            else break;
-
-          }
-
-
-
-          var pillarboxW = Math.min(leftBar, rightBar);
-
-          if (pillarboxW >= Math.round(W * 0.04)) {
-
-            var activeW = W - (pillarboxW * 2);
-
-            var contentAR = (img.naturalWidth / img.naturalHeight) * (activeW / W);
-
-            if (contentAR >= 0.5 && contentAR <= 1.7) {
-
-              window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: true, aspectRatio: contentAR, source: 'thumb' }));
-
-              return;
-
-            }
-
-          }
-
-
-
-          var naturalAR = img.naturalWidth / img.naturalHeight;
-
-          window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: true, aspectRatio: naturalAR, source: 'thumb' }));
-
-        } catch(e) {
-
-          window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: false, error: e && e.message }));
-
+    function snapToCinematicAR(rawAr) {
+      if (!rawAr || isNaN(rawAr)) return { ar: 16 / 9, vertPct: 0 };
+      var standards = [
+        { ar: 1.85, tol: 0.05 },
+        { ar: 2.00, tol: 0.06 },
+        { ar: 2.20, tol: 0.06 },
+        { ar: 2.35, tol: 0.05 },
+        { ar: 2.39, tol: 0.07 },
+        { ar: 2.55, tol: 0.08 },
+        { ar: 2.76, tol: 0.08 }
+      ];
+      for (var i = 0; i < standards.length; i++) {
+        if (Math.abs(rawAr - standards[i].ar) <= standards[i].tol) {
+          var sAr = standards[i].ar;
+          var vertPct = Math.max(0, (1 - (1.77778 / sAr)) * 0.5);
+          return { ar: sAr, vertPct: vertPct };
         }
-
-      };
-
-      img.onerror = function() {
-
-        if (fallbackUrl) {
-
-          scanThumb(fallbackUrl, null);
-
-        } else {
-
-          window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: false, error: 'Thumbnail load failed' }));
-
-        }
-
-      };
-
-      img.src = thumbUrl;
-
+      }
+      if (rawAr > 1.80 && rawAr <= 3.2) {
+        var vp = Math.max(0, (1 - (1.77778 / rawAr)) * 0.5);
+        return { ar: rawAr, vertPct: Math.min(0.26, vp) };
+      }
+      return { ar: rawAr, vertPct: 0 };
     }
 
+    function scanThumb(thumbUrl, fallbackUrl) {
+      var img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.onload = function() {
+        try {
+          var W = 160;
+          var H = Math.round(W * (img.naturalHeight / img.naturalWidth));
+          if (!H || H <= 0) H = 90;
+          var cvs = document.createElement('canvas');
+          cvs.width = W; cvs.height = H;
+          var ctx = cvs.getContext('2d');
+          ctx.drawImage(img, 0, 0, W, H);
+          var imgData = ctx.getImageData(0, 0, W, H).data;
 
+          function isPixelDark(x, y) {
+            if (x < 0 || x >= W || y < 0 || y >= H) return false;
+            var idx = (y * W + x) * 4;
+            var r = imgData[idx];
+            var g = imgData[idx + 1];
+            var b = imgData[idx + 2];
+            var lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            return lum < 32 && r < 45 && g < 45 && b < 45;
+          }
+
+          var maxCropH = Math.floor(H * 0.26);
+          var scanStartX = Math.floor(W * 0.15);
+          var scanEndX = Math.floor(W * 0.85);
+
+          // 1. Scan Top & Bottom Letterbox Bars (Cinema / Widescreen)
+          var topBar = 0;
+          while (topBar < maxCropH) {
+            var darkCols = 0;
+            var totalCols = 0;
+            for (var x = scanStartX; x < scanEndX; x += 3) {
+              if (isPixelDark(x, topBar)) darkCols++;
+              totalCols++;
+            }
+            if (totalCols > 0 && (darkCols / totalCols) >= 0.88) topBar++;
+            else break;
+          }
+
+          var bottomBar = 0;
+          while (bottomBar < maxCropH) {
+            var darkCols = 0;
+            var totalCols = 0;
+            for (var x = scanStartX; x < scanEndX; x += 3) {
+              if (isPixelDark(x, H - 1 - bottomBar)) darkCols++;
+              totalCols++;
+            }
+            if (totalCols > 0 && (darkCols / totalCols) >= 0.88) bottomBar++;
+            else break;
+          }
+
+          var letterboxH = 0;
+          var symTol = Math.max(3, Math.round(H * 0.08));
+          if (topBar >= Math.round(H * 0.04) && bottomBar >= Math.round(H * 0.04)) {
+            if (Math.abs(topBar - bottomBar) <= symTol) {
+              letterboxH = Math.min(topBar, bottomBar);
+            } else {
+              var minB = Math.min(topBar, bottomBar);
+              if (minB >= Math.round(H * 0.04)) letterboxH = minB;
+            }
+          } else if (topBar >= Math.round(H * 0.04) && bottomBar < Math.round(H * 0.04)) {
+            letterboxH = topBar;
+          } else if (bottomBar >= Math.round(H * 0.04) && topBar < Math.round(H * 0.04)) {
+            letterboxH = bottomBar;
+          }
+
+          if (letterboxH >= Math.round(H * 0.04)) {
+            var activeH = H - (letterboxH * 2);
+            var rawAr = (img.naturalWidth / img.naturalHeight) * (H / activeH);
+            var snapped = snapToCinematicAR(rawAr);
+            if (snapped.ar >= 1.82 && snapped.ar <= 3.2) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                id: id,
+                success: true,
+                aspectRatio: snapped.ar,
+                verticalPercent: snapped.vertPct,
+                source: 'thumb'
+              }));
+              return;
+            }
+          }
+
+          // 2. Scan Left & Right Pillarbox Bars (Tall / 4:3 / Narrow)
+          var maxCropW = Math.floor(W * 0.28);
+          var scanStartY = Math.floor(H * 0.15);
+          var scanEndY = Math.floor(H * 0.85);
+
+          var leftBar = 0;
+          while (leftBar < maxCropW) {
+            var darkRows = 0;
+            var totalRows = 0;
+            for (var y = scanStartY; y < scanEndY; y += 3) {
+              if (isPixelDark(leftBar, y)) darkRows++;
+              totalRows++;
+            }
+            if (totalRows > 0 && (darkRows / totalRows) >= 0.88) leftBar++;
+            else break;
+          }
+
+          var rightBar = 0;
+          while (rightBar < maxCropW) {
+            var darkRows = 0;
+            var totalRows = 0;
+            for (var y = scanStartY; y < scanEndY; y += 3) {
+              if (isPixelDark(W - 1 - rightBar, y)) darkRows++;
+              totalRows++;
+            }
+            if (totalRows > 0 && (darkRows / totalRows) >= 0.88) rightBar++;
+            else break;
+          }
+
+          var pSymTol = Math.max(3, Math.round(W * 0.08));
+          var pillarboxW = 0;
+          if (Math.abs(leftBar - rightBar) <= pSymTol) {
+            pillarboxW = Math.min(leftBar, rightBar);
+          }
+
+          if (pillarboxW >= Math.round(W * 0.04)) {
+            var activeW = W - (pillarboxW * 2);
+            var contentAR = (img.naturalWidth / img.naturalHeight) * (activeW / W);
+            if (Math.abs(contentAR - 1.333) <= 0.08) contentAR = 4 / 3;
+            else if (Math.abs(contentAR - 1.0) <= 0.06) contentAR = 1.0;
+            if (contentAR >= 0.5 && contentAR <= 1.7) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                id: id,
+                success: true,
+                aspectRatio: contentAR,
+                verticalPercent: 0,
+                source: 'thumb'
+              }));
+              return;
+            }
+          }
+
+          var naturalAR = img.naturalWidth / img.naturalHeight;
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            id: id,
+            success: true,
+            aspectRatio: naturalAR,
+            verticalPercent: 0,
+            source: 'thumb'
+          }));
+        } catch(e) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: false, error: e && e.message }));
+        }
+      };
+      img.onerror = function() {
+        if (fallbackUrl) {
+          scanThumb(fallbackUrl, null);
+        } else {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, success: false, error: 'Thumbnail load failed' }));
+        }
+      };
+      img.src = thumbUrl;
+    }
 
     // -- Rave BBD (Black Bar Detection) on real video frames via Storyboard Tiles --
 
     function analyzeBBDStoryboards(imgData, totalW, totalH, frameW, frameH, cols, rows, numFrames) {
       function isDark(canvasX, canvasY) {
+        if (canvasX < 0 || canvasX >= totalW || canvasY < 0 || canvasY >= totalH) return false;
         var idx = (canvasY * totalW + canvasX) * 4;
-        return imgData[idx] < 18 && imgData[idx + 1] < 18 && imgData[idx + 2] < 18;
+        var r = imgData[idx];
+        var g = imgData[idx + 1];
+        var b = imgData[idx + 2];
+        var lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        return lum < 32 && r < 45 && g < 45 && b < 45;
       }
 
       var frameResults = [];
@@ -1189,7 +1173,7 @@ window.handleHostMessage = function(data) {
         var centerDark = 0;
         var centerTotal = 0;
         for (var cy = oy + Math.floor(frameH * 0.25); cy < oy + Math.floor(frameH * 0.75); cy += 4) {
-          for (var cx = ox + Math.floor(frameW * 0.2); cx < ox + Math.floor(frameW * 0.8); cx += 8) {
+          for (var cx = ox + Math.floor(frameW * 0.25); cx < ox + Math.floor(frameW * 0.75); cx += 4) {
             if (isDark(cx, cy)) centerDark++;
             centerTotal++;
           }
@@ -1198,73 +1182,92 @@ window.handleHostMessage = function(data) {
           continue;
         }
 
-        // 2. Count black rows from top (capped at Rave standard MAX_CROP 22%)
-        var maxTop = Math.floor(frameH * 0.22);
+        // 2. Count black rows from top (capped at MAX_CROP 26%)
+        var maxCropH = Math.floor(frameH * 0.26);
+        var scanStartX = ox + Math.floor(frameW * 0.15);
+        var scanEndX = ox + Math.floor(frameW * 0.85);
+
         var top = 0;
-        while (top < maxTop) {
+        while (top < maxCropH) {
           var dark = 0;
           var total = 0;
           var y = oy + top;
-          for (var x = ox + Math.floor(frameW * 0.1); x < ox + Math.floor(frameW * 0.9); x += 4) {
+          for (var x = scanStartX; x < scanEndX; x += 3) {
             if (isDark(x, y)) dark++;
             total++;
           }
-          if (dark / total > 0.96) top++;
+          if (total > 0 && (dark / total) >= 0.88) top++;
           else break;
         }
 
-        // 3. Count black rows from bottom (capped at Rave standard MAX_CROP 22%)
-        var maxBottom = Math.floor(frameH * 0.22);
+        // 3. Count black rows from bottom (capped at MAX_CROP 26%)
         var bottom = 0;
-        while (bottom < maxBottom) {
+        while (bottom < maxCropH) {
           var dark = 0;
           var total = 0;
           var y = oy + frameH - 1 - bottom;
-          for (var x = ox + Math.floor(frameW * 0.1); x < ox + Math.floor(frameW * 0.9); x += 4) {
+          for (var x = scanStartX; x < scanEndX; x += 3) {
             if (isDark(x, y)) dark++;
             total++;
           }
-          if (dark / total > 0.96) bottom++;
+          if (total > 0 && (dark / total) >= 0.88) bottom++;
           else break;
         }
 
-        // 4. Strict symmetry verification: Real letterbox bars are identical on top & bottom.
-        // If top and bottom differ by > 3%, it is an asymmetric dark scene (night sky/shadow), NOT a letterbox bar!
+        // 4. Robust letterbox bar calculation with subtitle/watermark tolerance
         var letterboxH = 0;
-        if (Math.abs(top - bottom) <= Math.max(2, Math.round(frameH * 0.03))) {
-          letterboxH = Math.min(top, bottom);
+        var symTolerance = Math.max(3, Math.round(frameH * 0.08));
+
+        if (top >= Math.round(frameH * 0.04) && bottom >= Math.round(frameH * 0.04)) {
+          if (Math.abs(top - bottom) <= symTolerance) {
+            letterboxH = Math.min(top, bottom);
+          } else {
+            var minBar = Math.min(top, bottom);
+            if (minBar >= Math.round(frameH * 0.04)) {
+              letterboxH = minBar;
+            }
+          }
+        } else if (top >= Math.round(frameH * 0.04) && bottom < Math.round(frameH * 0.04)) {
+          // Bottom bar contaminated by subtitles/lyrics, top is clean
+          letterboxH = top;
+        } else if (bottom >= Math.round(frameH * 0.04) && top < Math.round(frameH * 0.04)) {
+          // Top bar contaminated by title banner, bottom is clean
+          letterboxH = bottom;
         }
 
         // 5. Pillarbox check (only if no letterbox)
         var pillarboxW = 0;
         if (letterboxH < Math.round(frameH * 0.04)) {
-          var maxLeft = Math.floor(frameW * 0.25);
+          var maxCropW = Math.floor(frameW * 0.28);
+          var scanStartY = oy + Math.floor(frameH * 0.15);
+          var scanEndY = oy + Math.floor(frameH * 0.85);
+
           var left = 0;
-          while (left < maxLeft) {
+          while (left < maxCropW) {
             var pDark = 0;
             var pTotal = 0;
             var px = ox + left;
-            for (var py = oy + Math.floor(frameH * 0.1); py < oy + Math.floor(frameH * 0.9); py += 4) {
+            for (var py = scanStartY; py < scanEndY; py += 3) {
               if (isDark(px, py)) pDark++;
               pTotal++;
             }
-            if (pDark / pTotal > 0.96) left++;
+            if (pTotal > 0 && (pDark / pTotal) >= 0.88) left++;
             else break;
           }
-          var maxRight = Math.floor(frameW * 0.25);
           var right = 0;
-          while (right < maxRight) {
+          while (right < maxCropW) {
             var pDark = 0;
             var pTotal = 0;
             var px = ox + frameW - 1 - right;
-            for (var py = oy + Math.floor(frameH * 0.1); py < oy + Math.floor(frameH * 0.9); py += 4) {
+            for (var py = scanStartY; py < scanEndY; py += 3) {
               if (isDark(px, py)) pDark++;
               pTotal++;
             }
-            if (pDark / pTotal > 0.96) right++;
+            if (pTotal > 0 && (pDark / pTotal) >= 0.88) right++;
             else break;
           }
-          if (Math.abs(left - right) <= Math.max(2, Math.round(frameW * 0.03))) {
+          var pSymTol = Math.max(3, Math.round(frameW * 0.08));
+          if (Math.abs(left - right) <= pSymTol) {
             pillarboxW = Math.min(left, right);
           }
         }
@@ -1274,11 +1277,15 @@ window.handleHostMessage = function(data) {
 
         if (letterboxH >= Math.round(frameH * 0.04)) {
           var activeH = frameH - (letterboxH * 2);
-          ar = frameW / activeH;
-          vertPct = letterboxH / frameH;
+          var rawAr = frameW / activeH;
+          var snapped = snapToCinematicAR(rawAr);
+          ar = snapped.ar;
+          vertPct = snapped.vertPct;
         } else if (pillarboxW >= Math.round(frameW * 0.04)) {
           var activeW = frameW - (pillarboxW * 2);
           ar = activeW / frameH;
+          if (Math.abs(ar - 1.333) <= 0.08) ar = 4 / 3;
+          else if (Math.abs(ar - 1.0) <= 0.06) ar = 1.0;
         }
 
         frameResults.push({ ar: ar, vertPct: vertPct });
@@ -1286,22 +1293,19 @@ window.handleHostMessage = function(data) {
 
       if (frameResults.length === 0) return null;
 
-      // 6. Consensus check: if at least 40% of frames have no letterbox, video is full-screen 16:9!
-      var zeroCount = 0;
-      for (var z = 0; z < frameResults.length; z++) {
-        if (frameResults[z].vertPct === 0) zeroCount++;
-      }
-      if (zeroCount >= Math.ceil(frameResults.length * 0.4)) {
-        return { ar: frameW / frameH, vertPct: 0 };
-      }
-
-      // Filter to letterboxed frames and take conservative median
+      // Filter to widescreen letterboxed frames
       var letterboxed = frameResults.filter(function(r) { return r.vertPct > 0; });
-      if (letterboxed.length === 0) return { ar: frameW / frameH, vertPct: 0 };
 
-      letterboxed.sort(function(a, b) { return a.vertPct - b.vertPct; });
-      var mid = Math.floor(letterboxed.length / 2);
-      return letterboxed[mid];
+      // If at least 2 frames (or >= 25% of valid frames) detected widescreen letterbox:
+      if (letterboxed.length >= 2 || (letterboxed.length >= 1 && frameResults.length <= 3)) {
+        // Sort by aspect ratio and pick the median to eliminate outlier frames
+        letterboxed.sort(function(a, b) { return a.ar - b.ar; });
+        var mid = Math.floor(letterboxed.length / 2);
+        return letterboxed[mid];
+      }
+
+      // Otherwise default to native 16:9 full frame
+      return { ar: frameW / frameH, vertPct: 0 };
     }
 
 

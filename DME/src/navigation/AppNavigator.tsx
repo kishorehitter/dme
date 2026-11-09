@@ -239,8 +239,7 @@ const MainTabs = () => {
             <View style={[
               styles.tabPill,
               focused && {
-                backgroundColor: isDark ? 'rgba(56, 189, 248, 0.16)' : '#E0F2FE',
-                borderColor: isDark ? 'rgba(56, 189, 248, 0.35)' : 'rgba(14, 165, 233, 0.28)',
+                backgroundColor: isDark ? 'rgba(56, 189, 248, 0.16)' : 'rgba(51, 65, 85, 0.10)',
               }
             ]}>
               <Icon
@@ -248,8 +247,8 @@ const MainTabs = () => {
                 size={26}
                 color={
                   focused
-                    ? (isDark ? '#38BDF8' : '#163B70')
-                    : (isDark ? '#94A3B8' : '#4B5563')
+                    ? (isDark ? '#38BDF8' : '#334155')
+                    : (isDark ? '#94A3B8' : '#64748B')
                 }
               />
             </View>
@@ -284,7 +283,7 @@ const MainTabs = () => {
             <Pressable {...(props as any)} android_ripple={{ color: 'transparent' }} />
           );
         },
-        tabBarActiveTintColor: isDark ? '#F1F5F9' : '#111827',
+        tabBarActiveTintColor: isDark ? '#F1F5F9' : '#334155',
         tabBarInactiveTintColor: isDark ? '#94A3B8' : '#64748B',
         tabBarLabelStyle: { fontSize: 13, fontWeight: '600', marginTop: 2 },
         tabBarStyle: musicRoomActive
@@ -655,7 +654,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         <View
           style={[
             StyleSheet.absoluteFill,
-            { zIndex: isSystemPip ? 999999 : 9999, backgroundColor: isSystemPip ? '#000000' : 'transparent' },
+            { zIndex: isSystemPip ? 999999 : 9999, backgroundColor: (musicRoom.isMinimized && !isSystemPip) ? 'transparent' : '#000000' },
             (musicRoom.isMinimized && (!isPipEnabled || isPipDismissed) && !isSystemPip) ? {
               position: 'absolute',
               top: -9999,

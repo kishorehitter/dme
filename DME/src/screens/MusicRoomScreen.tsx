@@ -49,6 +49,8 @@ import InviteModal from '../components/InviteModal';
 import RoomParticipantsModal from '../components/RoomParticipantsModal';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import RelatedVideosGrid from '../components/RelatedVideosGrid';
+import CenterLyricsView from '../components/CenterLyricsView';
+import { fetchLyrics, LyricLine, cleanArtistName, extractArtistFromTitle } from '../services/LyricsService';
 import DiscoveryFeedService from '../services/DiscoveryFeedService';
 import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -305,7 +307,7 @@ interface VideoAspectRatioResult {
   isNativeWidescreen: boolean;
 }
 
-const fetchVideoAspectRatio = async (videoId: string): Promise<VideoAspectRatioResult | null> => {
+const fetchVideoAspectRatio = async (videoId: string, storyboardSpec?: string): Promise<VideoAspectRatioResult | null> => {
   // 1. Check YouTube video stream formats first!
   // If YouTube serves a native widescreen stream format (e.g. 3840x1608 or 3840x1692, AR > 1.82),
   // the stream ITSELF has NO black bars to crop!
@@ -330,8 +332,8 @@ const fetchVideoAspectRatio = async (videoId: string): Promise<VideoAspectRatioR
             console.log(`📐 [NATIVE WIDESCREEN STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)} (0% black bars)`);
             return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: true };
           }
-          if (streamAr < 1.70 && streamAr >= 0.4) {
-            console.log(`📐 [TALL/4:3 STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)}`);
+          if (streamAr < 1.0 && streamAr >= 0.4) {
+            console.log(`📐 [PORTRAIT SHORT STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)}`);
             return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: false };
           }
         }
@@ -339,37 +341,29 @@ const fetchVideoAspectRatio = async (videoId: string): Promise<VideoAspectRatioR
     }
   } catch (e) {}
 
-  // 2. Check storyboard/thumbnail letterbox detection (detects cinema letterbox bars encoded into 16:9 streams)
-  try {
-    const letterboxRes = await YouTubeDecipherService.detectLetterboxAspectRatio(videoId);
-    if (letterboxRes && letterboxRes.aspectRatio >= 0.4 && letterboxRes.aspectRatio <= 3.5) {
-      if (Math.abs(letterboxRes.aspectRatio - 16 / 9) > 0.05 && letterboxRes.verticalPercent > 0.03) {
-        console.log(`📐 [LETTERBOX DETECTED] Video ${videoId} letterbox AR: ${letterboxRes.aspectRatio.toFixed(3)}, verticalPercent: ${(letterboxRes.verticalPercent * 100).toFixed(1)}%`);
-        return {
-          aspectRatio: letterboxRes.aspectRatio,
-          verticalPercent: Math.min(0.22, letterboxRes.verticalPercent),
-          isNativeWidescreen: false,
-        };
-      }
-    }
-  } catch (_) {}
+  return null;
+};
 
-  // 3. YouTube official oEmbed API fallback
-  try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-    const oembedRes = await fetch(oembedUrl);
-    if (oembedRes.ok) {
-      const data = await oembedRes.json();
-      if (data.width && data.height) {
-        const ar = data.width / data.height;
-        if (ar >= 0.4 && ar <= 3.5) {
-          console.log(`📐 [AUTO AR] Video ${videoId} oEmbed dimensions: ${data.width}x${data.height} -> Aspect Ratio: ${ar.toFixed(3)}`);
-          return { aspectRatio: ar, verticalPercent: 0.0, isNativeWidescreen: ar > 1.82 };
-        }
-      }
+const cleanThumbnailUrl = (url?: string | null): string | null => {
+  if (!url || typeof url !== 'string' || !url.startsWith('http') || url.includes('placeholder.com')) return null;
+  if (url.includes('ytimg.com') || url.includes('youtube.com')) {
+    return url.replace(/\/(hqdefault|mqdefault|sddefault|default|hq720)\.(jpg|webp)/, '/maxresdefault.jpg').replace('http://', 'https://');
+  }
+  return url;
+};
+
+const getSongThumbnail = (item?: any): string | null => {
+  if (!item) return null;
+  const s = item.song || item;
+  if (s.thumbnail) {
+    const cleaned = cleanThumbnailUrl(s.thumbnail);
+    if (cleaned) return cleaned;
+  }
+  if (s.videoId) {
+    if (s.source === 'drive') {
+      return `https://drive.google.com/thumbnail?id=${s.videoId}&sz=w1280`;
     }
-  } catch (e) {
-    console.warn('🎵 Video oEmbed aspect ratio fetch error:', e);
+    return `https://i.ytimg.com/vi/${s.videoId}/maxresdefault.jpg`;
   }
   return null;
 };
@@ -569,9 +563,9 @@ const VideoControls: React.FC<ControlsProps> = ({
     }, 500);
   };
 
-  const opacity    = useRef(new Animated.Value(1)).current;
+  const opacity    = useRef(new Animated.Value(visible ? 1 : 0)).current;
   const knobX      = useRef(new Animated.Value(0)).current;
-  const knobOpacity = useRef(new Animated.Value(0)).current;
+  const knobOpacity = useRef(new Animated.Value(visible ? 1 : 0)).current;
   const isSeeking  = useRef(false);
   const [isDraggingSeek, setIsDraggingSeek] = useState(false);
   const [dragDisplayPos, setDragDisplayPos] = useState<number | null>(null);
@@ -703,15 +697,15 @@ const VideoControls: React.FC<ControlsProps> = ({
   useEffect(() => {
     Animated.timing(opacity, {
       toValue:         visible ? 1 : 0,
-      duration:        200,
+      duration:        visible ? 200 : 180,
       useNativeDriver: false,
     }).start();
     Animated.timing(knobOpacity, {
       toValue:         visible ? 1 : 0,
-      duration:        200,
+      duration:        visible ? 200 : 180,
       useNativeDriver: false,
     }).start();
-  }, [visible]);
+  }, [visible, isFullscreen]);
 
   useEffect(() => {
     if (isSeeking.current) return;
@@ -793,7 +787,7 @@ const VideoControls: React.FC<ControlsProps> = ({
   })).current;
 
   return (
-    <Animated.View style={[cv.wrap, { opacity: isFullscreen ? opacity : 1 }]} pointerEvents={(visible || !isFullscreen) ? 'box-none' : 'none'}>
+    <Animated.View style={[cv.wrap, { opacity }]} pointerEvents={visible ? 'box-none' : 'none'}>
       {isFullscreen ? (
         <>
           <Animated.View style={[cv.scrimTop, { opacity }]} pointerEvents="none">
@@ -1106,9 +1100,9 @@ const VideoControls: React.FC<ControlsProps> = ({
 };
 
 const cv = StyleSheet.create({
-  wrap:             { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
-  scrimTop:         { position: 'absolute', top: 0, left: 0, right: 0, height: 90 },
-  scrimBottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, height: 100 },
+  wrap:             { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', zIndex: 9999, elevation: 50 },
+  scrimTop:         { position: 'absolute', top: 0, left: 0, right: 0, height: 90, zIndex: 10000, elevation: 51 },
+  scrimBottom:      { position: 'absolute', bottom: 0, left: 0, right: 0, height: 100, zIndex: 10000, elevation: 51 },
   fullscreenTopBar: {
     position: 'absolute',
     top: 0,
@@ -1117,7 +1111,8 @@ const cv = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    zIndex: 10,
+    zIndex: 10001,
+    elevation: 55,
   },
   fullscreenTopLeft: {
     flex: 1,
@@ -1207,7 +1202,8 @@ const cv = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    zIndex: 5,
+    zIndex: 10001,
+    elevation: 55,
   },
   sideSeekZone: {
     flex: 1,
@@ -1233,7 +1229,7 @@ const cv = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12, zIndex: 30, elevation: 10 },
+  bottomBar:        { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12, zIndex: 10001, elevation: 55 },
   bottomRowBtn: {
     width: 32,
     height: 32,
@@ -1381,7 +1377,7 @@ const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingV
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 0 };
 
 export const ROOM_THEMES: { id: RoomTheme; label: string; icon: string; color: string }[] = [
-  { id: 'cinema', label: 'Cinema', icon: 'film-outline', color: '#EAB308' },
+  { id: 'cinema', label: 'Cinema', icon: 'film-outline', color: '#00F2FE' },
   { id: 'rave', label: 'Party', icon: 'flash-outline', color: '#7C3AED' },
   { id: 'dark', label: 'Dark', icon: 'moon-outline', color: '#64748B' },
   // { id: 'light', label: 'Light', icon: 'sunny-outline', color: '#F59E0B' },
@@ -1401,6 +1397,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const { user } = useAuth();
   const { theme, isDark } = useTheme();
   const [fullscreen, setFullscreen] = useState(false);
+  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const lastNonZeroBottomInsetRef = useRef(insets.bottom || 24);
   if (insets.bottom > 0) {
@@ -1503,9 +1500,25 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [thumbFallbackUri, setThumbFallbackUri] = useState<string | null>(null);
   const thumbnailFadeAnim = useRef(new Animated.Value(1)).current;
+  const innerThumbFadeAnim = useRef(new Animated.Value(1)).current;
   const [showThumbnailOverlay, setShowThumbnailOverlay] = useState(true);
+  const [displayedThumbnailUrl, setDisplayedThumbnailUrl] = useState<string | null>(initialThumbnail || null);
+  const activeThumbnailRef = useRef<string | null>(initialThumbnail || null);
+  const previousSongIdRef = useRef<string | null>(initialVideoId || null);
   const [isTrackPlayerReady, setIsTrackPlayerReady] = useState(false);
   const trackPlayerReadyTime = useRef(0);
+  const [thumbnailHoldComplete, setThumbnailHoldComplete] = useState(true);
+  const thumbnailHoldCompleteRef = useRef(true);
+  const setThumbnailHold = useCallback((val: boolean) => {
+    thumbnailHoldCompleteRef.current = val;
+    setThumbnailHoldComplete(val);
+  }, []);
+  const thumbnailHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isContainerResettingRef = useRef(false);
+  const pendingThumbnailRef = useRef<string | null>(null);
+  const lastTransitionVideoIdRef = useRef<string | null>(null);
+  const songStartTimeRef = useRef(0);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [playerState, setPlayerState] = useState<string>('unstarted');
@@ -1519,7 +1532,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [adStatus, setAdStatus] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
   const [isBuffering, setIsBuffering] = useState(false);
-  const [showControls, setShowControls] = useState(true);
+  const [showControls, setShowControls] = useState(false);
   const [duration, setDuration] = useState(0);
   const [livePosition, setLivePosition] = useState(initialRoomPosition);
   const [activeTab, setActiveTab] = useState<'chat' | 'queue'>('chat');
@@ -1541,6 +1554,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [liveExactResolution, setLiveExactResolution] = useState<string | null>(null);
   const videoFormatsRef = useRef<Record<string, string>>({});
   const [showQualityOptions, setShowQualityOptions] = useState(false);
+  const [videoDisplayMode, setVideoDisplayMode] = useState<'fit' | 'zoom'>('fit');
+
+  const handleSelectAspectMode = useCallback((mode: 'fit' | 'zoom') => {
+    setVideoDisplayMode(mode);
+  }, []);
   const [isMuted, setIsMuted] = useState(false);
   const handleToggleMute = useCallback(() => {
     setIsMuted(prev => !prev);
@@ -1592,7 +1610,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [activeVideoId]);
 
   useEffect(() => {
-    if (isPlayerReady) {
+    if (isPlayerReady && thumbnailHoldComplete) {
       Animated.timing(thumbnailFadeAnim, {
         toValue: 0,
         duration: 250,
@@ -1604,7 +1622,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setShowThumbnailOverlay(true);
       thumbnailFadeAnim.setValue(1);
     }
-  }, [isPlayerReady]);
+  }, [isPlayerReady, thumbnailHoldComplete]);
+
+  useEffect(() => {
+    if (thumbnailHoldComplete && isPlayerReady && isPlaying) {
+      songStartTimeRef.current = Date.now();
+      try { playerRef.current?.playVideo?.(); } catch (_) {}
+      if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+        syncPlay(0);
+      }
+    }
+  }, [thumbnailHoldComplete, isPlayerReady, isPlaying, isDJ, isDJMode, syncPlay]);
 
   const displayTitle = (currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...' && currentSong.title !== 'YouTube Video' && currentSong.title !== 'Watch Party' && currentSong.title !== 'Drive Video')
     ? currentSong.title
@@ -1750,7 +1778,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const videoThumbnailUrl = useMemo(() => {
     const raw = (() => {
       // 1. Current song thumbnail / videoId
-      if (currentSong?.thumbnail && typeof currentSong.thumbnail === 'string' && currentSong.thumbnail.startsWith('http')) {
+      if (currentSong?.thumbnail && typeof currentSong.thumbnail === 'string' && currentSong.thumbnail.startsWith('http') && !currentSong.thumbnail.includes('placeholder.com')) {
         return currentSong.thumbnail;
       }
       if (currentSong?.videoId) {
@@ -1764,7 +1792,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       if (queue && queue.length > 0) {
         const nextItem = queue[0];
         const nextSong = nextItem?.song || nextItem;
-        if (nextSong?.thumbnail && typeof nextSong.thumbnail === 'string' && nextSong.thumbnail.startsWith('http')) {
+        if (nextSong?.thumbnail && typeof nextSong.thumbnail === 'string' && nextSong.thumbnail.startsWith('http') && !nextSong.thumbnail.includes('placeholder.com')) {
           return nextSong.thumbnail;
         }
         if (nextSong?.videoId) {
@@ -1776,7 +1804,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       }
 
       // 3. Fallback to initial navigation params while room is connecting/initializing
-      if (initialThumbnail) return initialThumbnail;
+      if (initialThumbnail && !initialThumbnail.includes('placeholder.com')) return initialThumbnail;
       const vid = initialVideoId;
       const src = initialSource;
       if (vid) {
@@ -1936,6 +1964,41 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, [isMinimized, pipEnabled]);
 
+  const fullscreenRef = useRef(fullscreen);
+  useEffect(() => { fullscreenRef.current = fullscreen; }, [fullscreen]);
+
+  const isMinimizedRef = useRef(isMinimized);
+  useEffect(() => { isMinimizedRef.current = isMinimized; }, [isMinimized]);
+
+  const isSystemPipRef = useRef(isSystemPip);
+  useEffect(() => { isSystemPipRef.current = isSystemPip; }, [isSystemPip]);
+
+  const centerModeProgress = useSharedValue(0);
+  const [isCenterMode, setIsCenterMode] = useState(false);
+  const isCenterModeRef = useRef(false);
+  useEffect(() => {
+    isCenterModeRef.current = isCenterMode;
+  }, [isCenterMode]);
+
+  const toggleCenterMode = useCallback((toCenter: boolean) => {
+    if (fullscreenRef.current || isMinimizedRef.current || isSystemPipRef.current) return;
+    setIsCenterMode(toCenter);
+    centerModeProgress.value = withSpring(toCenter ? 1 : 0, {
+      damping: 22,
+      stiffness: 170,
+      mass: 0.9,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (fullscreen || isMinimized || isSystemPip) {
+      if (isCenterModeRef.current) {
+        setIsCenterMode(false);
+        centerModeProgress.value = 0;
+      }
+    }
+  }, [fullscreen, isMinimized, isSystemPip]);
+
   // Dynamic sizing (YouTube-style dynamic aspect ratio resize)
   const currentAspectRatioRef = useRef<number>(16 / 9);
   const miniWidth = useSharedValue(176);
@@ -1971,11 +2034,93 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     AsyncStorage.setItem('@music_room_pip_enabled', value ? 'true' : 'false').catch(() => {});
   }, []);
 
+  // ─── Center Mode Live Synced Lyrics ───
+  const [centerLyricsEnabled, setCenterLyricsEnabled] = useState(false);
+  const [lyricsState, setLyricsState] = useState<{
+    lines: LyricLine[];
+    isLoading: boolean;
+    instrumental: boolean;
+    hasLyrics: boolean;
+    hasPlainLyrics: boolean;
+    plainLyrics?: string;
+    trackName?: string;
+    artistName?: string;
+    isMismatch?: boolean;
+  }>({
+    lines: [],
+    isLoading: false,
+    instrumental: false,
+    hasLyrics: false,
+    hasPlainLyrics: false,
+    isMismatch: false,
+  });
+
+  useEffect(() => {
+    AsyncStorage.getItem('@music_room_center_lyrics_enabled').then(saved => {
+      // Default for 1st time user: false (no lyrics)
+      setCenterLyricsEnabled(saved === 'true');
+    }).catch(() => {
+      setCenterLyricsEnabled(false);
+    });
+  }, []);
+
+  const handleToggleCenterLyrics = useCallback((value: boolean) => {
+    setCenterLyricsEnabled(value);
+    AsyncStorage.setItem('@music_room_center_lyrics_enabled', value ? 'true' : 'false').catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!centerLyricsEnabled) return;
+    const activeTitle = currentSong?.title;
+    const activeId = currentSong?.videoId;
+    if (!activeTitle || activeTitle === 'Initializing...') {
+      setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
+      return;
+    }
+
+    let isMounted = true;
+    // Immediately clear previous song's title and lines so old metadata is never displayed
+    setLyricsState({ lines: [], isLoading: true, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
+
+    fetchLyrics(activeTitle, currentSong?.channelTitle, duration, activeId)
+      .then(res => {
+        if (!isMounted) return;
+        setLyricsState({
+          lines: res.lines,
+          isLoading: false,
+          instrumental: res.instrumental,
+          hasLyrics: res.hasLyrics,
+          hasPlainLyrics: res.hasPlainLyrics,
+          plainLyrics: res.plainLyrics,
+          trackName: res.trackName,
+          artistName: res.artistName,
+          isMismatch: res.isMismatch,
+        });
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentSong?.videoId, currentSong?.title, currentSong?.channelTitle, duration, centerLyricsEnabled]);
+
+  const centerLyricsAnimatedStyle = useAnimatedStyle(() => {
+    const c = centerModeProgress.value;
+    return {
+      opacity: c,
+      transform: [{ translateY: (1 - c) * 30 }],
+    };
+  });
+
   useEffect(() => {
     isSystemPipSV.value = isSystemPip ? 1 : 0;
   }, [isSystemPip]);
 
   const wasInSystemPipRef = useRef(false);
+  const resolvedTargetVideoHRef = useRef(0);
 
   useEffect(() => {
     const removePip = addPipListener((inPip, isExpanded) => {
@@ -2000,6 +2145,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         DeviceEventEmitter.emit('pip_dismissed', false);
         DeviceEventEmitter.emit('minimize_music_room', false);
         wasInSystemPipRef.current = false;
+
+        // Immediately lock video height to final resolved target to prevent bottom-to-top layout elaboration
+        if (resolvedTargetVideoHRef.current > 0) {
+          animatedVideoHeightSV.value = resolvedTargetVideoHRef.current;
+        }
+
+        // Re-enforce system bars without re-triggering window insets redraw
+        StatusBar.setTranslucent(true);
+        StatusBar.setBarStyle('light-content');
+        StatusBar.setBackgroundColor('transparent');
       } else {
         setIsSystemPip(true);
         isSystemPipSV.value = 1;
@@ -2323,10 +2478,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     AsyncStorage.getItem('@music_room_theme').then(saved => {
-      if (saved === 'cinema' || saved === 'rave' || saved === 'dark' /* || saved === 'light' */) {
+      // Default for 1st time user: 'cinema'
+      if (saved === 'cinema' || saved === 'rave' || saved === 'dark') {
         setRoomTheme(saved as RoomTheme);
+      } else {
+        setRoomTheme('cinema');
       }
-    }).catch(() => {});
+    }).catch(() => {
+      setRoomTheme('cinema');
+    });
   }, []);
 
   const handleCycleTheme = useCallback(() => {
@@ -2537,6 +2697,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const doubleTapTimeoutRef = useRef<any>(null);
   const doubleTapHeartRef = useRef<DoubleTapHeartOverlayRef>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
+  const showDiscoverySV = useSharedValue(0);
+  useEffect(() => {
+    showDiscoverySV.value = showDiscovery ? 1 : 0;
+  }, [showDiscovery]);
   const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2560,7 +2724,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     showRelatedRef.current = showRelated;
     showRelatedSV.value = showRelated ? 1 : 0;
+    if (showRelated && isCenterModeRef.current) {
+      setIsCenterMode(false);
+      centerModeProgress.value = 0;
+    }
+    if (!showRelated) {
+      relatedScrollX.setValue(0);
+      relatedScrollXSV.value = 0;
+    }
   }, [showRelated]);
+
+  useEffect(() => {
+    if (playerState === 'ended' && isCenterModeRef.current) {
+      toggleCenterMode(false);
+    }
+  }, [playerState, toggleCenterMode]);
   const isKeyboardVisibleRef = useRef(false);
 
   const stickerPickerVisibleRef = useRef(false);
@@ -2605,6 +2783,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           collapseProgress.value = 0;
           stickerSpacerHeight.value = 0;
           kbHeight.value = 0;
+          kbProgress.value = 0;
         } else {
           isKeyboardClosingSV.value = 0;
           collapseProgress.value = 1;
@@ -2618,6 +2797,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         collapseProgress.value = 0;
         stickerSpacerHeight.value = 0;
         kbHeight.value = 0;
+        kbProgress.value = 0;
       } else {
         kbHeight.value = e.height;
         kbProgress.value = e.progress;
@@ -2629,6 +2809,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         collapseProgress.value = 0;
         stickerSpacerHeight.value = 0;
         kbHeight.value = 0;
+        kbProgress.value = 0;
       } else {
         kbHeight.value = e.height;
         kbProgress.value = e.progress;
@@ -2642,6 +2823,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           stickerSpacerHeight.value = 0;
           collapseProgress.value = 0;
           kbHeight.value = 0;
+          kbProgress.value = 0;
         } else {
           isKeyboardClosingSV.value = 0;
           collapseProgress.value = 1;
@@ -2650,11 +2832,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
       } else if (e.height > 150) {
         settledKeyboardHeight.value = Math.max(STICKER_DRAWER_HEIGHT, e.height - (bottomInsetSV?.value || 0));
+        collapseProgress.value = 1;
       }
     },
   }, []);
 
-  const isMinimizedRef = useRef(isMinimized);
   isMinimizedRef.current = isMinimized;
 
   // Only keyboard progress drives video/npBar/header collapse to maximize chat space while typing
@@ -2694,29 +2876,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
   });
 
-  // Video container smoothly covers header (58dp) and Now Playing bar hides under video (116dp):
-  const headerAnimStyle = useAnimatedStyle(() => {
-    if (isMinimizedSV.value === 1) return { opacity: 1 };
-    return {
-      opacity: Math.max(0, 1 - collapseProgress.value),
-    };
-  });
-
-  const npBarAnimStyle = useAnimatedStyle(() => {
-    if (isMinimizedSV.value === 1) return { opacity: 1, transform: [{ translateY: 0 }] };
-    return {
-      opacity: Math.max(0, 1 - collapseProgress.value),
-      transform: [{ translateY: -collapseProgress.value * 116 }],
-    };
-  });
-
-  const conversationContainerStyle = useAnimatedStyle(() => {
-    if (isMinimizedSV.value === 1) return { transform: [{ translateY: 0 }] };
-    return {
-      transform: [{ translateY: -collapseProgress.value * 116 }],
-    };
-  });
-
   // Gold-standard WhatsApp 1:1 hardware VSYNC synchronized keyboard lift (identical to ChatRoomScreen):
   const kbLift = useDerivedValue(() => {
     if (isMinimizedSV.value === 1 || Platform.OS !== 'android') return 0;
@@ -2730,14 +2889,46 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     return Math.max(kbLift.value, stickerSpacerHeight.value);
   });
 
-  const conversationLiftStyle = useAnimatedStyle(() => {
-    if (isMinimizedSV.value === 1) {
-      return { transform: [{ translateY: 0 }] };
-    }
-    const containerShift = collapseProgress.value * 116;
-    const remainingLift = Math.max(0, finalLift.value - containerShift);
+  const mainContentLiftStyle = useAnimatedStyle(() => {
     return {
-      transform: [{ translateY: -remainingLift }],
+      transform: [{ translateY: 0 }],
+    };
+  });
+
+  const headerAnimStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { opacity: 1, height: 58 };
+    const p = collapseProgress.value;
+    const c = centerModeProgress.value;
+    return {
+      height: 58 * (1 - p),
+      opacity: Math.max(0, 1 - p * 2) * (1 - c),
+      overflow: 'hidden',
+    };
+  });
+
+  const npBarAnimStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { opacity: 1, height: 58 };
+    const p = collapseProgress.value;
+    const c = centerModeProgress.value;
+    return {
+      height: 58 * (1 - p),
+      opacity: Math.max(0, 1 - p * 2) * (1 - c),
+      overflow: 'hidden',
+    };
+  });
+
+  const conversationAnimStyle = useAnimatedStyle(() => {
+    const c = centerModeProgress.value;
+    return {
+      opacity: Math.max(0, 1 - c * 1.5),
+      transform: [{ translateY: c * 80 }],
+    };
+  });
+
+  const keyboardSpacerStyle = useAnimatedStyle(() => {
+    if (isMinimizedSV.value === 1) return { height: 0 };
+    return {
+      height: finalLift.value,
     };
   });
 
@@ -2874,6 +3065,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           ? `https://m.youtube.com/results?search_query=${encodeURIComponent(channelTitle)}` 
           : 'https://m.youtube.com');
 
+    setShowRelated(false);
     setDiscoveryInitialUrl(channelUrl);
     setShowDiscovery(true);
   };
@@ -2886,8 +3078,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     return (
       <Reanimated.View
-        style={[{ height: 58, overflow: 'hidden', zIndex: 5, elevation: 0 }, npBarAnimStyle]}
-        pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible ? 'none' : 'auto'}
+        style={[{ overflow: 'hidden', zIndex: 5, elevation: 0 }, npBarAnimStyle]}
+        pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible || isCenterMode ? 'none' : 'auto'}
       >
         <View style={s.npBar}>
         <View style={{ width: 42, height: 42, position: 'relative' }}>
@@ -3085,6 +3277,19 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     if (fullscreen) {
       wasFullscreen.current = true;
+      richInputRef.current?.blur();
+      KeyboardController.dismiss({ animated: false });
+      Keyboard.dismiss();
+      setStickerPickerVisible(false);
+      setIsStickerPickerDeliberatelyOpen(false);
+      isStickerPickerDeliberatelyOpenSV.value = 0;
+      stickerSpacerHeight.value = 0;
+      collapseProgress.value = 0;
+      kbHeight.value = 0;
+      kbProgress.value = 0;
+      isKeyboardVisibleRef.current = false;
+
+      showControlsForRef.current(4000);
       Orientation.lockToLandscape();
       setImmersiveMode(true);
       const t1 = setTimeout(() => setImmersiveMode(true), 250);
@@ -3098,6 +3303,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setImmersiveMode(false);
       if (wasFullscreen.current) {
         pinNavBarColor('#00000000', true);
+        showControlsForRef.current(3500);
       }
     }
   }, [fullscreen]);
@@ -3129,6 +3335,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       }
       if (seekPollRef.current) clearInterval(seekPollRef.current);
       if (idleCloseTimerRef.current) clearTimeout(idleCloseTimerRef.current);
+      if (containerResetTimerRef.current) clearTimeout(containerResetTimerRef.current);
+      if (thumbnailHoldTimerRef.current) clearTimeout(thumbnailHoldTimerRef.current);
     };
   }, []);
 
@@ -3171,14 +3379,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const currentSongRef = useRef<Song | null>(null);
   const relatedScrollX = useRef(new Animated.Value(0)).current;
   const relatedScrollXSV = useSharedValue(0);
-  useEffect(() => {
-    const id = relatedScrollX.addListener(({ value }) => {
-      relatedScrollXSV.value = value;
-    });
-    return () => {
-      relatedScrollX.removeListener(id);
-    };
-  }, [relatedScrollX]);
   // Lets fetchSwipeSuggestions (declared with stable empty deps further
   // down) always read the CURRENT queue when it runs, without needing
   // `queue` in its dependency array — same rationale as currentSongRef.
@@ -3222,11 +3422,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const playerGestureResponder = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: (evt, gestureState) => {
-      // Capture gesture if it moves significantly in the horizontal direction
-      return Math.abs(gestureState.dx) > 10;
+      // If related overlay is open, DO NOT capture horizontal swipes - let the RelatedVideosGrid FlatList scroll freely!
+      if (showRelatedRef.current && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
+        return false;
+      }
+      // Capture gesture if it moves significantly in horizontal or vertical direction
+      return Math.abs(gestureState.dx) > 10 || Math.abs(gestureState.dy) > 10;
     },
     onPanResponderRelease: (evt, gestureState) => {
-      const isTap = Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5;
+      const isTap = Math.abs(gestureState.dx) < 14 && Math.abs(gestureState.dy) < 14;
       if (isTap) {
         if (isKeyboardVisibleRef.current) {
           Keyboard.dismiss();
@@ -3239,11 +3443,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           setShowRelated(false);
         } else {
           // Otherwise, toggle playback controls
-          showControlsForRef.current();
+          showControlsForRef.current(3500);
         }
-      } else if (Math.abs(gestureState.dx) > 40) {
+      } else if (Math.abs(gestureState.dx) > 40 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
         // Swipe detected! Open the related videos grid instantly (Rave UX)
         if (!showRelatedRef.current && currentSongRef.current?.source !== 'drive') {
+          if (isCenterModeRef.current) {
+            setIsCenterMode(false);
+            centerModeProgress.value = 0;
+          }
           const activeId = currentSongRef.current?.videoId || initialVideoId;
           if (activeId && relatedCacheRef.current.has(activeId)) {
             setRelatedVideos(relatedCacheRef.current.get(activeId)!);
@@ -3251,6 +3459,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
             fetchRelated(activeId);
           }
           setShowRelated(true);
+        }
+      } else if (gestureState.dy > 30 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)) {
+        // Vertical swipe DOWN: Center video & hide other UI smoothly
+        if (!isCenterModeRef.current && !fullscreenRef.current && !isMinimizedRef.current && !isSystemPipRef.current) {
+          Keyboard.dismiss();
+          setStickerPickerVisible(false);
+          toggleCenterMode(true);
+        }
+      } else if (gestureState.dy < -30 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)) {
+        // Vertical swipe UP: Return to normal top position smoothly
+        if (isCenterModeRef.current && !fullscreenRef.current && !isMinimizedRef.current && !isSystemPipRef.current) {
+          toggleCenterMode(false);
         }
       }
     },
@@ -3291,6 +3511,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // ─── Dynamic Video Container Aspect Ratio & Song Setup ─────────────────────
   const [detectedAspectRatio, setDetectedAspectRatio] = useState<number | null>(null);
   const [detectedCropPercent, setDetectedCropPercent] = useState<number>(0.0);
+  const [detectedHorizCropPercent, setDetectedHorizCropPercent] = useState<number>(0.0);
+  const detectedCropPercentRef = useRef<number>(0.0);
+  const detectedHorizCropPercentRef = useRef<number>(0.0);
 
   useEffect(() => {
     const targetVideoId = currentSong?.videoId || initialVideoId;
@@ -3307,6 +3530,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     if (targetSource === 'drive') {
       currentDirectFetchId.current = targetVideoId;
+      lastLoadedStreamVideoId.current = targetVideoId;
       setDirectStreamsList([]);
       directStreamsListRef.current = [];
       setDirectFallbackUrl(null);
@@ -3318,6 +3542,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setLiveExactResolution(null);
       setDetectedAspectRatio(null);
       setDetectedCropPercent(0.0);
+      setDetectedHorizCropPercent(0.0);
       setShowQualityOptions(false);
       setIsDirectLoading(true);
 
@@ -3325,6 +3550,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         setIsDirectLoading(false);
         if (currentDirectFetchId.current === targetVideoId && res && res.url) {
           console.log('🎬 [MusicRoom] Drive stream resolved for native ExoPlayer:', res.url);
+          lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.url);
           setDirectStreamHeaders(res.headers);
           setDirectStreamType('mp4');
@@ -3333,6 +3559,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
       }).catch((e) => {
         setIsDirectLoading(false);
+        lastLoadedStreamVideoId.current = targetVideoId;
         console.warn('⚠️ [MusicRoom] Drive stream resolution failed, using DrivePlayer fallback:', e);
       });
       return;
@@ -3369,13 +3596,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setLiveExactResolution(null);
     setDetectedAspectRatio(null);
     setDetectedCropPercent(0.0);
+    setDetectedHorizCropPercent(0.0);
     setShowQualityOptions(false);
 
     fetchVideoAspectRatio(targetVideoId).then((res) => {
       if (currentDirectFetchId.current === targetVideoId && res && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
-        console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" detected AR: ${res.aspectRatio.toFixed(3)}, crop: ${(res.verticalPercent * 100).toFixed(1)}% -> Target Height: ${Math.round(width / res.aspectRatio)}px`);
-        setDetectedAspectRatio(res.aspectRatio);
-        setDetectedCropPercent(res.isNativeWidescreen ? 0.0 : res.verticalPercent);
+        if (res.isNativeWidescreen || res.aspectRatio < 1.0) {
+          console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" stream AR: ${res.aspectRatio.toFixed(3)} -> Target Height: ${Math.round(width / res.aspectRatio)}px`);
+          setDetectedAspectRatio(res.aspectRatio);
+          setDetectedCropPercent(0.0);
+          setDetectedHorizCropPercent(0.0);
+        }
       }
     });
 
@@ -3445,7 +3676,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
         // Populate available qualities in UI
         const qKeys = res.streams.map(s => s.qualityKey).filter(Boolean);
-        setAvailableQualities(Array.from(new Set(['auto', ...qKeys])));
+        if (res.dashUrl) {
+          setAvailableQualities(Array.from(new Set(['auto', ...qKeys])));
+        } else {
+          // Rare progressive stream fallback (no DASH attestation available):
+          // Show only '360p' so the user is not presented with inaccessible DASH quality switches
+          setAvailableQualities(['360p']);
+          setVideoQuality('360p');
+        }
 
         dashUrlRef.current = res.dashUrl || null;
 
@@ -3464,12 +3702,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with DASH manifest (${res.streams.length} representations)`);
           lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.dashUrl);
+          setDirectStreamHeaders(res.headers);
           setDirectAudioUrl(null);
           setDirectStreamType('mpd');
         } else if (res.url) {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with single stream: ${res.url.substring(0, 60)}...`);
           lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.url);
+          setDirectStreamHeaders(res.headers);
           setDirectAudioUrl(res.audioUrl || null);
           setDirectStreamType(res.streamType || 'mp4');
         } else {
@@ -3492,17 +3732,49 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       if (ar > 1.82) {
         // Stream decoded by player is native widescreen (e.g. 21:9 or 2.39:1 without baked black bars)
         setDetectedCropPercent(0.0);
+        setDetectedHorizCropPercent(0.0);
+        detectedCropPercentRef.current = 0.0;
+        detectedHorizCropPercentRef.current = 0.0;
         setDetectedAspectRatio(ar);
         return;
       }
+      if (ar < 1.0) {
+        // Portrait / vertical short
+        setDetectedAspectRatio(ar);
+        return;
+      }
+      // For standard 16:9 streams, preserve ratio across seek size resets ONLY if BBD detected black bars for current track
       setDetectedAspectRatio((prev) => {
-        if (prev && Math.abs(prev - 16 / 9) > 0.05 && Math.abs(ar - 16 / 9) < 0.05) {
+        if (prev && Math.abs(prev - 16 / 9) > 0.05 && (detectedCropPercentRef.current > 0.03 || detectedHorizCropPercentRef.current > 0.03)) {
           return prev;
         }
         return ar;
       });
     }
   }, []);
+
+  const handleBlackBarDetected = useCallback((ar: number, cropPercent: number, horizCropPercent: number = 0.0) => {
+    if (cropPercent > 0.03 || horizCropPercent > 0.03) {
+      console.log(`📐 [LIVE BBD DETECTED] Black bars detected: ar: ${ar.toFixed(3)}, vertCrop: ${(cropPercent * 100).toFixed(1)}%, horizCrop: ${(horizCropPercent * 100).toFixed(1)}%`);
+      setDetectedCropPercent(cropPercent);
+      setDetectedHorizCropPercent(horizCropPercent);
+      detectedCropPercentRef.current = cropPercent;
+      detectedHorizCropPercentRef.current = horizCropPercent;
+      // In Fit mode: dynamically update aspect ratio so container shrinks (for widescreen) or expands (for 4:3)
+      if (videoDisplayMode === 'fit') {
+        setDetectedAspectRatio(ar);
+      }
+    } else {
+      console.log(`📐 [LIVE BBD DETECTED] Full frame (0% black bars)`);
+      setDetectedCropPercent(0.0);
+      setDetectedHorizCropPercent(0.0);
+      detectedCropPercentRef.current = 0.0;
+      detectedHorizCropPercentRef.current = 0.0;
+      if (videoDisplayMode === 'fit') {
+        setDetectedAspectRatio(ar || 16 / 9);
+      }
+    }
+  }, [videoDisplayMode]);
 
   // Dynamically synchronize In-App MiniPlayer and Android System PiP dimensions on aspect ratio change
   useEffect(() => {
@@ -3559,6 +3831,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (fullscreen) return screenW;
     const defaultVideoH = screenW * (9 / 16);
 
+    // When holding thumbnail, showing related videos grid, or when video has finished or not ready:
+    // ALWAYS use standard 16:9 thumbnail height!
+    if (!thumbnailHoldComplete || !isPlayerReady || showRelated || playerState === 'ended') {
+      return defaultVideoH;
+    }
+
+    // In Zoom to Fill mode: maintain fixed 16:9 container height so video fills 16:9 frame without expanding/shrinking container
+    if (videoDisplayMode === 'zoom') {
+      return defaultVideoH;
+    }
+
     const ar = detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio >= 0.4 && detectedAspectRatio <= 3.5
       ? detectedAspectRatio
       : (16 / 9);
@@ -3575,33 +3858,160 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       const maxH = Math.round(screenH * 0.55);
       return Math.min(maxH, targetHeight);
     }
-    // Standard 16:9 & Widescreen (21:9, 2.35:1, 2.39:1) videos:
-    // MAINTAIN fixed 16:9 thumbnail height center spot so container, info bar and chat area NEVER MOVE!
+    // In Fit Mode: dynamically shrink container height for widescreen videos (e.g. 164dp for 2.40:1)
+    if (videoDisplayMode === 'fit' && ar > 1.82) {
+      return Math.round(screenW / ar);
+    }
+    // Standard 16:9:
     return defaultVideoH;
-  }, [fullscreen, detectedAspectRatio]);
+  }, [fullscreen, detectedAspectRatio, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
 
-  const isWidescreenShort = !fullscreen && !isMinimized && !isSystemPip && !showRelated && !!detectedAspectRatio && detectedAspectRatio > 1.82;
+  const isWidescreenShort = !fullscreen && !isMinimized && !isSystemPip && isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && !!detectedAspectRatio && detectedAspectRatio > 1.82;
   const widescreenMetrics = useMemo(() => {
     const screenDims = Dimensions.get('screen');
     const screenW = Math.min(screenDims.width, screenDims.height);
     const defaultVideoH = screenW * (9 / 16);
-    const ar = detectedAspectRatio && detectedAspectRatio > 1.82 ? detectedAspectRatio : (16 / 9);
+    const ar = isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82 ? detectedAspectRatio : (16 / 9);
     const contentH = Math.round(screenW / ar);
-    const topOffset = Math.round((defaultVideoH - contentH) / 2);
+    const topOffset = 0;
     return { screenW, defaultVideoH, contentH, topOffset };
-  }, [detectedAspectRatio]);
+  }, [detectedAspectRatio, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
 
   const raveContentRect = useMemo(() => {
     if (fullscreen || isMinimized || isSystemPip) return undefined;
     const screenDims = Dimensions.get('screen');
     const screenW = Math.min(screenDims.width, screenDims.height);
+    const isWidescreen = Boolean(isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82);
+    const contentH = isWidescreen ? Math.round(screenW / (detectedAspectRatio as number)) : dynamicVideoHeight;
+    const centerDeltaY = Math.max(0, ((windowHeight - contentH) / 2) - (stableTopInset + 58));
     return {
       x: 0,
-      y: stableTopInset + 58,
+      y: stableTopInset + 58 + (isCenterMode ? centerDeltaY : 0),
       width: screenW,
-      height: dynamicVideoHeight,
+      height: contentH,
     };
-  }, [fullscreen, isMinimized, isSystemPip, stableTopInset, dynamicVideoHeight]);
+  }, [fullscreen, isMinimized, isSystemPip, stableTopInset, dynamicVideoHeight, detectedAspectRatio, isCenterMode, windowHeight, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
+
+  // Smooth, fluid video container height animation (curtain filling effect, zero jump)
+  const defaultBaseVideoH = Math.round(Math.min(Dimensions.get('screen').width, Dimensions.get('screen').height) * (9 / 16));
+  const animatedVideoHeightSV = useSharedValue(defaultBaseVideoH);
+
+  const resolvedTargetVideoH = (!isPlayerReady || !thumbnailHoldComplete || showRelated || playerState === 'ended')
+    ? defaultBaseVideoH
+    : dynamicVideoHeight;
+  resolvedTargetVideoHRef.current = resolvedTargetVideoH;
+
+  useEffect(() => {
+    if (!isPlayerReady || !thumbnailHoldComplete || showRelated || playerState === 'ended') {
+      animatedVideoHeightSV.value = defaultBaseVideoH;
+    } else {
+      animatedVideoHeightSV.value = withTiming(resolvedTargetVideoH, {
+        duration: 350,
+        easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
+      });
+    }
+  }, [resolvedTargetVideoH, isPlayerReady, thumbnailHoldComplete, showRelated, playerState, defaultBaseVideoH]);
+
+  // ── Unified Song Transition & Participant Sync Hold (Zero Rush, Zero Crop, Zero Desync) ──
+  const startSongTransition = useCallback((nextItem?: any) => {
+    if (containerResetTimerRef.current) {
+      clearTimeout(containerResetTimerRef.current);
+      containerResetTimerRef.current = null;
+    }
+    if (thumbnailHoldTimerRef.current) {
+      clearTimeout(thumbnailHoldTimerRef.current);
+      thumbnailHoldTimerRef.current = null;
+    }
+
+    setThumbnailHold(false);
+    isContainerResettingRef.current = true;
+
+    const nextThumb = getSongThumbnail(nextItem);
+    const targetVideoId = nextItem?.videoId || (nextItem?.song && nextItem.song.videoId) || null;
+    if (targetVideoId) {
+      lastTransitionVideoIdRef.current = targetVideoId;
+    }
+    pendingThumbnailRef.current = nextThumb || null;
+
+    try { TrackPlayer.pause(); } catch (_) {}
+    try { playerRef.current?.stopVideo?.(); } catch (_) {}
+    setDirectStreamUrl(null);
+    setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
+    setShowThumbnailOverlay(true);
+    thumbnailFadeAnim.setValue(1);
+    innerThumbFadeAnim.setValue(0);
+    setThumbFallbackUri(null);
+    setDetectedAspectRatio(null);
+    setDetectedCropPercent(0);
+    setDetectedHorizCropPercent(0);
+    setVideoDisplayMode('fit');
+    setIsPlayerReady(false);
+    isPlayerReadyRef.current = false;
+    setIsTrackPlayerReady(false);
+    setMediaFullySynced(false);
+    setIsBuffering(true);
+    lastLoadedStreamVideoId.current = null;
+    lastResetSongVideoIdRef.current = null;
+    setIsSyncing(true);
+    livePositionRef.current = 0;
+    setLivePosition(0);
+
+    // 1. Immediately hide previous song thumbnail and display clean black screen with spinner
+    setDisplayedThumbnailUrl(null);
+
+    // 2. Smoothly reset container height back to standard 16:9 thumbnail size (300ms)
+    animatedVideoHeightSV.value = withTiming(defaultBaseVideoH, {
+      duration: 300,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
+    });
+
+    // 3. ONLY AFTER container has settled to standard size (300ms), show next thumbnail and begin hold
+    containerResetTimerRef.current = setTimeout(() => {
+      isContainerResettingRef.current = false;
+      const thumbToShow = pendingThumbnailRef.current || getSongThumbnail(currentSongRef.current);
+      if (thumbToShow) {
+        setDisplayedThumbnailUrl(thumbToShow);
+        activeThumbnailRef.current = thumbToShow;
+        innerThumbFadeAnim.setValue(0);
+        Animated.timing(innerThumbFadeAnim, {
+          toValue: 1,
+          duration: 250,
+          useNativeDriver: true,
+        }).start();
+      }
+
+      // Generous 2.5s hold gives all participants sufficient time to receive WS message,
+      // decipher stream, initialize player, and pre-buffer frame 0 without desync!
+      thumbnailHoldTimerRef.current = setTimeout(() => {
+        setThumbnailHold(true);
+      }, 2500);
+    }, 300);
+  }, [defaultBaseVideoH, setThumbnailHold]);
+
+  // ─── Thumbnail Sync: Update displayed thumbnail when new song metadata/URL arrives ───
+  useEffect(() => {
+    if (!videoThumbnailUrl) return;
+    const currentVid = currentSong?.videoId || initialVideoId;
+    previousSongIdRef.current = currentVid;
+
+    if (isContainerResettingRef.current) {
+      pendingThumbnailRef.current = videoThumbnailUrl;
+    } else {
+      setDisplayedThumbnailUrl(videoThumbnailUrl);
+      activeThumbnailRef.current = videoThumbnailUrl;
+      Animated.timing(innerThumbFadeAnim, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+
+      if (!thumbnailHoldCompleteRef.current && !thumbnailHoldTimerRef.current) {
+        thumbnailHoldTimerRef.current = setTimeout(() => {
+          setThumbnailHold(true);
+        }, 2500);
+      }
+    }
+  }, [currentSong?.videoId, videoThumbnailUrl, setThumbnailHold]);
 
   const videoContainerAnimatedStyle = useAnimatedStyle(() => {
     if (fullscreen || isSystemPipSV.value === 1) {
@@ -3666,25 +4076,40 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     // Inside Music Room: Normal video container at top
+    const curH = animatedVideoHeightSV.value;
+    const centerDeltaY = Math.max(0, ((windowHeight - curH) / 2) - (stableTopInset + 58));
+
     return {
       position: 'relative',
       left: 0,
       top: 0,
       width: '100%',
-      height: dynamicVideoHeight,
+      height: curH,
       borderRadius: 0,
       borderWidth: 0,
       borderColor: 'transparent',
       backgroundColor: 'transparent',
-      overflow: roomTheme === 'rave' ? 'visible' : 'hidden',
+      overflow: 'hidden',
       zIndex: 20,
       elevation: 0,
       opacity: 1,
-      transform: [{ translateY: -collapseProgress.value * 58 }],
+      transform: [{ translateY: (showRelated || showRelatedSV.value === 1) ? 0 : centerModeProgress.value * centerDeltaY }],
     };
-  }, [dynamicVideoHeight, fullscreen, roomTheme, isSystemPip]);
+  }, [dynamicVideoHeight, fullscreen, isSystemPip, detectedAspectRatio, widescreenMetrics, windowHeight, stableTopInset, showRelated, showRelatedSV, playerState, isDark, showThumbnailOverlay, isPlayerReady]);
 
   const playerLayerAnimatedStyle = useAnimatedStyle(() => {
+    if (showDiscoverySV.value === 1) {
+      return {
+        position: 'absolute',
+        left: -9999,
+        top: -9999,
+        width: 1,
+        height: 1,
+        opacity: 0,
+        zIndex: 0,
+      };
+    }
+
     if (fullscreen || isSystemPipSV.value === 1) {
       return {
         position: 'absolute',
@@ -3695,8 +4120,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         width: '100%',
         height: '100%',
         borderRadius: 0,
-        zIndex: 9999,
-        elevation: 9999,
+        zIndex: 99999,
+        elevation: 99999,
         backgroundColor: '#000000',
         opacity: 1,
       };
@@ -3729,7 +4154,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     // ── Live Video in Related Videos Grid (Slot 1 PiP) ──
-    if (showRelatedSV.value === 1) {
+    if (showRelated || showRelatedSV.value === 1) {
       const isEndedOrError = playerState === 'ended' || Boolean(playerError);
       if (isEndedOrError || !activeVideoId) {
         return {
@@ -3740,13 +4165,31 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           height: 1,
           opacity: 0,
           zIndex: 0,
+          transform: [{ translateY: 0 }],
         };
       }
       const slotW = width / 2;
       const slotH = slotW * 0.5625;
+      const scrollX = relatedScrollXSV.value;
+
+      // When swiping or scrolled past Set 1, hide the live PiP player completely
+      // so native card thumbnail in FlatList scrolls butter-smooth at 120fps with zero stutter
+      if (scrollX > 15) {
+        return {
+          position: 'absolute',
+          left: -9999,
+          top: -9999,
+          width: slotW,
+          height: slotH,
+          opacity: 0,
+          zIndex: 0,
+          transform: [{ translateY: 0 }],
+        };
+      }
+
       return {
         position: 'absolute',
-        left: -relatedScrollXSV.value,
+        left: 0,
         top: stableTopInset + 58,
         width: slotW,
         height: slotH,
@@ -3756,10 +4199,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         borderRadius: 0,
         overflow: 'hidden',
         opacity: 1,
+        transform: [{ translateY: 0 }],
       };
     }
 
-    if (roomTheme === 'rave') {
+    const isDrive = (currentSong?.source || initialSource) === 'drive';
+    const isDirectStream = Boolean(directStreamUrl) && !isDirectLoading;
+    const curH = animatedVideoHeightSV.value;
+    const shiftY = collapseProgress.value * 58;
+    const centerDeltaY = Math.max(0, ((windowHeight - curH) / 2) - (stableTopInset + 58));
+    const translateY = -shiftY + (centerModeProgress.value * centerDeltaY);
+
+    if (roomTheme === 'rave' && isDirectStream && !isDrive) {
       return {
         position: 'absolute',
         left: 0,
@@ -3772,23 +4223,56 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         elevation: 0,
         backgroundColor: 'transparent',
         opacity: 1,
+        transform: [{ translateY: -shiftY }],
       };
     }
 
-    // Default (cinema, dark, light): exact video container bounds
+    const videoTop = stableTopInset + 58;
+
+    // Default (cinema, dark, or Drive/YouTube fallback): exact video bounds with theme covering crop area
     return {
       position: 'absolute',
       left: 0,
-      top: stableTopInset + 58,
+      top: videoTop,
       width: '100%',
-      height: dynamicVideoHeight,
-      transform: [{ translateY: -collapseProgress.value * 58 }],
+      height: curH,
+      borderRadius: 16,
+      overflow: 'hidden',
+      transform: [{ translateY }],
       zIndex: 0,
       elevation: 0,
       backgroundColor: 'transparent',
       opacity: 1,
     };
-  }, [dynamicVideoHeight, fullscreen, roomTheme, stableTopInset, isSystemPip, showRelated]);
+  }, [dynamicVideoHeight, fullscreen, roomTheme, stableTopInset, isSystemPip, showRelated, showRelatedSV, directStreamUrl, isDirectLoading, currentSong?.source, initialSource, detectedAspectRatio, widescreenMetrics, windowHeight, showThumbnailOverlay, isPlayerReady, relatedScrollXSV, showDiscovery, showDiscoverySV]);
+
+  const relatedPipOverlayStyle = useAnimatedStyle(() => {
+    if (showDiscoverySV.value === 1 || (!showRelated && showRelatedSV.value !== 1) || relatedScrollXSV.value > 15) {
+      return {
+        position: 'absolute',
+        left: -9999,
+        top: -9999,
+        width: 1,
+        height: 1,
+        opacity: 0,
+        zIndex: 0,
+        transform: [{ translateY: 0 }],
+      };
+    }
+    const slotW = width / 2;
+    const slotH = slotW * 0.5625;
+    return {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      width: slotW,
+      height: slotH,
+      zIndex: 40,
+      elevation: 40,
+      opacity: 1,
+      transform: [{ translateY: 0 }],
+    };
+  }, [width, showRelated]);
 
   const participantsRef = useRef(participants);
   useEffect(() => {
@@ -4117,8 +4601,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (!currentSong?.videoId) return;
     if (isReseeking) return; // a seek is in control right now, not us
 
-    // Both Drive and YouTube sync once player is ready
-    const isReadyToSync = isPlayerReady;
+    // Both Drive and YouTube sync once player is ready AND thumbnail hold has completed
+    const isReadyToSync = isPlayerReady && thumbnailHoldComplete;
 
     if (isReadyToSync) {
       // If room isn't playing yet (DJ startup — syncPlay comes later),
@@ -4168,7 +4652,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
       }, 100);
     }
-  }, [isPlayerReady, isTrackPlayerReady, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isPlaying]);
+  }, [isPlayerReady, thumbnailHoldComplete, isTrackPlayerReady, currentSong?.videoId, currentSong?.source, mediaFullySynced, isReseeking, isPlaying]);
 
   // ✅ NEW: lightweight play/pause reflection — reacts to room isPlaying
   // WITHOUT ever calling setMediaItem/reloading. This is the only place
@@ -4225,7 +4709,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     // Before the player is ready, livePositionRef is 0 — so drift = full room position (false positive).
     // Before snapshot is consumed, we haven't done the initial seek yet so any drift seek would fight it.
     if (!isPlayerReadyRef.current) return;
+    if (!thumbnailHoldCompleteRef.current) return;
     if (!isDJ && !isDJMode && joinSnapshot && joinSnapshot.videoId === currentSong?.videoId && !joinSnapshotConsumed.current) return;
+
+    // Grace period for first 3.5s of track start: prevent hard drift seeks while participants are settling
+    if (songStartTimeRef.current > 0 && Date.now() - songStartTimeRef.current < 3500) {
+      return;
+    }
 
     // ✅ Cooldown: ignore drift syncs if we performed a seek very recently (within 5 seconds)
     // to give the video player enough time to buffer, start playing, and catch up.
@@ -4504,7 +4994,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
 
         const nowMs = Date.now();
-        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && (nowMs - lastSyncBroadcastTimeRef.current >= 1500)) {
+        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && thumbnailHoldCompleteRef.current && (nowMs - lastSyncBroadcastTimeRef.current >= 1500)) {
           lastSyncBroadcastTimeRef.current = nowMs;
           syncPlay(pos ?? 0);
         }
@@ -4518,38 +5008,45 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const hasActiveVideo = !!currentSongRef.current?.videoId && playerState !== 'ended';
 
     if (forcePlay || (!hasActiveVideo && queue.length === 0)) {
-      try {
-        playerRef.current?.pauseVideo?.();
-        playerRef.current?.stopVideo?.();
-      } catch (_) {}
-      setDirectStreamUrl(null);
-      setShowThumbnailOverlay(true);
-      thumbnailFadeAnim.setValue(1);
-      setIsPlayerReady(false);
-      isPlayerReadyRef.current = false;
-      setIsBuffering(true);
+      startSongTransition(song);
       let richSong = song;
-      if (!song.channelTitle || song.title === 'Loading...' || song.title === 'Initializing...' || song.title === 'Watch Party' || song.title === 'YouTube Video') {
+      const isPlaceholder = !song.title || song.title === 'Loading...' || song.title === 'Initializing...' || song.title === 'Watch Party' || song.title === 'YouTube Video';
+
+      if (!isPlaceholder && song.channelTitle && song.channelTitle !== 'Loading...') {
+        // Metadata already known (History, Likes, Discovery, Queue): load song immediately with ZERO network delay!
+        if (richSong.videoId === loadedAudioSessionRef.current) {
+          loadedAudioSessionRef.current = null;
+          (globalThis as any).loadedAudioSessionId = null;
+          setAudioReloadToken(t => t + 1);
+        }
+        currentDirectFetchId.current = null;
+        lastLoadedStreamVideoId.current = null;
+        lastResetSongVideoIdRef.current = null;
+        setIsSyncing(true);
+        loadSong(richSong, currentRoomName);
+
+        // Background update for channel logo or extra metadata without delaying video playback
+        if (song.source !== 'drive') {
+          fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name).then((meta) => {
+            if (meta && meta.videoId === song.videoId) {
+              updateCurrentSongMetadata(meta);
+            }
+          }).catch(() => {});
+        }
+      } else {
         richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name);
         richSong.addedBy = song.addedBy ?? user?.display_name;
+        if (richSong.videoId === loadedAudioSessionRef.current) {
+          loadedAudioSessionRef.current = null;
+          (globalThis as any).loadedAudioSessionId = null;
+          setAudioReloadToken(t => t + 1);
+        }
+        currentDirectFetchId.current = null;
+        lastLoadedStreamVideoId.current = null;
+        lastResetSongVideoIdRef.current = null;
+        setIsSyncing(true);
+        loadSong(richSong, currentRoomName);
       }
-      // ✅ FIX (replay button not replaying): the audio load effect's
-      // dependency array is [currentSong?.videoId, currentSong?.source] —
-      // replaying the SAME video means videoId doesn't change, so that
-      // effect never re-fires, and loadedAudioSessionRef still thinks this
-      // track is "already loaded" from before it ended. Clearing the ref
-      // here forces the next load-effect pass to treat this as a genuine
-      // fresh load and actually restart TrackPlayer from position 0.
-      if (richSong.videoId === loadedAudioSessionRef.current) {
-        loadedAudioSessionRef.current = null;
-        (global as any).loadedAudioSessionId = null;
-        setAudioReloadToken(t => t + 1);
-      }
-      currentDirectFetchId.current = null;
-      lastLoadedStreamVideoId.current = null;
-      lastResetSongVideoIdRef.current = null;
-      setIsSyncing(true);
-      loadSong(richSong, currentRoomName);
     } else {
       addToQueue({ ...song, addedBy: song.addedBy ?? user?.display_name ?? 'Someone' });
     }
@@ -4557,7 +5054,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       fetchRelatedRef.current(song.videoId);
     }
     Keyboard.dismiss();
-  }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName]);
+  }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName, startSongTransition]);
 
   useEffect(() => {
     // ── Shared handler for play/pause triggered by lock screen / notification ──
@@ -4663,7 +5160,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         song = {
           videoId:      data.videoId,
           title:        data.title || 'Drive Video',
-          thumbnail:    data.thumbnail || 'https://via.placeholder.com/150/1a1a2e/FFFFFF?text=Drive',
+          thumbnail:    (data.thumbnail && !data.thumbnail.includes('placeholder.com')) ? data.thumbnail : `https://drive.google.com/thumbnail?id=${data.videoId}&sz=w1280`,
           channelTitle: 'Google Drive',
           addedBy:      user?.display_name || 'Someone',
           source:       'drive',
@@ -4749,11 +5246,38 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     showControlsForRef.current = showControlsFor;
   }, [showControlsFor]);
 
+  // Ensure controls are hidden when a new video loads/changes; only show on manual tap
   useEffect(() => {
-    if (isPlaying) {
-      showControlsFor(3500);
+    setShowControls(false);
+    if (controlTimer.current) {
+      clearTimeout(controlTimer.current);
+      controlTimer.current = null;
     }
-  }, [isPlaying, showControlsFor]);
+  }, [currentSong?.videoId]);
+
+  const handleToggleFullscreen = useCallback(() => {
+    richInputRef.current?.blur();
+    KeyboardController.dismiss({ animated: false });
+    Keyboard.dismiss();
+    setStickerPickerVisible(false);
+    setIsStickerPickerDeliberatelyOpen(false);
+    isStickerPickerDeliberatelyOpenSV.value = 0;
+    stickerSpacerHeight.value = 0;
+    collapseProgress.value = 0;
+    kbHeight.value = 0;
+    kbProgress.value = 0;
+    isKeyboardVisibleRef.current = false;
+
+    showControlsFor(4000);
+
+    triggerSmoothScreenTransition(() => {
+      setFullscreen(prev => {
+        const next = !prev;
+        showControlsFor(4000);
+        return next;
+      });
+    });
+  }, [triggerSmoothScreenTransition, showControlsFor]);
 
 
 
@@ -4778,9 +5302,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       if (isDrive) {
         // Drive: we have the title already from params or fallback
+        const driveThumb = (initialThumbnail && !initialThumbnail.includes('placeholder.com'))
+          ? initialThumbnail
+          : (initialVideoId ? `https://drive.google.com/thumbnail?id=${initialVideoId}&sz=w1280` : '');
         buildAndLoad(
           initialTitle || 'Drive Video',
-          initialThumbnail || 'https://via.placeholder.com/150/1a1a2e/FFFFFF?text=Drive',
+          driveThumb,
           'Google Drive',
         );
       } else if (initialTitle && initialThumbnail) {
@@ -4824,9 +5351,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         return;
       }
 
+      // If joining mid-song via snapshot, don't force a transition hold
+      const isMidSongJoin = joinSnapshot && joinSnapshot.videoId === currentSong.videoId && !joinSnapshotConsumed.current;
+
+      if (!isMidSongJoin && lastTransitionVideoIdRef.current !== currentSong.videoId && lastResetSongVideoIdRef.current !== null) {
+        // Participant receiving new song from WebSocket / DJ
+        startSongTransition(currentSong);
+      }
+
       lastResetSongVideoIdRef.current = currentSong.videoId;
       metadataLock.current = null;
-      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
+      setVideoDisplayMode('fit');
+      try { playerRef.current?.stopVideo?.(); } catch (_) {}
       try { TrackPlayer.pause(); } catch (_) {}
       setShowThumbnailOverlay(true);
       thumbnailFadeAnim.setValue(1);
@@ -4853,7 +5389,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setShowRelated(false);
       songPlaybackStartedRef.current = false;
     }
-  }, [currentSong?.videoId]);
+  }, [currentSong?.videoId, startSongTransition]);
 
   useEffect(() => {
     return () => {
@@ -4914,12 +5450,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         return true;
       }
       if (previewData.visible) { setPreviewData(p => ({ ...p, visible: false })); return true; }
+      if (isCenterModeRef.current || isCenterMode) {
+        toggleCenterMode(false);
+        return true;
+      }
       if (showDiscovery) { setShowDiscovery(false); setDiscoveryInitialUrl(null); return true; }
       if (showSettingsModal) { setShowSettingsModal(false); return true; }
       if (fullscreen) {
-        triggerSmoothScreenTransition(() => {
-          setFullscreen(false);
-        });
+        handleToggleFullscreen();
         return true;
       }
       if (showLeaveConfirm) { setShowLeaveConfirm(false); return true; }
@@ -4932,7 +5470,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm, showSettingsModal, handleMinimize]);
+  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm, showSettingsModal, isCenterMode, toggleCenterMode, handleMinimize, handleToggleFullscreen]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -5123,10 +5661,35 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         limit: 20,
       });
 
-      if (enriched.length > 0) {
-        relatedCacheRef.current.set(videoId, enriched);
+      let finalRelated = enriched;
+      if (finalRelated.length < 6 && videoId) {
+        try {
+          const resp = await api.post('/music/youtube/related/', { videoId });
+          if (resp.data && Array.isArray(resp.data.items) && resp.data.items.length > 0) {
+            const apiItems: Song[] = resp.data.items.map((it: any) => ({
+              videoId: it.id?.videoId || it.videoId || it.id,
+              title: it.snippet?.title || it.title || 'YouTube Video',
+              thumbnail: it.snippet?.thumbnails?.medium?.url || it.thumbnail || `https://img.youtube.com/vi/${it.id?.videoId || it.videoId || it.id}/hqdefault.jpg`,
+              channelTitle: it.snippet?.channelTitle || it.channelTitle || 'YouTube',
+              source: 'youtube' as const,
+              addedBy: 'YouTube',
+            })).filter((s: Song) => s.videoId && s.videoId !== videoId && !queuedIds.has(s.videoId));
+
+            const seen = new Set(finalRelated.map(s => s.videoId));
+            for (const item of apiItems) {
+              if (!seen.has(item.videoId)) {
+                finalRelated.push(item);
+                seen.add(item.videoId);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (finalRelated.length > 0) {
+        relatedCacheRef.current.set(videoId, finalRelated);
         if ((currentSongRef.current?.videoId || initialVideoId) === videoId) {
-          setRelatedVideos(enriched);
+          setRelatedVideos(finalRelated);
         }
       }
     } catch (e) {
@@ -5191,26 +5754,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     if (canPass && hasQueue) {
       console.log('🎵 [Playback Ended] Advancing queue via passAux() — resetting video player');
-      try { TrackPlayer.pause(); } catch (_) {}
-      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
-      try { playerRef.current?.stopVideo?.(); } catch (_) {}
-      setDirectStreamUrl(null);
-      setShowThumbnailOverlay(true);
-      thumbnailFadeAnim.setValue(1);
-      setIsPlayerReady(false);
-      isPlayerReadyRef.current = false;
-      setIsTrackPlayerReady(false);
-      setMediaFullySynced(false);
-      setIsBuffering(true);
-      lastLoadedStreamVideoId.current = null;
-      lastResetSongVideoIdRef.current = null;
-      setIsSyncing(true);
-      setPlayerState('unstarted');
-      playerStateRef.current = 'unstarted';
-      setPlayerError(null);
-      setShowRelated(false);
-      livePositionRef.current = 0;
-      setLivePosition(0);
+      const nextItem = (queue && queue.length > 0 ? (queue[0]?.song || queue[0]) : null) || (roomStateQueueRef.current && roomStateQueueRef.current.length > 0 ? roomStateQueueRef.current[0] : null);
+      startSongTransition(nextItem);
       passAux();
     } else {
       console.log('🎵 [Playback Ended] Queue empty or listener — stopping and closing PiP');
@@ -5222,6 +5767,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       // Dismiss outside system PiP window when no more songs to play
       closeSystemPip();
 
+      if (isCenterModeRef.current) {
+        toggleCenterMode(false);
+      }
+      setDetectedAspectRatio(16 / 9);
+      setDetectedCropPercent(0);
+      setDetectedHorizCropPercent(0);
+      setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
       setPlayerState('ended');
       playerStateRef.current = 'ended';
       isPlayingRef.current = false;
@@ -5231,7 +5783,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       fetchRelated();
       setShowRelated(true);
     }
-  }, [queue, isDJ, isDJMode, passAux, fetchRelated]);
+  }, [queue, isDJ, isDJMode, passAux, fetchRelated, startSongTransition]);
 
   const onPlayerStateChange = async (state: string) => {
     // ✅ Always update the ref so intervals/timeouts can read the
@@ -5241,7 +5793,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     if (state === 'playing') {
       if (playingStartTime.current === 0) playingStartTime.current = Date.now();
-      showControlsFor(3500);
     } else {
       playingStartTime.current = 0;
     }
@@ -5256,6 +5807,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     if (state === 'ended') {
+      if (isCenterModeRef.current) {
+        toggleCenterMode(false);
+      }
+      setDetectedAspectRatio(16 / 9);
+      setDetectedCropPercent(0);
+      setDetectedHorizCropPercent(0);
+      setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
       handleSongPlaybackEnded();
       return;
     }
@@ -5289,22 +5847,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       // silently fetching suggestions in the background with no UI change.
       setShowRelated(true);
     } else {
-      try { TrackPlayer.pause(); } catch (_) {}
-      try { playerRef.current?.pauseVideo?.(); } catch (_) {}
-      try { playerRef.current?.stopVideo?.(); } catch (_) {}
-      setDirectStreamUrl(null);
-      setShowThumbnailOverlay(true);
-      thumbnailFadeAnim.setValue(1);
-      setIsPlayerReady(false);
-      isPlayerReadyRef.current = false;
-      setIsTrackPlayerReady(false);
-      setMediaFullySynced(false);
-      setIsBuffering(true);
-      lastLoadedStreamVideoId.current = null;
-      lastResetSongVideoIdRef.current = null;
-      setIsSyncing(true);
-      livePositionRef.current = 0;
-      setLivePosition(0);
+      const nextItem = (queue && queue.length > 0 ? (queue[0]?.song || queue[0]) : null) || (roomStateQueueRef.current && roomStateQueueRef.current.length > 0 ? roomStateQueueRef.current[0] : null);
+      startSongTransition(nextItem);
       passAux();
     }
   };
@@ -5502,7 +6046,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               backgroundColor: modalBg,
               borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
               paddingBottom: Math.max(36, (insets.bottom || stableBottomInset) + 32),
-              minHeight: 270,
+              minHeight: 330,
             },
           ]}
           onPress={(e) => e.stopPropagation?.()}
@@ -5677,7 +6221,105 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               </View>
             </View>
 
-            {/* 2nd Item: Picture-in-Picture Mode */}
+            {/* 2nd Item: Video Aspect / Fit Mode (Rave vs Zoom to Fill) */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: cardBg,
+                borderWidth: 1,
+                borderColor: cardBorder,
+                borderRadius: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+              }}
+            >
+              {/* Left Corner: Label & Icon */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, marginRight: 8 }}>
+                <View
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    backgroundColor: isDark ? 'rgba(167, 139, 250, 0.15)' : 'rgba(124, 58, 237, 0.12)',
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(167, 139, 250, 0.3)' : 'rgba(124, 58, 237, 0.25)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Icon name="crop" size={19} color={isDark ? '#A78BFA' : '#7C3AED'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: textPrimary, fontSize: 15, fontWeight: '700' }}>
+                    Video Fit Mode
+                  </Text>
+                  <Text style={{ color: textSecondary, fontSize: 11.5, marginTop: 1 }} numberOfLines={1}>
+                    {videoDisplayMode === 'fit' ? 'Fit (Cut black bars, 100% video)' : 'Zoom to Fill (Zoom into frame)'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Right Corner: Segmented Control (Fit vs Zoom) */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+                  borderRadius: 20,
+                  padding: 3,
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
+                }}
+              >
+                <TouchableOpacity
+                  onPress={() => handleSelectAspectMode('fit')}
+                  activeOpacity={0.7}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 16,
+                    backgroundColor: videoDisplayMode === 'fit' ? '#7C3AED' : 'transparent',
+                  }}
+                  accessibilityLabel="Fit Mode"
+                >
+                  <Text
+                    style={{
+                      color: videoDisplayMode === 'fit' ? '#FFFFFF' : textSecondary,
+                      fontSize: 11.5,
+                      fontWeight: videoDisplayMode === 'fit' ? '700' : '500',
+                    }}
+                  >
+                    Fit
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => handleSelectAspectMode('zoom')}
+                  activeOpacity={0.7}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 16,
+                    backgroundColor: videoDisplayMode === 'zoom' ? '#0284C7' : 'transparent',
+                  }}
+                  accessibilityLabel="Zoom to Fill"
+                >
+                  <Text
+                    style={{
+                      color: videoDisplayMode === 'zoom' ? '#FFFFFF' : textSecondary,
+                      fontSize: 11.5,
+                      fontWeight: videoDisplayMode === 'zoom' ? '700' : '500',
+                    }}
+                  >
+                    Zoom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* 3rd Item: Picture-in-Picture Mode */}
             <TouchableOpacity
               activeOpacity={0.7}
               onPress={() => handleTogglePip(!pipEnabled)}
@@ -5726,6 +6368,60 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 <Switch
                   value={pipEnabled}
                   trackColor={{ false: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)', true: '#0284C7' }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+            </TouchableOpacity>
+
+            {/* 3rd Item: Live Lyrics in Center Mode */}
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => handleToggleCenterLyrics(!centerLyricsEnabled)}
+              hitSlop={{ top: 10, bottom: 20, left: 10, right: 10 }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: cardBg,
+                borderWidth: 1,
+                borderColor: cardBorder,
+                borderRadius: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+                marginBottom: 14,
+              }}
+            >
+              {/* Left Corner: Label & Icon */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    backgroundColor: isDark ? 'rgba(236, 72, 153, 0.15)' : 'rgba(219, 39, 119, 0.12)',
+                    borderWidth: 1,
+                    borderColor: isDark ? 'rgba(236, 72, 153, 0.3)' : 'rgba(219, 39, 119, 0.25)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Icon name="musical-notes" size={19} color={isDark ? '#F472B6' : '#DB2777'} />
+                </View>
+                <View>
+                  <Text style={{ color: textPrimary, fontSize: 15, fontWeight: '700' }}>
+                    Live Lyrics
+                  </Text>
+                  <Text style={{ color: textSecondary, fontSize: 11.5, marginTop: 1 }}>
+                    Show synced lyrics in center mode
+                  </Text>
+                </View>
+              </View>
+
+              {/* Right Corner: Switch */}
+              <View pointerEvents="none">
+                <Switch
+                  value={centerLyricsEnabled}
+                  trackColor={{ false: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)', true: '#EC4899' }}
                   thumbColor="#FFFFFF"
                 />
               </View>
@@ -5809,28 +6505,35 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           key={`drive_${activeVideoId}`}
           ref={playerRef}
           fileId={activeVideoId || ''}
-          play={isPlaying && !playerError}
+          play={isPlaying && !playerError && thumbnailHoldComplete}
           muted={isMuted}
           isFullscreen={fullscreen}
           resizeMode={isMinimized ? 'cover' : 'contain'}
           onAspectRatio={handleAspectRatio}
-          onReady={() => {
-            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
-              console.log('🛡️ [DirectVideoPlayer] Stale onReady ignored for', activeVideoId, '(stream loaded for:', lastLoadedStreamVideoId.current, ')');
+          onReady={(dur?: number) => {
+            if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
+              console.log('🛡️ [DrivePlayer] Stale onReady ignored for', activeVideoId, '(stream loaded for:', lastLoadedStreamVideoId.current, ')');
               return;
             }
+            if (dur && dur > 0 && !isNaN(dur)) {
+              setDuration(dur);
+            }
+            lastLoadedStreamVideoId.current = activeVideoId;
             isInitialVideoStartedRef.current = true;
             setIsPlayerReady(true);
             isPlayerReadyRef.current = true;
-            setShowThumbnailOverlay(false);
             playerReadyTime.current = Date.now();
             setIsBuffering(false);
+            setMediaFullySynced(true);
+            const state = isPlaying ? 'playing' : 'paused';
+            setPlayerState(state);
+            playerStateRef.current = state;
 
             if (livePositionRef.current > 1) {
               const currentPos = livePositionRef.current;
               setTimeout(() => {
                 try {
-                  playerRef.current?.seekTo?.(currentPos, true);
+                  playerRef.current?.seekTo?.(currentPos);
                 } catch (_) {}
               }, 100);
             }
@@ -5841,14 +6544,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           }}
           onStateChange={onPlayerStateChange}
           onProgress={(currentTime, dur) => {
-            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+            if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
               return;
             }
             if (dur > 0 && !isNaN(dur)) setDuration(dur);
             if (!isPlayerReadyRef.current && currentTime > 0) {
               setIsPlayerReady(true);
               isPlayerReadyRef.current = true;
-              setShowThumbnailOverlay(false);
+              setMediaFullySynced(true);
             }
             if (lastSeekTargetRef.current !== null) {
               const elapsed = Date.now() - lastSeekTimeRef.current;
@@ -5858,7 +6561,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 return;
               }
             }
-            if (!seekingRef.current && currentTime > 0 && isPlayerReadyRef.current) {
+            if (!seekingRef.current && currentTime >= 0) {
               livePositionRef.current = currentTime;
               setLivePosition(currentTime);
             }
@@ -5879,11 +6582,11 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           videoId={activeVideoId}
           ref={playerRef}
           videoUri={directStreamUrl || ''}
-          fallbackUri={directFallbackUrl || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
+          fallbackUri={directFallbackUrl || fallbackProgressiveUrlRef.current || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
           audioUri={directAudioUrl}
           streamType={directStreamType}
           headers={directStreamHeaders}
-          play={isPlaying && !playerError && !!directStreamUrl}
+          play={isPlaying && !playerError && thumbnailHoldComplete && !!directStreamUrl}
           quality={videoQuality}
           muted={isMuted}
           initialPosition={initialRoomPosition || 0}
@@ -5893,8 +6596,11 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           bleedEnabled={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen}
           contentRect={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen ? raveContentRect : undefined}
           bbdCropPercent={detectedCropPercent}
+          bbdHorizCropPercent={detectedHorizCropPercent}
+          displayMode={videoDisplayMode === 'fit' ? 0 : 1}
           blurSigma={48.0}
           onAspectRatio={handleAspectRatio}
+          onBlackBarDetected={handleBlackBarDetected}
           onExactResolution={setLiveExactResolution}
           onQualityFallback={(fallbackQuality) => {
             setVideoQuality(fallbackQuality);
@@ -5918,19 +6624,20 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             isInitialVideoStartedRef.current = true;
             setIsPlayerReady(true);
             isPlayerReadyRef.current = true;
-            setShowThumbnailOverlay(false);
             playerReadyTime.current = Date.now();
             setIsBuffering(false);
             setMediaFullySynced(true);
             const state = isPlaying ? 'playing' : 'paused';
             setPlayerState(state);
             playerStateRef.current = state;
-            if (isPlaying) {
+            if (isPlaying && thumbnailHoldCompleteRef.current) {
+              songStartTimeRef.current = Date.now();
               try { playerRef.current?.playVideo?.(); } catch (_) {}
               if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
                 syncPlay(0);
               }
-            } else if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+            } else if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && thumbnailHoldCompleteRef.current) {
+              songStartTimeRef.current = Date.now();
               try { playerRef.current?.playVideo?.(); } catch (_) {}
               syncPlay(0);
             }
@@ -5962,7 +6669,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             if (!isPlayerReadyRef.current && currentTime > 0) {
               setIsPlayerReady(true);
               isPlayerReadyRef.current = true;
-              setShowThumbnailOverlay(false);
             }
             if (lastSeekTargetRef.current !== null) {
               const elapsed = Date.now() - lastSeekTimeRef.current;
@@ -6001,14 +6707,23 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             console.warn('[MusicRoomScreen] DirectVideoPlayer error:', err);
             const targetVideoId = currentSong?.videoId || initialVideoId;
             if (targetVideoId) {
+              const fallbackUrl = fallbackProgressiveUrlRef.current || directFallbackUrl;
+              // If DASH stream encounters an error, immediately switch to the unthrottled ANDROID progressive stream
+              // for this specific video. Do NOT re-enter DASH in an infinite loop!
+              if (fallbackUrl && directStreamType === 'mpd') {
+                console.log('🎬 [MusicRoomScreen] DASH stream error at pos', livePositionRef.current, '— switching directly to unthrottled ANDROID progressive stream (360p)');
+                setAvailableQualities(['360p']);
+                setVideoQuality('360p');
+                setDirectStreamUrl(fallbackUrl);
+                setDirectStreamType('mp4');
+                return;
+              }
+
               extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
-                if (res && res.dashUrl) {
-                  console.log('🎬 [MusicRoomScreen] Refreshed DASH manifest for seamless recovery');
-                  setDirectStreamUrl(res.dashUrl);
-                  setDirectStreamType('mpd');
-                } else if (res && (res.streamType === 'm3u8' || res.url)) {
+                if (res && res.url) {
                   console.log('🎬 [MusicRoomScreen] Refreshed stream URL for seamless recovery');
                   setDirectStreamUrl(res.url);
+                  setDirectStreamHeaders(res.headers);
                   setDirectStreamType(res.streamType || 'mp4');
                 }
               }).catch(() => {});
@@ -6027,7 +6742,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         key={`yt_${activeVideoId}`}
         ref={playerRef}
         videoId={activeVideoId || ''}
-        play={isPlaying && !playerError}
+        play={isPlaying && !playerError && thumbnailHoldComplete}
         muted={isMuted}
         initialPosition={livePositionRef.current || 0}
         quality={videoQuality}
@@ -6061,7 +6776,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           isInitialVideoStartedRef.current = true;
           setIsPlayerReady(true);
           isPlayerReadyRef.current = true;
-          setShowThumbnailOverlay(false);
           playerReadyTime.current = Date.now();
           setIsBuffering(false);
           setMediaFullySynced(true);
@@ -6091,7 +6805,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           if (!isPlayerReadyRef.current && currentTime > 0) {
             setIsPlayerReady(true);
             isPlayerReadyRef.current = true;
-            setShowThumbnailOverlay(false);
           }
           if (lastSeekTargetRef.current !== null) {
             const elapsed = Date.now() - lastSeekTimeRef.current;
@@ -6153,36 +6866,55 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       />
 
       {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (cinema | dark | light) ── */}
-      {!isMinimized && !isSystemPip && !fullscreen && roomTheme !== 'rave' && (
-        <AmbientDiscoBackground
-          isPlaying={isPlaying}
-          isMinimized={isMinimized}
-          fullscreen={fullscreen}
-          videoId={currentSong?.videoId}
-          theme={roomTheme}
-        />
+      {!isMinimized && !fullscreen && roomTheme !== 'rave' && (
+        <View
+          style={[StyleSheet.absoluteFill, isSystemPip && { opacity: 0 }]}
+          pointerEvents="none"
+        >
+          <AmbientDiscoBackground
+            isPlaying={isPlaying && !isSystemPip}
+            isMinimized={isMinimized}
+            fullscreen={fullscreen}
+            videoId={currentSong?.videoId}
+            theme={roomTheme}
+          />
+        </View>
       )}
 
-      {/* ── 2. VIDEO LAYER (Root Level for Full Edge-to-Edge Bleed & Smooth Zero-Restart Switching) ── */}
-      <Reanimated.View
-        style={playerLayerAnimatedStyle}
-        pointerEvents="none"
-      >
-        {renderPlayerContent()}
-      </Reanimated.View>
+      {/* ── 2. VIDEO LAYER (Background ONLY for Rave theme blurred bleed) ── */}
+      {roomTheme === 'rave' && !isSystemPip && !fullscreen && (
+        <Reanimated.View
+          style={[{ zIndex: 0, elevation: 0 }, playerLayerAnimatedStyle]}
+          pointerEvents="none"
+        >
+          {renderPlayerContent()}
+        </Reanimated.View>
+      )}
 
       <KeyboardWrapperView
         {...keyboardWrapperProps}
-        style={isMinimized || fullscreen || isSystemPip ? StyleSheet.absoluteFill : [s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset, zIndex: 20 }]}
-        pointerEvents={showSettingsModal ? 'box-none' : (isMinimized ? 'box-none' : 'auto')}
+        style={
+          isSystemPip
+            ? [StyleSheet.absoluteFill, { opacity: 0 }]
+            : isMinimized
+            ? StyleSheet.absoluteFill
+            : fullscreen
+            ? [StyleSheet.absoluteFill, { zIndex: 9999, elevation: 9999 }]
+            : [s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset, zIndex: 20 }]
+        }
+        pointerEvents={isSystemPip ? 'none' : (showSettingsModal ? 'box-none' : (isMinimized ? 'box-none' : 'auto'))}
       >
-        <View style={{ flex: 1 }} pointerEvents={isMinimized ? 'box-none' : 'auto'}>
+        <Reanimated.View style={[{ flex: 1 }, fullscreen && { zIndex: 9999, elevation: 9999 }, mainContentLiftStyle]} pointerEvents={isMinimized ? 'box-none' : 'auto'}>
           {!isMinimized && renderLeaveModal()}
 
-          {!fullscreen && !isMinimized && !isSystemPip && (
+          {!fullscreen && !isMinimized && (
             <Reanimated.View
-              style={[{ height: 58, overflow: 'hidden', zIndex: 30, elevation: 5 }, headerAnimStyle]}
-              pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible ? 'none' : 'auto'}
+              style={[
+                { overflow: 'hidden', zIndex: 30, elevation: 5 },
+                headerAnimStyle,
+                isSystemPip && { opacity: 0, height: 0 },
+              ]}
+              pointerEvents={isKeyboardVisibleRef.current || stickerPickerVisible || isCenterMode || isSystemPip ? 'none' : 'auto'}
             >
               <View style={s.header}>
                 {/* Left Group: Exit & Room Participants (shifted left) */}
@@ -6224,7 +6956,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
                     >
                       <Text style={s.headerBrandText}>YOUT</Text>
-                      <Text style={[s.headerBrandText, { marginHorizontal: 1.6 }]}>E</Text>
+                      <Text style={[s.headerBrandText, { marginHorizontal: 1.4 }]}>E</Text>
                       <Text style={s.headerBrandText}>LITE</Text>
                     </View>
                   ) : (
@@ -6269,7 +7001,10 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 <View style={s.headerSideGroup}>
                   {/* 4. Search Songs Button */}
                   <TouchableOpacity
-                    onPress={() => setShowDiscovery(true)}
+                    onPress={() => {
+                      setShowRelated(false);
+                      setShowDiscovery(true);
+                    }}
                     style={s.headerSlot}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     accessibilityLabel="Search songs"
@@ -6298,6 +7033,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           <Reanimated.View
             style={[
               s.videoWrap,
+              fullscreen && { zIndex: 9999, elevation: 9999 },
               videoContainerAnimatedStyle,
             ]}
             {...(isMinimized && pipEnabled && !isSystemPip && !pipDismissed ? miniPanResponder.panHandlers : {})}
@@ -6308,31 +7044,53 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 style={[
                   StyleSheet.absoluteFill,
                   {
-                    backgroundColor: 'transparent',
+                    backgroundColor: '#0a0a0a',
                     justifyContent: 'center',
                     alignItems: 'center',
-                    zIndex: 10,
+                    zIndex: 40,
                     opacity: thumbnailFadeAnim,
                   },
                 ]}
                 pointerEvents="none"
               >
-                {videoThumbnailUrl ? (
-                  <FastImage
-                    source={{ uri: thumbFallbackUri || videoThumbnailUrl, priority: FastImage.priority.high }}
-                    style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
-                    resizeMode={FastImage.resizeMode.cover}
-                    onError={() => {
-                      if (!thumbFallbackUri && activeVideoId && (currentSong?.source || initialSource) !== 'drive') {
-                        setThumbFallbackUri(`https://i.ytimg.com/vi/${activeVideoId}/hqdefault.jpg`);
-                      }
-                    }}
-                  />
-                ) : null}
-                {videoThumbnailUrl ? (
-                  <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
-                ) : null}
-                {!isPlayerReady && <ActivityIndicator size="large" color="#FFFFFF" />}
+                {(currentSong?.source || initialSource) === 'drive' ? (
+                  <>
+                    {displayedThumbnailUrl ? (
+                      <Animated.View style={[StyleSheet.absoluteFill, { opacity: innerThumbFadeAnim }]}>
+                        <Image
+                          source={{ uri: displayedThumbnailUrl }}
+                          style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+                          resizeMode="cover"
+                        />
+                      </Animated.View>
+                    ) : null}
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.38)' }]} />
+                    {(!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete) && (
+                      <ActivityIndicator size="large" color="#FFFFFF" />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {displayedThumbnailUrl ? (
+                      <Animated.View style={[StyleSheet.absoluteFill, { opacity: innerThumbFadeAnim }]}>
+                        <FastImage
+                          source={{ uri: thumbFallbackUri || displayedThumbnailUrl, priority: FastImage.priority.high }}
+                          style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+                          resizeMode={FastImage.resizeMode.cover}
+                          onError={() => {
+                            if (!thumbFallbackUri && activeVideoId) {
+                              setThumbFallbackUri(`https://i.ytimg.com/vi/${activeVideoId}/hqdefault.jpg`);
+                            }
+                          }}
+                        />
+                      </Animated.View>
+                    ) : null}
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.38)' }]} />
+                    {(!isPlayerReady || !mediaFullySynced || isDirectLoading || !thumbnailHoldComplete) && (
+                      <ActivityIndicator size="large" color="#FFFFFF" />
+                    )}
+                  </>
+                )}
               </Animated.View>
             )}
 
@@ -6372,6 +7130,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       onPress={() => {
                         if (autoSkipTimer.current) clearTimeout(autoSkipTimer.current);
                         setPlayerError(null);
+                        setShowRelated(false);
                         setShowDiscovery(true);
                       }}
                       style={{ marginTop: 8, backgroundColor: '#31313100', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
@@ -6390,52 +7149,55 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 and tapping the mini-player inside the related grid expands it back. */}
 
 
-            {!isMinimized && !isSystemPip && !playerError && playerState !== 'ended' && (
-              <Animated.View 
-                style={showRelated ? {
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: width / 2,
-                  height: (width / 2) * 0.5625,
-                  zIndex: 40,
-                  transform: [{ translateX: Animated.multiply(relatedScrollX, -1) }],
-                } : StyleSheet.absoluteFill}
+            {/* Main Video Tap/Gesture Handlers */}
+            {!showRelated && !isMinimized && !isSystemPip && !playerError && playerState !== 'ended' && (
+              <View 
+                style={StyleSheet.absoluteFill}
                 {...playerGestureResponder.panHandlers}
+              />
+            )}
+
+            {/* Stationary overlay for live PiP in Slot 1 of Related Videos Grid (Zero Transform, Zero Stutter) */}
+            {showRelated && !isMinimized && !isSystemPip && !playerError && playerState !== 'ended' && (
+              <Reanimated.View
+                style={relatedPipOverlayStyle}
+                pointerEvents="box-none"
               >
-                {showRelated && (
-                  <>
-                    <View style={{
-                      position: 'absolute',
-                      top: 6,
-                      left: 6,
-                      backgroundColor: 'rgba(0, 0, 0, 0.72)',
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      paddingHorizontal: 6,
-                      paddingVertical: 3,
-                      borderRadius: 4,
-                      gap: 4,
-                    }} pointerEvents="none">
-                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }} />
-                      <Text style={{ color: '#fff', fontSize: 8.5, fontWeight: '700', letterSpacing: 0.5 }}>PLAYING</Text>
-                    </View>
-                    <View style={{
-                      position: 'absolute',
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      backgroundColor: 'rgba(0, 0, 0, 0.65)',
-                      paddingVertical: 4,
-                      paddingHorizontal: 6,
-                    }} pointerEvents="none">
-                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600', textAlign: 'center' }} numberOfLines={1}>
-                        {currentSong?.title}
-                      </Text>
-                    </View>
-                  </>
-                )}
-              </Animated.View>
+                <TouchableOpacity
+                  style={StyleSheet.absoluteFill}
+                  activeOpacity={0.9}
+                  onPress={() => setShowRelated(false)}
+                >
+                  <View style={{
+                    position: 'absolute',
+                    top: 6,
+                    left: 6,
+                    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    paddingHorizontal: 6,
+                    paddingVertical: 3,
+                    borderRadius: 4,
+                    gap: 4,
+                  }} pointerEvents="none">
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }} />
+                    <Text style={{ color: '#fff', fontSize: 8.5, fontWeight: '700', letterSpacing: 0.5 }}>PLAYING</Text>
+                  </View>
+                  <View style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                    paddingVertical: 4,
+                    paddingHorizontal: 6,
+                  }} pointerEvents="none">
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600', textAlign: 'center' }} numberOfLines={1}>
+                      {currentSong?.title}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </Reanimated.View>
             )}
 
             {/* Floating Mini-Player Overlay Controls (Android System PiP Style) */}
@@ -6550,7 +7312,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
             {!isMinimized && !isSystemPip && !showRelated && isPlayerReady && !showThumbnailOverlay && (
               <VideoControls
-                visible={showControls && !playerError}
+                visible={showControls && !playerError && !showQualityOptions}
                 isPlaying={isPlaying}
                 isEnded={playerState === 'ended'}
                 canControl={effectiveIsDJ && isPlayerReady}
@@ -6563,12 +7325,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 onPlayPause={handlePlayPause}
                 onSeek={handleSeek}
                 onNext={handleNext}
-                onToggleFullscreen={() => {
-                  triggerSmoothScreenTransition(() => {
-                    setFullscreen(prev => !prev);
-                  });
-                }}
+                onToggleFullscreen={handleToggleFullscreen}
                 onShowRelated={() => {
+                  if (isCenterModeRef.current) {
+                    setIsCenterMode(false);
+                    centerModeProgress.value = 0;
+                  }
                   const activeId = currentSongRef.current?.videoId || initialVideoId;
                   if (activeId && relatedCacheRef.current.has(activeId)) {
                     setRelatedVideos(relatedCacheRef.current.get(activeId)!);
@@ -6578,6 +7340,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   setShowRelated(true);
                 }}
                 onSettings={() => {
+                  setShowControls(false);
+                  if (controlTimer.current) clearTimeout(controlTimer.current);
                   setShowQualityOptions(prev => !prev);
                 }}
                 qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
@@ -6605,14 +7369,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 20, justifyContent: 'center', alignItems: 'center' }]} />
             )}
 
-            {/* ✅ Sync overlay — covers ONLY the initial startup
-                rendezvous (before audio+video are both confirmed running).
-                NOT shown during seeks — the video stays visible with its
-                natural seek behavior, only audio is briefly silent. */}
-            {!playerError && currentSong?.source === 'drive' && currentSong?.videoId && currentSong.title !== 'Initializing...' &&
-              !mediaFullySynced && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', zIndex: 30 }]} />
-            )}
+
 
 
 
@@ -6642,13 +7399,19 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     myAvatarSticker={user?.avatar_sticker}
                     participants={participants}
                     currentSong={(playerState === 'ended' || playerStateRef.current === 'ended' || !!playerError) ? null : currentSong}
-                    scrollX={relatedScrollX}
+                    onScrollX={(x) => {
+                      relatedScrollXSV.value = x;
+                    }}
+                    onSelectCurrent={() => setShowRelated(false)}
                     onPinVideo={(song) => {
                       // Auto-play immediately if video ended OR an error opened the grid OR playback is idle
                       const isEndedOrIdle = playerState === 'ended' || playerStateRef.current === 'ended' || !isPlaying || !directStreamUrl || !!playerError;
                       if (isEndedOrIdle) {
                         setShowRelated(false);
                         setPlayerError(null);
+                        setDetectedAspectRatio(16 / 9);
+                        setDetectedCropPercent(0);
+                        setDetectedHorizCropPercent(0);
                         handleSelectSong(song, true);
                       } else {
                         pinVideo(song);
@@ -6666,13 +7429,13 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             {/* ─── Compact Translucent Quality Grid Overlay (4x3) ─── */}
             {/* Fix 2: Guard against Drive source — Drive has no quality ladder */}
             {showQualityOptions && !playerError && currentSong?.source !== 'drive' && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.38)', justifyContent: 'center', alignItems: 'center', zIndex: 60 }]}>
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.55)', justifyContent: 'center', alignItems: 'center', zIndex: 10002, elevation: 60 }]}>
                 <TouchableWithoutFeedback onPress={() => setShowQualityOptions(false)}>
                   <View style={StyleSheet.absoluteFill} />
                 </TouchableWithoutFeedback>
                 <View style={{
                   width: '88%',
-                  maxWidth: 260,
+                  maxWidth: 270,
                   maxHeight: '90%',
                   backgroundColor: 'rgba(12, 15, 22, 0.78)',
                   borderRadius: 12,
@@ -6794,18 +7557,89 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       );
                     })}
                   </ScrollView>
+
+                  {/* Aspect Ratio / Display Mode: Rave (Dynamic) vs Zoom to Fill */}
+                  <View style={{
+                    marginTop: 8,
+                    paddingTop: 8,
+                    borderTopWidth: 1,
+                    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+                  }}>
+                    <Text style={{
+                      fontSize: 9,
+                      fontWeight: '700',
+                      color: 'rgba(255, 255, 255, 0.6)',
+                      letterSpacing: 0.8,
+                      textAlign: 'center',
+                      marginBottom: 6,
+                    }}>
+                      DISPLAY MODE
+                    </Text>
+                    <View style={{
+                      flexDirection: 'row',
+                      backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                      borderRadius: 7,
+                      padding: 2.5,
+                      gap: 4,
+                    }}>
+                      <TouchableOpacity
+                        onPress={() => handleSelectAspectMode('fit')}
+                        activeOpacity={0.7}
+                        style={{
+                          flex: 1,
+                          height: 26,
+                          borderRadius: 5,
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          backgroundColor: videoDisplayMode === 'fit' ? 'rgba(124, 58, 237, 0.95)' : 'transparent',
+                        }}
+                      >
+                        <Text style={{
+                          fontSize: 10,
+                          fontWeight: videoDisplayMode === 'fit' ? '700' : '500',
+                          color: videoDisplayMode === 'fit' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.75)',
+                        }}>
+                          Fit Mode
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => handleSelectAspectMode('zoom')}
+                        activeOpacity={0.7}
+                        style={{
+                          flex: 1,
+                          height: 26,
+                          borderRadius: 5,
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          backgroundColor: videoDisplayMode === 'zoom' ? 'rgba(2, 132, 199, 0.95)' : 'transparent',
+                        }}
+                      >
+                        <Text style={{
+                          fontSize: 10,
+                          fontWeight: videoDisplayMode === 'zoom' ? '700' : '500',
+                          color: videoDisplayMode === 'zoom' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.75)',
+                        }}>
+                          Zoom to Fill
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                 </View>
               </View>
             )}
           </Reanimated.View>
 
-          {!fullscreen && !isMinimized && !isSystemPip && (
-            renderNpBar()
+          {!fullscreen && !isMinimized && (
+            <View style={[isSystemPip && { opacity: 0, height: 0, overflow: 'hidden' }]} pointerEvents={isSystemPip ? 'none' : 'auto'}>
+              {renderNpBar()}
+            </View>
           )}
 
-          {!fullscreen && !isMinimized && !isSystemPip && (
-            <Reanimated.View style={[{ flex: 1, overflow: 'hidden', zIndex: 10, elevation: 0 }, conversationContainerStyle]}>
-              <Reanimated.View style={[{ flex: 1 }, conversationLiftStyle]}>
+          {!fullscreen && !isMinimized && (
+            <Reanimated.View 
+              style={[{ flex: 1, zIndex: 10, elevation: 0 }, conversationAnimStyle, isSystemPip && { opacity: 0, overflow: 'hidden' }]}
+              pointerEvents={isCenterMode || isSystemPip ? 'none' : 'auto'}
+            >
               {activeTab === 'chat' ? (
                 <>
                   <FlatList
@@ -7346,6 +8180,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       </TouchableOpacity>
                     </View>
                   </View>
+                  <Reanimated.View style={keyboardSpacerStyle} />
                 </>
               ) : (
                 <View style={{ flex: 1 }}>
@@ -7388,16 +8223,128 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                             </View>
                           )}
                         />
+                        <Reanimated.View style={keyboardSpacerStyle} />
                       </>
                     );
                   })()}
                   </View>
                 )}
-              </Reanimated.View>
             </Reanimated.View>
           )}
 
-        </View>
+          {isCenterMode && (
+            <Pressable
+              style={[StyleSheet.absoluteFill, { zIndex: 15 }]}
+              onPress={() => toggleCenterMode(false)}
+            />
+          )}
+
+          {/* ── LIVE SYNCED LYRICS IN CENTER MODE ── */}
+          {centerLyricsEnabled && (() => {
+            // Dynamic video geometry: calculate exact visible video content boundaries
+            const screenDims = Dimensions.get('screen');
+            const screenW = Math.min(screenDims.width, screenDims.height);
+            const defaultVideoH = screenW * (9 / 16);
+            const isWidescreen = Boolean(isPlayerReady && thumbnailHoldComplete && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82);
+            const contentH = isWidescreen ? Math.round(screenW / (detectedAspectRatio as number)) : dynamicVideoHeight;
+            const centerDeltaY = Math.max(0, ((windowHeight - contentH) / 2) - (stableTopInset + 58));
+
+            // Visible video top and bottom inside Reanimated.View (which has top inset = stableTopInset)
+            const videoTopInParent = 58 + centerDeltaY;
+            const videoBottomInParent = videoTopInParent + contentH;
+
+            // Only display verified song name while the song is active and not finished
+            const isSongFinished = playerState === 'ended' || playerStateRef.current === 'ended' || (!isPlaying && !isPlayerReady);
+            const hasVerifiedLyrics = !isSongFinished && (lyricsState.hasLyrics || lyricsState.hasPlainLyrics) && !lyricsState.isMismatch;
+            const songName = hasVerifiedLyrics && lyricsState.trackName ? lyricsState.trackName : null;
+            const resolvedArtist =
+              cleanArtistName(lyricsState.artistName) ||
+              extractArtistFromTitle(currentSong?.title) ||
+              cleanArtistName(currentSong?.channelTitle) ||
+              '';
+
+            // Song title positioning above video:
+            // Halve the distance to the video so the title sits comfortably close to the video
+            // and dynamically adjusts with video height
+            const titleBlockH = 20; // 1-line song name
+            const spaceAbove = videoTopInParent;
+            const titleGapToVideo = Math.max(12, Math.round((spaceAbove - titleBlockH) / 4));
+            const titleTop = songName && spaceAbove > titleBlockH + 10
+              ? videoTopInParent - titleBlockH - titleGapToVideo
+              : null;
+
+            // Position lyrics container 12px below bottom edge of video
+            const lyricsTop = videoBottomInParent + 12;
+
+            return (
+              <>
+                {/* Song title — ONLY verified song name, centered in empty space above video */}
+                {titleTop !== null && songName && (
+                  <Reanimated.View
+                    style={[
+                      {
+                        position: 'absolute',
+                        top: titleTop,
+                        left: 20,
+                        right: 20,
+                        zIndex: 25,
+                        alignItems: 'center',
+                      },
+                      centerLyricsAnimatedStyle,
+                    ]}
+                    pointerEvents="none"
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: '600',
+                        color: 'rgba(255,255,255,0.95)',
+                        textAlign: 'center',
+                        letterSpacing: 0.2,
+                      }}
+                    >
+                      {songName}
+                    </Text>
+                  </Reanimated.View>
+                )}
+
+                {/* Lyrics panel — dynamically hugs bottom edge of video */}
+                <Reanimated.View
+                  style={[
+                    {
+                      position: 'absolute',
+                      top: lyricsTop,
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      zIndex: 25,
+                    },
+                    centerLyricsAnimatedStyle,
+                  ]}
+                  pointerEvents={isCenterMode ? 'auto' : 'none'}
+                >
+                  <CenterLyricsView
+                    lines={lyricsState.lines}
+                    currentPosition={livePosition}
+                    isPlaying={isPlaying}
+                    isLoading={lyricsState.isLoading}
+                    instrumental={lyricsState.instrumental}
+                    hasLyrics={lyricsState.hasLyrics}
+                    hasPlainLyrics={lyricsState.hasPlainLyrics}
+                    plainLyrics={lyricsState.plainLyrics}
+                    artistName={resolvedArtist}
+                    trackName={lyricsState.trackName || currentSong?.title || ''}
+                    isDark={isDark}
+                    isMismatch={lyricsState.isMismatch}
+                    fadeHeight={contentH / 2}
+                  />
+                </Reanimated.View>
+              </>
+            );
+          })()}
+
+        </Reanimated.View>
 
         {/* AVATAR PREVIEW OVERLAY */}
         {previewData.visible && (
@@ -7422,7 +8369,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
         {/* DISCOVERY OVERLAY */}
         {showDiscovery && (
-          <Modal visible={showDiscovery} animationType="none" onRequestClose={() => { setShowDiscovery(false); setDiscoveryInitialUrl(null); }}>
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              { zIndex: 99999, elevation: 99999, backgroundColor: '#020912' },
+            ]}
+          >
             <YouTubeDiscoveryScreen
               navigation={{
                 goBack: () => { setShowDiscovery(false); setDiscoveryInitialUrl(null); },
@@ -7431,7 +8383,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               } as any}
               route={{ params: { roomCode, initialUrl: discoveryInitialUrl } } as any}
             />
-          </Modal>
+          </View>
         )}
 
         {/* STICKER PREVIEW MODAL */}
@@ -7507,6 +8459,19 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         )}
       </KeyboardWrapperView>
 
+      {/* ── 2. VIDEO LAYER (Topmost Layer for Cinema/Dark/Light & PiP — Zero Header Overlap) ── */}
+      {(roomTheme !== 'rave' || isSystemPip || fullscreen) && (
+        <Reanimated.View
+          style={[
+            { zIndex: isSystemPip ? 99999 : 40, elevation: isSystemPip ? 99999 : 8 },
+            playerLayerAnimatedStyle,
+          ]}
+          pointerEvents={isSystemPip ? 'auto' : 'none'}
+        >
+          {renderPlayerContent()}
+        </Reanimated.View>
+      )}
+
       {!isMinimized && renderSettingsModal()}
 
       {/* ── Center-screen modern fade toast (Friend Request Style) ── */}
@@ -7527,16 +8492,18 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       </Modal>
 
       {/* ── Lottie Sticker Picker Sheet (Always mounted, offscreen by default, 0ms GPU slide, outside KeyboardWrapperView for true screen bottom alignment) ── */}
-      <StickerPickerSheet
-        visible={stickerPickerVisible}
-        isDeliberatelyOpen={isStickerPickerDeliberatelyOpen}
-        isDeliberatelyOpenSV={isStickerPickerDeliberatelyOpenSV}
-        stickerPacks={BUILT_IN_STICKER_PACKS}
-        onSelectSticker={(sticker) => sendLottieSticker(sticker)}
-        onClose={handleCloseStickerPickerStable}
-        sheetHeight={STICKER_DRAWER_HEIGHT}
-        sharedHeight={stickerSpacerHeight}
-      />
+      {!fullscreen && (
+        <StickerPickerSheet
+          visible={stickerPickerVisible}
+          isDeliberatelyOpen={isStickerPickerDeliberatelyOpen}
+          isDeliberatelyOpenSV={isStickerPickerDeliberatelyOpenSV}
+          stickerPacks={BUILT_IN_STICKER_PACKS}
+          onSelectSticker={(sticker) => sendLottieSticker(sticker)}
+          onClose={handleCloseStickerPickerStable}
+          sheetHeight={STICKER_DRAWER_HEIGHT}
+          sharedHeight={stickerSpacerHeight}
+        />
+      )}
 
       {/* ── CINEMATIC SMOOTH SCREEN TRANSITION FADE CURTAIN (Eliminates flash on theme switch) ── */}
       {!isMinimized && (
@@ -7553,6 +8520,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           pointerEvents={isScreenTransitioning ? 'auto' : 'none'}
         />
       )}
+
+
     </View>
   );
 };
@@ -7618,14 +8587,13 @@ const s = StyleSheet.create({
   headerSlot:        { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
   headerCenterSlot:  { flex: 1, height: 36, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
   headerBrandText: {
-    fontFamily: 'ClashDisplay-Bold',
-    fontSize: 22,
-    color: '#FFFFFF',
+    fontFamily: 'poppins-bold',
+    fontWeight: '900',
+    fontSize: 28,
+    color: 'rgba(255,255,255,0.5)',
     letterSpacing: 1.2,
     includeFontPadding: false,
-    textShadowColor: 'rgba(0, 0, 0, 0.75)',
-    textShadowOffset: { width: 0, height: 1.5 },
-    textShadowRadius: 3.5,
+    
   },
   activeMicRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, paddingVertical: 2.5, borderRadius: 18, backgroundColor: 'rgba(16, 185, 129, 0.12)', borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.35)' },
   headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -7796,8 +8764,8 @@ const s = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.06)',
   },
   themePillActiveCinema: {
-    backgroundColor: '#241604',
-    borderColor: '#EAB308',
+    backgroundColor: '#03192E',
+    borderColor: '#00F2FE',
   },
   themePillActiveRave: {
     backgroundColor: '#7C3AED',

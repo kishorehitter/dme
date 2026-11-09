@@ -38,6 +38,8 @@ export interface DualSurfacePlayerProps {
   bleedEnabled?: boolean;
   bleedDarkness?: number;
   bbdCropPercent?: number; // e.g. 0.122 for Narivetta
+  bbdHorizCropPercent?: number;
+  displayMode?: number; // 0 = Rave Dynamic, 1 = Zoom to Fill
   blurSigma?: number;
   contentRect?: { x: number; y: number; width: number; height: number };
   onReady?: (duration: number) => void;
@@ -46,6 +48,7 @@ export interface DualSurfacePlayerProps {
   onError?: (error: any) => void;
   onBuffer?: (isBuffering: boolean) => void;
   onAspectRatio?: (aspectRatio: number, width?: number, height?: number) => void;
+  onBlackBarDetected?: (aspectRatio: number, verticalPercent: number, horizontalPercent: number) => void;
   onExactResolution?: (resolution: string) => void;
   onQualitiesAvailable?: (qualities: string[]) => void;
   style?: StyleProp<ViewStyle>;
@@ -63,6 +66,8 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
     bleedEnabled = true,
     bleedDarkness = 0.60,
     bbdCropPercent = 0.0,
+    bbdHorizCropPercent = 0.0,
+    displayMode = 0,
     blurSigma = 48.0,
     contentRect,
     onReady,
@@ -71,6 +76,7 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
     onError,
     onBuffer,
     onAspectRatio,
+    onBlackBarDetected,
     onExactResolution,
     onQualitiesAvailable,
     style,
@@ -110,6 +116,8 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
   useEffect(() => {
     if (videoUri) {
       dispatch(play ? 'play' : 'pause');
+    } else {
+      dispatch('stop');
     }
   }, [play, videoUri, dispatch]);
 
@@ -182,6 +190,11 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
     onAspectRatio?.(aspectRatio, width, height);
   }, [onAspectRatio]);
 
+  const handleBlackBarDetected = useCallback((event: NativeSyntheticEvent<{ aspectRatio: number; verticalPercent: number; horizontalPercent?: number }>) => {
+    const { aspectRatio, verticalPercent, horizontalPercent = 0.0 } = event.nativeEvent;
+    onBlackBarDetected?.(aspectRatio, verticalPercent, horizontalPercent);
+  }, [onBlackBarDetected]);
+
   const handleExactResolution = useCallback((event: NativeSyntheticEvent<{ resolution: string }>) => {
     onExactResolution?.(event.nativeEvent.resolution);
   }, [onExactResolution]);
@@ -210,6 +223,8 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
       bleedEnabled={bleedEnabled}
       bleedDarkness={bleedDarkness}
       bbdCropPercent={bbdCropPercent}
+      bbdHorizCropPercent={bbdHorizCropPercent}
+      displayMode={displayMode}
       blurSigma={blurSigma}
       contentRect={contentRect}
       onReady={handleReady}
@@ -218,6 +233,7 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
       onEnd={handleEnd}
       onError={handleError}
       onAspectRatio={handleAspectRatio}
+      onBlackBarDetected={handleBlackBarDetected}
       onExactResolution={handleExactResolution}
       onQualitiesAvailable={handleQualitiesAvailable}
     />

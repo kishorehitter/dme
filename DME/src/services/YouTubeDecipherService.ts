@@ -331,6 +331,10 @@ class YouTubeDecipherService {
     public sessionVisitorData: string | null = null;
     public latestVisitorBoundToken: { token: string; visitorData: string; expiresAt: number } | null = null;
 
+    public getStoryboardSpec(videoId: string): string | undefined {
+        return this.storyboardCache.get(videoId);
+    }
+
     public invalidateVideo(videoId: string): void {
         this.cachedPoTokens.delete(videoId);
         this.extractionPromises.delete(videoId);
@@ -642,7 +646,7 @@ class YouTubeDecipherService {
         if (!videoId) return null;
         try {
             const spec = storyboardSpec || this.storyboardCache.get(videoId);
-            const res = await this.callWorkerWithTimeout('detectAspectRatio', { videoId, storyboardSpec: spec }, 5000);
+            const res = await this.callWorkerWithTimeout('detectAspectRatio', { videoId, storyboardSpec: spec }, 10000);
             if (res && res.success && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
                 const vert = typeof res.verticalPercent === 'number' && !isNaN(res.verticalPercent) ? res.verticalPercent : 0.0;
                 console.log(`[YouTubeDecipherService] Detected Letterbox Aspect Ratio for ${videoId}: ${res.aspectRatio.toFixed(3)}, verticalPercent: ${(vert * 100).toFixed(1)}% (source: ${res.source || "worker"})`);
@@ -1271,6 +1275,9 @@ class YouTubeDecipherService {
                     if (!innertubeVisitorData && data?.responseContext?.visitorData) {
                         innertubeVisitorData = data.responseContext.visitorData;
                     }
+                    if (data?.storyboards?.playerStoryboardSpecRenderer?.spec && !this.storyboardCache.has(videoId)) {
+                        this.storyboardCache.set(videoId, data.storyboards.playerStoryboardSpecRenderer.spec);
+                    }
                     if (data?.playabilityStatus?.status === 'OK') {
                         if (!nativeTitle) nativeTitle = data.videoDetails?.title;
                         if (!nativeAuthor) nativeAuthor = data.videoDetails?.author;
@@ -1372,6 +1379,9 @@ class YouTubeDecipherService {
         }
 
         let playerResponse = html ? this.parsePlayerResponseFromHtml(html) : null;
+        if (playerResponse?.storyboards?.playerStoryboardSpecRenderer?.spec && !this.storyboardCache.has(videoId)) {
+            this.storyboardCache.set(videoId, playerResponse.storyboards.playerStoryboardSpecRenderer.spec);
+        }
 
         // ── Extract genuine visitorData from watch page HTML / player response / InnerTube ──
         // For MWEB streams, the watch page HTML's VISITOR_DATA is the authoritative session identity
@@ -1793,6 +1803,21 @@ class YouTubeDecipherService {
             } catch (_) {}
         }
 
+        const effectivePoToken = isAuthenticPoToken(po_token)
+            ? po_token
+            : (this.latestVisitorBoundToken && isAuthenticPoToken(this.latestVisitorBoundToken.token) ? this.latestVisitorBoundToken.token : '');
+        const hasAuthenticPoToken = isAuthenticPoToken(effectivePoToken);
+        const resolvedVisitorId = this.sessionVisitorId || this.extractVisitorId(visitor_data) || '';
+
+        const headers: Record<string, string> = {
+            'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
+            'Referer': 'https://m.youtube.com/',
+            'Origin': 'https://m.youtube.com',
+        };
+        if (resolvedVisitorId) {
+            headers['Cookie'] = `VISITOR_INFO1_LIVE=${resolvedVisitorId}; PREF=f6=40000000`;
+        }
+
         return {
             formats: finalFormats,
             duration,
@@ -1802,6 +1827,10 @@ class YouTubeDecipherService {
             androidProgressiveUrl: finalProgUrl,
             // Non-throttled ANDROID adaptive formats
             androidAdaptiveFormats: nativeAdaptive,
+            hasAuthenticPoToken,
+            poToken: effectivePoToken || undefined,
+            visitorId: resolvedVisitorId || undefined,
+            headers,
         };
     }
 
@@ -1819,6 +1848,10 @@ class YouTubeDecipherService {
         hlsManifestUrl?: string;
         dashManifestUrl?: string;
         isLive?: boolean;
+        hasAuthenticPoToken?: boolean;
+        poToken?: string;
+        visitorId?: string;
+        headers?: Record<string, string>;
     }> {
         if (this.extractionPromises.has(videoId)) {
             return this.extractionPromises.get(videoId)!;

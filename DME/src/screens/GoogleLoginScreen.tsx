@@ -765,14 +765,18 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   brandTitleText: {
-    fontFamily: 'ClashDisplay-Bold',
+    fontFamily: 'Poppins-Bold',
+    fontWeight: '900',
     fontSize: 34,
     color: '#FFFFFF',
     letterSpacing: 1.8,
     includeFontPadding: false,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 2,
   },
   brandLetterE: {
-    marginHorizontal: 1.8,
+    marginHorizontal: 1.4,
   },
   tagline: {
     fontSize: 15,

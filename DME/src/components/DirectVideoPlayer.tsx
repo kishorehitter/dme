@@ -56,6 +56,7 @@ interface Props {
   onError?: (error: any) => void;
   aspectRatio?: number;
   onAspectRatio?: (aspectRatio: number) => void;
+  onBlackBarDetected?: (aspectRatio: number, verticalPercent: number, horizontalPercent: number) => void;
   onExactResolution?: (resolution: string) => void;
   onQualitiesAvailable?: (qualities: string[]) => void;
   onQualityFallback?: (quality: string) => void;
@@ -66,6 +67,8 @@ interface Props {
   bleedEnabled?: boolean;
   bleedDarkness?: number;
   bbdCropPercent?: number;
+  bbdHorizCropPercent?: number;
+  displayMode?: number;
   blurSigma?: number;
   contentRect?: { x: number; y: number; width: number; height: number };
 }
@@ -94,6 +97,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     onEnd,
     onError,
     onAspectRatio,
+    onBlackBarDetected,
     onExactResolution,
     onQualitiesAvailable,
     onQualityFallback,
@@ -104,6 +108,8 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     bleedEnabled = false,
     bleedDarkness = 0.55,
     bbdCropPercent = 0.0,
+    bbdHorizCropPercent = 0.0,
+    displayMode = 0,
     blurSigma = 48.0,
     contentRect,
   } = props;
@@ -192,7 +198,6 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       setPlayableSource(null);
       if (dualSurfaceRef.current) {
         try {
-          dualSurfaceRef.current.pauseVideo?.();
           dualSurfaceRef.current.stopVideo?.();
         } catch (_) {}
       }
@@ -254,16 +259,12 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
         ? (prevUri.endsWith('.mpd') || prevUri.startsWith('data:application/dash+xml') || prevUri.includes('<MPD'))
         : false;
 
-      // Rescrape ONLY when:
-      // 1. Same video (NOT different video)
-      // 2. Both previous and current URIs are DASH MPDs
-      // 3. We are in an active in-stream error recovery state (isRecoveringRef.current === true)
-      // Natural queue advancement or track changes are NEVER a rescrape!
-      const isRescrape = !isDifferentVideo && prevIsMpd && isMpd && isRecoveringRef.current && Boolean(curTrackId && prevTrackId && curTrackId === prevTrackId);
+      // Same video check: if curTrackId matches prevTrackId, this is a stream refresh/rescrape for the current video.
+      const isSameVideo = !isDifferentVideo && Boolean(curTrackId && prevTrackId && curTrackId === prevTrackId);
 
-      if (isRescrape) {
-        // Rave rescrape: preserve current playback position so ExoPlayer resumes seamlessly on 403 recovery
-        console.log(`🔄 [DirectVideoPlayer] DASH rescrape for recovery detected for ${curTrackId} — preserving pos ${positionRef.current.toFixed(1)}s`);
+      if (isSameVideo) {
+        // Rave rescrape / same-video manifest refresh: preserve current playback position so ExoPlayer resumes seamlessly!
+        console.log(`🔄 [DirectVideoPlayer] Same-video stream refresh/recovery for ${curTrackId} — preserving pos ${positionRef.current.toFixed(1)}s`);
         isRecoveringRef.current = false;
         recoveryAttemptsRef.current = 0;
         blockedQualityHeightsRef.current.clear();
@@ -531,12 +532,24 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
 
 
   const handleError = useCallback((err: any) => {
-    const errorCode: string = err?.error?.errorCode || err?.errorCode || '';
-    const is403 = errorCode === '22004' ||
-      (err?.error?.errorStackTrace || '').includes('Response code: 403') ||
-      (err?.error?.errorString || '').includes('ERROR_CODE_IO_BAD_HTTP_STATUS');
+    const rawCode = err?.error?.errorCode ?? err?.errorCode ?? '';
+    const codeNum = typeof rawCode === 'number' ? rawCode : parseInt(String(rawCode), 10);
+    const errText = [
+      err?.error?.errorString,
+      err?.error?.message,
+      err?.error?.errorStackTrace,
+      typeof err?.error === 'string' ? err.error : '',
+      err?.message,
+      String(rawCode)
+    ].filter(Boolean).join(' ');
 
-    console.warn(`[DirectVideoPlayer] Native ExoPlayer error (${errorCode}${is403 ? ', 403' : ''}):`, err?.error?.errorString || errorCode);
+    const isHttpError = codeNum === 2004 || codeNum === 22004 ||
+      errText.includes('403') ||
+      errText.includes('ERROR_CODE_IO_BAD_HTTP_STATUS') ||
+      errText.includes('Response code: 403') ||
+      errText.includes('HttpDataSourceException');
+
+    console.warn(`[DirectVideoPlayer] Native ExoPlayer error (${codeNum}${isHttpError ? ', HTTP Error/403' : ''}):`, errText || codeNum);
     setIsBuffering(false);
 
     // Cancel any pending quality-switch debounce immediately
@@ -556,22 +569,25 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       onExactResolutionRef.current?.('Auto');
       onQualityFallback?.('auto');
 
-      // Seek to current position to make ExoPlayer resume on AUTO track without reloading player
       const currentPos = positionRef.current;
-      if (videoRef.current && currentPos > 0) {
-        videoRef.current.seek(currentPos);
+      if (currentPos > 0) {
+        if (useDualSurface) {
+          dualSurfaceRef.current?.seekTo(currentPos);
+        } else if (videoRef.current) {
+          videoRef.current.seek(currentPos);
+        }
       }
       return;
     }
 
-    // Attempt in-stream seek recovery (up to 3 attempts)
+    // Attempt in-stream seek recovery (up to 2 attempts, but NOT for HTTP 403 where stream is dead)
     const now = Date.now();
     if (now - lastRecoveryTimeRef.current > 15000) {
       recoveryAttemptsRef.current = 0;
     }
     lastRecoveryTimeRef.current = now;
 
-    if (recoveryAttemptsRef.current < 3) {
+    if (recoveryAttemptsRef.current < 2 && !isHttpError) {
       recoveryAttemptsRef.current++;
       const capturedPos = positionRef.current;
       recoveryPositionRef.current = capturedPos;
@@ -581,16 +597,35 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
         `[DirectVideoPlayer] In-stream seek recovery at pos: ${capturedPos.toFixed(2)}s (attempt ${recoveryAttemptsRef.current})`
       );
 
-      if (videoRef.current && capturedPos > 0) {
-        videoRef.current.seek(capturedPos);
+      if (capturedPos > 0) {
+        if (useDualSurface) {
+          dualSurfaceRef.current?.seekTo(capturedPos);
+        } else if (videoRef.current) {
+          videoRef.current.seek(capturedPos);
+        }
       }
       return;
     }
 
-    // Step 4: If in-stream recovery is exhausted, notify parent to refresh DASH manifest
-    console.warn('[DirectVideoPlayer] In-stream recovery exhausted — triggering DASH manifest refresh');
+    // Step 3: If fallbackUri is available and hasn't been applied yet, apply it before failing
+    if (fallbackUri && playableSource?.uri !== fallbackUri) {
+      const capturedPos = positionRef.current;
+      console.warn(`[DirectVideoPlayer] Recovery exhausted — switching to fallback progressive stream at pos ${capturedPos.toFixed(2)}s`);
+      recoveryAttemptsRef.current = 0;
+      setPlayableSource({
+        uri: fallbackUri,
+        type: 'mp4',
+        headers,
+        startPosition: capturedPos,
+      });
+      onError?.({ ...err, fallbackApplied: true, capturedPos });
+      return;
+    }
+
+    // Step 4: If all recoveries exhausted, notify parent
+    console.warn('[DirectVideoPlayer] All recoveries exhausted — notifying parent onError');
     onError?.(err);
-  }, [setSelectedVideoTrackSafe, onError, onQualityFallback]);
+  }, [setSelectedVideoTrackSafe, onError, onQualityFallback, fallbackUri, playableSource?.uri, headers, useDualSurface]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds: number, _allowSeekAhead?: boolean) => {
@@ -690,6 +725,8 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           bleedEnabled={bleedEnabled}
           bleedDarkness={bleedDarkness}
           bbdCropPercent={bbdCropPercent}
+          bbdHorizCropPercent={bbdHorizCropPercent}
+          displayMode={displayMode}
           blurSigma={blurSigma}
           contentRect={contentRect}
           style={styles.video}
@@ -718,6 +755,9 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           onError={handleError}
           onAspectRatio={(ar) => {
             onAspectRatio?.(ar);
+          }}
+          onBlackBarDetected={(ar, crop, horizCrop) => {
+            onBlackBarDetected?.(ar, crop, horizCrop);
           }}
           onExactResolution={onExactResolution}
           onQualitiesAvailable={onQualitiesAvailable}

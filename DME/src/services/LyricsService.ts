@@ -28,92 +28,222 @@ const HEADERS = { 'User-Agent': 'DME-MusicPlayer/1.0' };
 function stripBracketedNoise(text: string): string {
   return text
     .replace(
-      /\s*[\(\[]\s*(?:official\s*(?:music\s*)?video|official\s*audio|official|lyrics?|lyric\s*video|visualizer|audio\s*song|hd|4k|1080p|720p|remastered|extended\s*mix|full\s*(?:song|video)|mv|hq|special\s*version|feat\.?\s*[^\)\]]*?)\s*[\)\]]/gi,
-      ''
+      /\s*[\(\[\{][^\)\]\}]*[\)\]\}]/g,
+      ' '
     )
     .replace(/["""'']/g, '')
     .trim();
 }
 
 /**
- * Strip common YouTube noise words that appear WITHOUT brackets in a segment.
- * e.g. "Why This Kolaveri Di Video Song" → "Why This Kolaveri Di"
+ * Strips YouTube clutter from a single segment while preserving genuine title words.
  */
-function stripSegmentNoise(segment: string): string {
-  return segment
-    .replace(
-      /\s+(?:video\s+songs?|audio\s+songs?|official\s+video|official\s+audio|hd\s+video|full\s+(?:video|song|audio)|lyric\s+videos?|music\s+videos?|promotional\s+song|item\s+song|dance\s+number|lyrics?|lyric|hd|4k)\s*$/gi,
-      ''
-    )
-    .replace(/\s+(?:ft|feat)\.?\s+.+$/i, '')
-    .replace(/[-–—:|]+$/g, '')
+function cleanSegmentText(raw: string): string {
+  if (!raw) return '';
+  let s = raw;
+  // 1. Remove bracketed / parenthesized content: (Official Video), [4K], etc.
+  s = s.replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, ' ');
+
+  // 1b. Strip resolution / quality combinations and framerate tags
+  s = s.replace(/\b(?:8k\s*[\/\\]\s*4k|4k\s*[\/\\]\s*8k|hd\s*[\/\\]\s*4k|8k\s*[\/\\]\s*hd|4k\s*[\/\\]\s*uhd)\b/gi, ' ');
+  s = s.replace(/\b(?:[0-9]+k|[0-9]+p|[0-9]+\s*fps|uhd|ultra\s*hd|fhd|qhd|hdr10\+?|hdr|dolby\s*(?:vision|atmos))\b/gi, ' ');
+
+  // 2. Strip noise phrases
+  const noisePhrases = [
+    /\b(?:official\s*(?:music\s*)?video|official\s*audio|official\s*video\s*song|official|lyric\s*video|lyrics\s*video|lyrical\s*video|lyric\s*song|video\s*song|audio\s*song|full\s*song|full\s*video|title\s*track|theme\s*song)\b/gi,
+    /\b(?:movie\s*songs?|film\s*songs?|video\s*songs?|audio\s*songs?|tamil\s*songs?|telugu\s*songs?|hindi\s*songs?)\b/gi,
+    /\b(?:tamil\s*movie|telugu\s*movie|hindi\s*movie|malayalam\s*movie|kannada\s*movie)\b/gi,
+    /\b(?:movie|film)\b/gi,
+    /\b(?:tamil\s*lyric|telugu\s*lyric|hindi\s*lyric|lyrics?|lyrical)\b/gi,
+    /\b(?:tamil|telugu|hindi|malayalam|kannada|bengali|punjabi|english)\b/gi,
+    /\b(?:video|videos|audio|audios|soundtrack|ost|visualizer|remastered)\b/gi,
+    /\b(?:featuring|feat\.?|ft\.?)\b.*$/gi,
+  ];
+  for (const p of noisePhrases) {
+    s = s.replace(p, ' ');
+  }
+
+  // 3. Strip trailing / standalone 'songs?' or 'hits?' or 'jukebox'
+  s = s.replace(/\b(?:songs?|hits?|jukebox)\b/gi, ' ');
+
+  // 4. Strip punctuation
+  s = s.replace(/[\\/|:–—_~•#*"'`]/g, ' ');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function cleanChannelTitle(ch?: string): string {
+  if (!ch) return '';
+  return ch
+    .replace(/\s*(?:VEVO|Official|Music|Records|Channel|- Topic|Tamil|Audio|Entertainment|Series|Productions?|Films?|Studios?)$/gi, '')
     .trim();
 }
 
-function cleanSegment(raw: string): string {
-  return stripSegmentNoise(stripBracketedNoise(raw));
+/**
+ * Strips soundtrack, score, compilation and language noise from album title.
+ * e.g. "Sketch (Original Motion Picture Soundtrack)" → "Sketch"
+ * e.g. "Enakku 20 Unakku 18 (Original Motion Picture Soundtrack)" → "Enakku 20 Unakku 18"
+ * e.g. "David" → "David"
+ */
+export function cleanAlbumTitle(raw?: string): string {
+  if (!raw) return '';
+  let clean = raw;
+  clean = clean.replace(/\s*[\(\[]\s*(?:original\s+(?:motion\s+picture\s+)?soundtrack|ost|soundtrack|score|movie\s*soundtrack)[^\)\]]*[\)\]]/gi, '');
+  clean = clean.replace(/\s*[-–—|]\s*(?:original\s+(?:motion\s+picture\s+)?soundtrack|ost|soundtrack|score)[^(\n]+/gi, '');
+  clean = clean.replace(/\s*[\(\[]\s*(?:deluxe|bonus\s*track\s*version|expanded|anniversary|remastered|single|ep)\s*[\)\]]/gi, '');
+  clean = clean.replace(/\s*[\(\[]\s*(?:tamil|telugu|hindi|malayalam|kannada)\s*[\)\]]/gi, '');
+  clean = clean.replace(/\\/g, '');
+  clean = clean.replace(/["""'']/g, '');
+  return clean.replace(/^[-\s:|–—]+|[-\s:|–—]+$/g, '').trim();
 }
 
 /**
- * Builds multiple candidate search queries from a raw YouTube title.
- * Ordered from most-specific to least-specific.
+ * Checks if an album name is a generic / non-movie label (e.g. compilation, single, EP).
  */
-function buildSearchQueries(rawTitle: string, channelTitle?: string): string[] {
-  const clean = stripBracketedNoise(rawTitle);
+function isGenericAlbum(albumName?: string, trackName?: string): boolean {
+  if (!albumName) return true;
+  const normAlbum = normalizeText(albumName);
+  const normTrack = normalizeText(trackName);
+  if (normAlbum === normTrack) return true;
+  if (/\b(?:hits?|vol|volume|collection|greatest|best\s*of|anthology|essential|compilation|single|ep|remixes)\b/i.test(albumName)) {
+    return true;
+  }
+  return false;
+}
 
-  const pipeSegments = clean
+const SONG_MARKER_REGEX = /\b(?:video\s*songs?|audio\s*songs?|full\s*(?:video|song|audio)|official\s*(?:video|audio|music\s*video)|music\s*video|lyric(?:al)?\s*(?:video|song)?|lyrics?\s*video|title\s*track|theme\s*song|[0-9]+k|[0-9]+\s*fps|uhd|video|audio)\b/i;
+
+/**
+ * Extracts explicit candidate movie names, clean segments and hyphen pairs from a YouTube title.
+ */
+function extractTitleContext(rawTitle: string): {
+  cleanSegments: string[];
+  hyphenPairs: { partA: string; partB: string }[];
+  explicitMovieCandidates: string[];
+  primarySongCandidates: string[];
+} {
+  const standardized = rawTitle.replace(/[\\/~•:]/g, '|');
+  const rawSegments = standardized
     .split(/\s*\|\s*/)
-    .map((s) => cleanSegment(s.trim()))
-    .filter((s) => s.length > 1);
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 
-  const mainSegment = pipeSegments[0] || cleanSegment(clean);
-  const queries: string[] = [];
+  const cleanSegments: string[] = [];
+  const hyphenPairs: { partA: string; partB: string }[] = [];
+  const explicitMovieCandidates: string[] = [];
+  const primarySongCandidates: string[] = [];
 
-  // 1. If pipe segments exist (e.g. "LEO - Badass | Thalapathy Vijay | Anirudh")
-  if (pipeSegments.length > 1) {
-    for (const seg of pipeSegments) {
-      if (seg.length > 2) queries.push(seg);
+  for (const rawSeg of rawSegments) {
+    if (/\b(?:tamil\s*movie|telugu\s*movie|hindi\s*movie|malayalam\s*movie|kannada\s*movie|movie|film|movie\s*songs?|from)\b/i.test(rawSeg)) {
+      const cleanMovie = cleanSegmentText(rawSeg);
+      if (cleanMovie.length >= 2) {
+        explicitMovieCandidates.push(cleanMovie);
+      }
     }
-    queries.push(`${pipeSegments[0]} ${pipeSegments[1]}`);
-    if (pipeSegments.length > 2) {
-      queries.push(`${pipeSegments[0]} ${pipeSegments[pipeSegments.length - 1]}`);
+
+    if (/[-–—]/.test(rawSeg)) {
+      const parts = rawSeg.split(/\s*[-–—]\s*/);
+      const cleanParts = parts.map((p) => cleanSegmentText(p)).filter((p) => p.length >= 2);
+      if (cleanParts.length >= 2) {
+        hyphenPairs.push({ partA: cleanParts[0], partB: cleanParts[1] });
+        if (SONG_MARKER_REGEX.test(parts[1]) && !SONG_MARKER_REGEX.test(parts[0])) {
+          primarySongCandidates.push(cleanParts[1]);
+          explicitMovieCandidates.push(cleanParts[0]);
+        } else if (SONG_MARKER_REGEX.test(parts[0]) && !SONG_MARKER_REGEX.test(parts[1])) {
+          primarySongCandidates.push(cleanParts[0]);
+          explicitMovieCandidates.push(cleanParts[1]);
+        }
+        cleanSegments.push(cleanParts[1]);
+        cleanSegments.push(cleanParts[0]);
+      } else if (cleanParts.length === 1) {
+        cleanSegments.push(cleanParts[0]);
+      }
+    } else {
+      const cleaned = cleanSegmentText(rawSeg);
+      if (cleaned.length >= 2 && !rawSeg.includes(',')) {
+        if (SONG_MARKER_REGEX.test(rawSeg)) {
+          primarySongCandidates.push(cleaned);
+        }
+        cleanSegments.push(cleaned);
+      }
     }
   }
 
-  // 2. Dash separation (e.g. "LEO - Badass" -> "Badass", "LEO Badass")
-  const dashParts = mainSegment
-    .split(/\s*[-–—]\s*/)
-    .map((s) => cleanSegment(s))
-    .filter(Boolean);
+  return {
+    cleanSegments: Array.from(new Set(cleanSegments)),
+    hyphenPairs,
+    explicitMovieCandidates: Array.from(new Set(explicitMovieCandidates)),
+    primarySongCandidates: Array.from(new Set(primarySongCandidates)),
+  };
+}
 
-  if (dashParts.length >= 2) {
-    queries.push(dashParts[1]); // Song name typically follows movie/artist ("LEO - Badass" -> "Badass")
-    queries.push(`${dashParts[0]} ${dashParts[1]}`);
-    queries.push(`${dashParts[1]} ${dashParts[0]}`);
-    queries.push(dashParts[0]);
-  } else if (!queries.includes(mainSegment)) {
-    queries.push(mainSegment);
+/**
+ * Builds smart, categorized search queries from a raw YouTube title.
+ * Ordered from most-specific (Song + Movie / Song + Artist) to individual song title.
+ */
+function buildSearchQueries(rawTitle: string, channelTitle?: string): string[] {
+  const ctx = extractTitleContext(rawTitle);
+  const queries: string[] = [];
+
+  // Priority 0: Primary song candidate combined with movie or other segments (e.g. "Nenjil Nenjil Engeyum Kaadhal")
+  for (const song of ctx.primarySongCandidates) {
+    for (const movie of ctx.explicitMovieCandidates) {
+      if (song.toLowerCase() !== movie.toLowerCase()) {
+        queries.push(`${song} ${movie}`);
+        queries.push(`${movie} ${song}`);
+      }
+    }
+    for (const seg of ctx.cleanSegments) {
+      if (seg.toLowerCase() !== song.toLowerCase()) {
+        queries.push(`${song} ${seg}`);
+        queries.push(`${seg} ${song}`);
+      }
+    }
+    queries.push(song);
+  }
+
+  // Priority 1: Hyphen pairs combined (e.g. "Nenjil Nenjil Engeyum Kaadhal", "Engeyum Kaadhal Nenjil Nenjil")
+  for (const pair of ctx.hyphenPairs) {
+    queries.push(`${pair.partB} ${pair.partA}`);
+    queries.push(`${pair.partA} ${pair.partB}`);
+    queries.push(pair.partB);
+    queries.push(pair.partA);
+  }
+
+  // Priority 2: Explicit movie + segment combinations (e.g. "Moongil Kaadugale Samurai")
+  for (const movie of ctx.explicitMovieCandidates) {
+    for (const seg of ctx.cleanSegments) {
+      if (seg.toLowerCase() !== movie.toLowerCase()) {
+        queries.push(`${seg} ${movie}`);
+      }
+    }
+  }
+
+  // Priority 3: Segment combinations (e.g. Seg 1 + Seg 0, Seg 1 + Seg 2)
+  for (let i = 0; i < ctx.cleanSegments.length; i++) {
+    for (let j = 0; j < ctx.cleanSegments.length; j++) {
+      if (i !== j) {
+        queries.push(`${ctx.cleanSegments[i]} ${ctx.cleanSegments[j]}`);
+      }
+    }
+  }
+
+  // Priority 4: Individual segments (e.g. "Moongil Kaadugale", "Sandhippoma", "Oh Mariya")
+  for (const seg of ctx.cleanSegments) {
+    queries.push(seg);
   }
 
   if (channelTitle) {
-    const cleanChannel = channelTitle
-      .replace(/\s*(?:VEVO|Official|Music|Records|Channel|- Topic)$/gi, '')
-      .trim();
-    if (cleanChannel && cleanChannel !== mainSegment) {
-      queries.push(`${cleanSegment(mainSegment)} ${cleanChannel}`);
+    const cleanChannel = cleanChannelTitle(channelTitle);
+    if (cleanChannel && ctx.cleanSegments[0]) {
+      queries.push(`${ctx.cleanSegments[0]} ${cleanChannel}`);
     }
-  }
-
-  const mainWords = mainSegment.split(/\s+/);
-  if (mainWords.length >= 5) {
-    queries.push(mainWords.slice(0, 4).join(' '));
   }
 
   return Array.from(
     new Set(
       queries
         .map((q) => q.replace(/[-–—:|]+$/g, '').replace(/\s+/g, ' ').trim())
-        .filter((q) => q.length > 2)
+        .filter((q) => q.length >= 2)
     )
   );
 }
@@ -185,9 +315,9 @@ export function cleanSongTitle(raw?: string): string {
     ''
   );
 
-  // 5. Strip trailing noise words: "Video Song", "Audio Song", etc.
+  // 5. Strip trailing noise words: "Video Song", "Audio Song", "Video", "Song", etc.
   clean = clean.replace(
-    /\s+(?:video\s+songs?|audio\s+songs?|official\s+video|official\s+audio|hd\s+video|full\s+(?:video|song|audio)|lyric\s+video|music\s+video)\s*$/gi,
+    /\s+(?:video\s+songs?|audio\s+songs?|official\s+video|official\s+audio|hd\s+video|full\s+(?:video|song|audio)|lyric\s+video|music\s+video|video|song)\s*$/gi,
     ''
   );
 
@@ -222,7 +352,7 @@ export function isRecordLabelOrChannel(name?: string | null): boolean {
   const lower = name.toLowerCase().trim();
 
   const labelPatterns = [
-    /\b(?:sony|zee|tips|t-series|tseries|saregama|speed|lahari|aditya|muzik247|eros|svf|yrf|times\s*music|goldmines|think\s*music|sun\s*(?:tv|pictures))\b/i,
+    /\b(?:sony|zee|tips|t-series|tseries|saregama|speed|lahari|aditya|muzik247|eros|svf|yrf|times\s*music|goldmines|think\s*music|sun\s*(?:tv|pictures)|ayngaran|shemaroo|venus|ultra|satyam|rajshri|anand\s*audio|dbeats|manorama|newstalgia)\b/i,
     /\b(?:music|records|recordings|entertainment|series|production|productions|pictures|films?|studios?|media|channel|broadcasting|television|jukebox|vevo)\b/i,
     /\b(?:tamil|telugu|hindi|malayalam|kannada|punjabi|bhojpuri)\s*(?:music|audio|songs?|hits?|media)\b/i,
     /\b(?:official|channel|company|audio|network)\b/i,
@@ -266,7 +396,7 @@ export function cleanArtistName(rawArtist?: string | null): string {
 export function extractArtistFromTitle(title?: string): string {
   if (!title || typeof title !== 'string') return '';
 
-  const clean = title.replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
+  const clean = title.replace(/\s*[\(\[].*?[\)\]]/g, '').replace(/[\\/~•:]/g, '|').trim();
 
   // Pattern 1: Pipes: "Badass - Leo | Thalapathy Vijay | Anirudh Ravichander"
   if (clean.includes('|')) {
@@ -308,14 +438,30 @@ function verifyLyricsMatch(
   channelTitle: string | undefined,
   candidate: any,
   duration?: number
-): { matches: boolean; score: number; cleanTitle: string } {
+): {
+  matches: boolean;
+  score: number;
+  cleanTitle: string;
+  hasMovieMatch: boolean;
+  hasArtistMatch: boolean;
+  hasMovieConflict: boolean;
+} {
+  const fail = (clean = '') => ({
+    matches: false,
+    score: 0,
+    cleanTitle: clean,
+    hasMovieMatch: false,
+    hasArtistMatch: false,
+    hasMovieConflict: false,
+  });
+
   if (!candidate || !candidate.trackName) {
-    return { matches: false, score: 0, cleanTitle: '' };
+    return fail();
   }
 
   const cleanTitle = cleanSongTitle(candidate.trackName);
   if (!cleanTitle) {
-    return { matches: false, score: 0, cleanTitle: '' };
+    return fail();
   }
 
   const rawTitleClean = rawTitle.toLowerCase().replace(/\\/g, '').replace(/["""'']/g, '');
@@ -327,7 +473,7 @@ function verifyLyricsMatch(
 
   const candidateTitleWords = normalizeWords(cleanTitle);
   if (candidateTitleWords.length === 0) {
-    return { matches: false, score: 0, cleanTitle };
+    return fail(cleanTitle);
   }
 
   // 1. Title match: phrase match OR >= 80% word overlap
@@ -337,30 +483,89 @@ function verifyLyricsMatch(
 
   const titleMatches = phraseMatch || wordOverlapRatio >= 0.8;
   if (!titleMatches) {
-    return { matches: false, score: 0, cleanTitle };
+    return fail(cleanTitle);
   }
 
   let score = 0;
   if (phraseMatch) score += 60;
   score += Math.round(wordOverlapRatio * 40);
 
-  // 2. Context words (artist + album, EXCLUDING song title words)
+  // Specificity bonus: Multi-word / longer song titles get higher priority
+  score += Math.min(30, normCleanTitle.length * 2);
+
+  // 2. Candidate Movie / Album Extraction
   const candidateTitleWordSet = new Set(candidateTitleWords);
-  const candidateContextWords = [
-    ...normalizeWords(candidate.artistName || ''),
-    ...normalizeWords(candidate.albumName || ''),
-  ].filter((w) => w.length > 2 && !candidateTitleWordSet.has(w));
+  const cleanAlbum = cleanAlbumTitle(candidate.albumName);
+  const isGeneric = isGenericAlbum(candidate.albumName, candidate.trackName);
+
+  // Extract movie from track name if it has (From "...")
+  let trackMovie = '';
+  const fromMatch = candidate.trackName.match(/[\(\[-]\s*from\s+["']?([^)"'\]]+)/i);
+  if (fromMatch && fromMatch[1]) {
+    trackMovie = cleanAlbumTitle(fromMatch[1]);
+  }
+
+  const candidateArtistWords = normalizeWords(candidate.artistName || '').filter(
+    (w) => w.length > 2 && !candidateTitleWordSet.has(w)
+  );
+  const candidateArtistWordSet = new Set(candidateArtistWords);
+
+  // CRITICAL: candidateMovieWords must NOT include words from candidate artist name!
+  // Eponymous albums (e.g. "Harris Jayaraj", "A.R. Rahman") are NOT movies!
+  const candidateMovieWords = [
+    ...normalizeWords(cleanAlbum),
+    ...normalizeWords(trackMovie),
+  ].filter((w) => w.length > 1 && !candidateTitleWordSet.has(w) && !candidateArtistWordSet.has(w));
 
   const channelWords = normalizeWords(channelTitle || '');
   const fullContextSet = new Set([...titleWords, ...channelWords]);
 
-  const matchedContextWords = candidateContextWords.filter((w) => fullContextSet.has(w));
-  const hasContextMatch = matchedContextWords.length > 0;
-  if (hasContextMatch) {
-    score += Math.min(40, matchedContextWords.length * 15);
+  // MOVIE / ALBUM MATCH:
+  const matchedMovieWords = candidateMovieWords.filter((w) => fullContextSet.has(w));
+  const hasMovieMatch = matchedMovieWords.length > 0;
+
+  if (hasMovieMatch) {
+    // Massive bonus: Song is proven to be from the exact movie mentioned in the YouTube title!
+    score += Math.min(80, matchedMovieWords.length * 40);
   }
 
-  // 3. Duration check
+  // ARTIST / COMPOSER MATCH:
+  const matchedArtistWords = candidateArtistWords.filter((w) => fullContextSet.has(w));
+  const hasArtistMatch = matchedArtistWords.length > 0;
+  if (hasArtistMatch) {
+    score += Math.min(40, matchedArtistWords.length * 20);
+  }
+
+  // 3. PRIMARY SONG CANDIDATE BONUS:
+  // If candidate trackName matches the segment that explicitly had "video song" / "song" attached
+  // in the YouTube title, award a massive disambiguation bonus over movie title tracks!
+  const titleContext = extractTitleContext(rawTitle);
+  for (const songCand of titleContext.primarySongCandidates) {
+    if (normalizeText(songCand) === normCleanTitle) {
+      score += 70;
+      break;
+    }
+  }
+
+  // 4. MOVIE CONFLICT DETECTION:
+  // Context has multiple segments / indicators
+  const hasMultipleTitleContexts =
+    titleContext.explicitMovieCandidates.length > 0 || titleContext.cleanSegments.length >= 2;
+
+  const hasMovieConflict =
+    !isGeneric && candidateMovieWords.length > 0 && !hasMovieMatch && hasMultipleTitleContexts;
+
+  if (hasMovieConflict) {
+    // For common / short song titles (<= 2 words like "Anbe Anbe", "Kanave Kanave", "Kadhale Kadhale"),
+    // an album conflict is a fatal mismatch because common titles exist across multiple movies.
+    if (candidateTitleWords.length <= 2) {
+      return fail(cleanTitle);
+    }
+    // For longer titles (>= 3 words), heavily penalize
+    score -= 70;
+  }
+
+  // 4. Duration check
   let durationDiff = 9999;
   let durationOk = true;
 
@@ -374,25 +579,31 @@ function verifyLyricsMatch(
       score += 10;
     } else if (durationDiff > 60) {
       score -= 40;
-      if (!hasContextMatch && candidateTitleWords.length <= 2) {
+      if (!hasMovieMatch && !hasArtistMatch && candidateTitleWords.length <= 2) {
         durationOk = false;
       }
     }
   }
 
-  // 4. Single-word title disambiguation (e.g. "Illuminati", "Badass", "Hukum")
-  // For 1-word songs, require context match OR duration within 20s (accommodates video skits/intros)
+  // 5. Single-word title disambiguation (e.g. "Illuminati", "Badass", "Hukum")
   if (candidateTitleWords.length === 1) {
-    if (!hasContextMatch && durationDiff > 20) {
-      return { matches: false, score: 0, cleanTitle };
+    if (!hasMovieMatch && !hasArtistMatch && durationDiff > 20) {
+      return fail(cleanTitle);
     }
   }
 
   if (!durationOk) {
-    return { matches: false, score: 0, cleanTitle };
+    return fail(cleanTitle);
   }
 
-  return { matches: true, score, cleanTitle };
+  return {
+    matches: true,
+    score,
+    cleanTitle,
+    hasMovieMatch,
+    hasArtistMatch,
+    hasMovieConflict,
+  };
 }
 
 /**
@@ -471,8 +682,18 @@ export async function fetchLyrics(
   }
 
   const queries = buildSearchQueries(rawTitle, channelTitle);
-  let bestSyncedCandidate: { item: any; score: number; cleanTitle: string } | null = null;
-  let bestPlainCandidate: { item: any; score: number; cleanTitle: string } | null = null;
+  let bestSyncedCandidate: {
+    item: any;
+    score: number;
+    cleanTitle: string;
+    hasMovieMatch: boolean;
+  } | null = null;
+  let bestPlainCandidate: {
+    item: any;
+    score: number;
+    cleanTitle: string;
+    hasMovieMatch: boolean;
+  } | null = null;
   let hadAnyApiResults = false;
 
   for (const q of queries) {
@@ -501,6 +722,7 @@ export async function fetchLyrics(
               item,
               score: verification.score,
               cleanTitle: verification.cleanTitle,
+              hasMovieMatch: verification.hasMovieMatch,
             };
           }
         }
@@ -512,13 +734,14 @@ export async function fetchLyrics(
               item,
               score: verification.score,
               cleanTitle: verification.cleanTitle,
+              hasMovieMatch: verification.hasMovieMatch,
             };
           }
         }
       }
 
-      // Strong verified match found early (phrase match + context/duration match)
-      if (bestSyncedCandidate && bestSyncedCandidate.score >= 120) {
+      // Strong verified match found early (phrase match + confirmed movie match)
+      if (bestSyncedCandidate && bestSyncedCandidate.score >= 180) {
         break;
       }
     } catch (_) {
@@ -526,21 +749,46 @@ export async function fetchLyrics(
     }
   }
 
+  // Selection priority:
+  // A candidate with CONFIRMED MOVIE MATCH always beats a candidate without movie match,
+  // preventing synced lyrics from a different movie from overshadowing lyrics from the correct movie!
+  let chosenCandidate: {
+    item: any;
+    score: number;
+    cleanTitle: string;
+    hasMovieMatch: boolean;
+    isSynced: boolean;
+  } | null = null;
+
+  if (bestSyncedCandidate && bestSyncedCandidate.hasMovieMatch) {
+    chosenCandidate = { ...bestSyncedCandidate, isSynced: true };
+  } else if (bestPlainCandidate && bestPlainCandidate.hasMovieMatch) {
+    if (!bestSyncedCandidate || !bestSyncedCandidate.hasMovieMatch) {
+      chosenCandidate = { ...bestPlainCandidate, isSynced: false };
+    } else {
+      chosenCandidate = { ...bestSyncedCandidate, isSynced: true };
+    }
+  } else if (bestSyncedCandidate) {
+    chosenCandidate = { ...bestSyncedCandidate, isSynced: true };
+  } else if (bestPlainCandidate) {
+    chosenCandidate = { ...bestPlainCandidate, isSynced: false };
+  }
+
   // ── 1. Return verified synced lyrics ──
-  if (bestSyncedCandidate) {
-    const lines = parseLrc(bestSyncedCandidate.item.syncedLyrics);
+  if (chosenCandidate && chosenCandidate.isSynced) {
+    const lines = parseLrc(chosenCandidate.item.syncedLyrics);
     if (lines.length > 0) {
       const artist =
-        cleanArtistName(bestSyncedCandidate.item.artistName) ||
+        cleanArtistName(chosenCandidate.item.artistName) ||
         extractArtistFromTitle(rawTitle);
 
       const res: LyricsResult = {
         lines,
-        plainLyrics: bestSyncedCandidate.item.plainLyrics,
-        instrumental: Boolean(bestSyncedCandidate.item.instrumental),
+        plainLyrics: chosenCandidate.item.plainLyrics,
+        instrumental: Boolean(chosenCandidate.item.instrumental),
         hasLyrics: true,
-        hasPlainLyrics: Boolean(bestSyncedCandidate.item.plainLyrics),
-        trackName: bestSyncedCandidate.cleanTitle,
+        hasPlainLyrics: Boolean(chosenCandidate.item.plainLyrics),
+        trackName: chosenCandidate.cleanTitle,
         artistName: artist,
         isMismatch: false,
       };
@@ -550,18 +798,18 @@ export async function fetchLyrics(
   }
 
   // ── 2. Fallback: verified plain lyrics ──
-  if (bestPlainCandidate) {
+  if (chosenCandidate && !chosenCandidate.isSynced) {
     const artist =
-      cleanArtistName(bestPlainCandidate.item.artistName) ||
+      cleanArtistName(chosenCandidate.item.artistName) ||
       extractArtistFromTitle(rawTitle);
 
     const res: LyricsResult = {
       lines: [],
-      plainLyrics: bestPlainCandidate.item.plainLyrics,
-      instrumental: Boolean(bestPlainCandidate.item.instrumental),
+      plainLyrics: chosenCandidate.item.plainLyrics,
+      instrumental: Boolean(chosenCandidate.item.instrumental),
       hasLyrics: false,
       hasPlainLyrics: true,
-      trackName: bestPlainCandidate.cleanTitle,
+      trackName: chosenCandidate.cleanTitle,
       artistName: artist,
       isMismatch: false,
     };

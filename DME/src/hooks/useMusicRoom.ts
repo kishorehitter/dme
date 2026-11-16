@@ -21,6 +21,7 @@ export interface Song {
   addedBy: string;
   duration?: number;
   source?: 'youtube' | 'drive'; 
+  playSessionId?: string;
 }
 
 // ✅ NEW: a queue entry — wraps a Song with WHO pinned it and WHEN, so the
@@ -150,17 +151,29 @@ export const useMusicRoom = (
       switch (message.type) {
 
         case 'room_state':
-          setRoomState(prev => ({
-            ...prev,
-            isDJ: message.data.is_dj,
-            roomName: message.data.room_name || message.data.name || '',
-            currentSong: message.data.current_video,
-            position: message.data.position,
-            isPlaying: message.data.is_playing,
-            queue: normalizeQueue(message.data.queue),
-            participants: message.data.participants,
-            allowedSpeakers: message.data.allowed_speakers || []
-          }));
+          setRoomState(prev => {
+            const incomingVideo = message.data.current_video;
+            const isSame = incomingVideo && prev.currentSong?.videoId === incomingVideo.videoId;
+            const currentVideo = incomingVideo ? {
+              source: 'youtube',
+              ...incomingVideo,
+              source: incomingVideo.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube',
+              playSessionId: isSame && prev.currentSong?.playSessionId
+                ? prev.currentSong.playSessionId
+                : (incomingVideo.playSessionId || `${incomingVideo.videoId}_${Date.now()}`),
+            } : null;
+            return {
+              ...prev,
+              isDJ: message.data.is_dj,
+              roomName: message.data.room_name || message.data.name || '',
+              currentSong: currentVideo,
+              position: message.data.position,
+              isPlaying: message.data.is_playing,
+              queue: normalizeQueue(message.data.queue),
+              participants: message.data.participants,
+              allowedSpeakers: message.data.allowed_speakers || []
+            };
+          });
           
           // ✅ Save snapshot for the screen to consume on player ready
           setJoinSnapshot({
@@ -179,17 +192,33 @@ export const useMusicRoom = (
           break;
 
         case 'watch_load':
-          if (isPlayerReadyRef) isPlayerReadyRef.current = false;
-          if (playerRef?.current) {
-            try { playerRef.current.pauseVideo?.(); } catch (_) {}
+          const isDifferentWatchSong = !roomStateRef.current.currentSong || roomStateRef.current.currentSong.videoId !== message.data.video?.videoId;
+          if (isDifferentWatchSong) {
+            if (isPlayerReadyRef) isPlayerReadyRef.current = false;
+            if (playerRef?.current) {
+              try { playerRef.current.pauseVideo?.(); } catch (_) {}
+            }
           }
-          setRoomState(prev => ({
-            ...prev,
-            currentSong: message.data.video,
-            roomName: message.data.room_name || message.data.name || prev.roomName,
-            position: 0,
-            isPlaying: true
-          }));
+          setRoomState(prev => {
+            const incoming = message.data.video;
+            if (!incoming) return prev;
+            const isSame = prev.currentSong?.videoId === incoming.videoId;
+            const updatedSong: Song = {
+              source: 'youtube',
+              ...incoming,
+              source: incoming.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube',
+              playSessionId: isSame && prev.currentSong?.playSessionId
+                ? prev.currentSong.playSessionId
+                : (incoming.playSessionId || `${incoming.videoId}_${Date.now()}`),
+            };
+            return {
+              ...prev,
+              currentSong: updatedSong,
+              roomName: message.data.room_name || message.data.name || prev.roomName,
+              position: 0,
+              isPlaying: true
+            };
+          });
           break;
 
         case 'watch_sync':
@@ -253,9 +282,13 @@ export const useMusicRoom = (
 
         case 'aux_passed':
           if (isPlayerReadyRef) isPlayerReadyRef.current = false;
+          const nextSongFromMsg = message.data.next_song;
           setRoomState(prev => ({
             ...prev,
-            currentSong: message.data.next_song,
+            currentSong: nextSongFromMsg ? {
+              ...nextSongFromMsg,
+              playSessionId: `${nextSongFromMsg.videoId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            } : null,
             roomName: message.data.room_name || prev.roomName,
             position: 0,
             isPlaying: true
@@ -305,9 +338,13 @@ export const useMusicRoom = (
 
   // DJ Controls
   const loadSong = useCallback((song: Song, customRoomName?: string) => { // ✅ Added param
+    const songWithSession: Song = {
+      ...song,
+      playSessionId: `${song.videoId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+    };
     setRoomState(prev => ({
       ...prev,
-      currentSong: song,
+      currentSong: songWithSession,
       roomName: customRoomName || prev.roomName, // ✅ Local update
       position: 0,
       isPlaying: false
@@ -362,9 +399,13 @@ export const useMusicRoom = (
       if (prev.queue && prev.queue.length > 0) {
         const nextItem = prev.queue[0];
         const nextSong = nextItem?.song || nextItem;
+        const songWithSession: Song = {
+          ...nextSong,
+          playSessionId: `${nextSong.videoId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        };
         return {
           ...prev,
-          currentSong: nextSong,
+          currentSong: songWithSession,
           queue: prev.queue.slice(1),
           position: 0,
           isPlaying: true,
@@ -383,7 +424,12 @@ export const useMusicRoom = (
   const updateCurrentSongMetadata = useCallback((enrichedSong: Song) => {
     setRoomState(prev => ({
       ...prev,
-      currentSong: enrichedSong,  // preserve position & isPlaying
+      currentSong: prev.currentSong ? {
+        ...prev.currentSong,
+        ...enrichedSong,
+        source: enrichedSong.source || prev.currentSong.source || 'youtube',
+        playSessionId: prev.currentSong.playSessionId,
+      } : enrichedSong,
     }));
   }, []);
 

@@ -64,7 +64,9 @@ interface Props {
   resizeMode?: 'contain' | 'cover';
   headers?: Record<string, string>;
   style?: any;
+  roomTheme?: string;
   bleedEnabled?: boolean;
+  isTransparentBackground?: boolean;
   bleedDarkness?: number;
   bbdCropPercent?: number;
   bbdHorizCropPercent?: number;
@@ -106,6 +108,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     headers,
     style,
     bleedEnabled = false,
+    isTransparentBackground = false,
     bleedDarkness = 0.55,
     bbdCropPercent = 0.0,
     bbdHorizCropPercent = 0.0,
@@ -187,6 +190,12 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
   useEffect(() => {
     setCurrentVol(volume);
   }, [volume]);
+
+  useEffect(() => {
+    if (useDualSurface) {
+      dualSurfaceRef.current?.setVolume?.(muted ? 0 : currentVol);
+    }
+  }, [muted, currentVol, useDualSurface]);
 
   // Track initialPosition only for the very first load of a new videoUri
   const initialPositionAppliedRef = useRef(false);
@@ -705,7 +714,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
     fastForwardAd: () => {},
   }));
 
-  if (!playableSource && !useDualSurface) {
+  if (!useDualSurface && !playableSource?.uri) {
     return <View style={[styles.container, isFullscreen && { backgroundColor: '#000' }, style]} />;
   }
 
@@ -717,12 +726,14 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           videoId={videoId}
           videoUri={playableSource?.uri || ''}
           headers={playableSource?.headers}
-          play={Boolean(playableSource && !isPaused)}
+          play={Boolean(playableSource?.uri && !isPaused)}
           quality={quality}
           muted={muted}
           volume={currentVol}
           initialPosition={playableSource?.startPosition || 0}
+          roomTheme={props.roomTheme}
           bleedEnabled={bleedEnabled}
+          isTransparentBackground={isTransparentBackground}
           bleedDarkness={bleedDarkness}
           bbdCropPercent={bbdCropPercent}
           bbdHorizCropPercent={bbdHorizCropPercent}
@@ -781,6 +792,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           volume={currentVol}
           playInBackground={true}
           playWhenInactive={true}
+          mixWithOthers="mix"
           preventsDisplaySleepDuringVideoPlayback={true}
           resizeMode={resizeMode || 'contain'}
           style={styles.video}

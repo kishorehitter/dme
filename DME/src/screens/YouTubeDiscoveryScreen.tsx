@@ -25,6 +25,7 @@ import LottieStickerMessage from '../components/LottieStickerMessage';
 import { useTheme } from '../context/ThemeContext';
 
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
+import { checkYouTubeAuth, setHasSkippedYtLogin } from '../utils/youtubeAuth';
 import DiscoveryFeedService from '../services/DiscoveryFeedService';
 import FastImage from 'react-native-fast-image';
 
@@ -117,14 +118,27 @@ const DiscoBallLoadingView = ({ isDark = false, bgColor }: { isDark?: boolean; b
   );
 };
 
+const TabLoadingView = ({ color = '#FF3B3B', isDark = false, text }: { color?: string; isDark?: boolean; text?: string }) => (
+  <View style={[styles.loadingContainer, { backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }]}>
+    <ActivityIndicator size="large" color={color} />
+    {text ? (
+      <Text style={{ marginTop: 12, fontSize: 13, fontWeight: '600', color: isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)' }}>
+        {text}
+      </Text>
+    ) : null}
+  </View>
+);
+
 const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
-  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo, initialUrl } = route.params || {};
+  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo, initialUrl, initialTab } = route.params || {};
   const isFlow2 = !!roomCode;
+  const isFromMusicRoom = Boolean(isFlow2 || route?.params?.fromMusicRoom || route?.params?.skipSplash || (globalThis as any).activeMusicRoomCode);
+  const shouldSkipSplash = Boolean(isFromMusicRoom || initialTab);
 
-  // Only show splash when opened from Discovery button; skip completely when searching from Music Room
-  const [showSplash, setShowSplash] = useState(!isFlow2);
-  const splashFadeAnim = useRef(new Animated.Value(1)).current;
+  // Only show splash when opened directly from chat list without tab/room; skip when opened from Music Room
+  const [showSplash, setShowSplash] = useState(!shouldSkipSplash);
+  const splashFadeAnim = useRef(new Animated.Value(shouldSkipSplash ? 0 : 1)).current;
 
   const dismissSplash = useCallback(() => {
     Animated.timing(splashFadeAnim, {
@@ -138,7 +152,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   }, [splashFadeAnim]);
 
   useEffect(() => {
-    if (isFlow2) {
+    if (shouldSkipSplash) {
       setShowSplash(false);
       return;
     }
@@ -147,15 +161,16 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     }, 1200);
 
     return () => clearTimeout(timer);
-  }, [isFlow2, dismissSplash]);
+  }, [shouldSkipSplash, dismissSplash]);
 
   const youtubeWebViewRef = useRef<WebView>(null);
   const ytCanGoBackRef    = useRef(false);
+  const hasReportedAuthSuccessRef = useRef(false);
   const driveWebViewRef   = useRef<WebView>(null);
   const pendingDriveVideoRef = useRef<any>(initialPendingVideo || null);
   const insets = useSafeAreaInsets();
 
-  const [activeTab, setActiveTab]       = useState<TabType>(initialUrl ? 'youtube' : (requireDriveAuth ? 'drive' : 'youtube'));
+  const [activeTab, setActiveTab]       = useState<TabType>(initialTab || (initialUrl ? 'youtube' : (requireDriveAuth ? 'drive' : 'youtube')));
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem]       = useState<any | null>(null);
   const [showOverlay, setShowOverlay]   = useState(false);
@@ -250,48 +265,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     setActiveTab(tab);
   }, []);
 
-  // Dropdown state for tab selector
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const dropdownDimAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(dropdownDimAnim, {
-      toValue: isDropdownOpen ? 1 : 0,
-      duration: isDropdownOpen ? 220 : 180,
-      useNativeDriver: true,
-    }).start();
-  }, [isDropdownOpen, dropdownDimAnim]);
-
-  // Swipe Down gesture to Open dropdown
-  const openPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gestureState) => {
-        return gestureState.dy > 10 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
-      },
-      onPanResponderRelease: (_evt, gestureState) => {
-        if (gestureState.dy > 10 || gestureState.vy > 0.25) {
-          setIsDropdownOpen(true);
-        }
-      },
-    })
-  ).current;
-
-  // Swipe Up gesture to Close dropdown
-  const closePanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gestureState) => {
-        return gestureState.dy < -10 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
-      },
-      onPanResponderRelease: (_evt, gestureState) => {
-        if (gestureState.dy < -10 || gestureState.vy < -0.25) {
-          setIsDropdownOpen(false);
-        }
-      },
-    })
-  ).current;
-
   // History / Likes
   const [history, setHistory]           = useState<any[]>([]);
   const [likes, setLikes]               = useState<any[]>([]);
@@ -305,14 +278,16 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const [likesError, setLikesError]     = useState(false);
   const [historyError, setHistoryError] = useState(false);
 
+  // Tab loading indicators
+  const [isYtLoading, setIsYtLoading]           = useState(true);
+  const [isDriveLoading, setIsDriveLoading]     = useState(true);
+  const [isLikesLoading, setIsLikesLoading]     = useState(true);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+
   const isNavigating = useRef(false);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (isDropdownOpen) {
-        setIsDropdownOpen(false);
-        return true;
-      }
       if (isSelectingMedia || showOverlay) {
         Keyboard.dismiss();
         setIsSelectingMedia(false);
@@ -324,6 +299,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         }
         return true;
       }
+      if (route?.params?.requireYouTubeAuth) {
+        navigation?.goBack?.();
+        return true;
+      }
       if (activeTab === 'youtube' && ytCanGoBackRef.current) {
         youtubeWebViewRef.current?.goBack();
         return true;
@@ -331,7 +310,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
       return false;
     });
     return () => sub.remove();
-  }, [showOverlay, activeTab, isSelectingMedia, isDropdownOpen]);
+  }, [showOverlay, activeTab, isSelectingMedia]);
 
   useEffect(() => {
     if (!showOverlay) {
@@ -351,9 +330,20 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     setLikesError(false);
     setHistoryError(false);
 
-    loadHistory();
-    loadLikes();
+    if (activeTab === 'likes') {
+      loadLikes();
+    } else if (activeTab === 'history') {
+      loadHistory();
+    }
   };
+
+  useEffect(() => {
+    if (activeTab === 'likes' && likes.length === 0 && !isLikesLoading) {
+      loadLikes();
+    } else if (activeTab === 'history' && history.length === 0 && !isHistoryLoading) {
+      loadHistory();
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     isNavigating.current = false;
@@ -376,8 +366,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     setHistoryError(false);
 
     if (activeTab === 'youtube') {
+      setIsYtLoading(true);
       youtubeWebViewRef.current?.reload();
     } else if (activeTab === 'drive') {
+      setIsDriveLoading(true);
       driveWebViewRef.current?.reload();
     }
 
@@ -390,23 +382,29 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
 
   const loadHistory = async () => {
     try {
+      setIsHistoryLoading(true);
       const data = await musicAPI.getWatchHistory();
       setHistory(data);
       setHistoryError(false);
     } catch (e) {
       console.error('History load failed', e);
       setHistoryError(true);
+    } finally {
+      setIsHistoryLoading(false);
     }
   };
 
   const loadLikes = async () => {
     try {
+      setIsLikesLoading(true);
       const data = await musicAPI.getLikes();
       setLikes(data);
       setLikesError(false);
     } catch (e) {
       console.error('Likes load failed', e);
       setLikesError(true);
+    } finally {
+      setIsLikesLoading(false);
     }
   };
 
@@ -419,13 +417,18 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
     setSelectedVideoId(vId);
     setShowOverlay(true);
 
-    // Command the YouTube WebView to navigate to watch page so the video & ads play in background at lowest volume
+    // Command the YouTube WebView to navigate to watch page with MUTED audio until user clicks Start Watching
     try {
       youtubeWebViewRef.current?.injectJavaScript(`
         (function() {
           try {
             if (window.location.href.indexOf("${vId}") === -1) {
               window.location.href = "https://m.youtube.com/watch?v=${vId}";
+            }
+            var vids = document.querySelectorAll('video');
+            for (var i = 0; i < vids.length; i++) {
+              vids[i].muted = true;
+              vids[i].volume = 0;
             }
           } catch(e) {}
         })(); true;
@@ -496,13 +499,39 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         handleSelectYouTubeVideo(data.videoId, data.title, data.thumbnail, data.channelTitle);
       } else if (data.type === 'homeVideosExtracted' && Array.isArray(data.videos)) {
         DiscoveryFeedService.addVideos(data.videos);
+      } else if (data.type === 'youtube_logged_in') {
+        setHasSkippedYtLogin(false);
+        if (route?.params?.requireYouTubeAuth) {
+          if (!hasReportedAuthSuccessRef.current) {
+            hasReportedAuthSuccessRef.current = true;
+            console.log('🎉 [YouTubeDiscovery] YouTube sign-in confirmed via script! Returning to Music Room');
+            DeviceEventEmitter.emit('YOUTUBE_LOGIN_SUCCESS');
+            navigation?.goBack?.();
+          }
+        }
       }
     } catch (e) {}
-  }, [handleSelectYouTubeVideo]);
+  }, [handleSelectYouTubeVideo, navigation, route?.params?.requireYouTubeAuth]);
 
-  const handleYouTubeNavChange = (_navState: any) => {
+  const handleYouTubeNavChange = (navState: any) => {
     // Navigation state changes should NEVER auto-select a video
     // Video selection is strictly driven by explicit user clicks on video cards
+    const url = navState?.url;
+    if (url && (url.includes('m.youtube.com') || url.includes('youtube.com')) && !url.includes('accounts.google.com')) {
+      checkYouTubeAuth().then((authed) => {
+        if (authed) {
+          setHasSkippedYtLogin(false);
+          if (route?.params?.requireYouTubeAuth) {
+            if (!hasReportedAuthSuccessRef.current) {
+              hasReportedAuthSuccessRef.current = true;
+              console.log('🎉 [YouTubeDiscovery] YouTube sign-in verified via auth check! Returning to Music Room');
+              DeviceEventEmitter.emit('YOUTUBE_LOGIN_SUCCESS');
+              navigation?.goBack?.();
+            }
+          }
+        }
+      }).catch(() => {});
+    }
   };
 
   // ─── Drive WebView — intercept file selection ─────────────────────────────
@@ -805,7 +834,20 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
           }}
         >
           <View style={styles.gridThumb}>
-            <Image source={{ uri: thumb }} style={styles.gridThumbImage} resizeMode="cover" />
+            {thumb ? (
+              <FastImage
+                source={{
+                  uri: thumb,
+                  priority: FastImage.priority.normal,
+                }}
+                style={styles.gridThumbImage}
+                resizeMode={FastImage.resizeMode.cover}
+              />
+            ) : (
+              <View style={[styles.gridThumbImage, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)', justifyContent: 'center', alignItems: 'center' }]}>
+                <Icon name="play-circle-outline" size={28} color={isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'} />
+              </View>
+            )}
             <LinearGradient
               colors={['transparent', 'rgba(0,0,0,0.85)']}
               style={styles.thumbGradient}
@@ -885,126 +927,6 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
         ]}
       >
 
-        {/* ── Center Curved Toggle Button (closed state with Swipe Down support) ── */}
-        {!isDropdownOpen && (
-          <View
-            style={styles.topToggleHitZone}
-            {...openPanResponder.panHandlers}
-          >
-            <TouchableOpacity
-              style={[
-                styles.centerCurvedBtn,
-                {
-                  backgroundColor: isDark ? 'rgba(20, 20, 25, 0.94)' : 'rgba(255, 255, 255, 0.96)',
-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)',
-                },
-              ]}
-              activeOpacity={0.7}
-              hitSlop={{ top: 10, bottom: 16, left: 24, right: 24 }}
-              onPress={() => setIsDropdownOpen(true)}
-            >
-              <Icon
-                name="chevron-down"
-                size={17}
-                color={isDark ? '#FFF' : '#333'}
-              />
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* ── Single-Row Tabs Dropdown (open state with Swipe Up support) ── */}
-        {isDropdownOpen && (
-          <>
-            <Animated.View
-              style={[
-                styles.dropdownBackdrop,
-                {
-                  opacity: dropdownDimAnim,
-                  backgroundColor: isDark ? 'rgba(0, 0, 0, 0.50)' : 'rgba(0, 0, 0, 0.32)',
-                },
-              ]}
-            >
-              <TouchableOpacity
-                style={StyleSheet.absoluteFill}
-                activeOpacity={1}
-                onPress={() => setIsDropdownOpen(false)}
-              />
-            </Animated.View>
-            <View
-              style={[
-                styles.floatingTabRowCard,
-                {
-                  backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)',
-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.10)',
-                },
-              ]}
-              {...closePanResponder.panHandlers}
-            >
-              <View style={styles.topTabRow}>
-                {TABS.map((tab) => {
-                  const m = TAB_META[tab];
-                  const isActive = activeTab === tab;
-                  return (
-                    <TouchableOpacity
-                      key={tab}
-                      style={[
-                        styles.topTabBox,
-                        { backgroundColor: isActive ? m.color + '22' : 'transparent' },
-                      ]}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        switchTab(tab);
-                        setIsDropdownOpen(false);
-                      }}
-                    >
-                      <Icon
-                        name={m.icon}
-                        size={isActive ? 24 : 22}
-                        color={isActive ? m.color : (isDark ? '#94A3B8' : '#64748B')}
-                      />
-                      <Text
-                        style={[
-                          styles.topTabLabel,
-                          { color: isActive ? m.color : (isDark ? '#94A3B8' : '#64748B') },
-                        ]}
-                      >
-                        {m.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              {/* Seamless Attached Semi-Rounded Close Button */}
-              <TouchableOpacity
-                style={[
-                  styles.closeCurveHandle,
-                  {
-                    backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)',
-                    borderColor: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.10)',
-                  },
-                ]}
-                activeOpacity={0.7}
-                hitSlop={{ top: 8, bottom: 16, left: 24, right: 24 }}
-                onPress={() => setIsDropdownOpen(false)}
-              >
-                {/* Seamless bridge mask: hides/removes the tab container border line right above the button */}
-                <View
-                  style={[
-                    styles.handleBridgeMask,
-                    { backgroundColor: isDark ? 'rgba(18, 18, 22, 0.96)' : 'rgba(255, 255, 255, 0.98)' },
-                  ]}
-                />
-                <Icon
-                  name="chevron-up"
-                  size={16}
-                  color={isDark ? '#FFF' : '#333'}
-                />
-              </TouchableOpacity>
-            </View>
-          </>
-        )}
-
         {/* Content Card (Full Screen Height below Notch) */}
         <View
           style={[
@@ -1031,23 +953,82 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 message="Could not connect to YouTube. Tap Try Again to reload."
               />
             ) : (
-              <WebView
-                ref={youtubeWebViewRef}
-                source={{ uri: initialUrl || 'https://m.youtube.com' }}
-                onLoadEnd={() => {
-                  hasLoadedRef.current = true;
-                  ytRecoveryCount.current = 0;
-                  dismissSplash();
-                }}
-                cacheMode="LOAD_DEFAULT"
-                onError={(syntheticEvent) => {
-                  const { nativeEvent } = syntheticEvent;
-                  if (!hasLoadedRef.current && (nativeEvent.code === -101 || nativeEvent.description?.includes('ERR_CONNECTION_RESET'))) {
-                    handleAutoRecover();
-                  } else if (!hasLoadedRef.current) {
-                    setYtError(true);
-                  }
-                }}
+              <View style={{ flex: 1 }}>
+                {route?.params?.requireYouTubeAuth && (
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                      backgroundColor: isDark ? '#1F1F1F' : '#F7F7F7',
+                      borderBottomWidth: StyleSheet.hairlineWidth,
+                      borderBottomColor: isDark ? '#333333' : '#E0E0E0',
+                      zIndex: 10,
+                    }}
+                  >
+                    <TouchableOpacity
+                      onPress={() => navigation?.goBack?.()}
+                      style={{ padding: 6, marginRight: 10 }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Icon name="arrow-back" size={22} color={isDark ? '#FFFFFF' : '#000000'} />
+                    </TouchableOpacity>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: '700', color: isDark ? '#FFFFFF' : '#000000' }}>
+                        Sign in to YouTube
+                      </Text>
+                      <Text style={{ fontSize: 12, color: isDark ? '#AAAAAA' : '#666666' }}>
+                        Unlock high quality playback in room
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => {
+                        checkYouTubeAuth().then((authed) => {
+                          if (authed) {
+                            setHasSkippedYtLogin(false);
+                            if (!hasReportedAuthSuccessRef.current) {
+                              hasReportedAuthSuccessRef.current = true;
+                              DeviceEventEmitter.emit('YOUTUBE_LOGIN_SUCCESS');
+                              navigation?.goBack?.();
+                            }
+                          } else {
+                            youtubeWebViewRef.current?.reload();
+                          }
+                        });
+                      }}
+                      style={{ padding: 6 }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Icon name="refresh" size={20} color={isDark ? '#FFFFFF' : '#000000'} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                <WebView
+                  ref={youtubeWebViewRef}
+                  source={{ uri: initialUrl || 'https://m.youtube.com' }}
+                  containerStyle={{ backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }}
+                  startInLoadingState={true}
+                  renderLoading={() => <TabLoadingView color="#FF3B3B" isDark={isDark} />}
+                  onLoadStart={() => {
+                    if (!hasLoadedRef.current) setIsYtLoading(true);
+                  }}
+                  onLoadEnd={() => {
+                    hasLoadedRef.current = true;
+                    ytRecoveryCount.current = 0;
+                    setIsYtLoading(false);
+                    dismissSplash();
+                  }}
+                  cacheMode="LOAD_DEFAULT"
+                  onError={(syntheticEvent) => {
+                    setIsYtLoading(false);
+                    const { nativeEvent } = syntheticEvent;
+                    if (!hasLoadedRef.current && (nativeEvent.code === -101 || nativeEvent.description?.includes('ERR_CONNECTION_RESET'))) {
+                      handleAutoRecover();
+                    } else if (!hasLoadedRef.current) {
+                      setYtError(true);
+                    }
+                  }}
                 renderError={() => (
                   <OfflineErrorView
                     onRetry={handleRetry}
@@ -1087,7 +1068,7 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 sharedCookiesEnabled={true}
                 allowsInlineMediaPlayback={true}
                 mediaPlaybackRequiresUserAction={false}
-                style={{ flex: 1 }}
+                style={{ flex: 1, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }}
                 injectedJavaScript={`
                   (function() {
                     function extractCardMeta(el, videoId) {
@@ -1143,34 +1124,32 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                             channelTitle: meta.channelTitle,
                             thumbnail: meta.thumbnail
                           }));
-                          // Immediately navigate to watch page so video and ads start playing in background at lowest volume
+                          // Immediately navigate to watch page with audio muted until user clicks Start Watching
                           window.location.href = 'https://m.youtube.com/watch?v=' + m[1];
                         }
                       }
                     }, true);
 
-                    function enforcePlaybackAndLowestVolume() {
+                    function enforcePlaybackAndMutedAudio() {
                       try {
                         if (window.location.href.indexOf('/watch') !== -1 || window.location.href.indexOf('v=') !== -1) {
                           var vids = document.querySelectorAll('video');
                           for (var i = 0; i < vids.length; i++) {
                             var v = vids[i];
                             if (v) {
-                              v.muted = false;
-                              v.volume = 0.05;
+                              v.muted = true;
+                              v.volume = 0;
                               if (v.paused) {
                                 v.play().catch(function() {});
                               }
                             }
                           }
-                          var unmuteBtn = document.querySelector('.ytp-unmute, .ytp-mute-button[title*="unmute" i], button[aria-label*="unmute" i]');
-                          if (unmuteBtn && typeof unmuteBtn.click === 'function') unmuteBtn.click();
                           var bigPlayBtn = document.querySelector('.ytp-large-play-button, button.slim-video-action-bar-actions');
                           if (bigPlayBtn && typeof bigPlayBtn.click === 'function') bigPlayBtn.click();
                         }
                       } catch(e) {}
                     }
-                    setInterval(enforcePlaybackAndLowestVolume, 300);
+                    setInterval(enforcePlaybackAndMutedAudio, 250);
 
                     function harvestVideos() {
                       try {
@@ -1233,6 +1212,32 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                       });
                       harvestObs.observe(document.body, { childList: true, subtree: true });
                     } catch(e) {}
+
+                    function checkLogin() {
+                      try {
+                        if (window.location.href.indexOf('accounts.google.com') === -1 && (window.location.href.indexOf('youtube.com') !== -1 || window.location.href.indexOf('youtu.be') !== -1)) {
+                          var isLogged = false;
+                          if (window.ytcfg) {
+                            if (typeof window.ytcfg.get === 'function' && window.ytcfg.get('LOGGED_IN') === true) {
+                              isLogged = true;
+                            } else if (window.ytcfg.data_ && window.ytcfg.data_.LOGGED_IN === true) {
+                              isLogged = true;
+                            }
+                          }
+                          if (!isLogged) {
+                            var signInBtn = document.querySelector('a[href*="ServiceLogin"], ytm-header-bar-renderer a[href*="accounts.google"]');
+                            var avatarBtn = document.querySelector('button[aria-label*="Account"], ytm-avatar-stack, .topbar-menu-button-avatar-button');
+                            if (avatarBtn && !signInBtn) {
+                              isLogged = true;
+                            }
+                          }
+                          if (isLogged) {
+                            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'youtube_logged_in' }));
+                          }
+                        }
+                      } catch(e) {}
+                    }
+                    setInterval(checkLogin, 1500);
                   })(); true;
                 `}
                 onNavigationStateChange={(navState) => {
@@ -1241,8 +1246,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 }}
                 onMessage={handleYouTubeMessage}
               />
-            )
-          )}
+              {isYtLoading && <TabLoadingView color="#FF3B3B" isDark={isDark} />}
+            </View>
+          )
+        )}
 
         {/* Drive Tab */}
         {activeTab === 'drive' && (
@@ -1251,10 +1258,21 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               title="Unable to Load Google Drive"
               message="Could not connect to Google Drive. Tap Try Again to reload." />
           ) : (
-            <WebView
-              ref={driveWebViewRef}
-              source={{ uri: 'https://drive.google.com' }}
-              onLoadEnd={dismissSplash}
+            <View style={{ flex: 1 }}>
+              <WebView
+                ref={driveWebViewRef}
+                source={{ uri: 'https://drive.google.com' }}
+                containerStyle={{ backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }}
+                startInLoadingState={true}
+                renderLoading={() => <TabLoadingView color="#4DA3FF" isDark={isDark} />}
+                onLoadStart={() => setIsDriveLoading(true)}
+                onLoadEnd={() => {
+                  setIsDriveLoading(false);
+                  dismissSplash();
+                }}
+                onError={() => {
+                  setIsDriveLoading(false);
+                }}
               renderError={() => (
                 <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
                   title="Unable to Load Google Drive"
@@ -1323,8 +1341,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 })(); true;
               `}
             />
-          )
-        )}
+            {isDriveLoading && <TabLoadingView color="#4DA3FF" isDark={isDark} />}
+          </View>
+        )
+      )}
 
         {/* Likes Tab */}
         {activeTab === 'likes' && (
@@ -1332,6 +1352,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
               title="Unable to Load Likes"
               message="Connect to the internet to view and sync your liked videos." />
+          ) : isLikesLoading && likes.length === 0 ? (
+            <TabLoadingView color="#FF6EB4" isDark={isDark} />
           ) : (
             <View style={[styles.listContent, { paddingTop: 6, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }]}>
               <View style={[styles.searchBar, {
@@ -1350,9 +1372,19 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               <FlatList
                 data={filteredLikes}
                 numColumns={2}
-                keyExtractor={item => item.id.toString()}
+                keyExtractor={item => (item.id || item.video_id || item.videoId || Math.random()).toString()}
                 renderItem={item => renderGridItem(item, 'likes')}
                 contentContainerStyle={styles.gridContent}
+                initialNumToRender={8}
+                maxToRenderPerBatch={6}
+                windowSize={5}
+                removeClippedSubviews={Platform.OS === 'android'}
+                updateCellsBatchingPeriod={50}
+                getItemLayout={(_, index) => ({
+                  length: 110,
+                  offset: 110 * Math.floor(index / 2),
+                  index,
+                })}
                 ListEmptyComponent={
                   <View style={styles.emptyState}>
                     <Icon name="heart-outline" size={48} color={isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.2)'} />
@@ -1371,6 +1403,8 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
             <OfflineErrorView onRetry={handleRetry} isRetrying={isRetrying} isDark={isDark}
               title="Unable to Load Watch History"
               message="Connect to the internet to view and sync your watch history." />
+          ) : isHistoryLoading && history.length === 0 ? (
+            <TabLoadingView color="#FFBB45" isDark={isDark} />
           ) : (
             <View style={[styles.listContent, { paddingTop: 6, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' }]}>
               <View style={[styles.searchBar, {
@@ -1389,9 +1423,19 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
               <FlatList
                 data={filteredHistory}
                 numColumns={2}
-                keyExtractor={item => item.id.toString()}
+                keyExtractor={item => (item.id || item.video_id || item.videoId || Math.random()).toString()}
                 renderItem={item => renderGridItem(item, 'history')}
                 contentContainerStyle={styles.gridContent}
+                initialNumToRender={8}
+                maxToRenderPerBatch={6}
+                windowSize={5}
+                removeClippedSubviews={Platform.OS === 'android'}
+                updateCellsBatchingPeriod={50}
+                getItemLayout={(_, index) => ({
+                  length: 110,
+                  offset: 110 * Math.floor(index / 2),
+                  index,
+                })}
                 ListEmptyComponent={
                   <View style={styles.emptyState}>
                     <Icon name="time-outline" size={48} color={isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.2)'} />
@@ -1614,110 +1658,6 @@ const styles = StyleSheet.create({
   headerIconRing: {
     width: 34, height: 34, borderRadius: 17, borderWidth: 1.5,
     justifyContent: 'center', alignItems: 'center', marginRight: 8,
-  },
-
-  // Center Curved Toggle Button (closed state)
-  topToggleHitZone: {
-    position: 'absolute',
-    top: 0,
-    alignSelf: 'center',
-    width: 120,
-    height: 42,
-    zIndex: 100,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  centerCurvedBtn: {
-    position: 'absolute',
-    top: 0,
-    alignSelf: 'center',
-    width: 52,
-    height: 26,
-    borderBottomLeftRadius: 26,
-    borderBottomRightRadius: 26,
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderWidth: 1,
-    borderTopWidth: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 100,
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 5,
-  },
-
-  // Floating Single-Row Tab Bar (open state)
-  floatingTabRowCard: {
-    position: 'absolute',
-    top: 0,
-    left: 12,
-    right: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 6,
-    zIndex: 101,
-    elevation: 25,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    alignItems: 'center',
-  },
-  topTabRow: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-  },
-  topTabBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 6,
-    borderRadius: 14,
-    marginHorizontal: 4,
-  },
-  topTabLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  closeCurveHandle: {
-    position: 'absolute',
-    bottom: -25,
-    alignSelf: 'center',
-    width: 52,
-    height: 26,
-    borderBottomLeftRadius: 26,
-    borderBottomRightRadius: 26,
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderTopWidth: 0,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 102,
-    elevation: 26,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  handleBridgeMask: {
-    position: 'absolute',
-    top: -2,
-    left: 0.5,
-    right: 0.5,
-    height: 3.5,
-    zIndex: 10,
-  },
-  dropdownBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 99,
   },
 
   // Card wrapper — shared container for contentCard + overlay

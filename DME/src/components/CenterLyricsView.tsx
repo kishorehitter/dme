@@ -1,11 +1,15 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   FlatList,
+  FlatListProps,
   Animated as RNAnimated,
   StyleProp,
   ViewStyle,
+  Platform,
+  Dimensions,
+  GestureResponderEvent,
 } from 'react-native';
 import Reanimated, {
   useSharedValue,
@@ -19,9 +23,10 @@ import { LyricLine, cleanArtistName } from '../services/LyricsService';
 
 const ITEM_HEIGHT = 80;
 
-const AnimatedFlatList = Reanimated.createAnimatedComponent(
-  FlatList as new () => FlatList<DisplayItem>
-);
+const AnimatedFlatList = (Reanimated.FlatList ||
+  Reanimated.createAnimatedComponent(FlatList)) as unknown as React.ComponentType<
+  FlatListProps<DisplayItem> & { ref?: any }
+>;
 
 interface CenterLyricsViewProps {
   lines: LyricLine[];
@@ -59,15 +64,11 @@ interface LyricRowProps {
  *
  * As the user scrolls:
  * - dist = (index * ITEM_HEIGHT) - scrollY
- * - dist <= -ITEM_HEIGHT * 0.5: Opacity 0 (it alone disappears the moment it passes the top border)
- * - dist == 0 (Top Active Focal Row): Scale 0.80, Opacity 1.0 (Maximum brightness, 100% pure white)
- * - dist == ITEM_HEIGHT (Row 1): Scale 0.68, Opacity 0.75
- * - dist == ITEM_HEIGHT * 2 (Row 2): Scale 0.56, Opacity 0.50
- * - dist == ITEM_HEIGHT * 3 (Row 3): Scale 0.46, Opacity 0.25
- * - dist >= ITEM_HEIGHT * 4 (Row 4+): Scale 0.40, Opacity 0.0 (Clean empty space below)
- *
- * Scale grows continuously: 0.40 -> 0.41 -> 0.42 -> 0.43 ... -> 0.80
- * with every single millimeter of finger scroll!
+ * - dist <= -ITEM_HEIGHT * 0.5: Opacity 0 (disappears smoothly when past top border)
+ * - dist == 0 (Active Focal Row): Scale 0.80, Opacity 1.0 (Maximum brightness, bold and clear)
+ * - dist == ITEM_HEIGHT (Row 1 after active): Scale 0.65, Opacity 0.42 (faded down significantly, distinct secondary layer)
+ * - dist == ITEM_HEIGHT * 2 (Row 2 after active): Scale 0.52, Opacity 0.10 (very mildly visible, almost invisible)
+ * - dist >= ITEM_HEIGHT * 3 (Row 3+ / last set): Scale 0.42, Opacity 0.0 (completely ground hidden / not visible to eyes)
  */
 const LyricRow: React.FC<LyricRowProps> = React.memo(({ item, index, scrollY }) => {
   const itemY = index * ITEM_HEIGHT;
@@ -77,25 +78,49 @@ const LyricRow: React.FC<LyricRowProps> = React.memo(({ item, index, scrollY }) 
     const dist = itemY - scrollY.value;
 
     // 1. Opacity / Brightness:
-    // - Above top border: fades rapidly to 0.0 so it alone disappears
-    // - At top border: 1.0 (100% pure white)
-    // - Progressively decreases down through Row 1, Row 2, Row 3
-    // - Row 4+ (dist >= ITEM_HEIGHT * 4): 0.0 (clean space below)
+    // - Above top border: fades gracefully to 0.0 only after -20px
+    // - At active top border & overshoot zone (dist in [-20, 0]): Solid 1.0 (deadband prevents any dimming/flicker)
+    // - Ease-in cushion (dist 0 to 40): smoothly transitions 1.0 -> 0.70 so arrival feels soft and slower
+    // - Row 1 after active (dist == ITEM_HEIGHT): 0.42 (significantly reduced brightness)
+    // - Row 2 after active (dist == ITEM_HEIGHT * 2): 0.10 (very mildly visible, almost close to invisible)
+    // - Row 3+ after active (dist >= ITEM_HEIGHT * 3): 0.0 (ground hidden based on scroll)
     const opacity = interpolate(
       dist,
-      [-ITEM_HEIGHT * 0.5, -4, 0, ITEM_HEIGHT, ITEM_HEIGHT * 2, ITEM_HEIGHT * 3, ITEM_HEIGHT * 4],
-      [0.0, 0.2, 1.0, 0.80, 0.55, 0.25, 0.0],
+      [
+        -ITEM_HEIGHT * 0.75,
+        -20,
+        0,
+        40,
+        ITEM_HEIGHT,
+        ITEM_HEIGHT * 1.8,
+        ITEM_HEIGHT * 2,
+        ITEM_HEIGHT * 2.8,
+        ITEM_HEIGHT * 3,
+      ],
+      [
+        0.0,
+        1.0,
+        1.0,
+        0.70,
+        0.42,
+        0.18,
+        0.10,
+        0.02,
+        0.0,
+      ],
       Extrapolation.CLAMP
     );
 
-    // 2. Continuous Millimeter Scale Growth:
-    // - Bottom / Upcoming rows start at scale 0.40
-    // - As they scroll up toward the top, they smoothly grow: 0.40 -> 0.41 -> 0.42 ... -> 0.80
-    // - Active line reaches the maximum scale limit: 0.80
+    // 2. Continuous Millimeter Scale Growth with Ease-In Arrival:
+    // - Upcoming rows start at scale 0.42
+    // - Smoothly grow: 0.42 -> 0.52 -> 0.65 -> 0.74 (at 40px) -> 0.80 (at 0px)
+    // - The gradual growth between 40px and 0px visually cushions the deceleration, making the motion feel calmer and less rushed
+    // - For all dist <= 0, scale is PERMANENTLY LOCKED at 0.80 via Extrapolation.CLAMP:
+    //   It CANNOT shrink, reduce, or pulse when settling!
     const scale = interpolate(
       dist,
-      [-ITEM_HEIGHT * 0.5, 0, ITEM_HEIGHT, ITEM_HEIGHT * 2, ITEM_HEIGHT * 3, ITEM_HEIGHT * 4],
-      [0.70, 0.80, 0.68, 0.56, 0.46, 0.40],
+      [0, 40, ITEM_HEIGHT, ITEM_HEIGHT * 2, ITEM_HEIGHT * 3],
+      [0.80, 0.74, 0.65, 0.52, 0.42],
       Extrapolation.CLAMP
     );
 
@@ -106,15 +131,8 @@ const LyricRow: React.FC<LyricRowProps> = React.memo(({ item, index, scrollY }) 
   });
 
   if (item.isHeader) {
-    const isCredit = item.id === 'credit_label';
     return (
-      <Reanimated.View
-        style={[
-          S.headerContainer,
-          isCredit && { marginTop: 20 },
-          animatedStyle,
-        ]}
-      >
+      <Reanimated.View style={[S.headerContainer, animatedStyle]}>
         <Text style={S.headerText}>{item.text}</Text>
       </Reanimated.View>
     );
@@ -122,7 +140,9 @@ const LyricRow: React.FC<LyricRowProps> = React.memo(({ item, index, scrollY }) 
 
   return (
     <Reanimated.View style={[S.lineContainer, animatedStyle]}>
-      <Text style={S.lyricText}>{item.text}</Text>
+      <Text style={S.lyricText} numberOfLines={2} ellipsizeMode="tail">
+        {item.text}
+      </Text>
     </Reanimated.View>
   );
 });
@@ -187,6 +207,7 @@ export const CenterLyricsView: React.FC<CenterLyricsViewProps> = ({
   // Reset scroll to top whenever a new song arrives
   useEffect(() => {
     scrollY.value = 0;
+    targetIndexRef.current = 0;
     if (listRef.current) {
       try {
         listRef.current.scrollToOffset({ offset: 0, animated: false });
@@ -228,6 +249,78 @@ export const CenterLyricsView: React.FC<CenterLyricsViewProps> = ({
 
   const hasContent = displayItems.length > 0;
 
+  // ── Ultra-low Latency Instant Double-Tap (0ms response on touch down) ──
+  const lastTapTimeRef = useRef<number>(0);
+  const lastTapPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const targetIndexRef = useRef<number>(0);
+
+  const scrollNextLyric = useCallback(() => {
+    if (!displayItems || displayItems.length === 0) return;
+    const currentOffset = Math.max(0, scrollY.value);
+    const currentIndex = Math.round(currentOffset / ITEM_HEIGHT);
+    const baseIndex = Math.max(currentIndex, targetIndexRef.current);
+    const nextIndex = Math.min(displayItems.length - 1, baseIndex + 1);
+    targetIndexRef.current = nextIndex;
+    const targetOffset = nextIndex * ITEM_HEIGHT;
+
+    listRef.current?.scrollToOffset({
+      offset: targetOffset,
+      animated: true,
+    });
+  }, [displayItems, scrollY]);
+
+  const scrollPrevLyric = useCallback(() => {
+    if (!displayItems || displayItems.length === 0) return;
+    const currentOffset = Math.max(0, scrollY.value);
+    const currentIndex = Math.round(currentOffset / ITEM_HEIGHT);
+    const baseIndex = Math.min(currentIndex, targetIndexRef.current);
+    const prevIndex = Math.max(0, baseIndex - 1);
+    targetIndexRef.current = prevIndex;
+    const targetOffset = prevIndex * ITEM_HEIGHT;
+
+    listRef.current?.scrollToOffset({
+      offset: targetOffset,
+      animated: true,
+    });
+  }, [displayItems, scrollY]);
+
+  const handleTouchStart = useCallback(
+    (e: GestureResponderEvent) => {
+      if (!displayItems || displayItems.length === 0) return;
+      const now = Date.now();
+      const { pageX, pageY } = e.nativeEvent;
+      const elapsed = now - lastTapTimeRef.current;
+      const distX = Math.abs(pageX - lastTapPosRef.current.x);
+      const distY = Math.abs(pageY - lastTapPosRef.current.y);
+
+      // Instant double-tap detected on touch down (0ms latency, no waiting for finger lift!)
+      if (elapsed > 35 && elapsed < 380 && distX < 50 && distY < 50) {
+        lastTapTimeRef.current = 0; // consume tap
+        const screenW = Dimensions.get('window').width;
+        // Left 28% triggers previous lyric; center and right triggers next lyric
+        if (pageX < screenW * 0.28) {
+          scrollPrevLyric();
+        } else {
+          scrollNextLyric();
+        }
+      } else {
+        lastTapTimeRef.current = now;
+        lastTapPosRef.current = { x: pageX, y: pageY };
+      }
+    },
+    [displayItems, scrollNextLyric, scrollPrevLyric]
+  );
+
+  const handleTouchEnd = useCallback((e: GestureResponderEvent) => {
+    const { pageX, pageY } = e.nativeEvent;
+    const distX = Math.abs(pageX - lastTapPosRef.current.x);
+    const distY = Math.abs(pageY - lastTapPosRef.current.y);
+    // If user dragged/swiped, cancel pending double-tap
+    if (distX > 15 || distY > 15) {
+      lastTapTimeRef.current = 0;
+    }
+  }, []);
+
   return (
     <View
       style={[{ flex: 1, overflow: 'hidden' }, style]}
@@ -239,27 +332,52 @@ export const CenterLyricsView: React.FC<CenterLyricsViewProps> = ({
           <Text style={S.stateText}>♪ Instrumental ♪</Text>
         </View>
       ) : hasContent ? (
-        <AnimatedFlatList
-          ref={listRef}
-          data={displayItems}
-          keyExtractor={(item) => item.id}
-          showsVerticalScrollIndicator={false}
-          scrollEventThrottle={16}
-          onScroll={onScroll}
-          getItemLayout={(_, index) => ({
-            length: ITEM_HEIGHT,
-            offset: ITEM_HEIGHT * index,
-            index,
-          })}
-          contentContainerStyle={{
-            paddingTop: 0,
-            paddingBottom: Math.max(450, containerHeight + 200),
-            paddingHorizontal: 16,
-          }}
-          renderItem={({ item, index }) => (
-            <LyricRow item={item} index={index} scrollY={scrollY} />
-          )}
-        />
+        <View
+          style={{ flex: 1 }}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <AnimatedFlatList
+            ref={listRef}
+            data={displayItems}
+            keyExtractor={(item: DisplayItem) => item.id}
+            showsVerticalScrollIndicator={false}
+            scrollEventThrottle={16}
+            overScrollMode="never"
+            bounces={false}
+            onScroll={onScroll}
+            onScrollBeginDrag={() => {
+              lastTapTimeRef.current = 0;
+            }}
+            onMomentumScrollEnd={(e: any) => {
+              targetIndexRef.current = Math.round(e.nativeEvent.contentOffset.y / ITEM_HEIGHT);
+            }}
+            onScrollEndDrag={(e: any) => {
+              targetIndexRef.current = Math.round(e.nativeEvent.contentOffset.y / ITEM_HEIGHT);
+            }}
+            getItemLayout={(_: any, index: number) => ({
+              length: ITEM_HEIGHT,
+              offset: ITEM_HEIGHT * index,
+              index,
+            })}
+            removeClippedSubviews={Platform.OS === 'android'}
+            initialNumToRender={8}
+            maxToRenderPerBatch={6}
+            windowSize={5}
+            contentContainerStyle={{
+              paddingTop: 0,
+              paddingBottom: Math.max(450, containerHeight + 200),
+              paddingHorizontal: 16,
+            }}
+            renderItem={({ item, index }: { item: DisplayItem; index: number }) => (
+              <LyricRow
+                item={item}
+                index={index}
+                scrollY={scrollY}
+              />
+            )}
+          />
+        </View>
       ) : alertVisible ? (
         <View style={S.center}>
           <RNAnimated.Text
@@ -306,7 +424,7 @@ const S = {
     textAlign: 'center' as const,
   },
   lineContainer: {
-    minHeight: ITEM_HEIGHT,
+    height: ITEM_HEIGHT,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
     paddingHorizontal: 4,

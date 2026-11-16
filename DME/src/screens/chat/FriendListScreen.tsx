@@ -15,6 +15,7 @@ import {
   Modal,
   DeviceEventEmitter,
   InteractionManager,
+  Platform,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -340,15 +341,22 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
       }
     };
 
-    // Load initially
-    loadData();
-
-    // Reload when screen gains focus
-    const unsubscribe = navigation.addListener('focus', () => {
+    // Load after slide animation completes
+    const task = InteractionManager.runAfterInteractions(() => {
       loadData();
     });
 
-    return unsubscribe;
+    // Reload when screen gains focus after interactions
+    const unsubscribe = navigation.addListener('focus', () => {
+      InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
+    });
+
+    return () => {
+      task.cancel();
+      unsubscribe();
+    };
   }, [isAdding, isInvitingToCall, loadFriends, loadFriendRequests, loadAddModeUsers, navigation]);
 
   useEffect(() => {
@@ -864,6 +872,10 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
           showsHorizontalScrollIndicator={false}
           data={displayData}
           keyExtractor={(item, i) => (item?.id ?? i).toString()}
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
           renderItem={
             isGroupMode
               ? renderSearchResult

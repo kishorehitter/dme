@@ -7,6 +7,7 @@ import fcmService from '../services/fcm';
 import { User, AuthTokens, LoginCredentials, RegisterData, OTPVerify } from '../types';
 import localDatabase from '../services/LocalDatabase';
 import { KeyManager, BackupManager } from '../services/e2ee';
+import { getLocalAvatarUri, cacheRemoteAvatar } from '../utils/avatarCache';
 
 interface AuthContextType {
   user: User | null;
@@ -51,7 +52,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const [userJson, accessToken] = await AsyncStorage.multiGet(['user', 'access_token']);
       
       if (userJson[1] && accessToken[1]) {
-        setUser(JSON.parse(userJson[1]));
+        const parsedUser: User = JSON.parse(userJson[1]);
+        if (parsedUser?.id) {
+          const localUri = await getLocalAvatarUri(parsedUser.id);
+          if (localUri) {
+            parsedUser.local_profile_picture = localUri;
+          } else if (parsedUser.profile_picture) {
+            cacheRemoteAvatar(parsedUser.id, parsedUser.profile_picture).then(cached => {
+              if (cached) {
+                setUser(prev => prev ? { ...prev, local_profile_picture: cached } : prev);
+              }
+            });
+          }
+        }
+        setUser(parsedUser);
         KeyManager.ensureKeysSetup().catch(err => console.warn('[AuthContext] Key setup error:', err));
       }
     } catch (error) {
@@ -74,6 +88,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           }
         } catch {}
       }
+      if (response.user?.id) {
+        const localUri = await getLocalAvatarUri(response.user.id);
+        if (localUri) {
+          response.user.local_profile_picture = localUri;
+        } else if (response.user.profile_picture) {
+          cacheRemoteAvatar(response.user.id, response.user.profile_picture).then(cached => {
+            if (cached) {
+              setUser(prev => prev ? { ...prev, local_profile_picture: cached } : prev);
+            }
+          });
+        }
+      }
       await AsyncStorage.multiSet([
         ['access_token', response.access_token],
         ['refresh_token', response.refresh_token],
@@ -93,6 +119,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const googleLogin = async (idToken: string) => {
     try {
       const response = await authAPI.googleLogin(idToken);
+      if (response.user?.id) {
+        const localUri = await getLocalAvatarUri(response.user.id);
+        if (localUri) {
+          response.user.local_profile_picture = localUri;
+        } else if (response.user.profile_picture) {
+          cacheRemoteAvatar(response.user.id, response.user.profile_picture).then(cached => {
+            if (cached) {
+              setUser(prev => prev ? { ...prev, local_profile_picture: cached } : prev);
+            }
+          });
+        }
+      }
       await AsyncStorage.multiSet([
         ['access_token', response.access_token],
         ['refresh_token', response.refresh_token],
@@ -197,7 +235,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const refreshUser = async () => {
     try {
-      const updatedUser = await authAPI.getProfile();
+      const updatedUser: User = await authAPI.getProfile();
+      if (updatedUser?.id) {
+        const localUri = await getLocalAvatarUri(updatedUser.id);
+        if (localUri) {
+          updatedUser.local_profile_picture = localUri;
+        }
+        if (updatedUser.profile_picture) {
+          cacheRemoteAvatar(updatedUser.id, updatedUser.profile_picture).then(cached => {
+            if (cached) {
+              setUser(prev => prev ? { ...prev, local_profile_picture: cached } : prev);
+            }
+          });
+        }
+      }
       setUser(updatedUser);
       await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
     } catch (error) {
@@ -207,7 +258,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const completeProfileSetup = async (formData: FormData) => {
     try {
-      const updatedUser = await authAPI.completeProfileSetup(formData);
+      const updatedUser: User = await authAPI.completeProfileSetup(formData);
+      if (updatedUser?.id) {
+        const localUri = await getLocalAvatarUri(updatedUser.id);
+        if (localUri) {
+          updatedUser.local_profile_picture = localUri;
+        } else if (updatedUser.profile_picture) {
+          cacheRemoteAvatar(updatedUser.id, updatedUser.profile_picture).then(cached => {
+            if (cached) {
+              setUser(prev => prev ? { ...prev, local_profile_picture: cached } : prev);
+            }
+          });
+        }
+      }
       setUser(updatedUser);
       await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
       await AsyncStorage.setItem('dme_is_fresh_signup', 'true');

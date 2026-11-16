@@ -35,7 +35,9 @@ export interface DualSurfacePlayerProps {
   muted?: boolean;
   volume?: number;
   initialPosition?: number;
+  roomTheme?: string;
   bleedEnabled?: boolean;
+  isTransparentBackground?: boolean;
   bleedDarkness?: number;
   bbdCropPercent?: number; // e.g. 0.122 for Narivetta
   bbdHorizCropPercent?: number;
@@ -64,6 +66,7 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
     volume = 1.0,
     initialPosition = 0,
     bleedEnabled = true,
+    isTransparentBackground = false,
     bleedDarkness = 0.60,
     bbdCropPercent = 0.0,
     bbdHorizCropPercent = 0.0,
@@ -120,6 +123,10 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
       dispatch('stop');
     }
   }, [play, videoUri, dispatch]);
+
+  useEffect(() => {
+    dispatch('setVolume', [muted ? 0 : volume]);
+  }, [muted, volume, dispatch]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds: number) => {
@@ -216,11 +223,13 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
       ref={nativeRef}
       style={[styles.container, style]}
       source={nativeSource}
+      roomTheme={props.roomTheme}
       play={play}
       quality={quality}
       muted={muted}
       volume={volume}
       bleedEnabled={bleedEnabled}
+      isTransparentBackground={isTransparentBackground}
       bleedDarkness={bleedDarkness}
       bbdCropPercent={bbdCropPercent}
       bbdHorizCropPercent={bbdHorizCropPercent}

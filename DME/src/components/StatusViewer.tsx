@@ -27,6 +27,7 @@ import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import Video from 'react-native-video';
 import Reanimated, {
   useAnimatedStyle,
@@ -203,6 +204,10 @@ const StatusViewerScreen: React.FC = () => {
   const safeTop = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 20);
 
   const { theme, isDark } = useTheme();
+  const { user } = useAuth();
+  const currentUserAvatar = (user as any)?.local_profile_picture || (user as any)?.avatar || user?.profile_picture || null;
+  const currentUserSticker = user?.avatar_sticker || null;
+  const currentUserName = user?.display_name || user?.username || 'You';
 
   useLayoutEffect(() => {
     if (Platform.OS === 'android') {
@@ -252,10 +257,10 @@ const StatusViewerScreen: React.FC = () => {
   // We construct temporary Status objects for local preview
   const mappedQueueStatuses = uploadQueue ? uploadQueue.map((item: any, idx: number) => ({
     id: -(idx + 1), // temporary negative ID to identify uploading items
-    user_id: params.currentUserId || 0,
-    username: 'You',
-    user_avatar: null,
-    user_avatar_sticker: null,
+    user_id: user?.id || params.currentUserId || 0,
+    username: currentUserName,
+    user_avatar: currentUserAvatar,
+    user_avatar_sticker: currentUserSticker,
     media_url: item.mediaUri,
     media_file: item.mediaUri,
     media_type: item.mediaType,
@@ -471,6 +476,8 @@ const StatusViewerScreen: React.FC = () => {
               // Replace temporary status with real uploaded status, but keep the local URI to prevent source reload/jump
               finalStatuses[i] = {
                 ...uploadedStatus,
+                user_avatar: uploadedStatus.user_avatar || currentUserAvatar,
+                user_avatar_sticker: uploadedStatus.user_avatar_sticker || currentUserSticker,
                 media_url: item.mediaUri,
                 media_file: item.mediaUri,
               };
@@ -889,9 +896,9 @@ const StatusViewerScreen: React.FC = () => {
       <View style={[s.header, { top: safeTop + 18, opacity: 1 }]} pointerEvents="box-none">
         <View style={s.headerLeft}>
           <AvatarWithFallback
-            uri={current.user_avatar}
-            sticker={current.user_avatar_sticker}
-            displayName={displayName}
+            uri={isOwner ? (current.user_avatar || currentUserAvatar) : current.user_avatar}
+            sticker={isOwner ? (current.user_avatar_sticker || currentUserSticker) : current.user_avatar_sticker}
+            displayName={isOwner ? (user?.display_name || user?.username || user?.email || 'User') : displayName}
             style={s.avatar}
           />
           <View style={{ marginLeft: 8 }}>

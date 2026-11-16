@@ -14,6 +14,7 @@ import {
   BackHandler,
   Modal,
   NativeModules,
+  DeviceEventEmitter,
   ActivityIndicator,
   Image,
   TextInput,
@@ -53,8 +54,8 @@ import { useTheme } from '../context/ThemeContext';
 
 const { width, height: SCREEN_H } = Dimensions.get('window');
 
-// Enable playing sound in silence mode (iOS)
-Sound.setCategory('Playback');
+// Enable playing sound in silence mode (iOS) with audio mixing enabled
+Sound.setCategory('Playback', true);
 
 const AVATAR_COLORS = [
   '#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5', 
@@ -724,6 +725,12 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
   // Load sound effects on mount & style native bottom navigation bar
   useEffect(() => {
+    const isMusicActive = Boolean((globalThis as any).activeMusicRoomCode || (globalThis as any).isMusicPlaying);
+    if (isMusicActive) {
+      console.log('🔇 [Trivia] MusicRoom active — muting all trivia tones to preserve seamless music playback');
+      return;
+    }
+
     const correctName = Platform.OS === 'android' ? 'correct' : 'correct.mp3';
     const incorrectName = Platform.OS === 'android' ? 'incorrect' : 'incorrect.wav';
 
@@ -819,6 +826,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
   const playCorrectFeedback = () => {
     Vibration.vibrate(80);
+    const isMusicActive = Boolean((globalThis as any).activeMusicRoomCode || (globalThis as any).isMusicPlaying);
+    if (isMusicActive) return;
     if (correctSoundRef.current) {
       if (correctSoundTimerRef.current) {
         clearTimeout(correctSoundTimerRef.current);
@@ -836,6 +845,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
 
   const playIncorrectFeedback = () => {
     Vibration.vibrate([0, 120, 80, 120]);
+    const isMusicActive = Boolean((globalThis as any).activeMusicRoomCode || (globalThis as any).isMusicPlaying);
+    if (isMusicActive) return;
     if (incorrectSoundRef.current) {
       incorrectSoundRef.current.setCurrentTime(0);
       incorrectSoundRef.current.play();
@@ -843,6 +854,8 @@ export const TriviaSoloScreen: React.FC<any> = ({ navigation }) => {
   };
 
   const playSelectTone = () => {
+    const isMusicActive = Boolean((globalThis as any).activeMusicRoomCode || (globalThis as any).isMusicPlaying);
+    if (isMusicActive) return;
     if (selectSoundRef.current) {
       selectSoundRef.current.setCurrentTime(0);
       selectSoundRef.current.play();

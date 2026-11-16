@@ -223,9 +223,9 @@ const tryInnerTubeExtraction = async (videoId: string): Promise<{ url?: string; 
             let best: any = null;
 
             if (audioStreams.length > 0) {
-                best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+                best = sortBestAudio(audioStreams);
             } else if (muxedFormats.length > 0) {
-                best = muxedFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+                best = sortBestAudio(muxedFormats) || muxedFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
                 console.log(`🎵 [InnerTube - ${client.name}] No adaptive audio streams; using muxed format`);
             }
 
@@ -336,6 +336,7 @@ export interface ExtractedVideoResult {
     audioUrl?: string | null;
     dashUrl?: string | null;
     fallbackProgressiveUrl?: string | null;
+    headers?: Record<string, string>;
 }
 
 function formatRange(r: any): string | null {
@@ -382,6 +383,55 @@ export const heightToQualityKey = (h: number, w?: number): string => {
     if (eff >= 360) return 'medium';
     if (eff >= 240) return 'small';
     return 'tiny';
+};
+
+/**
+ * Checks if an audio stream format is supported for mobile ExoPlayer playback.
+ * Filters out Dolby multichannel/surround streams (ec-3, ac-3, eac3, >2 channels)
+ * which fail on standard Android devices with supported=false / no decoder found.
+ */
+export const isSupportedMobileAudio = (f: any): boolean => {
+    if (!f) return false;
+    const mime = (f.mimeType || f.type || '').toLowerCase();
+    const codecs = (f.codecs || '').toLowerCase();
+    if (
+        mime.includes('ec-3') ||
+        mime.includes('ac-3') ||
+        mime.includes('eac3') ||
+        codecs.includes('ec-3') ||
+        codecs.includes('ac-3') ||
+        codecs.includes('eac3') ||
+        f.itag === 256 ||
+        f.itag === 258 ||
+        f.itag === 327 ||
+        f.itag === 328
+    ) {
+        return false;
+    }
+    if (typeof f.audioChannels === 'number' && f.audioChannels > 2) {
+        return false;
+    }
+    return true;
+};
+
+/**
+ * Sorts audio formats to find the best mobile-compatible audio stream.
+ * 1. Strictly filters for supported mobile audio (stereo AAC/Opus, no 5.1 EC-3).
+ * 2. Prioritizes stereo AAC (itag 140 / mp4a.40.2) with a huge bonus (+500,000)
+ *    because AAC in MP4 container is universally supported by ExoPlayer and DASH on Android.
+ * 3. Falls back to other audio formats if no preferred formats exist.
+ */
+export const sortBestAudio = (audioList: any[]): any | null => {
+    if (!audioList || audioList.length === 0) return null;
+    const supported = audioList.filter(isSupportedMobileAudio);
+    const pool = supported.length > 0 ? supported : audioList;
+    return pool.slice().sort((a: any, b: any) => {
+        const aMime = (a.mimeType || a.type || '').toLowerCase();
+        const bMime = (b.mimeType || b.type || '').toLowerCase();
+        const aIsAac = aMime.includes('mp4a.40.2') || a.itag === 140 ? 500000 : (aMime.includes('mp4a') ? 200000 : 0);
+        const bIsAac = bMime.includes('mp4a.40.2') || b.itag === 140 ? 500000 : (bMime.includes('mp4a') ? 200000 : 0);
+        return (b.bitrate || 0) + bIsAac - ((a.bitrate || 0) + aIsAac);
+    })[0] || null;
 };
 
 export function buildDashMpdXml(
@@ -447,10 +497,10 @@ export function buildDashMpdXml(
         const mimeType = audioStream.mimeType?.split(';')[0]?.trim() || 'audio/mp4';
 
         if (audioInitRange && audioIndexRange) {
-            audioAdaptationSet = `\n    <AdaptationSet id="1" startWithSAP="1" contentType="audio" mimeType="${mimeType}" subsegmentAlignment="true">
-      <Representation id="audio_${audioStream.itag || 140}" bandwidth="${audioBitrate}" codecs="${audioCodecs}" audioSamplingRate="${sampleRate}">
-        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="${channels}"/>
-        <Role schemeIdUri="urn:mpeg:DASH:role:2011" value="main" />
+            audioAdaptationSet = `\n    <AdaptationSet id="1" contentType="audio" mimeType="${mimeType}" codecs="${audioCodecs}" lang="en" subsegmentAlignment="true" startWithSAP="1">
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main" />
+      <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="${channels}" />
+      <Representation id="audio_${audioStream.itag || 140}" mimeType="${mimeType}" codecs="${audioCodecs}" bandwidth="${audioBitrate}" audioSamplingRate="${sampleRate}">
         <BaseURL>${safeAudioUrl}</BaseURL>
         <SegmentBase indexRange="${audioIndexRange}">
           <Initialization range="${audioInitRange}" />
@@ -482,7 +532,7 @@ const tryPipedVideoStreams = async (instance: string, videoId: string): Promise<
     });
     const videoStreams: any[] = res.data?.videoStreams || [];
     const audioStreams: any[] = res.data?.audioStreams || [];
-    const bestAudio = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0] || null;
+    const bestAudio = sortBestAudio(audioStreams);
 
     const validStreams = videoStreams.filter((s: any) => Boolean(s.url));
     if (validStreams.length === 0) {
@@ -575,7 +625,7 @@ const tryInvidiousVideoStreams = async (instance: string, videoId: string): Prom
     const allFormats = [...adaptiveFormats, ...formatStreams];
 
     const audioStreams = allFormats.filter((f: any) => f.url && f.type && f.type.startsWith('audio/'));
-    const bestAudio = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0] || null;
+    const bestAudio = sortBestAudio(audioStreams);
 
     const videoOnly = allFormats.filter((f: any) => f.url && (f.type?.startsWith('video/') || f.resolution || f.qualityLabel));
     if (videoOnly.length === 0) {
@@ -711,16 +761,25 @@ export const extractVideoStreamUrlClientSide = async (
             const allFmts = workerResult.formats;
 
             // ── Best audio: deciphered MWEB adaptive audio (AAC mp4a) ─────────────
-            const audioFmts = allFmts.filter((f: any) =>
+            let audioFmts = allFmts.filter((f: any) =>
                 f.url && typeof f.url === 'string' && f.url.startsWith('http') &&
                 !f.url.includes('[object Object]') &&
-                f.mimeType && f.mimeType.startsWith('audio/')
+                f.mimeType && f.mimeType.startsWith('audio/') &&
+                Boolean(formatRange(f.initRange) && formatRange(f.indexRange))
             );
-            const bestAudio = audioFmts.sort((a: any, b: any) => {
-                const aIsMp4 = a.mimeType?.includes('mp4a') ? 100000 : 0;
-                const bIsMp4 = b.mimeType?.includes('mp4a') ? 100000 : 0;
-                return (b.bitrate || 0) + bIsMp4 - ((a.bitrate || 0) + aIsMp4);
-            })[0] || null;
+            if (audioFmts.length === 0 && workerResult.androidAdaptiveFormats && workerResult.androidAdaptiveFormats.length > 0) {
+                audioFmts = workerResult.androidAdaptiveFormats.filter((f: any) =>
+                    f.url && typeof f.url === 'string' && f.url.startsWith('http') &&
+                    f.mimeType && f.mimeType.startsWith('audio/') &&
+                    Boolean(formatRange(f.initRange) && formatRange(f.indexRange))
+                );
+            }
+            const bestAudio = sortBestAudio(audioFmts);
+            if (bestAudio) {
+                console.log(`🔊 [TrackPlayerService] Selected best audio: itag=${bestAudio.itag}, mime=${bestAudio.mimeType}, bitrate=${bestAudio.bitrate}, ch=${bestAudio.audioChannels || 2}`);
+            } else {
+                console.warn('⚠️ [TrackPlayerService] No supported audio stream found in audioFmts');
+            }
 
             const videoFmts = allFmts.filter((f: any) =>
                 f.url && typeof f.url === 'string' && f.url.startsWith('http') &&
@@ -1188,11 +1247,7 @@ export const extractVideoStreamUrlClientSide = async (
                     const audioFormats = validFormats.filter(
                         (f: any) => f.url && f.mimeType && f.mimeType.startsWith('audio/')
                     );
-                    const bestAudio = audioFormats.sort((a: any, b: any) => {
-                        const aIsMp4 = a.mimeType?.includes('mp4a') ? 100000 : 0;
-                        const bIsMp4 = b.mimeType?.includes('mp4a') ? 100000 : 0;
-                        return (b.bitrate || 0) + bIsMp4 - ((a.bitrate || 0) + aIsMp4);
-                    })[0] || null;
+                    const bestAudio = sortBestAudio(audioFormats);
 
                     // 4. Extract all video formats (both adaptive up to 4K and muxed)
                     const rawVideoList: any[] = validFormats.filter(
@@ -1330,6 +1385,7 @@ export const setupPlayer = () => {
             android: {
                 taskRemovedBehavior: 'stop',
             },
+            audioMixing: 'mix',
         });
 
         TrackPlayer.setCommands({

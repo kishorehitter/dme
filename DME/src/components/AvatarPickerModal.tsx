@@ -11,12 +11,13 @@ import {
   ScrollView,
   FlatList,
   Platform,
+  Keyboard,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useTheme } from '../context/ThemeContext';
 import { ALL_PRESET_AVATARS, AVATAR_FILTER_CHIPS, AvatarCategory, PresetAvatar } from '../utils/presetAvatars';
-import AvatarWithFallback from './AvatarWithFallback';
 
 export interface AvatarPickerModalProps {
   visible: boolean;
@@ -27,7 +28,18 @@ export interface AvatarPickerModalProps {
   displayName: string;
 }
 
-const AVATAR_SHEET_HEIGHT = Dimensions.get('window').height * 0.62;
+// Default Google Keyboard (Gboard) standard height
+const GOOGLE_KEYBOARD_HEIGHT = 286;
+let lastKnownKeyboardHeight = GOOGLE_KEYBOARD_HEIGHT;
+
+if (Platform.OS === 'android') {
+  Keyboard.addListener('keyboardDidShow', (e) => {
+    const h = e.endCoordinates?.height;
+    if (h && h > 180) {
+      lastKnownKeyboardHeight = h;
+    }
+  });
+}
 
 export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
   visible,
@@ -38,7 +50,23 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
   displayName,
 }) => {
   const { theme } = useTheme();
-  const translateY = useRef(new Animated.Value(AVATAR_SHEET_HEIGHT)).current;
+  const insets = useSafeAreaInsets();
+  const [sheetHeight, setSheetHeight] = useState(lastKnownKeyboardHeight);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const sub = Keyboard.addListener(showEvent, (e) => {
+      const h = e.endCoordinates?.height;
+      if (h && h > 180) {
+        lastKnownKeyboardHeight = h;
+        setSheetHeight(h);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const totalSheetHeight = sheetHeight + (insets.bottom > 0 ? insets.bottom : 0);
+  const translateY = useRef(new Animated.Value(totalSheetHeight)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const isClosingRef = useRef(false);
   const [avatarCategory, setAvatarCategory] = useState<AvatarCategory>('all');
@@ -55,7 +83,7 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
     }
 
     isClosingRef.current = false;
-    translateY.setValue(AVATAR_SHEET_HEIGHT);
+    translateY.setValue(totalSheetHeight);
     backdropOpacity.setValue(0);
 
     Animated.parallel([
@@ -79,7 +107,7 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
 
     Animated.parallel([
       Animated.timing(translateY, {
-        toValue: AVATAR_SHEET_HEIGHT,
+        toValue: totalSheetHeight,
         duration: 160,
         useNativeDriver: true,
       }),
@@ -100,7 +128,7 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
 
     Animated.parallel([
       Animated.timing(translateY, {
-        toValue: AVATAR_SHEET_HEIGHT,
+        toValue: totalSheetHeight,
         duration: 160,
         useNativeDriver: true,
       }),
@@ -183,7 +211,7 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
             {
               backgroundColor: theme.surface,
               borderColor: theme.border,
-              height: AVATAR_SHEET_HEIGHT,
+              height: totalSheetHeight,
               transform: [{ translateY }],
             },
           ]}
@@ -195,16 +223,6 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = React.memo(({
             <TouchableOpacity onPress={handleClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <Icon name="close" size={22} color={theme.textSecondary} />
             </TouchableOpacity>
-          </View>
-
-          <View style={{ alignItems: 'center', marginVertical: 8 }}>
-            <AvatarWithFallback 
-              uri={profilePicture} 
-              displayName={displayName} 
-              sticker={currentSticker}
-              style={{ width: 64, height: 64, borderRadius: 32 }} 
-            />
-            <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 4, fontFamily: 'Kalam-Regular' }}>Current Avatar</Text>
           </View>
 
           {AVATAR_FILTER_CHIPS.length > 1 && (
@@ -262,8 +280,8 @@ const avatarPickerStyles = StyleSheet.create({
     borderTopRightRadius: 20,
     borderTopWidth: 1,
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 8,
     overflow: 'hidden',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: -4 },
@@ -277,21 +295,21 @@ const avatarPickerStyles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     alignSelf: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
     paddingHorizontal: 4,
   },
   title: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 'bold',
   },
   filterRow: {
-    marginBottom: 10,
+    marginBottom: 6,
   },
   filterScroll: {
     paddingHorizontal: 2,
@@ -318,15 +336,15 @@ const avatarPickerStyles = StyleSheet.create({
   },
   stickerWrapperOuter: {
     position: 'relative',
-    width: 60,
-    height: 60,
+    width: 52,
+    height: 52,
     justifyContent: 'center',
     alignItems: 'center',
   },
   stickerImageWrapper: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1.5,
@@ -334,8 +352,8 @@ const avatarPickerStyles = StyleSheet.create({
     overflow: 'hidden',
   },
   stickerImage: {
-    width: 54,
-    height: 54,
+    width: 46,
+    height: 46,
   },
   stickerCheckBadge: {
     position: 'absolute',

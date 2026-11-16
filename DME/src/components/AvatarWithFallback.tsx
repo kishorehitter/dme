@@ -103,7 +103,11 @@ const AvatarWithFallbackComponent = ({
       if (resolved && (resolved.startsWith('http') || resolved.startsWith('file://'))) {
         return (
           <FastImage
-            source={{ uri: resolved, priority: FastImage.priority.high }}
+            source={{
+              uri: resolved,
+              priority: FastImage.priority.high,
+              cache: FastImage.cacheControl.immutable,
+            }}
             style={[styles.fill, { borderRadius }]}
             onError={() => setError(true)}
           />

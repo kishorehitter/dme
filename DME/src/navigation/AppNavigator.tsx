@@ -40,6 +40,7 @@ import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/Ionicons';
 import MusicRoomScreen from '../screens/MusicRoomScreen';
 import YouTubeDiscoveryScreen from '../screens/YouTubeDiscoveryScreen';
+import WatchTogetherTabSelectScreen from '../screens/WatchTogetherTabSelectScreen';
 import MultiMediaPreviewScreen from '../screens/MultiMediaPreviewScreen';
 import { useFocusEffect } from '@react-navigation/native';
 import { Pressable } from 'react-native';
@@ -147,18 +148,6 @@ const MainTabs = () => {
   const statusBtnRef = useRef<View>(null);
   const { theme, isDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const [musicRoomActive, setMusicRoomActive] = useState(() => !!(global as any).activeMusicRoomCode);
-
-  useEffect(() => {
-    const openSub = DeviceEventEmitter.addListener('open_music_room', () => setMusicRoomActive(true));
-    const closeSub = DeviceEventEmitter.addListener('close_music_room', () => setMusicRoomActive(false));
-    const minimizeSub = DeviceEventEmitter.addListener('minimize_music_room', (minimized: boolean) => setMusicRoomActive(!minimized));
-    return () => {
-      openSub.remove();
-      closeSub.remove();
-      minimizeSub.remove();
-    };
-  }, []);
 
   const lastStatusTabMeasurement = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
 
@@ -197,7 +186,7 @@ const MainTabs = () => {
 
   useFocusEffect(
     useCallback(() => {
-      if ((global as any).activeMusicRoomCode) return;
+      if ((global as any).activeMusicRoomCode && !(global as any).isMusicRoomMinimized) return;
       pinNavBarColor('#00000000', isDark);
       StatusBar.setTranslucent(true);
       StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
@@ -213,7 +202,7 @@ const MainTabs = () => {
     <Tab.Navigator
       screenListeners={{
         state: () => {
-          if ((global as any).activeMusicRoomCode) return;
+          if ((global as any).activeMusicRoomCode && !(global as any).isMusicRoomMinimized) return;
           StatusBar.setTranslucent(true);
           StatusBar.setBarStyle(isDark ? 'light-content' : 'dark-content');
           StatusBar.setBackgroundColor('transparent');
@@ -286,21 +275,19 @@ const MainTabs = () => {
         tabBarActiveTintColor: isDark ? '#F1F5F9' : '#334155',
         tabBarInactiveTintColor: isDark ? '#94A3B8' : '#64748B',
         tabBarLabelStyle: { fontSize: 13, fontWeight: '600', marginTop: 2 },
-        tabBarStyle: musicRoomActive
-          ? { display: 'none' }
-          : {
-              height: 86 + (insets.bottom || 48),
-              paddingBottom: 10 + (insets.bottom || 48),
-              paddingTop: 16,
-              position: 'absolute',
-              bottom: 0,
-              left: 0,
-              right: 0,
-              backgroundColor: theme.surface,
-              elevation: 0,
-              shadowOpacity: 0,
-              borderTopWidth: 0,
-            },
+        tabBarStyle: {
+          height: 86 + (insets.bottom || 48),
+          paddingBottom: 10 + (insets.bottom || 48),
+          paddingTop: 16,
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: theme.surface,
+          elevation: 0,
+          shadowOpacity: 0,
+          borderTopWidth: 0,
+        },
         tabBarIconStyle: { marginBottom: 0 },
       })}
     >
@@ -374,24 +361,24 @@ const ChatStack: React.FC<any> = ({ logout }) => {
     };
   }, []);
 
-  // When in PiP state (minimized music room with PiP enabled), intercept Android back press at root
+  // When in minimized music room state, intercept Android back press at root
   // so instead of closing the app, it smoothly enters native system PiP outside the app!
   useEffect(() => {
-    if (!musicRoom.isMinimized || !isPipEnabled || isPipDismissed) return;
+    if (!musicRoom.isMinimized || !isPipEnabled) return;
 
     const backAction = () => {
       // If stack navigation can go back within the app (e.g. ChatRoom -> ChatList), let navigation handle it
       if (navigationRef?.isReady() && navigationRef.canGoBack()) {
         return false;
       }
-      // At root level, back press enters system PiP outside the app
+      // At root level, back press enters system PiP outside the app only if PiP switch is enabled
       enterSystemPip([16, 9]);
       return true;
     };
 
     const backSub = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backSub.remove();
-  }, [musicRoom.isMinimized, isPipEnabled, isPipDismissed]);
+  }, [musicRoom.isMinimized, isPipEnabled]);
 
   useEffect(() => {
     const maximizeSub = DeviceEventEmitter.addListener('maximize_music_room', () => {
@@ -472,11 +459,11 @@ const ChatStack: React.FC<any> = ({ logout }) => {
             navigationRef.navigate('MainTabs' as never);
           } catch (_) {}
         }
-        // Delay restoring light theme nav bar until the dark overlay is fully minimized
+        // Immediately restore light theme nav bar
         setTimeout(() => {
           setWindowBackground(theme.background);
           pinNavBarColor('#00000000', isDark);
-        }, 200);
+        }, 30);
       } else {
         setIsPipDismissed(false);
         setWindowBackground('#000000');
@@ -540,17 +527,45 @@ const ChatStack: React.FC<any> = ({ logout }) => {
       />
       <Stack.Screen name="Call"         component={CallScreen}         options={{ headerShown: false }} />
       <Stack.Screen name="IncomingCall" component={IncomingCallScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="FriendList"   component={FriendListScreen}   options={{ title: 'My Friends', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, animation: 'slide_from_right', animationDuration: 130 }} />
-      <Stack.Screen name="CreateGroup"  component={CreateGroupScreen}  options={{ title: 'New Group', headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, headerTintColor: theme.headerTint, animation: 'slide_from_right', animationDuration: 130 }} />
+      <Stack.Screen 
+        name="FriendList"   
+        component={FriendListScreen}   
+        options={{ 
+          title: 'My Friends', 
+          headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, 
+          headerTintColor: theme.headerTint, 
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: theme.background },
+        }} 
+      />
+      <Stack.Screen 
+        name="CreateGroup"  
+        component={CreateGroupScreen}  
+        options={{ 
+          title: 'New Group', 
+          headerTitleStyle: { color: theme.headerTint, fontWeight: 'bold' }, 
+          headerTintColor: theme.headerTint, 
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: theme.background },
+        }} 
+      />
       <Stack.Screen 
         name="GroupInfo"    
         component={GroupInfoScreen}    
-        options={{ headerShown: false, animation: 'slide_from_right', animationDuration: 130 }} 
+        options={{ 
+          headerShown: false, 
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: theme.background },
+        }} 
       />
       <Stack.Screen 
         name="Profile"      
         component={ProfileScreen}      
-        options={{ headerShown: false, animation: 'slide_from_right', animationDuration: 130 }} 
+        options={{ 
+          headerShown: false, 
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: theme.background },
+        }} 
       />
       <Stack.Screen
         name="StatusViewer"
@@ -580,12 +595,24 @@ const ChatStack: React.FC<any> = ({ logout }) => {
         }} 
       />
       <Stack.Screen 
+        name="WatchTogetherTabSelect" 
+        component={WatchTogetherTabSelectScreen} 
+        options={{ 
+          headerShown: false,
+          animation: 'slide_from_right',
+          animationDuration: 130,
+          statusBarTranslucent: true,
+          statusBarStyle: isDark ? 'light' : 'dark',
+          contentStyle: { backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' },
+        }} 
+      />
+      <Stack.Screen 
         name="YouTubeDiscovery" 
         component={YouTubeDiscoveryScreen} 
         options={{ 
           headerShown: false,
           animation: 'none',
-          contentStyle: { backgroundColor: '#020912' },
+          contentStyle: { backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' },
         }} 
       />
       <Stack.Screen
@@ -655,7 +682,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
           style={[
             StyleSheet.absoluteFill,
             { zIndex: isSystemPip ? 999999 : 9999, backgroundColor: (musicRoom.isMinimized && !isSystemPip) ? 'transparent' : '#000000' },
-            (musicRoom.isMinimized && (!isPipEnabled || isPipDismissed) && !isSystemPip) ? {
+            (musicRoom.isMinimized && !isSystemPip) ? {
               position: 'absolute',
               top: -9999,
               left: -9999,
@@ -671,7 +698,7 @@ const ChatStack: React.FC<any> = ({ logout }) => {
               opacity: 1,
             }
           ]}
-          pointerEvents={isSystemPip ? 'auto' : (musicRoom.isMinimized ? ((isPipEnabled && !isPipDismissed) ? 'box-none' : 'none') : 'auto')}
+          pointerEvents={isSystemPip ? 'auto' : (musicRoom.isMinimized ? 'none' : 'auto')}
         >
           <MusicRoomScreen
             key={musicRoom.roomCode}

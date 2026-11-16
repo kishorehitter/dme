@@ -16,6 +16,16 @@ import android.support.v4.media.session.PlaybackStateCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.graphics.Color;
 import android.os.PowerManager;
+import android.content.Context;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.telephony.PhoneStateListener;
+import android.telephony.TelephonyManager;
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.WritableMap;
 import java.io.InputStream;
 import java.net.URL;
 import androidx.core.app.NotificationCompat;
@@ -34,12 +44,50 @@ public class MusicForegroundService extends Service {
     public static final String ACTION_UPDATE_POSITION = "ACTION_UPDATE_POSITION";
     public static final String EXTRA_IS_DJ = "isDJ";
 
+    public static MusicForegroundService instance = null;
+
     private MediaSessionCompat mediaSession;
     private PowerManager.WakeLock wakeLock = null;
+    private AudioManager audioManager = null;
+    private AudioManager.OnAudioFocusChangeListener audioFocusChangeListener = null;
+    private AudioFocusRequest audioFocusRequest = null;
+    private boolean hasAudioFocus = false;
+    private TelephonyManager telephonyManager = null;
+    private PhoneStateListener phoneStateListener = null;
+
+    private final Handler callCheckHandler = new Handler(Looper.getMainLooper());
+    private boolean lastWasCall = false;
+    private final Runnable callCheckRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (audioManager == null) {
+                    audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                }
+                if (audioManager != null) {
+                    int mode = audioManager.getMode();
+                    boolean isCall = (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_RINGTONE);
+                    if (isCall != lastWasCall) {
+                        lastWasCall = isCall;
+                        if (isCall) {
+                            com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(true);
+                        } else if (hasAudioFocus) {
+                            com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
+                        }
+                        WritableMap params = Arguments.createMap();
+                        params.putBoolean("isCall", isCall);
+                        MusicServiceModule.sendEvent("PHONE_CALL_STATE", params);
+                    }
+                }
+            } catch (Exception ignored) {}
+            callCheckHandler.postDelayed(this, 500);
+        }
+    };
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         createNotificationChannel();
 
         try {
@@ -50,6 +98,9 @@ public class MusicForegroundService extends Service {
             }
         } catch (Exception ignored) {}
 
+        setupAudioFocus();
+        setupPhoneCallListener();
+
         // Create MediaSession — this is what powers the
         // lockscreen overlay and Android media controls
         mediaSession = new MediaSessionCompat(this, "MusicRoomSession");
@@ -58,15 +109,140 @@ public class MusicForegroundService extends Service {
             @Override
             public void onPlay() {
                 super.onPlay();
-                MusicServiceModule.sendEvent("MEDIA_PLAY");
+                requestAudioFocusInternal();
+                com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
+                WritableMap params = Arguments.createMap();
+                params.putBoolean("interrupted", false);
+                MusicServiceModule.sendEvent("EXTERNAL_AUDIO_INTERRUPTION", params);
             }
 
             @Override
             public void onPause() {
                 super.onPause();
-                MusicServiceModule.sendEvent("MEDIA_PAUSE");
+                // External media focus loss (other app media or call).
+                // DO NOT pause the watch party! Mute audio locally while video keeps playing.
+                com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(true);
+                WritableMap params = Arguments.createMap();
+                params.putBoolean("interrupted", true);
+                MusicServiceModule.sendEvent("EXTERNAL_AUDIO_INTERRUPTION", params);
             }
         });
+    }
+
+    private void setupAudioFocus() {
+        if (audioManager == null) {
+            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        }
+        if (audioManager == null) return;
+
+        audioFocusChangeListener = new AudioManager.OnAudioFocusChangeListener() {
+            @Override
+            public void onAudioFocusChange(int focusChange) {
+                WritableMap params = Arguments.createMap();
+                switch (focusChange) {
+                    case AudioManager.AUDIOFOCUS_LOSS:
+                        hasAudioFocus = false;
+                        com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(true);
+                        params.putBoolean("interrupted", true);
+                        params.putString("reason", "loss");
+                        MusicServiceModule.sendEvent("EXTERNAL_AUDIO_INTERRUPTION", params);
+                        break;
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                        hasAudioFocus = false;
+                        com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(true);
+                        params.putBoolean("interrupted", true);
+                        params.putString("reason", "transient_loss");
+                        MusicServiceModule.sendEvent("EXTERNAL_AUDIO_INTERRUPTION", params);
+                        break;
+                    case AudioManager.AUDIOFOCUS_GAIN:
+                        hasAudioFocus = true;
+                        com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
+                        params.putBoolean("interrupted", false);
+                        params.putString("reason", "gain");
+                        MusicServiceModule.sendEvent("EXTERNAL_AUDIO_INTERRUPTION", params);
+                        break;
+                }
+            }
+        };
+
+        requestAudioFocusInternal();
+    }
+
+    public void requestAudioFocusInternal() {
+        if (audioManager == null || audioFocusChangeListener == null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                AudioAttributes playbackAttributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build();
+                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(playbackAttributes)
+                        .setAcceptsDelayedFocusGain(true)
+                        .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                        .build();
+                int res = audioManager.requestAudioFocus(audioFocusRequest);
+                hasAudioFocus = (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            } else {
+                int res = audioManager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+                hasAudioFocus = (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public void abandonAudioFocusInternal() {
+        if (audioManager == null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+                audioManager.abandonAudioFocusRequest(audioFocusRequest);
+            } else if (audioFocusChangeListener != null) {
+                audioManager.abandonAudioFocus(audioFocusChangeListener);
+            }
+            hasAudioFocus = false;
+        } catch (Exception ignored) {}
+    }
+
+    private void setupPhoneCallListener() {
+        try {
+            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            callCheckHandler.post(callCheckRunnable);
+        } catch (Exception ignored) {}
+
+        try {
+            telephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+            if (telephonyManager != null) {
+                phoneStateListener = new PhoneStateListener() {
+                    @Override
+                    public void onCallStateChanged(int state, String phoneNumber) {
+                        super.onCallStateChanged(state, phoneNumber);
+                        boolean isCall = (state == TelephonyManager.CALL_STATE_RINGING ||
+                                          state == TelephonyManager.CALL_STATE_OFFHOOK);
+                        if (isCall != lastWasCall) {
+                            lastWasCall = isCall;
+                            if (isCall) {
+                                com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(true);
+                            } else if (hasAudioFocus) {
+                                com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
+                            }
+                            WritableMap params = Arguments.createMap();
+                            params.putBoolean("isCall", isCall);
+                            MusicServiceModule.sendEvent("PHONE_CALL_STATE", params);
+                        }
+                    }
+                };
+                telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void cleanupPhoneCallListener() {
+        callCheckHandler.removeCallbacks(callCheckRunnable);
+        try {
+            if (telephonyManager != null && phoneStateListener != null) {
+                telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
+            }
+        } catch (Exception ignored) {}
     }
 
     private Bitmap downloadedThumbnail = null;
@@ -79,6 +255,9 @@ public class MusicForegroundService extends Service {
         String action = intent.getAction();
 
         if (ACTION_STOP.equals(action)) {
+            abandonAudioFocusInternal();
+            cleanupPhoneCallListener();
+            com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
             if (wakeLock != null && wakeLock.isHeld()) {
                 try { wakeLock.release(); } catch (Exception ignored) {}
             }
@@ -171,6 +350,7 @@ public class MusicForegroundService extends Service {
                 startForeground(1, notification);
             }
 
+            MusicServiceModule.sendEvent(play ? "NOTIFICATION_PLAY" : "NOTIFICATION_PAUSE");
             MusicServiceModule.sendEvent(play ? "MEDIA_PLAY" : "MEDIA_PAUSE");
             return START_STICKY;
         }
@@ -335,6 +515,10 @@ public class MusicForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        instance = null;
+        abandonAudioFocusInternal();
+        cleanupPhoneCallListener();
+        com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(false);
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
         }

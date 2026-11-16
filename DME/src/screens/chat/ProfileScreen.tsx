@@ -33,6 +33,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import { check, request, PERMISSIONS, RESULTS } from 'react-native-permissions';
@@ -40,6 +41,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { useAuth } from '../../context/AuthContext';
+import { saveLocalAvatar, removeLocalAvatar } from '../../utils/avatarCache';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { getApiUrl } from '../../config/network';
 import { resolveImageUrl } from '../../utils/image';
@@ -80,6 +82,7 @@ import { ALL_PRESET_AVATARS, AVATAR_FILTER_CHIPS, AvatarCategory, PresetAvatar, 
 import AvatarWithFallback from '../../components/AvatarWithFallback';
 
 import AvatarPickerModal from '../../components/AvatarPickerModal';
+import { QuickReactionPicker } from '../../components/QuickReactionPicker';
 
 const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   navigation,
@@ -108,15 +111,30 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   const isReadOnly = !!viewingOtherProfile;
   const [isEditingMode, setIsEditingMode] = useState(false);
 
+  const cancelEditMode = useCallback(() => {
+    setPendingPhoto(null);
+    setPendingSticker(null);
+    setPendingRemovePhoto(false);
+    if (profile) {
+      setFormData({
+        display_name: profile.display_name || '',
+        username: profile.username || '',
+        bio: profile.bio || '',
+        quick_reaction: profile.quick_reaction || '❤️',
+      });
+    }
+    setIsEditingMode(false);
+  }, [profile]);
+
   useEffect(() => {
     if (!isEditingMode) return;
     const onBackPress = () => {
-      setIsEditingMode(false);
+      cancelEditMode();
       return true;
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
-  }, [isEditingMode]);
+  }, [isEditingMode, cancelEditMode]);
   const [conversationId, setConversationId] = useState<number | null>(route?.params?.conversationId || null);
   const [profile, setProfile] = useState<UserProfile | null>(() => {
     if (viewingOtherProfile) return viewingOtherProfile;
@@ -150,11 +168,24 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
   const [showStickerModal, setShowStickerModal] = useState(false);
   const [showPhotoOptionsModal, setShowPhotoOptionsModal] = useState(false);
 
+  // Deferred profile picture & avatar changes (preview only until "Update Changes" is clicked)
+  const [pendingPhoto, setPendingPhoto] = useState<any | null>(null);
+  const [pendingSticker, setPendingSticker] = useState<string | null>(null);
+  const [pendingRemovePhoto, setPendingRemovePhoto] = useState(false);
+
+  const previewUri = pendingRemovePhoto 
+    ? null 
+    : (pendingPhoto ? pendingPhoto.uri : (pendingSticker ? null : profile?.profile_picture));
+
+  const previewSticker = pendingRemovePhoto 
+    ? null 
+    : (pendingSticker ? pendingSticker : (pendingPhoto ? null : profile?.avatar_sticker));
+
+  const hasPhotoOrAvatar = Boolean(previewUri || previewSticker);
+
   const handleCloseAvatarModal = useCallback(() => {
     setShowStickerModal(false);
   }, []);
-
-  const hasPhotoOrAvatar = Boolean(profile?.profile_picture || profile?.avatar_sticker);
   const currentStickerImage = profile?.avatar_sticker && PRESET_AVATARS[profile.avatar_sticker]
     ? PRESET_AVATARS[profile.avatar_sticker]
     : ALL_PRESET_AVATARS[0]?.image;
@@ -468,13 +499,14 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     }
   };
 
-  const handleProfileGallerySelect = async (assets: GalleryAsset[]) => {
+  const handleProfileGallerySelect = (assets: GalleryAsset[]) => {
     setProfileGalleryVisible(false);
     if (assets && assets.length > 0) {
       const asset = assets[0];
-      setIsUploadingImage(true);
-      await uploadProfilePicture(asset);
-      setIsUploadingImage(false);
+      setPendingPhoto(asset);
+      setPendingSticker(null);
+      setPendingRemovePhoto(false);
+      setShowPhotoOptionsModal(false);
     }
   };
 
@@ -823,13 +855,13 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       });
       if (res.didCancel || res.errorCode || !res.assets?.length) return;
       const asset = res.assets[0];
-      setIsUploadingImage(true);
-      await uploadProfilePicture(asset);
+      setPendingPhoto(asset);
+      setPendingSticker(null);
+      setPendingRemovePhoto(false);
+      setShowPhotoOptionsModal(false);
     } catch (err) {
       console.error('Error taking photo:', err);
       Alert.alert('Error', 'Failed to open camera');
-    } finally {
-      setIsUploadingImage(false);
     }
   };
 
@@ -854,119 +886,19 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     );
   };
 
-  const handleRemovePhoto = async () => {
-    setIsUploadingImage(true);
-    try {
-      const token = await AsyncStorage.getItem('access_token');
-
-      const response = await fetch(
-        getApiUrl('accounts/profile/update/'),
-        {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            profile_picture: null,
-            avatar_sticker: null,
-          }),
-        },
-      );
-
-      const data = await response.json();
-      if (response.ok) {
-        setProfile(data);
-        await refreshUser();
-        setShowStickerModal(false);
-        setShowPhotoOptionsModal(false);
-        Toast.show({ type: 'success', text1: 'Profile picture removed' });
-      } else {
-        Alert.alert('Error', data.message || 'Failed to remove profile picture');
-      }
-    } catch (error) {
-      console.error('Error removing image:', error);
-      Alert.alert('Error', 'Failed to remove profile picture');
-    } finally {
-      setIsUploadingImage(false);
-    }
+  const handleRemovePhoto = () => {
+    setPendingRemovePhoto(true);
+    setPendingPhoto(null);
+    setPendingSticker(null);
+    setShowPhotoOptionsModal(false);
   };
 
-  const uploadProfilePicture = async (asset: any) => {
-    try {
-      const token = await AsyncStorage.getItem('access_token');
-      const formDataUpload = new FormData();
-      
-      formDataUpload.append('profile_picture', {
-        uri: asset.uri,
-        type: asset.type || 'image/jpeg',
-        name: asset.fileName || 'profile.jpg',
-      } as any);
-
-      const response = await fetch(
-        getApiUrl('accounts/profile/update/'),
-        {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formDataUpload,
-        },
-      );
-
-      const data = await response.json();
-      if (response.ok) {
-        const freshData = { ...data, profile_picture: data.profile_picture ? `${resolveImageUrl(data.profile_picture)}?t=${Date.now()}` : null };
-        setProfile(freshData);
-        await refreshUser();
-        setShowPhotoOptionsModal(false);
-        Toast.show({ type: 'success', text1: 'Profile picture updated' });
-      } else {
-        Alert.alert('Error', data.message || 'Failed to update profile picture');
-      }
-    } catch (error) {
-      console.error('Error uploading image:', error);
-      Alert.alert('Error', 'Failed to upload profile picture');
-    }
-  };
-
-  const selectSticker = async (sticker: string) => {
-    try {
-      setIsUploadingImage(true);
-      const token = await AsyncStorage.getItem('access_token');
-
-      const response = await fetch(
-        getApiUrl('accounts/profile/update/'),
-        {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            avatar_sticker: sticker,
-            profile_picture: null,
-          }),
-        },
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        setProfile(data);
-        await refreshUser();
-        setShowStickerModal(false);
-        setShowPhotoOptionsModal(false);
-        Alert.alert('Success', 'Avatar sticker updated successfully');
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        Alert.alert('Error', errorData.message || 'Failed to update avatar');
-      }
-    } catch (error) {
-      console.error('Error updating sticker:', error);
-      Alert.alert('Error', 'Failed to update avatar');
-    } finally {
-      setIsUploadingImage(false);
-    }
+  const selectSticker = (sticker: string) => {
+    setPendingSticker(sticker);
+    setPendingPhoto(null);
+    setPendingRemovePhoto(false);
+    setShowStickerModal(false);
+    setShowPhotoOptionsModal(false);
   };
 
   const handleSave = async () => {
@@ -984,36 +916,119 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
     setIsSaving(true);
     try {
       const token = await AsyncStorage.getItem('access_token');
-      const updateData: any = {
-        username: formData.username.trim(),
-        bio: formData.bio.trim(),
-        quick_reaction: formData.quick_reaction,
-      };
-      if (formData.display_name && formData.display_name.trim() !== '') {
-        updateData.display_name = formData.display_name.trim();
-      }
+      let response: Response;
 
-      const response = await fetch(
-        getApiUrl('accounts/profile/update/'),
-        {
+      if (pendingPhoto) {
+        if (user?.id) {
+          saveLocalAvatar(user.id, pendingPhoto.uri).catch(() => {});
+        }
+        // Upload with new photo via FormData
+        const formDataUpload = new FormData();
+        formDataUpload.append('profile_picture', {
+          uri: pendingPhoto.uri,
+          type: pendingPhoto.type || 'image/jpeg',
+          name: pendingPhoto.fileName || 'profile.jpg',
+        } as any);
+        formDataUpload.append('avatar_sticker', '');
+        formDataUpload.append('username', formData.username.trim());
+        formDataUpload.append('bio', formData.bio.trim());
+        formDataUpload.append('quick_reaction', formData.quick_reaction);
+        if (formData.display_name && formData.display_name.trim() !== '') {
+          formDataUpload.append('display_name', formData.display_name.trim());
+        }
+
+        response = await fetch(getApiUrl('accounts/profile/update/'), {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formDataUpload,
+        });
+      } else if (pendingSticker) {
+        if (user?.id) {
+          removeLocalAvatar(user.id).catch(() => {});
+        }
+        // Update with 3D avatar sticker via JSON (clearing profile_picture)
+        const updateData: any = {
+          username: formData.username.trim(),
+          bio: formData.bio.trim(),
+          quick_reaction: formData.quick_reaction,
+          avatar_sticker: pendingSticker,
+          profile_picture: null,
+        };
+        if (formData.display_name && formData.display_name.trim() !== '') {
+          updateData.display_name = formData.display_name.trim();
+        }
+
+        response = await fetch(getApiUrl('accounts/profile/update/'), {
           method: 'PATCH',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(updateData),
-        },
-      );
+        });
+      } else if (pendingRemovePhoto) {
+        if (user?.id) {
+          removeLocalAvatar(user.id).catch(() => {});
+        }
+        // Explicitly remove both picture and sticker via JSON
+        const updateData: any = {
+          username: formData.username.trim(),
+          bio: formData.bio.trim(),
+          quick_reaction: formData.quick_reaction,
+          avatar_sticker: null,
+          profile_picture: null,
+        };
+        if (formData.display_name && formData.display_name.trim() !== '') {
+          updateData.display_name = formData.display_name.trim();
+        }
+
+        response = await fetch(getApiUrl('accounts/profile/update/'), {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(updateData),
+        });
+      } else {
+        // Text-only update via JSON
+        const updateData: any = {
+          username: formData.username.trim(),
+          bio: formData.bio.trim(),
+          quick_reaction: formData.quick_reaction,
+        };
+        if (formData.display_name && formData.display_name.trim() !== '') {
+          updateData.display_name = formData.display_name.trim();
+        }
+
+        response = await fetch(getApiUrl('accounts/profile/update/'), {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(updateData),
+        });
+      }
 
       if (response.ok) {
         const data = await response.json();
-        setProfile(data);
+        const freshData = {
+          ...data,
+          profile_picture: data.profile_picture ? `${resolveImageUrl(data.profile_picture)}?t=${Date.now()}` : null,
+        };
+        setProfile(freshData);
         setFormData({
-          display_name: data.display_name || '',
-          username: data.username || '',
-          bio: data.bio || '',
-          quick_reaction: data.quick_reaction || '❤️',
+          display_name: freshData.display_name || '',
+          username: freshData.username || '',
+          bio: freshData.bio || '',
+          quick_reaction: freshData.quick_reaction || '❤️',
         });
+        setPendingPhoto(null);
+        setPendingSticker(null);
+        setPendingRemovePhoto(false);
         await refreshUser();
         Toast.show({
           type: 'success',
@@ -1023,7 +1038,6 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
         setIsEditingMode(false);
       } else {
         const errorData = await response.json().catch(() => ({}));
-        // Use the specific 'message' from our backend update
         Alert.alert('Error', errorData.message || errorData.username?.[0] || 'Failed to update profile');
       }
     } catch (error) {
@@ -1462,7 +1476,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       {/* Clean In-Screen Header */}
       <View style={[s.customHeader, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}>
         <Pressable
-          onPress={() => setIsEditingMode(false)}
+          onPress={cancelEditMode}
           style={s.headerBackButton}
           hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
           android_ripple={{ color: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderless: true, radius: 20 }}
@@ -1512,9 +1526,9 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
                   )
                 )}
                 <AvatarWithFallback 
-                  uri={profile?.profile_picture} 
+                  uri={previewUri} 
                   displayName={formData.display_name || formData.username || 'User'} 
-                  sticker={profile?.avatar_sticker}
+                  sticker={previewSticker}
                   style={[s.profilePicture, { borderWidth: 0 }]} 
                 />
                 {!showPhotoOptionsModal && (
@@ -1576,20 +1590,18 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
               disabled={showStickerModal || profileGalleryVisible || showPhotoOptionsModal || isUploadingImage}
               activeOpacity={0.78}
             >
-              <View style={s.avatarStickerIconWrap}>
-                <Image
-                  source={currentStickerImage || ALL_PRESET_AVATARS[0].image}
-                  style={s.avatarStickerPreviewImg}
-                  resizeMode="contain"
-                />
-                <View style={s.avatarStickerSparkleBadge}>
-                  <Icon name="sparkles" size={10} color="#FFFFFF" />
-                </View>
-              </View>
+              <LinearGradient
+                colors={['#FFF', '#3B82F6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={s.avatarStickerIconWrap}
+              >
+                <MaterialIcon name="face-retouching-natural" size={32} color="#000" />
+              </LinearGradient>
               <View style={s.avatarStickerTextCol}>
                 <Text style={s.avatarStickerTitle} numberOfLines={1}>3D Avatar</Text>
                 <Text style={s.avatarStickerSub} numberOfLines={1}>
-                  {profile?.avatar_sticker ? 'Change 3D' : 'Choose 3D'}
+                  {previewSticker ? 'Change 3D' : 'Choose 3D'}
                 </Text>
               </View>
               <View style={s.avatarStickerArrowWrap}>
@@ -1732,32 +1744,10 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
               Double-Tap Reaction{' '}
               <Text style={s.labelHint}>(emoji shown on double-tap)</Text>
             </Text>
-            <View style={s.emojiSelectionRow}>
-              <ScrollView 
-                horizontal 
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingVertical: 8, alignItems: 'center' }}
-              >
-                {QUICK_REACTIONS.map(emoji => {
-                  const isActive = formData.quick_reaction === emoji;
-                  return (
-                    <TouchableOpacity
-                      key={emoji}
-                      style={[s.emojiSelectItem, isActive && s.emojiSelectItemActive]}
-                      onPress={() => setFormData({ ...formData, quick_reaction: emoji })}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[s.emojiSelectText, isActive && s.emojiSelectTextActive]}>{emoji}</Text>
-                      {isActive && (
-                        <View style={s.emojiCheckBadge}>
-                          <Icon name="checkmark" size={8} color="#FFFFFF" />
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
+            <QuickReactionPicker
+              selectedEmoji={formData.quick_reaction}
+              onSelectEmoji={(emoji) => setFormData({ ...formData, quick_reaction: emoji })}
+            />
           </View>
         )}
 
@@ -1824,8 +1814,8 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           visible={showStickerModal}
           onClose={handleCloseAvatarModal}
           onSelect={selectSticker}
-          currentSticker={profile?.avatar_sticker}
-          profilePicture={profile?.profile_picture}
+          currentSticker={previewSticker}
+          profilePicture={previewUri}
           displayName={formData.display_name || formData.username || 'User'}
         />
       )}
@@ -1839,7 +1829,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingBottom: 6,
   },
   headerBackButton: {
     padding: 6,
@@ -1857,7 +1847,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     alignItems: 'center',
   },
   container: { flex: 1, backgroundColor: theme.background },
-  profilePictureSection: { alignItems: 'center', paddingVertical: 12, backgroundColor: theme.surface },
+  profilePictureSection: { alignItems: 'center', paddingTop: 4, paddingBottom: 10, backgroundColor: theme.surface },
   profilePictureContainer: { position: 'relative' },
   profilePicture: { width: 120, height: 120, borderRadius: 60 },
   avatarWrapper90: {
@@ -1937,7 +1927,8 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingTop: 2,
+    paddingBottom: 6,
     paddingHorizontal: 16,
     gap: 16,
     width: '100%',
@@ -1945,26 +1936,24 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
   avatarStickerButton: {
     flex: 1,
     maxWidth: 205,
-    height: 106,
+    height: 80,
     borderRadius: 20,
     backgroundColor: 'transparent',
     borderWidth: 0,
     borderColor: 'transparent',
     paddingHorizontal: 8,
-    paddingVertical: 10,
+    paddingVertical: 6,
     flexDirection: 'row',
     alignItems: 'center',
   },
   avatarStickerIconWrap: {
     position: 'relative',
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: isDark ? 'rgba(15, 98, 254, 0.25)' : '#E0EDFE',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#BAD7FE',
+    overflow: 'hidden',
   },
   avatarStickerPreviewImg: {
     width: 40,
@@ -2011,7 +2000,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     marginLeft: 2,
   },
   changePhotoText: { marginTop: spacing.sm, fontSize: fontSize.md, color: theme.primary, fontWeight: '600' },
-  section: { backgroundColor: theme.surface, marginTop: spacing.sm, padding: spacing.md },
+  section: { backgroundColor: theme.surface, marginTop: 0, paddingHorizontal: spacing.md, paddingTop: 8, paddingBottom: spacing.md },
   sectionTitle: { fontSize: fontSize.md, fontWeight: 'bold', color: theme.textPrimary, marginBottom: spacing.sm },
   inputContainer: { marginBottom: spacing.md },
   label: { fontSize: 13, color: theme.textSecondary, marginBottom: 2 },
@@ -2115,10 +2104,6 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     flex: 1,
     justifyContent: 'flex-end',
     width: '100%',
-  },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
   modalContent: {
     width: '100%',

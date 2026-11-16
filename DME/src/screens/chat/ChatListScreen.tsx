@@ -39,6 +39,7 @@ import BiometricService from '../../services/BiometricService';
 
 
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { launchImageLibrary } from 'react-native-image-picker';
 
@@ -696,7 +697,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
   const [isMusicPlaying, setIsMusicPlaying] = useState<boolean>(() => Boolean((global as any).isMusicPlaying));
-  const spinValue = useRef(new Animated.Value(0)).current;
+  const playPulse = useRef(new Animated.Value(1)).current;
+  const eqBar1 = useRef(new Animated.Value(0.4)).current;
+  const eqBar2 = useRef(new Animated.Value(0.9)).current;
+  const eqBar3 = useRef(new Animated.Value(0.5)).current;
   const [myStatuses, setMyStatuses] = useState<Status[]>([]);
 
   useFocusEffect(
@@ -704,13 +708,16 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       userTouchedSearch.current = false;
       setActiveRoomCode((global as any).activeMusicRoomCode || null);
       setIsMusicPlaying(Boolean((global as any).isMusicPlaying));
-      if (user?.id) {
-        StatusService.getStatuses().then(statuses => {
-          if (Array.isArray(statuses)) {
-            setMyStatuses(statuses.filter((s: Status) => s.user_id === user.id));
-          }
-        }).catch(() => {});
-      }
+      const task = InteractionManager.runAfterInteractions(() => {
+        if (user?.id) {
+          StatusService.getStatuses().then(statuses => {
+            if (Array.isArray(statuses)) {
+              setMyStatuses(statuses.filter((s: Status) => s.user_id === user.id));
+            }
+          }).catch(() => {});
+        }
+      });
+      return () => task.cancel();
     }, [user?.id])
   );
 
@@ -734,6 +741,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
   }, [navigation]);
 
   const handleProfileAvatarPress = useCallback(() => {
+    navigation.navigate('Profile');
+  }, [navigation]);
+
+  const handleProfileAvatarLongPress = useCallback(() => {
     if (myStatuses.length > 0) {
       navigation.navigate('StatusViewer', {
         statuses: myStatuses,
@@ -741,8 +752,6 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         currentUserId: user?.id,
         isOwn: true,
       });
-    } else {
-      navigation.navigate('Profile');
     }
   }, [myStatuses, navigation, user?.id]);
 
@@ -763,20 +772,54 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
     });
     const subPlayback = DeviceEventEmitter.addListener('music_playback_state_changed', handlePlaybackState);
 
-    let spinAnimation: Animated.CompositeAnimation | null = null;
+    let pulseAnimation: Animated.CompositeAnimation | null = null;
+    let eqAnimation: Animated.CompositeAnimation | null = null;
+
     if (activeRoomCode) {
-      spinValue.setValue(0);
-      spinAnimation = Animated.loop(
-        Animated.timing(spinValue, {
-          toValue: 1,
-          duration: 3000,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        })
+      pulseAnimation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(playPulse, {
+            toValue: 1.09,
+            duration: 800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(playPulse, {
+            toValue: 1.0,
+            duration: 800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
       );
-      spinAnimation.start();
+      pulseAnimation.start();
+
+      eqAnimation = Animated.parallel([
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(eqBar1, { toValue: 1.0, duration: 320, useNativeDriver: true }),
+            Animated.timing(eqBar1, { toValue: 0.35, duration: 320, useNativeDriver: true }),
+          ])
+        ),
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(eqBar2, { toValue: 0.35, duration: 420, useNativeDriver: true }),
+            Animated.timing(eqBar2, { toValue: 1.0, duration: 420, useNativeDriver: true }),
+          ])
+        ),
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(eqBar3, { toValue: 1.0, duration: 360, useNativeDriver: true }),
+            Animated.timing(eqBar3, { toValue: 0.35, duration: 360, useNativeDriver: true }),
+          ])
+        ),
+      ]);
+      eqAnimation.start();
     } else {
-      spinValue.setValue(0);
+      playPulse.setValue(1);
+      eqBar1.setValue(0.4);
+      eqBar2.setValue(0.9);
+      eqBar3.setValue(0.5);
     }
 
     return () => {
@@ -784,14 +827,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
       subOpen.remove();
       subClose.remove();
       subPlayback.remove();
-      if (spinAnimation) spinAnimation.stop();
+      if (pulseAnimation) pulseAnimation.stop();
+      if (eqAnimation) eqAnimation.stop();
     };
   }, [activeRoomCode]);
-
-  const spin = spinValue.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '360deg'],
-  });
 
   const [isKeyboardActive, setIsKeyboardActive] = useState(false);
   // Expandable entertainment hub (Disco Ball + Trivia Book + Add Friend) - initially opened
@@ -1100,7 +1139,10 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
   useFocusEffect(
     useCallback(() => {
-      loadConversations();
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadConversations();
+      });
+      return () => task.cancel();
     }, [loadConversations])
   );
 
@@ -1558,14 +1600,14 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         ) : (
           <View style={{ width: 125, flexDirection: 'row', alignItems: 'center', paddingLeft: 24 }}>
             <TouchableOpacity
-              onPress={() => navigation.navigate('Profile')}
+              onPress={handleUploadStatus}
               activeOpacity={0.7}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
-              accessibilityLabel="Profile"
+              accessibilityLabel="Upload Status"
               accessibilityRole="button"
             >
-              <Icon name="create-outline" size={28} color={theme.textPrimary} />
+              <Icon name="add" size={30} color={theme.textPrimary} />
             </TouchableOpacity>
           </View>
         )
@@ -1623,7 +1665,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         )
       ),
     });
-  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode, isMusicPlaying, spin, isDark, theme, user, friendRequestsCount]);
+  }, [navigation, selectionMode, selectedIds, handleBatchDelete, activeRoomCode, isMusicPlaying, isDark, theme, user, friendRequestsCount]);
 
   const handleShareApp = async () => {
     try {
@@ -1904,12 +1946,14 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
 
       {/* ── Top Action Row (Profile Story Circle on Left, Horizontal Disco & Trivia Dock on Right) ── */}
       <View style={s.topActionRow}>
-        {/* Left: Profile with dynamic Status border or plain circle, and + badge */}
+        {/* Left: Plain Profile Avatar circle (redirects to My Profile) */}
         <View style={s.profileStoryContainer}>
           <TouchableOpacity
             onPress={handleProfileAvatarPress}
+            onLongPress={handleProfileAvatarLongPress}
             activeOpacity={0.85}
-            accessibilityLabel={myStatuses.length > 0 ? "View my status" : "My Profile"}
+            accessibilityLabel="My Profile"
+            accessibilityRole="button"
           >
             {myStatuses.length > 0 ? (
               /* Outer border with combination logo colors (Cobalt Blue -> Cyan -> Emerald) */
@@ -1921,7 +1965,7 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               >
                 <View style={s.storyCircleInner}>
                   <AvatarWithFallback
-                    uri={user?.profile_picture}
+                    uri={user?.local_profile_picture || user?.profile_picture}
                     sticker={user?.avatar_sticker}
                     displayName={user?.display_name || user?.username || user?.email || 'User'}
                     style={s.storyAvatar}
@@ -1932,26 +1976,13 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
               /* Plain circle with no outer border */
               <View style={s.plainProfileCircle}>
                 <AvatarWithFallback
-                  uri={user?.profile_picture}
+                  uri={user?.local_profile_picture || user?.profile_picture}
                   sticker={user?.avatar_sticker}
                   displayName={user?.display_name || user?.username || user?.email || 'User'}
                   style={s.plainAvatar}
                 />
               </View>
             )}
-          </TouchableOpacity>
-
-          {/* + circle at bottom right edge of circle to upload status */}
-          <TouchableOpacity
-            style={[s.addStatusBadge, { borderColor: theme.surface }]}
-            onPress={handleUploadStatus}
-            activeOpacity={0.85}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Upload status"
-          >
-            <View style={s.addStatusBadgeGradient}>
-              <Icon name="add" size={15} color="#000000" />
-            </View>
           </TouchableOpacity>
         </View>
 
@@ -1981,22 +2012,20 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
           </TouchableOpacity>
         </View>
 
-        {/* Right: Book Button (Knowledge Quest) without outer container and without inner circle */}
+        {/* Right: Layers Button (Knowledge Quest / Trivia Sets) */}
         <View ref={triviaBtnRef} collapsable={false}>
           <TouchableOpacity
             onPress={() => navigation.navigate('TriviaHub')}
             activeOpacity={0.7}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             style={s.bookButtonPlain}
-            accessibilityLabel="Q-Zone"
+            accessibilityLabel="Knowledge Quest"
           >
-            <View pointerEvents="none">
-              <LottieStickerMessage
-                url="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4da/lottie.json"
-                size={50}
-                autoPlay={false}
-              />
-            </View>
+            <Icon
+              name="book"
+              size={36}
+              color={isDark ? '#F59E0B' : '#D97706'}
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -2554,64 +2583,40 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
         pointerEvents="box-none"
         style={[s.fabWrapper, { bottom: 120 + insets.bottom }]}
       >
-        <View ref={playBtnRef} collapsable={false}>
+        <View ref={playBtnRef} collapsable={false} style={s.fabShadowContainer}>
           <TouchableOpacity
-            style={[
-              s.miniFabRoundedButton,
-              { borderColor: isDark ? 'rgba(56, 189, 248, 0.55)' : 'rgba(99, 102, 241, 0.35)' }
-            ]}
+            style={s.miniFabRoundedButton}
             onPress={() => {
               if (activeRoomCode) {
                 DeviceEventEmitter.emit('minimize_music_room', false);
               } else {
-                navigation.navigate('YouTubeDiscovery', {});
+                navigation.navigate('WatchTogetherTabSelect');
               }
             }}
             activeOpacity={0.82}
-            accessibilityLabel="Music Room"
+            accessibilityLabel="Watch Together"
           >
             <LinearGradient
-              colors={
-                isDark
-                  ? ['#1E3A8A', '#0F172A']
-                  : ['#FFFFFF', '#E0E7FF']
-              }
+              colors={['#38BDF8', '#0284C7', '#071A2E']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={[StyleSheet.absoluteFillObject, { borderRadius: 31 }]}
-            />
-            {/* 3D Specular Highlight Sheen */}
-            <View
-              pointerEvents="none"
-              style={{
-                position: 'absolute',
-                top: 3,
-                left: 10,
-                right: 10,
-                height: 14,
-                borderRadius: 12,
-                backgroundColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(255, 255, 255, 0.7)',
-              }}
+              style={StyleSheet.absoluteFillObject}
             />
             <View pointerEvents="none" style={{ width: 50, height: 50, alignItems: 'center', justifyContent: 'center' }}>
-              {activeRoomCode ? (
-                <Animated.View style={{ transform: [{ rotate: spin }] }}>
-                  <LottieStickerMessage
-                    url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
-                    size={46}
-                    autoPlay={true}
-                  />
-                </Animated.View>
-              ) : (
-                <LottieStickerMessage
-                  url="https://fonts.gstatic.com/s/e/notoemoji/latest/1faa9/lottie.json"
-                  size={46}
-                  autoPlay={false}
+              <Animated.View style={{ transform: [{ scale: activeRoomCode ? playPulse : 1 }] }}>
+                <MaterialIcon
+                  name="ondemand-video"
+                  size={30}
+                  color="#FFFFFF"
                 />
-              )}
+              </Animated.View>
             </View>
             {activeRoomCode && (
-              <View style={s.musicActiveDot} />
+              <View style={s.musicActiveBadge}>
+                <Animated.View style={[s.eqBar, { transform: [{ scaleY: eqBar1 }] }]} />
+                <Animated.View style={[s.eqBar, { transform: [{ scaleY: eqBar2 }] }]} />
+                <Animated.View style={[s.eqBar, { transform: [{ scaleY: eqBar3 }] }]} />
+              </View>
             )}
           </TouchableOpacity>
         </View>
@@ -3085,24 +3090,49 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     alignItems: 'center',
     justifyContent: 'center',
   },
-  miniFabRoundedButton: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    borderWidth: 1.5,
-    borderColor: isDark
-      ? 'rgba(56, 189, 248, 0.4)'
-      : 'rgba(32, 92, 184, 0.22)',
-    backgroundColor: isDark
-      ? '#071527'
-      : '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
+  fabShadowContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    backgroundColor: '#071A2E',
     elevation: 8,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.5 : 0.22,
-    shadowRadius: 6,
+    shadowOpacity: isDark ? 0.5 : 0.3,
+    shadowRadius: 8,
+  },
+  miniFabRoundedButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  musicActiveBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 2,
+    backgroundColor: '#10B981',
+    paddingHorizontal: 4,
+    paddingVertical: 2.5,
+    borderRadius: 6,
+    height: 15,
+    elevation: 2,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+  },
+  eqBar: {
+    width: 2.5,
+    height: 9,
+    borderRadius: 1.5,
+    backgroundColor: '#FFFFFF',
   },
   musicActiveDot: {
     position: 'absolute',

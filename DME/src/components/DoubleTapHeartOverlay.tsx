@@ -1,5 +1,5 @@
 import React, { useRef, useImperativeHandle, forwardRef, memo } from 'react';
-import { StyleSheet, View, Text, Animated, Easing } from 'react-native';
+import { StyleSheet, View, Text, Animated, Easing, Vibration } from 'react-native';
 
 export interface DoubleTapHeartOverlayRef {
   trigger: (x: number, y: number, emoji?: string) => void;
@@ -9,151 +9,133 @@ interface Props {
   defaultEmoji?: string;
 }
 
-const PARTICLE_ANGLES = [0, 60, 120, 180, 240, 300];
-const PARTICLE_COLORS = ['#FF4D6D', '#FFD166', '#48CAE4', '#FF70A6', '#A2D2FF', '#F72585'];
+const LIKE_PARTICLES = [
+  { angle: 30, color: '#FF7597', size: 3.5 },
+  { angle: 90, color: '#FFD166', size: 2.8 },
+  { angle: 150, color: '#FFB3C6', size: 3.5 },
+  { angle: 210, color: '#FFA4BA', size: 3.0 },
+  { angle: 270, color: '#FF69B4', size: 3.5 },
+  { angle: 330, color: '#FF94AA', size: 3.0 },
+];
 
 const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ defaultEmoji = '❤️' }, ref) => {
   const [coords, setCoords] = React.useState({ x: 0, y: 0 });
   const [activeEmoji, setActiveEmoji] = React.useState(defaultEmoji);
   const [visible, setVisible] = React.useState(false);
 
-  const scaleAnim = useRef(new Animated.Value(0)).current;
-  const opacityAnim = useRef(new Animated.Value(0)).current;
-  const translateYAnim = useRef(new Animated.Value(0)).current;
-  const rotateAnim = useRef(new Animated.Value(0)).current;
-  const burstProgress = useRef(new Animated.Value(0)).current;
+  const heartScaleAnim = useRef(new Animated.Value(1)).current;
+  const burstAnim = useRef(new Animated.Value(0)).current;
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useImperativeHandle(ref, () => ({
     trigger: (x: number, y: number, emoji?: string) => {
+      try { Vibration.vibrate(12); } catch (_) {}
       setCoords({ x, y });
       if (emoji) setActiveEmoji(emoji);
       setVisible(true);
 
+      // Stop previous animation if currently running
+      if (animRef.current) {
+        animRef.current.stop();
+      }
+
       // Reset values
-      scaleAnim.setValue(0);
-      opacityAnim.setValue(0);
-      translateYAnim.setValue(0);
-      rotateAnim.setValue(0);
-      burstProgress.setValue(0);
+      burstAnim.setValue(0);
+      heartScaleAnim.setValue(1);
 
-      Animated.parallel([
-        // 1. Snappy Heart Scale Pop & Settle (Industrial Standard)
+      const anim = Animated.parallel([
         Animated.sequence([
-          Animated.parallel([
-            Animated.timing(scaleAnim, {
-              toValue: 1.18,
-              duration: 150,
-              easing: Easing.out(Easing.back(1.4)),
-              useNativeDriver: true,
-            }),
-            Animated.timing(opacityAnim, {
-              toValue: 1,
-              duration: 80,
-              useNativeDriver: true,
-            }),
-            Animated.timing(rotateAnim, {
-              toValue: 1,
-              duration: 150,
-              easing: Easing.out(Easing.quad),
-              useNativeDriver: true,
-            }),
-          ]),
-          // Gentle float up and clean fade out
-          Animated.parallel([
-            Animated.timing(translateYAnim, {
-              toValue: -24,
-              duration: 220,
-              easing: Easing.out(Easing.quad),
-              useNativeDriver: true,
-            }),
-            Animated.timing(scaleAnim, {
-              toValue: 0.88,
-              duration: 220,
-              easing: Easing.in(Easing.quad),
-              useNativeDriver: true,
-            }),
-            Animated.timing(opacityAnim, {
-              toValue: 0,
-              duration: 220,
-              easing: Easing.in(Easing.quad),
-              useNativeDriver: true,
-            }),
-          ]),
+          Animated.timing(heartScaleAnim, {
+            toValue: 0.80,
+            duration: 90,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.spring(heartScaleAnim, {
+            toValue: 1.22,
+            friction: 5,
+            tension: 260,
+            useNativeDriver: true,
+          }),
+          Animated.spring(heartScaleAnim, {
+            toValue: 1.0,
+            friction: 6,
+            tension: 180,
+            useNativeDriver: true,
+          }),
         ]),
-
-        // 2. Micro Sparkle Burst Particles (100% Native Driver)
-        Animated.timing(burstProgress, {
+        Animated.timing(burstAnim, {
           toValue: 1,
-          duration: 260,
+          duration: 950,
           easing: Easing.out(Easing.quad),
           useNativeDriver: true,
         }),
-      ]).start(() => {
+      ]);
+
+      animRef.current = anim;
+      anim.start(() => {
         setVisible(false);
-        scaleAnim.setValue(0);
-        opacityAnim.setValue(0);
-        translateYAnim.setValue(0);
-        rotateAnim.setValue(0);
-        burstProgress.setValue(0);
+        burstAnim.setValue(0);
+        heartScaleAnim.setValue(1);
+        animRef.current = null;
       });
     },
   }));
 
   if (!visible) return null;
 
-  const heartRotation = rotateAnim.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: ['-8deg', '4deg', '0deg'],
-  });
-
   return (
     <View style={styles.overlay} pointerEvents="none">
-      {/* Sparkle Particle Accents */}
-      {PARTICLE_ANGLES.map((deg, i) => {
-        const rad = (deg * Math.PI) / 180;
-        const dist = 24;
+      {/* Micro Sparkle Burst Particles */}
+      {LIKE_PARTICLES.map((particle, idx) => {
+        const rad = (particle.angle * Math.PI) / 180;
+        const dist = 22;
         const targetX = Math.cos(rad) * dist;
         const targetY = Math.sin(rad) * dist;
 
-        const particleTranslateX = burstProgress.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, targetX],
-        });
-        const particleTranslateY = burstProgress.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, targetY],
-        });
-        const particleScale = burstProgress.interpolate({
-          inputRange: [0, 0.4, 1],
-          outputRange: [0, 1, 0],
-        });
-        const particleOpacity = burstProgress.interpolate({
-          inputRange: [0, 0.2, 0.8, 1],
-          outputRange: [0, 1, 0.8, 0],
-        });
-
         return (
           <Animated.View
-            key={`particle-${i}`}
+            key={`dt-particle-${idx}`}
             style={[
               styles.particle,
               {
                 top: coords.y,
                 left: coords.x,
-                backgroundColor: PARTICLE_COLORS[i % PARTICLE_COLORS.length],
+                width: particle.size,
+                height: particle.size,
+                borderRadius: particle.size / 2,
+                backgroundColor: particle.color,
                 transform: [
-                  { translateX: particleTranslateX },
-                  { translateY: particleTranslateY },
-                  { scale: particleScale },
+                  {
+                    translateX: burstAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, targetX],
+                    }),
+                  },
+                  {
+                    translateY: burstAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, targetY],
+                    }),
+                  },
+                  {
+                    scale: burstAnim.interpolate({
+                      inputRange: [0, 0.35, 1],
+                      outputRange: [0, 1.15, 0],
+                    }),
+                  },
                 ],
-                opacity: particleOpacity,
+                opacity: burstAnim.interpolate({
+                  inputRange: [0, 0.2, 0.75, 1],
+                  outputRange: [0, 1, 0.85, 0],
+                }),
               },
             ]}
           />
         );
       })}
 
-      {/* Main Heart with tilt & float */}
+      {/* Floating Main Heart / Reaction Emoji */}
       <Animated.View
         style={[
           styles.reaction,
@@ -161,11 +143,26 @@ const DoubleTapHeartOverlay = forwardRef<DoubleTapHeartOverlayRef, Props>(({ def
             top: coords.y,
             left: coords.x,
             transform: [
-              { translateY: translateYAnim },
-              { rotate: heartRotation },
-              { scale: scaleAnim },
+              {
+                translateY: burstAnim.interpolate({
+                  inputRange: [0, 0.45, 1],
+                  outputRange: [0, -12, -24],
+                }),
+              },
+              {
+                scale: heartScaleAnim,
+              },
+              {
+                rotate: burstAnim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: ['0deg', '-5deg', '5deg'],
+                }),
+              },
             ],
-            opacity: opacityAnim,
+            opacity: burstAnim.interpolate({
+              inputRange: [0, 0.12, 0.7, 1],
+              outputRange: [0, 1, 0.9, 0],
+            }),
           },
         ]}
       >
@@ -191,19 +188,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   heartText: {
-    fontSize: 34,
+    fontSize: 32,
     textAlign: 'center',
     textShadowColor: 'rgba(0, 0, 0, 0.2)',
-    textShadowOffset: { width: 0, height: 2 },
+    textShadowOffset: { width: 0, height: 1.5 },
     textShadowRadius: 4,
   },
   particle: {
     position: 'absolute',
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    marginLeft: -2.5,
-    marginTop: -2.5,
+    marginLeft: -1.75,
+    marginTop: -1.75,
   },
 });
 

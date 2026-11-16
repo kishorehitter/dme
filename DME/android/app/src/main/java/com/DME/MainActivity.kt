@@ -145,62 +145,6 @@ class MainActivity : ReactActivity() {
   }
 
   private var lastFullScreenVideoRect: Rect? = null
-  private val hiddenViewsDuringPip = ArrayList<View>()
-  private var translatedVideoView: View? = null
-
-  private fun applyNativePipLayout(inPip: Boolean) {
-    if (inPip) {
-      hiddenViewsDuringPip.clear()
-      val videoView = findVideoView(window.decorView) ?: return
-      val dsv = if (videoView is DualSurfaceVideoView) videoView
-                else (videoView.parent as? DualSurfaceVideoView) ?: videoView
-
-      val loc = IntArray(2)
-      dsv.getLocationInWindow(loc)
-      val videoTopInWindow = loc[1]
-
-      if (videoTopInWindow > 0) {
-        dsv.translationY = -videoTopInWindow.toFloat()
-        translatedVideoView = dsv
-      }
-
-      hideNonVideoViews(window.decorView, dsv)
-    } else {
-      translatedVideoView?.translationY = 0f
-      translatedVideoView = null
-      for (v in hiddenViewsDuringPip) {
-        v.alpha = 1f
-      }
-      hiddenViewsDuringPip.clear()
-    }
-  }
-
-  private fun hideNonVideoViews(root: View, videoView: View) {
-    if (root == videoView) return
-    if (root is ViewGroup) {
-      for (i in 0 until root.childCount) {
-        val child = root.getChildAt(i)
-        if (isAncestorOf(child, videoView) || child == videoView) {
-          hideNonVideoViews(child, videoView)
-        } else {
-          if (child.visibility == View.VISIBLE && child.alpha > 0f) {
-            child.alpha = 0f
-            hiddenViewsDuringPip.add(child)
-          }
-        }
-      }
-    }
-  }
-
-  private fun isAncestorOf(parent: View, target: View): Boolean {
-    if (parent !is ViewGroup) return false
-    var curr: View? = target.parent as? View
-    while (curr != null) {
-      if (curr == parent) return true
-      curr = curr.parent as? View
-    }
-    return false
-  }
 
   fun buildPipParams(autoEnter: Boolean? = null): PictureInPictureParams? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
@@ -368,7 +312,6 @@ class MainActivity : ReactActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         window.decorView.setBackgroundColor(Color.BLACK)
-        applyNativePipLayout(isInPictureInPictureMode)
       } catch (e: Exception) {
         android.util.Log.e("MainActivity", "Error in onPictureInPictureModeChanged: ${e.message}")
       }

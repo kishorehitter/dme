@@ -33,6 +33,7 @@ import ViewShot, { captureRef } from 'react-native-view-shot';
 import { SketchCanvas } from '@terrylinla/react-native-sketch-canvas';
 import LinearGradient from 'react-native-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { pinNavBarColor } from '../utils/navBarPin';
 import changeNavigationBarColor from 'react-native-navigation-bar-color';
@@ -375,6 +376,7 @@ const StatusEditorScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { width, height } = Dimensions.get('screen');
   const { theme, isDark } = useTheme();
+  const { user } = useAuth();
   const params = (route.params as RouteParams) ?? {};
 
   const safeTop = Math.max(insets.top, StatusBar.currentHeight || 0, 24);
@@ -734,6 +736,7 @@ const StatusEditorScreen: React.FC = () => {
       navigation.replace('StatusViewer', {
         uploadQueue: queue,
         isOwn: true,
+        currentUserId: user?.id,
       });
     }, 150);
   };

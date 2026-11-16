@@ -87,3 +87,33 @@ export const stopMusicService = (): void => {
     console.warn('[MusicServiceBridge] stopService error:', e);
   }
 };
+
+/**
+ * Re-request audio focus when the user returns to DME from another app.
+ */
+export const reacquireAudioFocus = (): void => {
+  try {
+    MusicService?.reacquireAudioFocus();
+  } catch (_) {}
+};
+
+/**
+ * Manually update native video player interruption mute state.
+ */
+export const setInterruptionMuted = (muted: boolean): void => {
+  try {
+    MusicService?.setInterruptionMuted?.(muted);
+  } catch (_) {}
+};
+
+/**
+ * Check if a normal phone call or external audio is active on the device.
+ */
+export const checkExternalAudioActive = async (): Promise<{ isCall: boolean; isMusicActive: boolean }> => {
+  try {
+    if (MusicService?.isExternalAudioActive) {
+      return await MusicService.isExternalAudioActive();
+    }
+  } catch (_) {}
+  return { isCall: false, isMusicActive: false };
+};

@@ -19,16 +19,20 @@ import changeNavigationBarColor from 'react-native-navigation-bar-color';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
+import LinearGradient from 'react-native-linear-gradient';
 import { CustomGalleryPicker, GalleryAsset } from '../../components/CustomGalleryPicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
 
 import AvatarWithFallback, { getAvatarGradient } from '../../components/AvatarWithFallback';
 import AvatarPickerModal from '../../components/AvatarPickerModal';
+import { QuickReactionPicker } from '../../components/QuickReactionPicker';
 import LegalModal, { LegalTabType } from '../../components/LegalModal';
 import { ALL_PRESET_AVATARS, PRESET_AVATARS } from '../../utils/presetAvatars';
 // import Toast from 'react-native-toast-message'; // Assuming this is used for notifications (commented out as not used in current scope)
 import { useAuth } from '../../context/AuthContext';
+import { saveLocalAvatar } from '../../utils/avatarCache';
 import { useTheme } from '../../context/ThemeContext';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
 import { authAPI } from '../../services/api'; // Assuming this has the checkUsername and completeProfileSetup functions
@@ -202,6 +206,9 @@ export const ProfileSetupScreen: React.FC = () => {
 
       // Append profile_picture if image info is available
       if (selectedImageInfo) {
+        if (user?.id) {
+          saveLocalAvatar(user.id, selectedImageInfo.uri).catch(() => {});
+        }
         // Append the image info object directly. FormData in React Native often handles this structure.
         // This mirrors the successful approach from ProfileScreen.tsx for uploads.
         formData.append('profile_picture', {
@@ -275,16 +282,14 @@ export const ProfileSetupScreen: React.FC = () => {
           onPress={() => setAvatarModalVisible(true)}
           activeOpacity={0.78}
         >
-          <View style={s.avatarStickerIconWrap}>
-            <Image
-              source={currentStickerImage || ALL_PRESET_AVATARS[0].image}
-              style={s.avatarStickerPreviewImg}
-              resizeMode="contain"
-            />
-            <View style={s.avatarStickerSparkleBadge}>
-              <Icon name="sparkles" size={10} color="#FFFFFF" />
-            </View>
-          </View>
+          <LinearGradient
+            colors={['#FFF', '#3B82F6']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.avatarStickerIconWrap}
+          >
+            <MaterialIcon name="face-retouching-natural" size={32} color="#000" />
+          </LinearGradient>
           <View style={s.avatarStickerTextCol}>
             <Text style={s.avatarStickerTitle} numberOfLines={1}>3D Avatar</Text>
             <Text style={s.avatarStickerSub} numberOfLines={1}>
@@ -389,31 +394,10 @@ export const ProfileSetupScreen: React.FC = () => {
       <View style={s.reactionSection}>
         <Text style={s.sectionLabel}>Double-Tap Reaction</Text>
         <View style={s.reactionContainer}>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false} 
-            contentContainerStyle={s.reactionScroll}
-            
-          >
-            {QUICK_REACTIONS.map(emoji => {
-              const isActive = quickReaction === emoji;
-              return (
-                <TouchableOpacity
-                  key={emoji}
-                  style={[s.reactionItem, isActive && s.reactionItemActive]}
-                  onPress={() => setQuickReaction(emoji)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={s.reactionText}>{emoji}</Text>
-                  {isActive && (
-                    <View style={s.reactionCheckBadge}>
-                      <Icon name="checkmark" size={8} color="#FFFFFF" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          <QuickReactionPicker
+            selectedEmoji={quickReaction}
+            onSelectEmoji={setQuickReaction}
+          />
         </View>
       </View>
 
@@ -571,7 +555,8 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingTop: 4,
+    paddingBottom: 8,
     paddingHorizontal: 16,
     gap: 16,
     width: '100%',
@@ -610,26 +595,24 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
   avatarStickerButton: {
     flex: 1,
     maxWidth: 205,
-    height: 106,
+    height: 80,
     borderRadius: 20,
     backgroundColor: 'transparent',
     borderWidth: 0,
     borderColor: 'transparent',
     paddingHorizontal: 8,
-    paddingVertical: 10,
+    paddingVertical: 6,
     flexDirection: 'row',
     alignItems: 'center',
   },
   avatarStickerIconWrap: {
     position: 'relative',
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: isDark ? 'rgba(15, 98, 254, 0.25)' : '#E0EDFE',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#BAD7FE',
+    overflow: 'hidden',
   },
   avatarStickerPreviewImg: {
     width: 40,
@@ -845,13 +828,7 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors, isDark = 
     marginVertical: 16,
   },
   reactionContainer: {
-    borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    backgroundColor: theme.inputBackground,
-    overflow: 'hidden',
+    width: '100%',
   },
   sectionLabel: {
     fontSize: 14,

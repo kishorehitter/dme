@@ -56,9 +56,19 @@ class DualSurfaceViewManager : SimpleViewManager<DualSurfaceVideoView>() {
         view.setVolume(volume)
     }
 
+    @ReactProp(name = "roomTheme")
+    fun setRoomTheme(view: DualSurfaceVideoView, theme: String?) {
+        view.setRoomTheme(theme ?: "rave")
+    }
+
     @ReactProp(name = "bleedEnabled", defaultBoolean = true)
     fun setBleedEnabled(view: DualSurfaceVideoView, enabled: Boolean) {
         view.setBleedEnabled(enabled)
+    }
+
+    @ReactProp(name = "isTransparentBackground", defaultBoolean = false)
+    fun setIsTransparentBackground(view: DualSurfaceVideoView, transparent: Boolean) {
+        view.setIsTransparentBackground(transparent)
     }
 
     @ReactProp(name = "bleedDarkness", defaultFloat = 0.55f)

@@ -27,27 +27,27 @@ interface AmbientDiscoBackgroundProps {
 // 2.2x canvas size for generous visible motion range
 const CANVAS_SIZE = Math.round(Math.max(SCREEN_WIDTH, SCREEN_HEIGHT) * 2.2);
 
-// ── 1. CINEMA VIP THEME: Electric Aqua & Jelly Ocean ──
+// ── 1. CINEMA VIP THEME: Deep Ocean & Soft Marine Glow ──
 const SWIRL_SPECTRUM_1 = [
-  'rgba(0, 242, 254, 0.85)',   // Electric Aqua (#00F2FE)
-  'rgba(0, 119, 255, 0.72)',   // Jelly Royal Blue (#0077FF)
-  'rgba(2, 40, 80, 0.82)',     // Deep Oceanic Abyss (#022850)
-  'rgba(56, 189, 248, 0.80)',  // Radiant Ice Sky Cyan (#38BDF8)
-  'rgba(0, 242, 254, 0.85)',   // Loop
+  'rgba(14, 82, 116, 0.85)',   // Deep Marine Sapphire (#0E5274)
+  'rgba(11, 37, 72, 0.82)',    // Pacific Midnight Navy (#0B2548)
+  'rgba(3, 9, 21, 0.88)',      // Deep Oceanic Abyss (#030915)
+  'rgba(18, 66, 107, 0.80)',   // Bioluminescent Ocean Crest (#12426B)
+  'rgba(14, 82, 116, 0.85)',   // Loop
 ];
 
 const SWIRL_SPECTRUM_2 = [
-  'rgba(0, 194, 255, 0.78)',   // Vivid Jelly Cyan (#00C2FF)
-  'rgba(125, 249, 255, 0.68)', // Shimmering Crystalline Aqua (#7DF9FF)
-  'rgba(3, 25, 52, 0.85)',     // Midnight Abyssal Indigo (#031934)
-  'rgba(14, 165, 233, 0.75)',  // Deep Azure Ribbon (#0EA5E9)
-  'rgba(0, 194, 255, 0.78)',   // Loop
+  'rgba(13, 47, 84, 0.78)',    // Deep Sapphire Marine (#0D2F54)
+  'rgba(20, 82, 120, 0.68)',   // Soft Marine Teal (#145278)
+  'rgba(5, 17, 37, 0.85)',     // Deep Trench Indigo (#051125)
+  'rgba(14, 165, 233, 0.65)',  // Soft Ocean Azure Ribbon (#0EA5E9)
+  'rgba(13, 47, 84, 0.78)',    // Loop
 ];
 
 const SWIRL_SPECTRUM_3 = [
-  'rgba(186, 250, 255, 0.80)', // Brilliant Aqua-White Diamond Highlight (#BAFAFF)
+  'rgba(56, 189, 248, 0.40)',  // Soft Marine Bubble Glow (#38BDF8)
   'transparent',
-  'rgba(0, 242, 254, 0.72)',   // Electric Aqua Flare (#00F2FE)
+  'rgba(14, 165, 233, 0.35)',  // Subtle Sapphire Light
   'transparent',
 ];
 
@@ -59,7 +59,7 @@ const AmbientDiscoBackground: React.FC<AmbientDiscoBackgroundProps> = ({
   isMinimized = false,
   fullscreen = false,
   thumbnail,
-  theme = 'cinema',
+  theme = 'rave',
 }) => {
   // ── Swirl Layer 1: Clockwise Fast Swirl ──
   const rot1 = useSharedValue(0);

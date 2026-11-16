@@ -6,6 +6,7 @@ export interface User {
   display_name: string;
   username: string;
   profile_picture: string | null;
+  local_profile_picture?: string | null;
   avatar_sticker: string | null;
   quick_reaction: string;
   status: string;

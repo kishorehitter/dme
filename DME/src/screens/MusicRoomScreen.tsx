@@ -35,11 +35,13 @@ import YoutubePlayer from '../components/YoutubePlayer';
 import YouTubeDecipherService from '../services/YouTubeDecipherService';
 import TrackPlayerService, { extractStreamUrlClientSide, extractVideoStreamUrlClientSide, heightToQualityKey, getEffectiveResolutionHeight } from '../services/TrackPlayerService';
 import TrackPlayer, { Event, PlaybackState } from '@rntp/player';
-import { startMusicService, updateMusicService, stopMusicService, updateMusicServicePosition } from '../services/MusicServiceBridge';
+import { startMusicService, updateMusicService, stopMusicService, updateMusicServicePosition, checkExternalAudioActive, reacquireAudioFocus, setInterruptionMuted } from '../services/MusicServiceBridge';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useMusicRoom, Song, QueueItem } from '../hooks/useMusicRoom';
 import { setSystemPipEnabled, setSystemPipMinimized, setSystemPipAspectRatio, getAspectRatioFraction, enterSystemPip, closeSystemPip, addPipListener, hasSystemPipPermission, openSystemPipSettings } from '../services/PipService';
 import YouTubeDiscoveryScreen from './YouTubeDiscoveryScreen';
+import WatchTogetherTabSelectScreen from './WatchTogetherTabSelectScreen';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
@@ -50,7 +52,7 @@ import RoomParticipantsModal from '../components/RoomParticipantsModal';
 import AvatarWithFallback from '../components/AvatarWithFallback';
 import RelatedVideosGrid from '../components/RelatedVideosGrid';
 import CenterLyricsView from '../components/CenterLyricsView';
-import { fetchLyrics, LyricLine, cleanArtistName, extractArtistFromTitle } from '../services/LyricsService';
+import { fetchLyrics, LyricLine, cleanArtistName, cleanSongTitle, extractArtistFromTitle, isRecordLabelOrChannel } from '../services/LyricsService';
 import DiscoveryFeedService from '../services/DiscoveryFeedService';
 import musicWebSocketService from '../services/MusicWebSocketService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -68,12 +70,13 @@ import StickerPreviewModal from '../components/StickerPreviewModal';
 import { CustomGalleryPicker } from '../components/CustomGalleryPicker';
 import FastImage from 'react-native-fast-image';
 import { checkGoogleDriveAuth } from '../utils/driveAuth';
+import { checkYouTubeAuth, getHasSkippedYtLogin, setHasSkippedYtLogin } from '../utils/youtubeAuth';
 import DriveStreamService from '../services/DriveStreamService';
 import StickerPickerSheet from '../components/StickerPickerSheet';
 import DoubleTapHeartOverlay, { DoubleTapHeartOverlayRef } from '../components/DoubleTapHeartOverlay';
 import LottieStickerMessage from '../components/LottieStickerMessage';
 import { BUILT_IN_STICKER_PACKS, Sticker } from '../stickers/stickerPacks';
-import Reanimated, { useSharedValue, useAnimatedStyle, useDerivedValue, useAnimatedReaction, withTiming, withSpring, cancelAnimation, Easing } from 'react-native-reanimated';
+import Reanimated, { useSharedValue, useAnimatedStyle, useDerivedValue, useAnimatedReaction, withTiming, withSpring, cancelAnimation, Easing, interpolate, Extrapolation } from 'react-native-reanimated';
 import { useGenericKeyboardHandler, KeyboardController, AndroidSoftInputModes } from 'react-native-keyboard-controller';
 import { useMusicVoiceChat } from '../hooks/useMusicVoiceChat';
 
@@ -135,6 +138,15 @@ const AnimatedMessageBubble = React.memo(({
 
 const { width, height } = Dimensions.get('window');
 const VIDEO_HEIGHT = width * (9 / 16);
+
+const LIKE_PARTICLES = [
+  { angle: 30, color: '#FF7597', size: 4 },
+  { angle: 90, color: '#FF8DA1', size: 3 },
+  { angle: 150, color: '#FFB3C6', size: 4 },
+  { angle: 210, color: '#FFA4BA', size: 3.5 },
+  { angle: 270, color: '#FF69B4', size: 4 },
+  { angle: 330, color: '#FF94AA', size: 3.5 },
+];
 
 // ── Isolated Input Box: Encapsulates inputHeight so multiline expansions (<1ms)
 // NEVER trigger a re-render of the 6,000-line MusicRoomScreen tree (WhatsApp / ChatInputArea style) ──
@@ -258,36 +270,54 @@ const fetchChannelDetails = async (videoId: string): Promise<{ logo: string | nu
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
+      credentials: 'omit',
     });
     const html = await res.text();
-    const ownerMatch = html.match(/"videoOwnerRenderer"\s*:\s*\{[^}]*?"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
-    if (ownerMatch && ownerMatch[1]) {
-      logo = ownerMatch[1].replace(/\\u0026/g, '&');
-    } else {
-      const avatarMatch = html.match(/"avatar"\s*:\s*\{\s*"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
-      if (avatarMatch && avatarMatch[1]) {
-        logo = avatarMatch[1].replace(/\\u0026/g, '&');
+
+    // 1. Strictly target the videoOwnerRenderer object (with colon) so we never match
+    // topbar/masthead avatars of the logged-in user or unrelated recommendation avatars.
+    const ownerIdx = html.search(/"videoOwnerRenderer"\s*:/);
+    if (ownerIdx !== -1) {
+      const slice = html.substring(ownerIdx, ownerIdx + 3000);
+      const thumbMatch = slice.match(/"thumbnails"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https:\/\/[^"]+)"/);
+      if (thumbMatch && thumbMatch[1]) {
+        logo = thumbMatch[1].replace(/\\u0026/g, '&');
       } else {
-        const matches = html.match(/https:\/\/yt3\.(?:ggpht|googleusercontent)\.com\/[a-zA-Z0-9_\-=/]+/g);
-        if (matches && matches.length > 0) {
-          logo = matches[0];
+        const yt3Match = slice.match(/"url"\s*:\s*"(https:\/\/yt3\.(?:ggpht|googleusercontent)\.com\/[^"]+)"/);
+        if (yt3Match && yt3Match[1]) {
+          logo = yt3Match[1].replace(/\\u0026/g, '&');
+        }
+      }
+
+      const navMatch = slice.match(/"canonicalBaseUrl"\s*:\s*"(\/@[^"]+)"/) ||
+                       slice.match(/"url"\s*:\s*"(\/(?:@[^"]+|channel\/UC[^"]+))"/);
+      if (navMatch && navMatch[1]) {
+        channelUrl = `https://m.youtube.com${navMatch[1].replace(/\/+$/, '')}/videos`;
+      }
+    }
+
+    // 2. Channel thumbnail supported renderers (with colon)
+    if (!logo) {
+      const chanIdx = html.search(/"channelThumbnail(?:SupportedRenderers|WithLinkRenderer)"\s*:/);
+      if (chanIdx !== -1) {
+        const chanSlice = html.substring(chanIdx, chanIdx + 2000);
+        const thumbMatch = chanSlice.match(/"url"\s*:\s*"(https:\/\/[^"]+)"/);
+        if (thumbMatch && thumbMatch[1]) {
+          logo = thumbMatch[1].replace(/\\u0026/g, '&');
         }
       }
     }
 
-    const canonicalMatch = html.match(/"canonicalBaseUrl"\s*:\s*"(\/@[^"]+)"/);
-    if (canonicalMatch && canonicalMatch[1]) {
-      channelUrl = `https://m.youtube.com${canonicalMatch[1]}/videos`;
-    } else {
-      const navUrlMatch = html.match(/"videoOwnerRenderer"\s*:\s*\{[^}]*?"navigationEndpoint"\s*:\s*\{[^}]*?"url"\s*:\s*"(\/[^"]+)"/);
-      if (navUrlMatch && navUrlMatch[1]) {
-        const base = navUrlMatch[1].startsWith('/') ? navUrlMatch[1] : `/${navUrlMatch[1]}`;
-        channelUrl = `https://m.youtube.com${base}/videos`;
-      } else {
-        const browseMatch = html.match(/"browseId"\s*:\s*"(UC[a-zA-Z0-9_\-]+)"/);
-        if (browseMatch && browseMatch[1]) {
-          channelUrl = `https://m.youtube.com/channel/${browseMatch[1]}/videos`;
-        }
+    // Upgrade low-res =s48- thumbnail to crystal-clear high-res =s176-
+    if (logo && logo.includes('=s')) {
+      logo = logo.replace(/=s\d+-/, '=s176-');
+    }
+
+    // Fallback to browseId for channelUrl if not already found
+    if (!channelUrl) {
+      const browseMatch = html.match(/"browseId"\s*:\s*"(UC[a-zA-Z0-9_\-]+)"/);
+      if (browseMatch && browseMatch[1]) {
+        channelUrl = `https://m.youtube.com/channel/${browseMatch[1]}/videos`;
       }
     }
   } catch (e) {
@@ -328,12 +358,12 @@ const fetchVideoAspectRatio = async (videoId: string, storyboardSpec?: string): 
           videoFormats.sort((a: any, b: any) => b.width - a.width);
           const top = videoFormats[0];
           const streamAr = top.width / top.height;
-          if (streamAr > 1.82) {
-            console.log(`📐 [NATIVE WIDESCREEN STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)} (0% black bars)`);
+          if (streamAr >= 2.30) {
+            console.log(`📐 [NATIVE CINEMASCOPE STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)} (0% black bars)`);
             return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: true };
           }
-          if (streamAr < 1.0 && streamAr >= 0.4) {
-            console.log(`📐 [PORTRAIT SHORT STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)}`);
+          if (streamAr < 1.75 && streamAr >= 0.4) {
+            console.log(`📐 [TALL STREAM] Video ${videoId} format ${top.width}x${top.height} -> Aspect Ratio: ${streamAr.toFixed(3)}`);
             return { aspectRatio: streamAr, verticalPercent: 0.0, isNativeWidescreen: false };
           }
         }
@@ -352,6 +382,299 @@ const cleanThumbnailUrl = (url?: string | null): string | null => {
   return url;
 };
 
+/**
+ * Isolates ONLY the pure song name from any YouTube title:
+ * strips 8K/4K resolution tags, artist prefixes, movie/album titles, cast/crew, pipe clauses, and video noise.
+ */
+const cleanNoiseFromSongName = (str: string): string => {
+  let s = str;
+
+  // 1. Strip resolution combinations anywhere in the string:
+  // e.g. "8K/4K", "4K/8K", "8K / 4K", "4K / 8K", "HD/4K", "4K/UHD"
+  s = s.replace(/\b(?:8k\s*[\/\\]\s*4k|4k\s*[\/\\]\s*8k|hd\s*[\/\\]\s*4k|8k\s*[\/\\]\s*hd|4k\s*[\/\\]\s*uhd)\b/gi, ' ');
+
+  // 2. Strip standalone resolution, quality, and framerate tokens anywhere in the string:
+  // e.g. 4K, 8K, 2K, 1080p, 720p, 60FPS, 120FPS, UHD, Ultra HD, HDR, HDR10+, Dolby Vision
+  s = s.replace(/\b(?:[0-9]+k|[0-9]+p|[0-9]+\s*fps|uhd|ultra\s*hd|fhd|qhd|hdr10\+?|hdr|dolby\s*(?:vision|atmos))\b/gi, ' ');
+
+  // 3. Strip "From ..." or "- From ..." (e.g. from "Movie")
+  s = s.replace(/\bfrom\s+["'“‘]?[^"’\n]+["'”’]?/gi, ' ');
+
+  // 4. Strip featuring info: "feat. DaBaby", "ft. Drake", "featuring ..."
+  s = s.replace(/\s*[\(\[]?\s*(?:feat\.?|ft\.?|featuring)\s+[^\)\]]+[\)\]]?/gi, ' ');
+
+  // 5. Repeatedly strip common noise phrases from the end of the song name:
+  const noiseRegex = /\s+(?:full\s+video\s+songs?|video\s+songs?|audio\s+songs?|lyric(?:al)?\s+(?:video|song)?|lyrics?\s+video|official\s+(?:music\s+)?video|official\s+audio|music\s+video|full\s+(?:song|video|track|audio)|official\s+mv|m\/?v|theme\s+song|original\s+soundtrack|soundtrack|ost|visualizer|remastered|remaster|video|audio|song)$/i;
+
+  let prev = '';
+  while (prev !== s) {
+    prev = s;
+    s = s.replace(noiseRegex, '').trim();
+    // Re-check and strip resolution tokens if exposed at end
+    s = s.replace(/\b(?:8k\s*[\/\\]\s*4k|4k\s*[\/\\]\s*8k|hd\s*[\/\\]\s*4k|8k\s*[\/\\]\s*hd|4k\s*[\/\\]\s*uhd)\b/gi, ' ').trim();
+    s = s.replace(/\b(?:[0-9]+k|[0-9]+p|[0-9]+\s*fps|uhd|ultra\s*hd|fhd|qhd|hdr10\+?|hdr|dolby\s*(?:vision|atmos))\b/gi, ' ').trim();
+  }
+
+  // 6. Strip leading/trailing punctuation, dashes, slashes, and quotes
+  s = s.replace(/^[-\s:|•–—~"'`“‘\[\]\(\)\/\\]+|[-\s:|•–—~"'`”’\[\]\(\)\/\\]+$/g, '').trim();
+
+  // 7. Normalize multiple spaces
+  s = s.replace(/\s+/g, ' ').trim();
+
+  return s;
+};
+
+const SONG_INDICATOR_REGEX = /\b(?:video\s*songs?|audio\s*songs?|full\s*(?:video|song|audio)|official\s*(?:video|audio|music\s*video)|music\s*video|lyric(?:al)?\s*(?:video|song)?|lyrics?\s*video|title\s*track|theme\s*song|[0-9]+k|[0-9]+\s*fps|uhd|video|audio)\b/i;
+const MOVIE_INDICATOR_REGEX = /\b(?:movie|film|from|soundtrack|ost)\b/i;
+
+/**
+ * Checks whether a candidate string is a YouTube channel, record label, media company,
+ * or format indicator tag rather than an actual song title.
+ */
+const isChannelOrLabelMatch = (candidate?: string | null, channelName?: string | null): boolean => {
+  if (!candidate || typeof candidate !== 'string') return false;
+  const trimmed = candidate.trim();
+  if (trimmed.length < 2) return false;
+
+  // 1. Explicitly check record labels / corporate channels (Sony, T-Series, Zee, Tips, Saregama, etc.)
+  if (isRecordLabelOrChannel(trimmed)) return true;
+
+  // 2. Known YouTube channel tags / format indicators without song keywords
+  if (/\b(?:4k|8k|hd|60fps|120fps|status|vibes?|hub|records?|creations?|edits?|clips?|jukebox|media)\b/i.test(trimmed)) {
+    if (!/\b(?:songs?|lyrics?|track)\b/i.test(trimmed)) {
+      return true;
+    }
+  }
+
+  // 3. Compare against channelName / rawArtist if provided
+  if (channelName && typeof channelName === 'string') {
+    const cNorm = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const chNorm = channelName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (cNorm && chNorm && (cNorm === chNorm || cNorm.includes(chNorm) || chNorm.includes(cNorm))) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Checks whether a title is a loading placeholder, watch party default,
+ * or matched to a participant/room name.
+ */
+const isPlaceholderSongTitle = (title?: string | null, excludedNames?: (string | null | undefined)[]): boolean => {
+  if (!title || typeof title !== 'string') return true;
+  const t = title.trim();
+  if (
+    !t ||
+    t === 'Loading...' ||
+    t === 'Initializing...' ||
+    t === 'YouTube Video' ||
+    t === 'Watch Party' ||
+    t === 'Drive Video' ||
+    t === 'Now Playing' ||
+    t === 'Music Room' ||
+    t.toLowerCase().endsWith("'s room") ||
+    /^room\s*#?\d+$/i.test(t)
+  ) {
+    return true;
+  }
+  if (excludedNames && excludedNames.length > 0) {
+    const tLower = t.toLowerCase();
+    for (const name of excludedNames) {
+      if (name && typeof name === 'string') {
+        const n = name.trim().toLowerCase();
+        if (n && (tLower === n || tLower === `${n}'s room`)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+};
+
+const extractPureSongName = (
+  rawTitle?: string,
+  verifiedTrackName?: string | null,
+  channelTitle?: string | null
+): string => {
+  // If we already have a verified track name from Spotify / Musixmatch / Lrclib, use it
+  if (verifiedTrackName && verifiedTrackName.trim().length > 0) {
+    const cleaned = cleanNoiseFromSongName(cleanSongTitle(verifiedTrackName).trim());
+    if (cleaned.length >= 2 && !isChannelOrLabelMatch(cleaned, channelTitle)) {
+      return cleaned;
+    }
+  }
+
+  if (!rawTitle || typeof rawTitle !== 'string') return '';
+
+  let text = rawTitle.trim();
+  if (
+    !text ||
+    text === 'Loading...' ||
+    text === 'Initializing...' ||
+    text === 'YouTube Video' ||
+    text === 'Watch Party' ||
+    text === 'Drive Video' ||
+    text === 'Now Playing'
+  ) {
+    return '';
+  }
+
+  // 1. If song title is explicitly enclosed in quotes (e.g. BTS 'Dynamite' Official MV or Maroon 5 - "Memories")
+  const quoteMatch = text.match(/['"‘“]([^'"’“”]{2,45})['"’”]/);
+  if (quoteMatch) {
+    const candidate = quoteMatch[1].trim();
+    if (
+      !/^(official|video|audio|remix|hd|4k|8k|feat|soundtrack|live|version|mv)$/i.test(candidate) &&
+      !isChannelOrLabelMatch(candidate, channelTitle)
+    ) {
+      const qIndex = text.indexOf(quoteMatch[0]);
+      const prefix = text.slice(Math.max(0, qIndex - 10), qIndex).toLowerCase();
+      if (!prefix.includes('from')) {
+        const cleaned = cleanNoiseFromSongName(candidate);
+        if (cleaned.length >= 2 && !isChannelOrLabelMatch(cleaned, channelTitle)) {
+          return cleaned;
+        }
+      }
+    }
+  }
+
+  // 2. Multi-segment inspection (e.g. "Movie | Song Video Song | Cast | Music Director")
+  const rawSegments = text.split(/\s*(?:\||\/\/|•)\s*/).filter(Boolean);
+  const hasMultipleSegments = rawSegments.length > 1;
+
+  let chosenSegment = rawSegments[0] || text;
+
+  if (hasMultipleSegments) {
+    // Filter out cast lists (containing commas), role prefixes, pure noise segments, AND pure channel/label segments!
+    const candidateSegments = rawSegments
+      .slice(0, 4)
+      .filter((seg) => {
+        const s = seg.trim();
+        if (!s) return false;
+        if (s.includes(',')) return false;
+        if (/^(?:directed\s*by|starring|music\s*by|singer|composer|produced\s*by)/i.test(s)) return false;
+        if (/[-–—:~]/.test(s)) {
+          const parts = s.split(/[-–—:~]/);
+          const allChan = parts.every((p) => isChannelOrLabelMatch(p, channelTitle) || cleanNoiseFromSongName(p).length < 2);
+          if (allChan) return false;
+        } else if (isChannelOrLabelMatch(s, channelTitle)) {
+          return false;
+        }
+        if (cleanNoiseFromSongName(s).length < 2) return false;
+        return true;
+      });
+
+    // Look for an explicit song candidate (e.g. Seg 1 has "Video Song" while Seg 0 is movie name)
+    const songIndex = candidateSegments.findIndex(
+      (seg) => SONG_INDICATOR_REGEX.test(seg) && !MOVIE_INDICATOR_REGEX.test(seg)
+    );
+
+    if (songIndex >= 0) {
+      chosenSegment = candidateSegments[songIndex];
+    } else if (candidateSegments.length > 0) {
+      // If neither has explicit song indicator, check if seg 0 is explicitly a movie
+      if (candidateSegments.length > 1 && MOVIE_INDICATOR_REGEX.test(candidateSegments[0])) {
+        chosenSegment = candidateSegments[1];
+      } else {
+        chosenSegment = candidateSegments[0];
+      }
+    }
+  }
+
+  // 3. Remove bracketed and parenthesized tags:
+  // e.g. [8K/4K], [Official Video], (4K), (From "Leo"), (Lyric Video), [Tamil], (Audio)
+  chosenSegment = chosenSegment.replace(/\[[^\]]*\]/g, ' ');
+  chosenSegment = chosenSegment.replace(/\([^\)]*\)/g, ' ');
+
+  // 4. Split by artist/title, movie/song, or channel/song separator:
+  // "Artist - Title", "Channel - Song Title", "Movie - Song Video Song", or "Song - Movie | Cast"
+  // Prefer separator with surrounding whitespace so hyphenated names like "T-Series" or "Jay-Z" are preserved!
+  const sepMatch = chosenSegment.match(/^(.+?)\s+[-–—:~]\s+(.+)$/) || chosenSegment.match(/^([^-–—:~]+)\s*[-–—:~]\s*(.+)$/);
+  if (sepMatch) {
+    const leftPart = sepMatch[1].trim();
+    const rightPart = sepMatch[2].trim();
+
+    const leftIsChan = isChannelOrLabelMatch(leftPart, channelTitle);
+    const rightIsChan = isChannelOrLabelMatch(rightPart, channelTitle);
+
+    if (leftIsChan && !rightIsChan) {
+      chosenSegment = rightPart;
+    } else if (rightIsChan && !leftIsChan) {
+      chosenSegment = leftPart;
+    } else {
+      const leftHasSong = SONG_INDICATOR_REGEX.test(leftPart);
+      const rightHasSong = SONG_INDICATOR_REGEX.test(rightPart);
+
+      if (rightHasSong && !leftHasSong) {
+        chosenSegment = rightPart;
+      } else if (leftHasSong && !rightHasSong) {
+        chosenSegment = leftPart;
+      } else if (hasMultipleSegments) {
+        // In Indian video formats with pipe segments ("Song - Movie | Cast | Composer"),
+        // the left part before the hyphen is the song title, and the right part is the movie.
+        // BUT if leftPart is a movie indicator, choose rightPart:
+        const cleanedLeft = cleanNoiseFromSongName(leftPart);
+        const cleanedRight = cleanNoiseFromSongName(rightPart);
+
+        if (MOVIE_INDICATOR_REGEX.test(leftPart) && cleanedRight.length >= 2) {
+          chosenSegment = rightPart;
+        } else if (cleanedLeft.length >= 2) {
+          chosenSegment = leftPart;
+        } else {
+          chosenSegment = rightPart;
+        }
+      } else {
+        // Standard Western "Artist - Title" format: right part is song title
+        const cleanedRight = cleanNoiseFromSongName(rightPart);
+        if (cleanedRight.length >= 2) {
+          chosenSegment = rightPart;
+        } else {
+          chosenSegment = leftPart;
+        }
+      }
+    }
+  }
+
+  // 5. If another dash exists on the right side (e.g. "Song Name - 8K/4K Video" or "Song Name - Lyrics")
+  const secondSep = chosenSegment.match(/^([^-–—:~]+)\s*[-–—:~]\s*(.+)$/);
+  if (secondSep) {
+    if (/(lyrics?|official|audio|video|remaster|hd|4k|8k|60fps|visualizer|mix|soundtrack|version)/i.test(secondSep[2])) {
+      chosenSegment = secondSep[1].trim();
+    }
+  }
+
+  const finalName = cleanNoiseFromSongName(chosenSegment);
+  if (isChannelOrLabelMatch(finalName, channelTitle)) {
+    return '';
+  }
+  return finalName || '';
+};
+
+const parseViralPopTitleInfo = (
+  rawTitle?: string,
+  rawArtist?: string,
+  verifiedTrackName?: string | null,
+  verifiedArtistName?: string | null
+): { title: string; artist: string } => {
+  let artist = verifiedArtistName || '';
+  const title = extractPureSongName(rawTitle, verifiedTrackName, rawArtist);
+
+  if (!artist && rawTitle) {
+    artist = extractArtistFromTitle(rawTitle) || '';
+  }
+
+  if (!artist && rawArtist) {
+    const cleanArt = cleanArtistName(rawArtist);
+    if (cleanArt) {
+      artist = cleanArt;
+    }
+  }
+
+  return { title, artist };
+};
+
 const getSongThumbnail = (item?: any): string | null => {
   if (!item) return null;
   const s = item.song || item;
@@ -368,14 +691,31 @@ const getSongThumbnail = (item?: any): string | null => {
   return null;
 };
 
-const fetchYouTubeMetadata = async (videoId: string, fallbackName?: string): Promise<Song> => {
-  const cleanFallback = (fallbackName && fallbackName !== 'Watch Party' && fallbackName !== 'YouTube Video') ? fallbackName : '';
+const fetchYouTubeMetadata = async (
+  videoId: string,
+  addedBy?: string,
+  fallbackTitle?: string
+): Promise<Song> => {
+  let cleanTitle = (
+    fallbackTitle &&
+    fallbackTitle !== 'Watch Party' &&
+    fallbackTitle !== 'YouTube Video' &&
+    fallbackTitle !== 'Drive Video' &&
+    fallbackTitle !== 'Loading...' &&
+    fallbackTitle !== 'Initializing...' &&
+    fallbackTitle !== 'Now Playing'
+  ) ? fallbackTitle : '';
+
+  if (cleanTitle && addedBy && cleanTitle.trim().toLowerCase() === addedBy.trim().toLowerCase()) {
+    cleanTitle = '';
+  }
+
   const base: Song = {
     videoId,
-    title:        cleanFallback || 'Loading...',
+    title:        cleanTitle || 'Loading...',
     thumbnail:    `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
     channelTitle: 'YouTube',
-    addedBy:      fallbackName ?? 'Someone',
+    addedBy:      addedBy ?? 'Someone',
   };
 
   let resolvedTitle = base.title;
@@ -487,6 +827,8 @@ interface ControlsProps {
   title?: string;
   isMuted?: boolean;
   onToggleMute?: () => void;
+  onZoomToggle?: () => void;
+  isZoom?: boolean;
 }
 
 const VideoControls: React.FC<ControlsProps> = ({
@@ -500,6 +842,8 @@ const VideoControls: React.FC<ControlsProps> = ({
   title,
   isMuted = false,
   onToggleMute,
+  onZoomToggle,
+  isZoom = false,
 }) => {
   const insets = useSafeAreaInsets();
   const canControlRef = useRef(canControl);
@@ -868,16 +1212,16 @@ const VideoControls: React.FC<ControlsProps> = ({
         <>
           <View style={[cv.scrimTop, { opacity: 0 }]} pointerEvents="none" />
           <View style={[cv.scrimBottom, { opacity: 0 }]} pointerEvents="none" />
-          {!isDrivePlayer && onSettings && (
+          {!isDrivePlayer && onZoomToggle && (
             <Animated.View style={[{ position: 'absolute', top: 4, left: 8 }, { opacity }]} pointerEvents={visible ? 'auto' : 'none'}>
               <TouchableOpacity
-                style={cv.qualityPillBtn}
-                onPress={onSettings}
+                style={cv.topRightBtn}
+                onPress={onZoomToggle}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 activeOpacity={0.7}
-                accessibilityLabel="Video quality"
+                accessibilityLabel="Toggle zoom/fit"
               >
-                <Text style={cv.qualityPillText}>Q</Text>
+                <Icon name={isZoom ? 'contract' : 'scan'} size={16} color="#fff" />
               </TouchableOpacity>
             </Animated.View>
           )}
@@ -982,6 +1326,21 @@ const VideoControls: React.FC<ControlsProps> = ({
             ) : (
               <Text style={cv.timeText}>{fmtTime(displayPosition)} / {fmtTime(duration)}</Text>
             )}
+
+            {/* Next / Skip Track Button in Fullscreen */}
+            <TouchableOpacity
+              style={[cv.bottomRowBtn, !canControl && { opacity: 0.4 }]}
+              onPress={() => {
+                onNext();
+                onKeepControlsAlive?.();
+              }}
+              disabled={!canControl}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Skip video"
+            >
+              <Icon name="play-skip-forward" size={15} color="#fff" />
+            </TouchableOpacity>
           </View>
           <View
             ref={fullscreenTrackerRef}
@@ -1079,20 +1438,21 @@ const VideoControls: React.FC<ControlsProps> = ({
             </View>
           </View>
 
-          {/* Right: Skip Button */}
-          <TouchableOpacity
-            style={[cv.bottomRowBtn, !canControl && { opacity: 0.4 }]}
-            onPress={() => {
-              onNext();
-              onKeepControlsAlive?.();
-            }}
-            disabled={!canControl}
-            activeOpacity={0.7}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            accessibilityLabel="Skip video"
-          >
-            <Icon name="play-skip-forward" size={15} color="#fff" />
-          </TouchableOpacity>
+          {/* Right: Quality Button */}
+          {!isDrivePlayer && onSettings && (
+            <TouchableOpacity
+              style={cv.qualityPillBtn}
+              onPress={() => {
+                onSettings();
+                onKeepControlsAlive?.();
+              }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Video quality"
+            >
+              <Text style={cv.qualityPillText}>Q</Text>
+            </TouchableOpacity>
+          )}
         </Animated.View>
       )}
     </Animated.View>
@@ -1377,11 +1737,19 @@ const KeyboardWrapperView = Platform.OS === 'android' ? View : KeyboardAvoidingV
 const keyboardWrapperProps = Platform.OS === 'android' ? {} : { behavior: 'padding' as const, keyboardVerticalOffset: 0 };
 
 export const ROOM_THEMES: { id: RoomTheme; label: string; icon: string; color: string }[] = [
-  { id: 'cinema', label: 'Cinema', icon: 'film-outline', color: '#00F2FE' },
   { id: 'rave', label: 'Party', icon: 'flash-outline', color: '#7C3AED' },
+  { id: 'cinema', label: 'Cinema', icon: 'film-outline', color: '#0EA5E9' },
   { id: 'dark', label: 'Dark', icon: 'moon-outline', color: '#64748B' },
   // { id: 'light', label: 'Light', icon: 'sunny-outline', color: '#F59E0B' },
 ];
+
+// Module-level theme cache — survives re-renders, eliminates party flash on entry
+let _cachedRoomTheme: RoomTheme = 'rave';
+AsyncStorage.getItem('@music_room_theme').then(saved => {
+  if (saved === 'cinema' || saved === 'rave' || saved === 'dark') {
+    _cachedRoomTheme = saved as RoomTheme;
+  }
+}).catch(() => {});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main MusicRoomScreen
@@ -1393,7 +1761,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // Try values between -0.10 (100ms) and -0.20 (200ms) for typical Bluetooth devices.
   const AUDIO_VIDEO_OFFSET = -0.30;
 
-  const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, roomName: initialRoomName } = route.params || {};
+  const { roomCode, isDJMode, initialVideoId, initialSource, initialTitle, initialThumbnail, initialChannelTitle, roomName: initialRoomName } = route.params || {};
   const { user } = useAuth();
   const { theme, isDark } = useTheme();
   const [fullscreen, setFullscreen] = useState(false);
@@ -1494,6 +1862,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [fetchedChannelLogo, setFetchedChannelLogo] = useState<string | null>(null);
   const [fetchedChannelUrl, setFetchedChannelUrl] = useState<string | null>(null);
   const [discoveryInitialUrl, setDiscoveryInitialUrl] = useState<string | null>(null);
+  const [discoveryInitialTab, setDiscoveryInitialTab] = useState<string | null>(null);
   const [currentRoomName, setCurrentRoomName] = useState(initialRoomName || '');
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [participantsModalVisible, setParticipantsModalVisible] = useState(false);
@@ -1501,23 +1870,40 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [thumbFallbackUri, setThumbFallbackUri] = useState<string | null>(null);
   const thumbnailFadeAnim = useRef(new Animated.Value(1)).current;
   const innerThumbFadeAnim = useRef(new Animated.Value(1)).current;
+  const loaderFadeAnim = useRef(new Animated.Value(1)).current;
+  const [showSpinner, setShowSpinner] = useState(true);
+  const isThumbnailFadingRef = useRef(false);
   const [showThumbnailOverlay, setShowThumbnailOverlay] = useState(true);
+  const trackPlayCounterRef = useRef(0);
+  const lastDismissedThumbnailSessionRef = useRef<string | null>(null);
   const [displayedThumbnailUrl, setDisplayedThumbnailUrl] = useState<string | null>(initialThumbnail || null);
   const activeThumbnailRef = useRef<string | null>(initialThumbnail || null);
   const previousSongIdRef = useRef<string | null>(initialVideoId || null);
   const [isTrackPlayerReady, setIsTrackPlayerReady] = useState(false);
   const trackPlayerReadyTime = useRef(0);
-  const [thumbnailHoldComplete, setThumbnailHoldComplete] = useState(true);
-  const thumbnailHoldCompleteRef = useRef(true);
+  const [thumbnailHoldComplete, setThumbnailHoldComplete] = useState(!initialVideoId);
+  const thumbnailHoldCompleteRef = useRef(!initialVideoId);
   const setThumbnailHold = useCallback((val: boolean) => {
     thumbnailHoldCompleteRef.current = val;
     setThumbnailHoldComplete(val);
   }, []);
   const thumbnailHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isAspectSettledRef = useRef(false);
+  const layoutSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onLayoutAndAspectSettled = useCallback(() => {
+    if (isAspectSettledRef.current) return;
+    isAspectSettledRef.current = true;
+    console.log('📐 [LAYOUT_SETTLE] Sizing settled — releasing thumbnail hold immediately');
+    if (layoutSettleTimerRef.current) clearTimeout(layoutSettleTimerRef.current);
+    setThumbnailHold(true);
+  }, [setThumbnailHold]);
+
+  const lastSyncPlayedVideoIdRef = useRef<string | null>(null);
   const containerResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isContainerResettingRef = useRef(false);
   const pendingThumbnailRef = useRef<string | null>(null);
-  const lastTransitionVideoIdRef = useRef<string | null>(null);
+  const lastTransitionVideoIdRef = useRef<string | null>(initialVideoId || null);
   const songStartTimeRef = useRef(0);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -1547,6 +1933,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const [isInputActive, setIsInputActive] = useState(false);
   const [isDJBackgrounded, setIsDJBackgrounded] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
+  const likeHeartScaleAnim = useRef(new Animated.Value(1)).current;
+  const likeBurstAnim = useRef(new Animated.Value(0)).current;
+  const [showLikeBurst, setShowLikeBurst] = useState(false);
   const [videoRatings, setVideoRatings] = useState<Record<string, { total: number; count: number; myRating?: number }>>({});
   const [isDriveAuthenticated, setIsDriveAuthenticated] = useState<boolean | null>(null);
   const [videoQuality, setVideoQuality] = useState('auto');
@@ -1560,18 +1949,79 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setVideoDisplayMode(mode);
   }, []);
   const [isMuted, setIsMuted] = useState(false);
+  const [userOverrideUnmute, setUserOverrideUnmute] = useState(false);
   const handleToggleMute = useCallback(() => {
-    setIsMuted(prev => !prev);
+    setIsMuted(prev => {
+      const next = !prev;
+      if (!next) {
+        setUserOverrideUnmute(true);
+      } else {
+        setUserOverrideUnmute(false);
+      }
+      return next;
+    });
   }, []);
+
+  const { callState } = useCall();
+  const [isIncomingCall, setIsIncomingCall] = useState(false);
+  const [isVoiceMessagePlaying, setIsVoiceMessagePlaying] = useState(false);
+  const [isPhoneCallActive, setIsPhoneCallActive] = useState(false);
+  const [isExternalAudioInterrupted, setIsExternalAudioInterrupted] = useState(false);
+
+  useEffect(() => {
+    const subIncoming = DeviceEventEmitter.addListener('incoming_call_active', (active: boolean) => {
+      setIsIncomingCall(Boolean(active));
+    });
+    const subVoice = DeviceEventEmitter.addListener('audio_message_playing', (playing: boolean) => {
+      setIsVoiceMessagePlaying(Boolean(playing));
+    });
+    const subPhone = DeviceEventEmitter.addListener('PHONE_CALL_STATE', (data: any) => {
+      const isCall = Boolean(data?.isCall);
+      console.log('📞 [PHONE CALL STATE] Cellular call:', isCall);
+      setIsPhoneCallActive(isCall);
+    });
+    const subExternal = DeviceEventEmitter.addListener('EXTERNAL_AUDIO_INTERRUPTION', (data: any) => {
+      const isInterrupted = Boolean(data?.interrupted);
+      console.log('📻 [EXTERNAL AUDIO] Interruption:', isInterrupted);
+      setIsExternalAudioInterrupted(isInterrupted);
+    });
+
+    return () => {
+      subIncoming.remove();
+      subVoice.remove();
+      subPhone.remove();
+      subExternal.remove();
+    };
+  }, []);
+
+  const isCallActive = Boolean(callState?.isActive);
+  const isInterruptionMuted = isCallActive || isIncomingCall || isVoiceMessagePlaying || isPhoneCallActive || isExternalAudioInterrupted;
+  const isInterruptionMutedRef = useRef(isInterruptionMuted);
+  useEffect(() => {
+    isInterruptionMutedRef.current = isInterruptionMuted;
+    if (!isInterruptionMuted) {
+      setUserOverrideUnmute(false);
+    }
+  }, [isInterruptionMuted]);
+
+  const effectiveMuted = isMuted || (isInterruptionMuted && !userOverrideUnmute);
 
   useEffect(() => {
     try {
-      TrackPlayer.setVolume(isMuted ? 0 : 1);
+      TrackPlayer.setVolume(effectiveMuted ? 0 : 1);
     } catch (_) {}
-  }, [isMuted]);
+    try {
+      playerRef.current?.setVolume?.(effectiveMuted ? 0 : 1);
+    } catch (_) {}
+    setInterruptionMuted(effectiveMuted);
+  }, [effectiveMuted]);
 
   // ─── Direct ExoPlayer (Rave-style Native Video) State ───────────────────────
   const [directStreamUrl, setDirectStreamUrl] = useState<string | null>(null);
+  const directStreamUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    directStreamUrlRef.current = directStreamUrl;
+  }, [directStreamUrl]);
   const [directAudioUrl, setDirectAudioUrl] = useState<string | null>(null);
   const [directStreamType, setDirectStreamType] = useState<'mpd' | 'mp4' | 'm3u8'>('mp4');
   const [directStreamHeaders, setDirectStreamHeaders] = useState<Record<string, string> | undefined>(undefined);
@@ -1588,6 +2038,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const initialSongLoadedRef = useRef(false);
   const songPlaybackStartedRef = useRef(false);
   const isInitialVideoStartedRef = useRef(!initialVideoId);
+  const hasCompletedFirstVideoMountRef = useRef(false);
   const lastAuxPassTimeRef = useRef(0);
   const lastResetSongVideoIdRef = useRef<string | null>(initialVideoId || null);
   const loadedAudioSessionRef = useRef<string | null>(null);
@@ -1598,45 +2049,143 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const isAdPlayingRef = useRef(false);
   const isDJBackgroundedRef = useRef(false);
 
+  const [showYtQualityPrompt, setShowYtQualityPrompt] = useState(false);
+  const [hasSkippedYtLogin, setHasSkippedYtLoginState] = useState(false);
+  const hasSkippedYtLoginRef = useRef(false);
+  const ytPromptPausePosRef = useRef<number | null>(null);
+  const ytPromptWallTimeRef = useRef<number | null>(null);
+  const pendingFallbackProgUrlRef = useRef<string | null>(null);
+  const isHandlingYtLoginSuccessRef = useRef(false);
+
+  useEffect(() => {
+    const initAuthAndSkipPreference = async () => {
+      try {
+        const isAuthed = await checkYouTubeAuth();
+        if (isAuthed) {
+          console.log('🎬 [MusicRoom] User is authenticated with YouTube — clearing guest low quality preference');
+          await setHasSkippedYtLogin(false);
+          hasSkippedYtLoginRef.current = false;
+          setHasSkippedYtLoginState(false);
+          return;
+        }
+      } catch (_) {}
+
+      const skipped = await getHasSkippedYtLogin();
+      hasSkippedYtLoginRef.current = skipped;
+      setHasSkippedYtLoginState(skipped);
+    };
+
+    initAuthAndSkipPreference();
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      checkYouTubeAuth().then((isAuthed) => {
+        if (isAuthed) {
+          console.log('🎬 [MusicRoom] Auth detected on screen focus — clearing guest low quality preference');
+          setHasSkippedYtLogin(false);
+          hasSkippedYtLoginRef.current = false;
+          setHasSkippedYtLoginState(false);
+        }
+      }).catch(() => {});
+    }, [])
+  );
+
   const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateMicPermission, switchDJ, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName, allowedSpeakers } = roomState;
+  const isPlayingRef = useRef(isPlaying);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   const activeVideoId = currentSong?.videoId || initialVideoId;
 
   // Authoritative DJ state: WebSocket isDJ when connected, otherwise route param isDJMode
   const effectiveIsDJ = isConnected ? isDJ : Boolean(isDJMode);
 
   useEffect(() => {
+    lastDismissedThumbnailSessionRef.current = null;
+    isThumbnailFadingRef.current = false;
     setThumbFallbackUri(null);
-  }, [activeVideoId]);
+  }, [activeVideoId, currentSong?.playSessionId]);
 
   useEffect(() => {
+    const curVid = activeVideoId || currentSong?.videoId || initialVideoId;
+    const curSession = currentSong?.playSessionId || (curVid ? `${curVid}_${trackPlayCounterRef.current}` : 'vid');
+    console.log(`🖼️ [THUMB_EFFECT] isPlayerReady: ${isPlayerReady}, holdComplete: ${thumbnailHoldComplete}, curSession: ${curSession}, dismissedSession: ${lastDismissedThumbnailSessionRef.current}`);
+
     if (isPlayerReady && thumbnailHoldComplete) {
-      Animated.timing(thumbnailFadeAnim, {
-        toValue: 0,
-        duration: 250,
-        useNativeDriver: true,
-      }).start(() => {
+      // 1. Always dismiss thumbnail overlay immediately if currently showing
+      if (showThumbnailOverlay || showSpinner) {
+        console.log(`🖼️ [THUMB_EFFECT] Video ready! Immediately displaying video and closing thumbnail for ${curSession}`);
         setShowThumbnailOverlay(false);
-      });
+        setShowSpinner(false);
+        isThumbnailFadingRef.current = false;
+      }
+
+      // 2. Start playback once per play session
+      if (lastDismissedThumbnailSessionRef.current !== curSession) {
+        lastDismissedThumbnailSessionRef.current = curSession;
+        try { playerRef.current?.playVideo?.(); } catch (_) {}
+      }
     } else {
-      setShowThumbnailOverlay(true);
-      thumbnailFadeAnim.setValue(1);
+      // If this session has already been dismissed, do not re-show thumbnail during mid-playback buffering or seeking
+      if (lastDismissedThumbnailSessionRef.current === curSession) {
+        return;
+      }
+      if (!curSession || lastDismissedThumbnailSessionRef.current !== curSession) {
+        setShowThumbnailOverlay(true);
+        setShowSpinner(true);
+      }
     }
-  }, [isPlayerReady, thumbnailHoldComplete]);
+  }, [isPlayerReady, thumbnailHoldComplete, activeVideoId, currentSong?.videoId, currentSong?.playSessionId, initialVideoId, showThumbnailOverlay, showSpinner]);
+
+  // Synchronized settle: ensure video decoder has rendered frame 0 and layout/aspect ratio has stabilized behind thumbnail
+  useEffect(() => {
+    if (isPlayerReady && !thumbnailHoldCompleteRef.current) {
+      // Fallback settle: if aspect ratio calculation didn't trigger settle within 1200ms of player ready, trigger settle now
+      const fallbackTimer = setTimeout(() => {
+        if (!isAspectSettledRef.current) {
+          console.log('🛡️ [MusicRoom] Aspect ratio settle fallback fired (1200ms) — releasing hold');
+          onLayoutAndAspectSettled();
+        }
+      }, 1200);
+
+      // Global safety timer: ensure hold is never stuck forever under any circumstances
+      const safetyTimer = setTimeout(() => {
+        if (!thumbnailHoldCompleteRef.current) {
+          console.log('🛡️ [MusicRoom] Global thumbnail hold safety timer expired (3000ms) — releasing hold');
+          setThumbnailHold(true);
+        }
+      }, 3000);
+
+      return () => {
+        clearTimeout(fallbackTimer);
+        clearTimeout(safetyTimer);
+      };
+    }
+  }, [isPlayerReady, onLayoutAndAspectSettled, setThumbnailHold]);
 
   useEffect(() => {
     if (thumbnailHoldComplete && isPlayerReady && isPlaying) {
       songStartTimeRef.current = Date.now();
       try { playerRef.current?.playVideo?.(); } catch (_) {}
-      if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+      const curVid = currentSong?.videoId || initialVideoId;
+      const curSession = currentSong?.playSessionId || (curVid ? `${curVid}_${trackPlayCounterRef.current}` : 'vid');
+      if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && lastSyncPlayedVideoIdRef.current !== curSession) {
+        lastSyncPlayedVideoIdRef.current = curSession;
         syncPlay(0);
       }
     }
-  }, [thumbnailHoldComplete, isPlayerReady, isPlaying, isDJ, isDJMode, syncPlay]);
+  }, [thumbnailHoldComplete, isPlayerReady, isPlaying, isDJ, isDJMode, syncPlay, currentSong?.playSessionId, currentSong?.videoId, initialVideoId]);
 
-  const displayTitle = (currentSong?.title && currentSong.title !== 'Loading...' && currentSong.title !== 'Initializing...' && currentSong.title !== 'YouTube Video' && currentSong.title !== 'Watch Party' && currentSong.title !== 'Drive Video')
-    ? currentSong.title
-    : (initialTitle && initialTitle !== 'YouTube Video' && initialTitle !== 'Watch Party' && initialTitle !== 'Drive Video' ? initialTitle : (initialRoomName && initialRoomName !== 'YouTube Video' && initialRoomName !== 'Watch Party' ? initialRoomName : 'Loading...'));
+  const isDisplayTitleValid = useCallback(
+    (t?: string | null): boolean => {
+      return !isPlaceholderSongTitle(t, [user?.display_name]);
+    },
+    [user?.display_name]
+  );
+
+  const displayTitle = isDisplayTitleValid(currentSong?.title)
+    ? currentSong!.title
+    : (isDisplayTitleValid(initialTitle) ? initialTitle! : 'Loading...');
 
   const isDJRef = useRef(effectiveIsDJ);
   isDJRef.current = effectiveIsDJ;
@@ -1838,6 +2387,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, []);
 
   const dynamicQualityOptions = useMemo(() => {
+    // If guest user skipped YouTube login, strictly limit options to 360p lower quality
+    if (hasSkippedYtLogin) {
+      return [{
+        key: 'medium',
+        label: '360p',
+        icon: 'film',
+        badge: undefined,
+      }];
+    }
+
     // 1. Gather real quality keys from direct extracted streams
     const directKeys = directStreamsList
       .map(s => s.qualityKey || (s.height ? heightToQualityKey(s.height, s.width) : null))
@@ -1893,7 +2452,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         badge: meta.badge,
       };
     });
-  }, [availableQualities, directStreamsList]);
+  }, [availableQualities, directStreamsList, hasSkippedYtLogin]);
 
   const handleSelectQuality = useCallback((qualityKey: string) => {
     setVideoQuality(qualityKey);
@@ -1941,9 +2500,35 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     displayName?: string;
   }>({ visible: false });
 
-  // ─── Picture-in-Picture & Floating Mini-Player State ─────────────────────────
+  // ─── Picture-in-Picture State (Device-Level Native System PiP) ────────────────
   const [pipEnabled, setPipEnabled] = useState(false);
-  const pipEnabledSV = useSharedValue(0);
+
+  // Load persisted PiP preference (initially OFF by default in fresh app)
+  useEffect(() => {
+    AsyncStorage.getItem('@music_room_pip_enabled').then(val => {
+      const isEnabled = val === 'true'; // default: false
+      setPipEnabled(isEnabled);
+      (global as any).isPipEnabledInMusicRoom = isEnabled;
+      DeviceEventEmitter.emit('pip_mode_changed', isEnabled);
+      if (!isEnabled) {
+        setSystemPipEnabled(false);
+      }
+    }).catch(() => {
+      setPipEnabled(false);
+      (global as any).isPipEnabledInMusicRoom = false;
+      setSystemPipEnabled(false);
+    });
+  }, []);
+
+  const handleTogglePip = useCallback((value: boolean) => {
+    setPipEnabled(value);
+    (global as any).isPipEnabledInMusicRoom = value;
+    DeviceEventEmitter.emit('pip_mode_changed', value);
+    AsyncStorage.setItem('@music_room_pip_enabled', value ? 'true' : 'false').catch(() => {});
+    if (!value) {
+      setSystemPipEnabled(false);
+    }
+  }, []);
 
   const [isSystemPip, setIsSystemPip] = useState(false);
   const isSystemPipSV = useSharedValue(0);
@@ -1962,7 +2547,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       DeviceEventEmitter.emit('pip_dismissed', false);
       // PiP auto-enter managed dynamically by playback state effect
     }
-  }, [isMinimized, pipEnabled]);
+  }, [isMinimized]);
 
   const fullscreenRef = useRef(fullscreen);
   useEffect(() => { fullscreenRef.current = fullscreen; }, [fullscreen]);
@@ -1984,9 +2569,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (fullscreenRef.current || isMinimizedRef.current || isSystemPipRef.current) return;
     setIsCenterMode(toCenter);
     centerModeProgress.value = withSpring(toCenter ? 1 : 0, {
-      damping: 22,
-      stiffness: 170,
-      mass: 0.9,
+      damping: 24,
+      stiffness: 180,
+      mass: 0.85,
     });
   }, []);
 
@@ -2009,30 +2594,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const miniX = useSharedValue(defaultMiniX);
   const miniY = useSharedValue(defaultMiniY);
   const miniPosRef = useRef({ x: defaultMiniX, y: defaultMiniY });
-
-  // Load persisted PiP preference (initially OFF by default)
-  useEffect(() => {
-    AsyncStorage.getItem('@music_room_pip_enabled').then(val => {
-      const isEnabled = val === 'true'; // default: false
-      setPipEnabled(isEnabled);
-      pipEnabledSV.value = isEnabled ? 1 : 0;
-      (global as any).isPipEnabledInMusicRoom = isEnabled;
-      DeviceEventEmitter.emit('pip_mode_changed', isEnabled);
-    }).catch(() => {
-      setPipEnabled(false);
-      pipEnabledSV.value = 0;
-      (global as any).isPipEnabledInMusicRoom = false;
-      setSystemPipEnabled(false);
-    });
-  }, []);
-
-  const handleTogglePip = useCallback((value: boolean) => {
-    setPipEnabled(value);
-    pipEnabledSV.value = value ? 1 : 0;
-    (global as any).isPipEnabledInMusicRoom = value;
-    DeviceEventEmitter.emit('pip_mode_changed', value);
-    AsyncStorage.setItem('@music_room_pip_enabled', value ? 'true' : 'false').catch(() => {});
-  }, []);
 
   // ─── Center Mode Live Synced Lyrics ───
   const [centerLyricsEnabled, setCenterLyricsEnabled] = useState(false);
@@ -2107,11 +2668,27 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
   }, [currentSong?.videoId, currentSong?.title, currentSong?.channelTitle, duration, centerLyricsEnabled]);
 
+  // ── Viral Pop Title: Fades in only AFTER the video has traveled down past titleTop (c: 0.70 -> 1.0) ──
+  // When exiting: Fades out immediately (c: 1.0 -> 0.70) BEFORE the video rises back up.
+  // Completely eliminates visual collision, GPU text-shadow overdraw, and transition stutter.
+  const centerTitleAnimatedStyle = useAnimatedStyle(() => {
+    const c = centerModeProgress.value;
+    const opacity = interpolate(c, [0.7, 1.0], [0, 1], Extrapolation.CLAMP);
+    const translateY = interpolate(c, [0.7, 1.0], [-10, 0], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateY }],
+    };
+  });
+
+  // ── Center Lyrics Panel: Fades in smoothly as the chat list fades away and video arrives ──
   const centerLyricsAnimatedStyle = useAnimatedStyle(() => {
     const c = centerModeProgress.value;
+    const opacity = interpolate(c, [0.55, 1.0], [0, 1], Extrapolation.CLAMP);
+    const translateY = interpolate(c, [0.55, 1.0], [20, 0], Extrapolation.CLAMP);
     return {
-      opacity: c,
-      transform: [{ translateY: (1 - c) * 30 }],
+      opacity,
+      transform: [{ translateY }],
     };
   });
 
@@ -2163,6 +2740,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         setStickerPickerVisible(false);
         setShowSettingsModal(false);
         setShowDiscovery(false);
+        setShowTabSelect(false);
         Keyboard.dismiss();
       }
     });
@@ -2416,7 +2994,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   ).current;
 
   // ─── Room Theme State & Persistence ───────────────────────────────────
-  const [roomTheme, setRoomTheme] = useState<RoomTheme>('cinema');
+  const [roomTheme, setRoomTheme] = useState<RoomTheme>(_cachedRoomTheme);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // ─── Cinematic Smooth Screen Transition (Fade out to black & fade in to eliminate any flash) ───
@@ -2458,6 +3036,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const handleThemeChange = useCallback((newTheme: RoomTheme) => {
     if (newTheme === roomTheme) return;
+    _cachedRoomTheme = newTheme; // update module-level cache instantly
     triggerSmoothScreenTransition(() => {
       setRoomTheme(newTheme);
       AsyncStorage.setItem('@music_room_theme', newTheme).catch(() => {});
@@ -2476,26 +3055,15 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     handleThemeChange(ROOM_THEMES[nextIdx].id);
   }, [roomTheme, handleThemeChange]);
 
-  useEffect(() => {
-    AsyncStorage.getItem('@music_room_theme').then(saved => {
-      // Default for 1st time user: 'cinema'
-      if (saved === 'cinema' || saved === 'rave' || saved === 'dark') {
-        setRoomTheme(saved as RoomTheme);
-      } else {
-        setRoomTheme('cinema');
-      }
-    }).catch(() => {
-      setRoomTheme('cinema');
-    });
-  }, []);
+  // Theme is loaded instantly from module-level _cachedRoomTheme (no async flash)
 
   const handleCycleTheme = useCallback(() => {
     const nextTheme: Record<RoomTheme, RoomTheme> = {
-      cinema: 'rave',
-      rave: 'dark',
-      dark: 'cinema',
+      rave: 'cinema',
+      cinema: 'dark',
+      dark: 'rave',
       // dark: 'light',
-      // light: 'cinema',
+      // light: 'rave',
     };
     handleThemeChange(nextTheme[roomTheme]);
   }, [roomTheme, handleThemeChange]);
@@ -2560,8 +3128,67 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
   }, []);
 
+  const triggerLikeAnimation = useCallback(() => {
+    try { Vibration.vibrate(12); } catch (_) {}
+    setShowLikeBurst(true);
+    likeBurstAnim.setValue(0);
+    likeHeartScaleAnim.setValue(1);
+
+    Animated.parallel([
+      Animated.sequence([
+        Animated.timing(likeHeartScaleAnim, {
+          toValue: 0.65,
+          duration: 60,
+          easing: RNEasing.out(RNEasing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.spring(likeHeartScaleAnim, {
+          toValue: 1.45,
+          friction: 3,
+          tension: 400,
+          useNativeDriver: true,
+        }),
+        Animated.spring(likeHeartScaleAnim, {
+          toValue: 1.0,
+          friction: 4,
+          tension: 300,
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.timing(likeBurstAnim, {
+        toValue: 1,
+        duration: 700,
+        easing: RNEasing.out(RNEasing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setShowLikeBurst(false);
+      likeBurstAnim.setValue(0);
+    });
+  }, [likeHeartScaleAnim, likeBurstAnim]);
+
   const handleToggleLike = async () => {
     if (!currentSong?.videoId) return;
+    const nextLiked = !isLiked;
+    setIsLiked(nextLiked);
+
+    if (nextLiked) {
+      triggerLikeAnimation();
+    } else {
+      Animated.sequence([
+        Animated.timing(likeHeartScaleAnim, {
+          toValue: 0.8,
+          duration: 70,
+          useNativeDriver: true,
+        }),
+        Animated.timing(likeHeartScaleAnim, {
+          toValue: 1.0,
+          duration: 70,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+
     try {
       const videoData = {
         video_id: currentSong.videoId,
@@ -2571,10 +3198,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         source: currentSong.source || 'youtube',
       };
       const res = await musicAPI.toggleLike(videoData);
-      setIsLiked(res.liked);
-
+      if (typeof res?.liked === 'boolean' && res.liked !== nextLiked) {
+        setIsLiked(res.liked);
+      }
     } catch (e) {
       console.error('Error toggling like:', e);
+      setIsLiked(!nextLiked);
     }
   };
 
@@ -2697,10 +3326,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const doubleTapTimeoutRef = useRef<any>(null);
   const doubleTapHeartRef = useRef<DoubleTapHeartOverlayRef>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
+  const [showTabSelect, setShowTabSelect] = useState(false);
+  const [isDiscoveryLoginFlow, setIsDiscoveryLoginFlow] = useState(false);
   const showDiscoverySV = useSharedValue(0);
   useEffect(() => {
-    showDiscoverySV.value = showDiscovery ? 1 : 0;
-  }, [showDiscovery]);
+    showDiscoverySV.value = (showDiscovery || showTabSelect) ? 1 : 0;
+  }, [showDiscovery, showTabSelect]);
   const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2942,6 +3573,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setShowSettingsModal(false);
       setShowLeaveConfirm(false);
       setShowDiscovery(false);
+      setShowTabSelect(false);
       setShowQualityOptions(false);
       setShowRelated(false);
       setShowControls(false);
@@ -3067,13 +3699,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     setShowRelated(false);
     setDiscoveryInitialUrl(channelUrl);
+    setDiscoveryInitialTab('youtube');
     setShowDiscovery(true);
   };
 
   const renderNpBar = () => {
     const pinnerName = currentSong?.addedBy || 'Someone';
     const pinner = participants.find(p => p.name === currentSong?.addedBy) || user;
-    const likers = isLiked ? [user] : [];
     const logoUri = currentSong?.channelLogo || fetchedChannelLogo || initialThumbnail || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null);
 
     return (
@@ -3123,147 +3755,212 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
             <Text style={[s.npTitle, { flex: 1 }, isLight && { color: '#0F172A' }]} numberOfLines={1}>{displayTitle}</Text>
           </View>
 
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 19 }}>
-            {/* Likers Container - Left aligned, normal order (heart on left, avatars next to it on right) */}
-            <TouchableOpacity 
-              onPress={handleToggleLike} 
-              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-              style={{ 
-                flexDirection: 'row', 
-                alignItems: 'center', 
-                backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
-                paddingHorizontal: 7, 
-                height: 19, 
-                borderRadius: 9.5,
-                flexShrink: 0
-              }}
-              activeOpacity={0.7}
-            >
-              <Icon 
-                name={isLiked ? "heart" : "heart-outline"} 
-                size={13} 
-                color={isLiked ? (isLight ? "#E11D48" : "#fff") : (isLight ? "#64748B" : "rgba(255,255,255,0.6)")} 
-                style={{ marginRight: likers.length > 0 ? 5 : 0 }} 
-              />
-              {likers.length > 0 && (
-                likers.length <= 4 ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {likers.map((liker: any, i) => (
-                      <AvatarWithFallback 
-                        key={i}
-                        uri={liker?.avatar || liker?.profile_picture} 
-                        displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
-                        sticker={liker?.avatar_sticker}
-                        style={{ 
-                          width: 13, 
-                          height: 13, 
-                          borderRadius: 6.5, 
-                          marginLeft: i > 0 ? -4 : 0, 
-                          borderWidth: 1, 
-                          borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
-                        }} 
-                      />
-                    ))}
-                  </View>
-                ) : (
-                  <ScrollView 
-                    horizontal 
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
-                    style={{ maxHeight: 15, flexShrink: 1, maxWidth: 80 }}
-                  >
-                    {likers.map((liker: any, i) => (
-                      <AvatarWithFallback 
-                        key={i}
-                        uri={liker?.avatar || liker?.profile_picture} 
-                        displayName={liker?.display_name || liker?.email || liker?.name || 'User'} 
-                        sticker={liker?.avatar_sticker}
-                        style={{ 
-                          width: 13, 
-                          height: 13, 
-                          borderRadius: 6.5, 
-                          marginLeft: i > 0 ? -4 : 0, 
-                          borderWidth: 1, 
-                          borderColor: isLight ? '#FFFFFF' : '#1E1E1E' 
-                        }} 
-                      />
-                    ))}
-                  </ScrollView>
-                )
-              )}
-            </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', height: 19 }}>
+            {/* Left group: Like + Skip */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+            {/* 1. Like Button — bare icon, no container */}
+            <View style={{ position: 'relative' }}>
+              <TouchableOpacity 
+                onPress={handleToggleLike} 
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ justifyContent: 'center', alignItems: 'center' }}
+                activeOpacity={0.7}
+                accessibilityLabel={isLiked ? "Unlike song" : "Like song"}
+              >
+                <Animated.View style={{ transform: [{ scale: likeHeartScaleAnim }] }}>
+                  <Icon 
+                    name={isLiked ? "heart" : "heart-outline"} 
+                    size={18} 
+                    color={isLiked ? "#FF7597" : (isLight ? "#64748B" : "rgba(255,255,255,0.6)")} 
+                  />
+                </Animated.View>
+              </TouchableOpacity>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {/* Pink Heart Pop & Particle Starburst Animation */}
+              {showLikeBurst && (
+                <View style={StyleSheet.absoluteFill} pointerEvents="none">
+                  {/* Floating & fading rising light pink heart */}
+                  <Animated.View
+                    style={{
+                      position: 'absolute',
+                      top: -4,
+                      left: 0,
+                      right: 0,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transform: [
+                        {
+                          translateY: likeBurstAnim.interpolate({
+                            inputRange: [0, 0.4, 1],
+                            outputRange: [0, -16, -34],
+                          }),
+                        },
+                        {
+                          scale: likeBurstAnim.interpolate({
+                            inputRange: [0, 0.25, 0.6, 1],
+                            outputRange: [0.3, 1.5, 1.25, 0.5],
+                          }),
+                        },
+                        {
+                          rotate: likeBurstAnim.interpolate({
+                            inputRange: [0, 0.5, 1],
+                            outputRange: ['0deg', '-8deg', '8deg'],
+                          }),
+                        },
+                      ],
+                      opacity: likeBurstAnim.interpolate({
+                        inputRange: [0, 0.15, 0.7, 1],
+                        outputRange: [0, 1, 0.9, 0],
+                      }),
+                    }}
+                  >
+                    <Icon name="heart" size={18} color="#FF7597" />
+                  </Animated.View>
+
+                  {/* Micro Sparkle Burst Particles */}
+                  {LIKE_PARTICLES.map((particle, idx) => {
+                    const angleRad = (particle.angle * Math.PI) / 180;
+                    const targetDist = 18;
+                    const targetX = Math.cos(angleRad) * targetDist;
+                    const targetY = Math.sin(angleRad) * targetDist;
+
+                    return (
+                      <Animated.View
+                        key={idx}
+                        style={{
+                          position: 'absolute',
+                          top: 8,
+                          left: 12,
+                          width: particle.size,
+                          height: particle.size,
+                          borderRadius: particle.size / 2,
+                          backgroundColor: particle.color,
+                          transform: [
+                            {
+                              translateX: likeBurstAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0, targetX],
+                              }),
+                            },
+                            {
+                              translateY: likeBurstAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0, targetY],
+                              }),
+                            },
+                            {
+                              scale: likeBurstAnim.interpolate({
+                                inputRange: [0, 0.3, 1],
+                                outputRange: [0, 1.2, 0],
+                              }),
+                            },
+                          ],
+                          opacity: likeBurstAnim.interpolate({
+                            inputRange: [0, 0.2, 0.75, 1],
+                            outputRange: [0, 1, 0.85, 0],
+                          }),
+                        }}
+                      />
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+
+              {/* 2. Skip Button — bare icon, no container */}
+              <TouchableOpacity
+                onPress={handleNext}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ justifyContent: 'center', alignItems: 'center' }}
+                activeOpacity={0.7}
+                accessibilityLabel="Skip song"
+              >
+                <Icon name="play-skip-forward" size={18} color={isLight ? '#64748B' : 'rgba(255,255,255,0.6)'} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Center: Active Mic Speakers in the gap between Skip and Share */}
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+              {activeMicSpeakers.length > 0 && (
+                <View style={s.videoInfoMicRow}>
+                  <Icon name="mic" size={11} color="#10B981" style={{ marginRight: 1 }} />
+                  {activeMicSpeakers.slice(0, 3).map((speaker) => (
+                    <TouchableOpacity
+                      key={`vinfo-mic-spk-${speaker.user_id}`}
+                      onPress={() => handleAvatarPress(speaker.avatar, speaker.avatar_sticker, speaker.name)}
+                      style={{ position: 'relative' }}
+                      activeOpacity={0.8}
+                    >
+                      <AvatarWithFallback
+                        uri={speaker.avatar}
+                        displayName={speaker.name}
+                        sticker={speaker.avatar_sticker}
+                        style={{
+                          width: 18,
+                          height: 18,
+                          borderRadius: 9,
+                          borderWidth: 1.5,
+                          borderColor: '#10B981',
+                        }}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                  {activeMicSpeakers.length > 3 && (
+                    <View style={s.videoInfoMicMore}>
+                      <Text style={s.videoInfoMicMoreText}>
+                        +{activeMicSpeakers.length - 3}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+
+            {/* Right group: Share, Invite, Queue — bare icons with gap */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
               {/* Share Room Button */}
               <TouchableOpacity 
                 onPress={handleShareRoom} 
-                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                style={{ 
-                  flexDirection: 'row', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
-                  paddingHorizontal: 8, 
-                  height: 19, 
-                  borderRadius: 9.5,
-                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ justifyContent: 'center', alignItems: 'center' }}
                 activeOpacity={0.7}
                 accessibilityLabel="Share room"
               >
-                <Icon name="share-social-outline" size={13} color={isLight ? '#0F172A' : '#fff'} />
+                <Icon name="share-social-outline" size={17} color={isLight ? '#64748B' : 'rgba(255,255,255,0.7)'} />
               </TouchableOpacity>
 
-              {/* Add Friend / Invite Button */}
+              {/* Invite Button */}
               <TouchableOpacity 
                 onPress={() => setInviteModalVisible(true)} 
-                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                style={{ 
-                  flexDirection: 'row', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)', 
-                  paddingHorizontal: 8, 
-                  height: 19, 
-                  borderRadius: 9.5,
-                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ justifyContent: 'center', alignItems: 'center' }}
                 activeOpacity={0.7}
                 accessibilityLabel="Invite friends"
               >
-                <Icon name="person-add-outline" size={13} color={isLight ? '#0F172A' : '#fff'} />
+                <Icon name="person-add-outline" size={17} color={isLight ? '#64748B' : 'rgba(255,255,255,0.7)'} />
               </TouchableOpacity>
 
-              {/* Queue Button - In between invite and skip */}
+              {/* Queue Button */}
               <TouchableOpacity 
                 onPress={() => setActiveTab(activeTab === 'chat' ? 'queue' : 'chat')} 
-                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                style={{ 
-                  flexDirection: 'row', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  backgroundColor: activeTab === 'queue' 
-                    ? (isLight ? 'rgba(2,132,199,0.15)' : 'rgba(2,132,199,0.25)')
-                    : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)'), 
-                  paddingHorizontal: 8, 
-                  height: 19, 
-                  borderRadius: 9.5,
-                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center' }}
                 activeOpacity={0.7}
                 accessibilityLabel="Toggle queue"
               >
-                <Icon name="list" size={13} color={activeTab === 'queue' ? '#0284C7' : (isLight ? '#0F172A' : '#fff')} />
+                <Icon name="list" size={17} color={activeTab === 'queue' ? '#0284C7' : (isLight ? '#64748B' : 'rgba(255,255,255,0.7)')} />
                 {queue.length > 0 && (
                   <Text style={{ 
                     fontSize: 9.5, 
                     fontWeight: '700', 
                     marginLeft: 3, 
-                    color: activeTab === 'queue' ? '#0284C7' : (isLight ? '#0F172A' : '#fff'),
+                    color: activeTab === 'queue' ? '#0284C7' : (isLight ? '#64748B' : 'rgba(255,255,255,0.7)'),
                     includeFontPadding: false 
                   }}>
                     {queue.length}
                   </Text>
                 )}
               </TouchableOpacity>
-
             </View>
           </View>
         </View>
@@ -3481,8 +4178,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const backgroundStartPosition = useRef<number>(0);
   const backgroundStartTime = useRef<number>(0);
 
-  const { callState } = useCall();
-
   // ── Voice Chat ─────────────────────────────────────────────────────────────
   const { isMicOn, toggleMic, voiceParticipants } = useMusicVoiceChat(user?.id ?? 0, participants);
 
@@ -3517,7 +4212,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     const targetVideoId = currentSong?.videoId || initialVideoId;
-    const targetSource = currentSong?.source || initialSource;
+    const targetSource = currentSong?.source || initialSource || 'youtube';
 
     if (!targetVideoId) {
       setDirectStreamUrl(null);
@@ -3566,13 +4261,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     // Deduplication guard: do not re-run extraction if already fetching or active for targetVideoId
-    if (currentDirectFetchId.current === targetVideoId && (directStreamUrl || isDirectLoading)) {
+    if (
+      (currentDirectFetchId.current === targetVideoId && (directStreamUrl || isDirectLoading)) ||
+      (lastLoadedStreamVideoId.current === targetVideoId && directStreamUrl)
+    ) {
       console.log(`ℹ️ [MusicRoom] Video ${targetVideoId} already active/extracting, skipping duplicate run`);
       return;
     }
 
     currentDirectFetchId.current = targetVideoId;
     lastLoadedStreamVideoId.current = null;
+    lastSyncPlayedVideoIdRef.current = null;
     videoFormatsRef.current = {};
     failedStreamUrlsRef.current.clear();
     setDirectStreamsList([]);
@@ -3581,8 +4280,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setDirectFallbackUrl(null);
     setDirectAudioUrl(null);
     setDirectStreamUrl(null); // Clear old stream URL so DirectVideoPlayer stops old playback immediately
+    console.log('🖼️ [THUMB] Resetting overlay in stream extraction for targetVideoId:', targetVideoId);
     setShowThumbnailOverlay(true);
+    setShowSpinner(true);
+    loaderFadeAnim.setValue(1);
+    innerThumbFadeAnim.setValue(1);
     thumbnailFadeAnim.setValue(1);
+    isThumbnailFadingRef.current = false;
     setIsPlayerReady(false);
     isPlayerReadyRef.current = false;
     setIsTrackPlayerReady(false);
@@ -3598,30 +4302,38 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setDetectedCropPercent(0.0);
     setDetectedHorizCropPercent(0.0);
     setShowQualityOptions(false);
+    isAspectSettledRef.current = false;
+    if (layoutSettleTimerRef.current) {
+      clearTimeout(layoutSettleTimerRef.current);
+      layoutSettleTimerRef.current = null;
+    }
 
     fetchVideoAspectRatio(targetVideoId).then((res) => {
-      if (currentDirectFetchId.current === targetVideoId && res && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
-        if (res.isNativeWidescreen || res.aspectRatio < 1.0) {
-          console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" stream AR: ${res.aspectRatio.toFixed(3)} -> Target Height: ${Math.round(width / res.aspectRatio)}px`);
-          setDetectedAspectRatio(res.aspectRatio);
-          setDetectedCropPercent(0.0);
-          setDetectedHorizCropPercent(0.0);
+      if (currentDirectFetchId.current === targetVideoId) {
+        if (res && res.aspectRatio && !isNaN(res.aspectRatio) && res.aspectRatio >= 0.4 && res.aspectRatio <= 3.5) {
+          if (res.isNativeWidescreen || res.aspectRatio < 1.75) {
+            console.log(`📐 [AUTO ASPECT RATIO] Song "${currentSong?.title || targetVideoId}" stream AR: ${res.aspectRatio.toFixed(3)} -> Target Height: ${Math.round(width / res.aspectRatio)}px`);
+            setDetectedAspectRatio(res.aspectRatio);
+            setDetectedCropPercent(0.0);
+            setDetectedHorizCropPercent(0.0);
+            onLayoutAndAspectSettled();
+          }
         }
       }
-    });
+    }).catch(() => {});
 
     // Preemptively fetch oEmbed metadata & channel logo for dynamic title + avatar
     if (targetSource !== 'drive') {
-      fetchYouTubeMetadata(targetVideoId, currentSong?.addedBy || user?.display_name).then((meta) => {
+      fetchYouTubeMetadata(targetVideoId, currentSong?.addedBy || user?.display_name, isDisplayTitleValid(currentSong?.title) ? currentSong?.title : undefined).then((meta) => {
         if (currentDirectFetchId.current !== targetVideoId) return;
-        if (meta && meta.title && meta.title !== 'Loading...' && meta.title !== 'Watch Party' && meta.title !== 'YouTube Video') {
+        if (meta && meta.title && isDisplayTitleValid(meta.title)) {
           if (meta.channelLogo) {
             setFetchedChannelLogo(meta.channelLogo);
           }
           if (meta.channelUrl) {
             setFetchedChannelUrl(meta.channelUrl);
           }
-          if (!currentSong?.title || currentSong.title === 'Watch Party' || currentSong.title === 'YouTube Video' || currentSong.title === 'Loading...') {
+          if (!isDisplayTitleValid(currentSong?.title)) {
             updateCurrentSongMetadata({
               videoId: targetVideoId,
               title: meta.title,
@@ -3650,11 +4362,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         Boolean(isDJ || isDJMode)
       );
     }
-    extractVideoStreamUrlClientSide(targetVideoId).then((res) => {
+    extractVideoStreamUrlClientSide(targetVideoId).then(async (res) => {
       if (currentDirectFetchId.current !== targetVideoId) return;
       if (res && res.streams && res.streams.length > 0) {
         console.log(`🎬 [MusicRoom] Client-side extraction success: ${res.streams.length} qualities available (highest: ${res.streams[0].height}p)`);
-        if (res.title && (!currentSong?.title || currentSong.title === 'Watch Party' || currentSong.title === 'YouTube Video' || currentSong.title === 'Loading...')) {
+        if (res.title && isDisplayTitleValid(res.title) && !isDisplayTitleValid(currentSong?.title)) {
           updateCurrentSongMetadata({
             videoId: targetVideoId,
             title: res.title,
@@ -3674,9 +4386,27 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         });
         videoFormatsRef.current = formatMap;
 
+        // Check if user is authenticated with YouTube before deciding stream type
+        let isGuestSkipped = hasSkippedYtLoginRef.current;
+        if (isGuestSkipped) {
+          try {
+            const isAuthed = await checkYouTubeAuth();
+            if (isAuthed) {
+              console.log('🎬 [MusicRoom] YouTube authenticated: clearing guest lower quality preference and unlocking DASH');
+              await setHasSkippedYtLogin(false);
+              hasSkippedYtLoginRef.current = false;
+              setHasSkippedYtLoginState(false);
+              isGuestSkipped = false;
+            }
+          } catch (_) {}
+        }
+
         // Populate available qualities in UI
         const qKeys = res.streams.map(s => s.qualityKey).filter(Boolean);
-        if (res.dashUrl) {
+        if (isGuestSkipped) {
+          setAvailableQualities(['360p']);
+          setVideoQuality('360p');
+        } else if (res.dashUrl) {
           setAvailableQualities(Array.from(new Set(['auto', ...qKeys])));
         } else {
           // Rare progressive stream fallback (no DASH attestation available):
@@ -3695,10 +4425,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           console.log('🤖 [MusicRoom] ANDROID fallback progressive URL stored for seamless CDN-403 recovery');
         }
 
-        // Activate DirectVideoPlayer via DASH MPD manifest (ExoPlayer architecture)
-        // DASH gives quality switching for all users. For guests, CDN may 403 after ~60s
-        // but onError below handles that by switching to ANDROID progressive at current position.
-        if (res.dashUrl) {
+        // If guest user previously chose to watch in lower quality, start with progressive immediately
+        if (isGuestSkipped && (res.fallbackProgressiveUrl || res.url)) {
+          const progUrl = res.fallbackProgressiveUrl || res.url;
+          console.log('🎬 [MusicRoom] Guest preferred lower quality: starting directly with 360p');
+          lastLoadedStreamVideoId.current = targetVideoId;
+          setAvailableQualities(['360p']);
+          setVideoQuality('360p');
+          setDirectStreamUrl(progUrl);
+          setDirectStreamHeaders(res.headers);
+          setDirectAudioUrl(null);
+          setDirectStreamType('mp4');
+        } else if (res.dashUrl) {
           console.log(`🎬 [MusicRoom] Activating DirectVideoPlayer with DASH manifest (${res.streams.length} representations)`);
           lastLoadedStreamVideoId.current = targetVideoId;
           setDirectStreamUrl(res.dashUrl);
@@ -3729,52 +4467,57 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   const handleAspectRatio = useCallback((ar: number) => {
     if (ar && !isNaN(ar) && ar >= 0.4 && ar <= 3.5) {
-      if (ar > 1.82) {
-        // Stream decoded by player is native widescreen (e.g. 21:9 or 2.39:1 without baked black bars)
+      if (ar >= 2.30) {
+        // Stream decoded by player is native Cinemascope (>= 2.30 without baked black bars)
         setDetectedCropPercent(0.0);
         setDetectedHorizCropPercent(0.0);
         detectedCropPercentRef.current = 0.0;
         detectedHorizCropPercentRef.current = 0.0;
         setDetectedAspectRatio(ar);
+        onLayoutAndAspectSettled();
         return;
       }
-      if (ar < 1.0) {
-        // Portrait / vertical short
+      if (ar < 1.75) {
+        // Taller than 16:9 (e.g. 1:1 square, 4:3, or portrait vertical short)
+        setDetectedCropPercent(0.0);
+        setDetectedHorizCropPercent(0.0);
+        detectedCropPercentRef.current = 0.0;
+        detectedHorizCropPercentRef.current = 0.0;
         setDetectedAspectRatio(ar);
+        onLayoutAndAspectSettled();
         return;
       }
-      // For standard 16:9 streams, preserve ratio across seek size resets ONLY if BBD detected black bars for current track
+      // For streams that may have baked black bars, preserve ratio if BBD already detected black bars
       setDetectedAspectRatio((prev) => {
-        if (prev && Math.abs(prev - 16 / 9) > 0.05 && (detectedCropPercentRef.current > 0.03 || detectedHorizCropPercentRef.current > 0.03)) {
+        if (prev && Math.abs(prev - ar) > 0.05 && (prev > 1.82 || detectedCropPercentRef.current > 0.03 || detectedHorizCropPercentRef.current > 0.03)) {
           return prev;
         }
         return ar;
       });
+      onLayoutAndAspectSettled();
     }
-  }, []);
+  }, [onLayoutAndAspectSettled]);
 
   const handleBlackBarDetected = useCallback((ar: number, cropPercent: number, horizCropPercent: number = 0.0) => {
-    if (cropPercent > 0.03 || horizCropPercent > 0.03) {
+    const hasMeaningfulCrop = cropPercent > 0.03 || horizCropPercent > 0.03;
+    if (hasMeaningfulCrop) {
       console.log(`📐 [LIVE BBD DETECTED] Black bars detected: ar: ${ar.toFixed(3)}, vertCrop: ${(cropPercent * 100).toFixed(1)}%, horizCrop: ${(horizCropPercent * 100).toFixed(1)}%`);
       setDetectedCropPercent(cropPercent);
       setDetectedHorizCropPercent(horizCropPercent);
       detectedCropPercentRef.current = cropPercent;
       detectedHorizCropPercentRef.current = horizCropPercent;
-      // In Fit mode: dynamically update aspect ratio so container shrinks (for widescreen) or expands (for 4:3)
-      if (videoDisplayMode === 'fit') {
-        setDetectedAspectRatio(ar);
-      }
+      setDetectedAspectRatio(ar);
+      onLayoutAndAspectSettled();
     } else {
       console.log(`📐 [LIVE BBD DETECTED] Full frame (0% black bars)`);
       setDetectedCropPercent(0.0);
       setDetectedHorizCropPercent(0.0);
       detectedCropPercentRef.current = 0.0;
       detectedHorizCropPercentRef.current = 0.0;
-      if (videoDisplayMode === 'fit') {
-        setDetectedAspectRatio(ar || 16 / 9);
-      }
+      setDetectedAspectRatio(ar || 16 / 9);
+      onLayoutAndAspectSettled();
     }
-  }, [videoDisplayMode]);
+  }, [onLayoutAndAspectSettled]);
 
   // Dynamically synchronize In-App MiniPlayer and Android System PiP dimensions on aspect ratio change
   useEffect(() => {
@@ -3819,8 +4562,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       miniPosRef.current = { x: maxX, y: maxY };
     }
 
-    const [num, den] = getAspectRatioFraction(ar);
-    setSystemPipAspectRatio(num, den);
+    const timer = setTimeout(() => {
+      const [num, den] = getAspectRatioFraction(ar);
+      setSystemPipAspectRatio(num, den);
+    }, 850);
+    return () => clearTimeout(timer);
   }, [detectedAspectRatio, isMinimized, width, height, insets.bottom]);
 
   const dynamicVideoHeight = useMemo(() => {
@@ -3829,11 +4575,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const screenW = Math.min(screenDims.width, screenDims.height);
     const screenH = Math.max(screenDims.width, screenDims.height);
     if (fullscreen) return screenW;
-    const defaultVideoH = screenW * (9 / 16);
+    const defaultVideoH = Math.round(screenW * (9 / 16));
 
-    // When holding thumbnail, showing related videos grid, or when video has finished or not ready:
+    // When showing related videos grid or when video has finished:
     // ALWAYS use standard 16:9 thumbnail height!
-    if (!thumbnailHoldComplete || !isPlayerReady || showRelated || playerState === 'ended') {
+    if (showRelated || playerState === 'ended') {
       return defaultVideoH;
     }
 
@@ -3864,53 +4610,87 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
     // Standard 16:9:
     return defaultVideoH;
-  }, [fullscreen, detectedAspectRatio, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
+  }, [fullscreen, detectedAspectRatio, showRelated, playerState, videoDisplayMode]);
 
-  const isWidescreenShort = !fullscreen && !isMinimized && !isSystemPip && isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && !!detectedAspectRatio && detectedAspectRatio > 1.82;
+  const isWidescreenShort = !fullscreen && !isMinimized && !isSystemPip && isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && !showThumbnailOverlay && !!detectedAspectRatio && detectedAspectRatio > 1.82;
   const widescreenMetrics = useMemo(() => {
     const screenDims = Dimensions.get('screen');
     const screenW = Math.min(screenDims.width, screenDims.height);
-    const defaultVideoH = screenW * (9 / 16);
-    const ar = isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82 ? detectedAspectRatio : (16 / 9);
+    const defaultVideoH = Math.round(screenW * (9 / 16));
+    const ar = !showThumbnailOverlay && isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82 ? detectedAspectRatio : (16 / 9);
     const contentH = Math.round(screenW / ar);
     const topOffset = 0;
     return { screenW, defaultVideoH, contentH, topOffset };
-  }, [detectedAspectRatio, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
-
-  const raveContentRect = useMemo(() => {
-    if (fullscreen || isMinimized || isSystemPip) return undefined;
-    const screenDims = Dimensions.get('screen');
-    const screenW = Math.min(screenDims.width, screenDims.height);
-    const isWidescreen = Boolean(isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82);
-    const contentH = isWidescreen ? Math.round(screenW / (detectedAspectRatio as number)) : dynamicVideoHeight;
-    const centerDeltaY = Math.max(0, ((windowHeight - contentH) / 2) - (stableTopInset + 58));
-    return {
-      x: 0,
-      y: stableTopInset + 58 + (isCenterMode ? centerDeltaY : 0),
-      width: screenW,
-      height: contentH,
-    };
-  }, [fullscreen, isMinimized, isSystemPip, stableTopInset, dynamicVideoHeight, detectedAspectRatio, isCenterMode, windowHeight, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode]);
+  }, [detectedAspectRatio, showRelated, playerState, thumbnailHoldComplete, isPlayerReady, videoDisplayMode, showThumbnailOverlay]);
 
   // Smooth, fluid video container height animation (curtain filling effect, zero jump)
   const defaultBaseVideoH = Math.round(Math.min(Dimensions.get('screen').width, Dimensions.get('screen').height) * (9 / 16));
-  const animatedVideoHeightSV = useSharedValue(defaultBaseVideoH);
 
-  const resolvedTargetVideoH = (!isPlayerReady || !thumbnailHoldComplete || showRelated || playerState === 'ended')
+  const resolvedTargetVideoH = (showRelated || playerState === 'ended' || showThumbnailOverlay)
     ? defaultBaseVideoH
     : dynamicVideoHeight;
   resolvedTargetVideoHRef.current = resolvedTargetVideoH;
 
+  const animatedVideoHeightSV = useSharedValue(defaultBaseVideoH);
+
+  const videoContentRect = useMemo(() => {
+    if (fullscreen || isMinimized || isSystemPip) return undefined;
+    // Full-screen surface themes (rave, dark & cinema) use GPU viewport morphing.
+    if (roomTheme !== 'rave' && roomTheme !== 'dark' && roomTheme !== 'cinema') return undefined;
+
+    const screenDims = Dimensions.get('screen');
+    const screenW = Math.min(screenDims.width, screenDims.height);
+    const contentH = resolvedTargetVideoH;
+
+    const ar = (detectedAspectRatio && !isNaN(detectedAspectRatio) && detectedAspectRatio >= 0.4 && detectedAspectRatio <= 3.5)
+      ? detectedAspectRatio
+      : (16 / 9);
+
+    const isFitVertical = videoDisplayMode === 'fit' && ar < 1.0 && isPlayerReady && thumbnailHoldComplete && !showRelated && playerState !== 'ended' && !showThumbnailOverlay;
+    const contentW = isFitVertical ? Math.min(screenW, Math.round(contentH * ar)) : screenW;
+    const contentX = isFitVertical ? Math.round((screenW - contentW) / 2) : 0;
+
+    const centerDeltaY = Math.max(0, ((windowHeight - contentH) / 2) - (stableTopInset + 58));
+    const topY = stableTopInset + 58 + (isCenterMode ? centerDeltaY : 0);
+
+    return {
+      x: contentX,
+      y: topY,
+      width: contentW,
+      height: contentH,
+    };
+  }, [
+    fullscreen,
+    isMinimized,
+    isSystemPip,
+    stableTopInset,
+    resolvedTargetVideoH,
+    detectedAspectRatio,
+    isPlayerReady,
+    thumbnailHoldComplete,
+    showRelated,
+    playerState,
+    videoDisplayMode,
+    isCenterMode,
+    windowHeight,
+    roomTheme,
+    defaultBaseVideoH,
+    showThumbnailOverlay,
+  ]);
+
   useEffect(() => {
-    if (!isPlayerReady || !thumbnailHoldComplete || showRelated || playerState === 'ended') {
+    if (showRelated || playerState === 'ended' || showThumbnailOverlay) {
       animatedVideoHeightSV.value = defaultBaseVideoH;
     } else {
+      // In ALL room themes (rave, cinema, dark, light):
+      // Smoothly scale down / up the video container height at 380ms speed,
+      // perfectly synchronized with OpenGL's live mathematical aspect lock!
       animatedVideoHeightSV.value = withTiming(resolvedTargetVideoH, {
-        duration: 350,
-        easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
+        duration: 380,
+        easing: Easing.inOut(Easing.cubic),
       });
     }
-  }, [resolvedTargetVideoH, isPlayerReady, thumbnailHoldComplete, showRelated, playerState, defaultBaseVideoH]);
+  }, [resolvedTargetVideoH, showRelated, playerState, defaultBaseVideoH, showThumbnailOverlay]);
 
   // ── Unified Song Transition & Participant Sync Hold (Zero Rush, Zero Crop, Zero Desync) ──
   const startSongTransition = useCallback((nextItem?: any) => {
@@ -3922,12 +4702,20 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       clearTimeout(thumbnailHoldTimerRef.current);
       thumbnailHoldTimerRef.current = null;
     }
+    if (layoutSettleTimerRef.current) {
+      clearTimeout(layoutSettleTimerRef.current);
+      layoutSettleTimerRef.current = null;
+    }
+    isAspectSettledRef.current = false;
+    trackPlayCounterRef.current += 1;
+    lastDismissedThumbnailSessionRef.current = null;
 
     setThumbnailHold(false);
     isContainerResettingRef.current = true;
 
     const nextThumb = getSongThumbnail(nextItem);
     const targetVideoId = nextItem?.videoId || (nextItem?.song && nextItem.song.videoId) || null;
+    const currentVid = currentSong?.videoId || initialVideoId;
     if (targetVideoId) {
       lastTransitionVideoIdRef.current = targetVideoId;
     }
@@ -3935,11 +4723,20 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     try { TrackPlayer.pause(); } catch (_) {}
     try { playerRef.current?.stopVideo?.(); } catch (_) {}
-    setDirectStreamUrl(null);
+    if (targetVideoId && targetVideoId !== currentVid) {
+      setDirectStreamUrl(null);
+      lastLoadedStreamVideoId.current = null;
+    } else if (targetVideoId && targetVideoId === currentVid) {
+      lastLoadedStreamVideoId.current = targetVideoId;
+    }
     setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
+    console.log('🖼️ [THUMB] Resetting overlay in startSongTransition for targetVideoId:', targetVideoId);
     setShowThumbnailOverlay(true);
+    setShowSpinner(true);
+    loaderFadeAnim.setValue(1);
+    innerThumbFadeAnim.setValue(1);
     thumbnailFadeAnim.setValue(1);
-    innerThumbFadeAnim.setValue(0);
+    isThumbnailFadingRef.current = false;
     setThumbFallbackUri(null);
     setDetectedAspectRatio(null);
     setDetectedCropPercent(0);
@@ -3950,41 +4747,32 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     setIsTrackPlayerReady(false);
     setMediaFullySynced(false);
     setIsBuffering(true);
-    lastLoadedStreamVideoId.current = null;
     lastResetSongVideoIdRef.current = null;
+    lastSyncPlayedVideoIdRef.current = null;
     setIsSyncing(true);
     livePositionRef.current = 0;
     setLivePosition(0);
+    if (targetVideoId === currentVid) {
+      try { playerRef.current?.seekTo?.(0, true); } catch (_) {}
+    }
 
-    // 1. Immediately hide previous song thumbnail and display clean black screen with spinner
-    setDisplayedThumbnailUrl(null);
+    // 1. Keep next song thumbnail or current thumbnail visible with spinner — do NOT wipe to null / black
+    if (nextThumb) {
+      setDisplayedThumbnailUrl(nextThumb);
+      activeThumbnailRef.current = nextThumb;
+    }
 
-    // 2. Smoothly reset container height back to standard 16:9 thumbnail size (300ms)
-    animatedVideoHeightSV.value = withTiming(defaultBaseVideoH, {
-      duration: 300,
-      easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
-    });
+    // 2. Reset container height to standard 16:9 thumbnail size in a single clean pass
+    animatedVideoHeightSV.value = defaultBaseVideoH;
 
-    // 3. ONLY AFTER container has settled to standard size (300ms), show next thumbnail and begin hold
+    // 3. ONLY AFTER container has settled to standard size (300ms), ensure next thumbnail is active and begin hold
     containerResetTimerRef.current = setTimeout(() => {
       isContainerResettingRef.current = false;
-      const thumbToShow = pendingThumbnailRef.current || getSongThumbnail(currentSongRef.current);
+      const thumbToShow = pendingThumbnailRef.current || getSongThumbnail(currentSongRef.current) || nextThumb;
       if (thumbToShow) {
         setDisplayedThumbnailUrl(thumbToShow);
         activeThumbnailRef.current = thumbToShow;
-        innerThumbFadeAnim.setValue(0);
-        Animated.timing(innerThumbFadeAnim, {
-          toValue: 1,
-          duration: 250,
-          useNativeDriver: true,
-        }).start();
       }
-
-      // Generous 2.5s hold gives all participants sufficient time to receive WS message,
-      // decipher stream, initialize player, and pre-buffer frame 0 without desync!
-      thumbnailHoldTimerRef.current = setTimeout(() => {
-        setThumbnailHold(true);
-      }, 2500);
     }, 300);
   }, [defaultBaseVideoH, setThumbnailHold]);
 
@@ -4004,16 +4792,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         duration: 250,
         useNativeDriver: true,
       }).start();
-
-      if (!thumbnailHoldCompleteRef.current && !thumbnailHoldTimerRef.current) {
-        thumbnailHoldTimerRef.current = setTimeout(() => {
-          setThumbnailHold(true);
-        }, 2500);
-      }
     }
-  }, [currentSong?.videoId, videoThumbnailUrl, setThumbnailHold]);
+  }, [currentSong?.videoId, videoThumbnailUrl]);
 
   const videoContainerAnimatedStyle = useAnimatedStyle(() => {
+    const curH = animatedVideoHeightSV.value;
+
     if (fullscreen || isSystemPipSV.value === 1) {
       return {
         position: 'absolute',
@@ -4036,34 +4820,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     if (isMinimizedSV.value === 1) {
-      if (pipEnabledSV.value === 1 && pipDismissedSV.value === 0) {
-        return {
-          position: 'absolute',
-          left: miniX.value,
-          top: miniY.value,
-          width: miniWidth.value,
-          height: miniHeight.value,
-          borderRadius: 16,
-          borderWidth: 1.5,
-          borderColor: 'rgba(255, 255, 255, 0.22)',
-          overflow: 'hidden',
-          zIndex: 9999,
-          elevation: 20,
-          shadowColor: '#000000',
-          shadowOffset: { width: 0, height: 6 },
-          shadowOpacity: 0.55,
-          shadowRadius: 10,
-          backgroundColor: 'transparent',
-          opacity: 1,
-          transform: [{ translateY: 0 }],
-        };
-      }
       return {
         position: 'absolute',
         left: -9999,
         top: -9999,
-        width: 1,
-        height: 1,
+        width: '100%',
+        height: curH,
         borderRadius: 0,
         borderWidth: 0,
         borderColor: 'transparent',
@@ -4076,7 +4838,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     // Inside Music Room: Normal video container at top
-    const curH = animatedVideoHeightSV.value;
     const centerDeltaY = Math.max(0, ((windowHeight - curH) / 2) - (stableTopInset + 58));
 
     return {
@@ -4128,28 +4889,38 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     if (isMinimizedSV.value === 1) {
-      if (pipEnabledSV.value === 1 && pipDismissedSV.value === 0) {
-        return {
-          position: 'absolute',
-          left: miniX.value,
-          top: miniY.value,
-          width: miniWidth.value,
-          height: miniHeight.value,
-          borderRadius: 16,
-          overflow: 'hidden',
-          zIndex: 9999,
-          elevation: 20,
-          opacity: 1,
-        };
-      }
       return {
         position: 'absolute',
         left: -9999,
         top: -9999,
-        width: 1,
-        height: 1,
+        width: '100%',
+        height: '100%',
         opacity: 0,
         zIndex: 0,
+      };
+    }
+
+    const isDrive = (currentSong?.source || initialSource) === 'drive';
+    const curH = animatedVideoHeightSV.value;
+    const shiftY = collapseProgress.value * 58;
+
+    // Cinema Theme: Full-screen GPU Subsurface Liquid Glass is the permanent room backdrop.
+    // It must NEVER be moved off-screen or shrunk, so it remains visible when room opens,
+    // between songs, when queue ends, or when related panel is open!
+    if (roomTheme === 'cinema' && !isDrive) {
+      return {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: '100%',
+        zIndex: 0,
+        elevation: 0,
+        backgroundColor: 'transparent',
+        opacity: 1,
+        transform: [{ translateY: -shiftY }],
       };
     }
 
@@ -4203,14 +4974,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       };
     }
 
-    const isDrive = (currentSong?.source || initialSource) === 'drive';
     const isDirectStream = Boolean(directStreamUrl) && !isDirectLoading;
-    const curH = animatedVideoHeightSV.value;
-    const shiftY = collapseProgress.value * 58;
     const centerDeltaY = Math.max(0, ((windowHeight - curH) / 2) - (stableTopInset + 58));
     const translateY = -shiftY + (centerModeProgress.value * centerDeltaY);
 
-    if (roomTheme === 'rave' && isDirectStream && !isDrive) {
+    if ((roomTheme === 'rave' || roomTheme === 'dark') && !isDrive) {
       return {
         position: 'absolute',
         left: 0,
@@ -4229,7 +4997,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     const videoTop = stableTopInset + 58;
 
-    // Default (cinema, dark, or Drive/YouTube fallback): exact video bounds with theme covering crop area
+    // Default (Drive/YouTube fallback): exact video bounds with theme covering crop area
     return {
       position: 'absolute',
       left: 0,
@@ -4244,7 +5012,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       backgroundColor: 'transparent',
       opacity: 1,
     };
-  }, [dynamicVideoHeight, fullscreen, roomTheme, stableTopInset, isSystemPip, showRelated, showRelatedSV, directStreamUrl, isDirectLoading, currentSong?.source, initialSource, detectedAspectRatio, widescreenMetrics, windowHeight, showThumbnailOverlay, isPlayerReady, relatedScrollXSV, showDiscovery, showDiscoverySV]);
+  }, [dynamicVideoHeight, defaultBaseVideoH, resolvedTargetVideoH, fullscreen, roomTheme, stableTopInset, isSystemPip, showRelated, showRelatedSV, directStreamUrl, isDirectLoading, currentSong?.source, initialSource, detectedAspectRatio, widescreenMetrics, windowHeight, showThumbnailOverlay, isPlayerReady, relatedScrollXSV, showDiscovery, showDiscoverySV]);
 
   const relatedPipOverlayStyle = useAnimatedStyle(() => {
     if (showDiscoverySV.value === 1 || (!showRelated && showRelatedSV.value !== 1) || relatedScrollXSV.value > 15) {
@@ -4323,14 +5091,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => {
     const canPip = Boolean(
       pipEnabled &&
-      !pipDismissed &&
       isPlaying &&
       isPlayerReady &&
       !isDirectLoading &&
       directStreamUrl
     );
     setSystemPipEnabled(canPip);
-  }, [pipEnabled, pipDismissed, isPlaying, isPlayerReady, isDirectLoading, directStreamUrl]);
+  }, [pipEnabled, isPlaying, isPlayerReady, isDirectLoading, directStreamUrl]);
 
   // Live position ticker — updates MediaSession every second so the lock-screen
   // progress bar tracks playback. Seeking from outside is intentionally blocked
@@ -4367,10 +5134,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
   const handleMinimize = useCallback(() => {
-    if (!isInitialVideoStartedRef.current) {
-      console.log('⏳ [MusicRoom] Cannot minimize — initial video starting');
-      return;
-    }
     (globalThis as any).keepMusicRoomAlive = true;
     (globalThis as any).activeMusicRoomCode = roomCode;
     DeviceEventEmitter.emit('minimize_music_room', true);
@@ -4386,14 +5149,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     DeviceEventEmitter.emit('music_playback_state_changed', currentlyPlaying);
   }, [isPlaying, currentSong?.videoId]);
 
+  // Interruption handling (calls, voice notes, trivia):
+  // Instead of pausing playback and disrupting participants, audio is muted locally.
+  // When interruption ends, restore playback if needed and align audio with current video position.
+  const prevInterruptionRef = useRef(false);
   useEffect(() => {
-    if (callState.isActive) {
-      console.log('📞 [CALL ACTIVE] Pausing music room playback');
-      if (isPlaying && (isDJ || isDJMode)) {
-        syncPause(livePositionRef.current || 0);
+    if (prevInterruptionRef.current && !isInterruptionMuted) {
+      console.log('🔊 [INTERRUPTION] Interruption ended, ensuring audio is aligned and playing');
+      if (isPlayingRef.current) {
+        try {
+          const currentPos = livePositionRef.current || 0;
+          TrackPlayer.seekTo(currentPos);
+          TrackPlayer.play();
+        } catch (_) {}
+        try { playerRef.current?.playVideo?.(); } catch (_) {}
       }
     }
-  }, [callState.isActive, isPlaying, isDJ, isDJMode, syncPause]);
+    prevInterruptionRef.current = isInterruptionMuted;
+  }, [isInterruptionMuted]);
 
   // ✅ NEW: monotonic token so a stale seek's delayed resume (playVideo
   // after the settle timeout) can detect it's been superseded by a newer
@@ -4520,7 +5293,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }
 
     let cancelled = false;
-    setIsPlayerReady(false);
     setIsTrackPlayerReady(false);
     setLiveExactResolution(null);
     // ✅ NEW: a fresh load always starts unsynced — pure black+spinner
@@ -4619,8 +5391,11 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       const startPos = livePositionRef.current > 0 ? livePositionRef.current : 0;
 
-      // Seek video to starting position
-      try { playerRef.current?.seekTo?.(startPos, true); } catch (_) {}
+      // Seek video to starting position only if resuming mid-stream
+      // Seeking ExoPlayer to 0 on startup flushes the decoder pipeline and causes a screen blink!
+      if (startPos > 0.1) {
+        try { playerRef.current?.seekTo?.(startPos, true); } catch (_) {}
+      }
 
       // The play prop (which no longer includes mediaFullySynced) will
       // cause the video to start playing. Poll until the video confirms
@@ -4759,6 +5534,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackStateChanged, (event) => {
 
       if (event.state === PlaybackState.Ready) {
+        // DirectVideoPlayer uses ExoPlayer's unified native A/V pipeline.
+        // Never seek-snap native ExoPlayer based on TrackPlayer!
+        if (directStreamUrlRef.current) {
+          setIsTrackPlayerReady(true);
+          return;
+        }
+
         const activeTrack = TrackPlayer.getActiveMediaItem();
 
         setIsTrackPlayerReady(true);
@@ -4768,7 +5550,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
           setTimeout(() => {
             const { position: tpPosition } = TrackPlayer.getProgress();
-            if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.1) {
+            if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.2) {
               playerRef.current.seekTo(tpPosition + AUDIO_VIDEO_OFFSET, true);
               livePositionRef.current = tpPosition;
             }
@@ -4776,7 +5558,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
           setTimeout(() => {
             const { position: tpPosition } = TrackPlayer.getProgress();
-            if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.1) {
+            if (playerRef.current && isPlayerReadyRef.current && tpPosition > 0.2) {
               playerRef.current.seekTo(tpPosition + AUDIO_VIDEO_OFFSET, true);
               livePositionRef.current = tpPosition;
             }
@@ -4799,9 +5581,6 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // TrackPlayer keeps playing uninterrupted in the background (OS handles it).
   // On foreground return, re-enforce the room's isPlaying state to the WebView player
   // so any background pause/play actions take immediate visible effect.
-  const isPlayingRef = useRef(isPlaying);
-  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
-
   useEffect(() => {
     const subscription = AppState.addEventListener('change', async (nextState) => {
       const prevState = appState.current;
@@ -4820,6 +5599,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
       } else if (nextState === 'active' && prevState === 'background') {
         isInBackgroundRef.current = false; // ✅ Back in foreground
+
+        reacquireAudioFocus();
+        checkExternalAudioActive().then(({ isCall }) => {
+          if (!isCall) {
+            setIsPhoneCallActive(false);
+            setIsExternalAudioInterrupted(false);
+          }
+        }).catch(() => {});
 
         // Re-apply transparent nav bar and dark window background after unlock
         setWindowBackground('#000000');
@@ -5010,7 +5797,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (forcePlay || (!hasActiveVideo && queue.length === 0)) {
       startSongTransition(song);
       let richSong = song;
-      const isPlaceholder = !song.title || song.title === 'Loading...' || song.title === 'Initializing...' || song.title === 'Watch Party' || song.title === 'YouTube Video';
+      const isPlaceholder = !isDisplayTitleValid(song.title);
 
       if (!isPlaceholder && song.channelTitle && song.channelTitle !== 'Loading...') {
         // Metadata already known (History, Likes, Discovery, Queue): load song immediately with ZERO network delay!
@@ -5027,14 +5814,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
         // Background update for channel logo or extra metadata without delaying video playback
         if (song.source !== 'drive') {
-          fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name).then((meta) => {
-            if (meta && meta.videoId === song.videoId) {
+          fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name, song.title).then((meta) => {
+            if (meta && meta.videoId === song.videoId && isDisplayTitleValid(meta.title)) {
+              if (meta.channelLogo) setFetchedChannelLogo(meta.channelLogo);
+              if (meta.channelUrl) setFetchedChannelUrl(meta.channelUrl);
               updateCurrentSongMetadata(meta);
             }
           }).catch(() => {});
         }
       } else {
-        richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name);
+        richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name, isPlaceholder ? undefined : song.title);
         richSong.addedBy = song.addedBy ?? user?.display_name;
         if (richSong.videoId === loadedAudioSessionRef.current) {
           loadedAudioSessionRef.current = null;
@@ -5090,6 +5879,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
 
     const handlePause = (webViewAlreadyHandled = false) => {
+      if (isInterruptionMutedRef.current) return;
       if (!(isDJ || isDJMode || isDJRef.current || isDJModeRef.current)) return;
       const now = Date.now();
       if (now - lastActionTs < DEBOUNCE_MS) return;
@@ -5109,14 +5899,18 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     };
 
     // Path 1: native MusicForegroundService MediaSession (notification button)
-    const playSub  = DeviceEventEmitter.addListener('MEDIA_PLAY',  () => handlePlay(false));
-    const pauseSub = DeviceEventEmitter.addListener('MEDIA_PAUSE', () => handlePause(false));
+    const notifPlaySub  = DeviceEventEmitter.addListener('NOTIFICATION_PLAY',  () => handlePlay(false));
+    const notifPauseSub = DeviceEventEmitter.addListener('NOTIFICATION_PAUSE', () => handlePause(false));
+    const playSub       = DeviceEventEmitter.addListener('MEDIA_PLAY',         () => handlePlay(false));
+    const pauseSub      = DeviceEventEmitter.addListener('MEDIA_PAUSE',        () => handlePause(false));
 
     // Path 2: WebView's own navigator.mediaSession (background-safe, postMessage)
     const wvPlaySub  = DeviceEventEmitter.addListener('WEBVIEW_MEDIA_PLAY',  () => handlePlay(true));
     const wvPauseSub = DeviceEventEmitter.addListener('WEBVIEW_MEDIA_PAUSE', () => handlePause(true));
 
     return () => {
+      notifPlaySub.remove();
+      notifPauseSub.remove();
       playSub.remove();
       pauseSub.remove();
       wvPlaySub.remove();
@@ -5192,7 +5986,9 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         setPlayerError(null);
         handleSelectSong(song, true);
         setShowDiscovery(false);
+        setShowTabSelect(false);
         setDiscoveryInitialUrl(null);
+        setDiscoveryInitialTab(null);
       }
       setIsFirstCreation(false);
     });
@@ -5206,19 +6002,21 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       console.log('🎵 [Auto-Play Queue] Video ended and queue has song, auto-playing next song');
       setShowRelated(false);
       setPlayerError(null);
+      const nextItem = (queue && queue.length > 0 ? (queue[0]?.song || queue[0]) : null) || (roomStateQueueRef.current && roomStateQueueRef.current.length > 0 ? roomStateQueueRef.current[0] : null);
+      startSongTransition(nextItem);
       passAux();
     }
-  }, [queue.length, playerState, isDJ, isDJMode, passAux]);
+  }, [queue, playerState, isDJ, isDJMode, passAux, startSongTransition]);
 
   useEffect(() => {
     if (currentSong?.videoId && metadataLock.current !== currentSong.videoId &&
-        (currentSong.title === 'Initializing...' || currentSong.title === 'Loading...' || !currentSong.channelTitle)) {
+        !isDisplayTitleValid(currentSong.title)) {
       const fetchMeta = async () => {
         try {
           metadataLock.current = currentSong.videoId;
-          const fullSong = await fetchYouTubeMetadata(currentSong.videoId, user?.display_name);
+          const fullSong = await fetchYouTubeMetadata(currentSong.videoId, currentSong?.addedBy ?? user?.display_name);
           fullSong.addedBy = currentSong.addedBy ?? user?.display_name ?? 'Someone';
-          if (metadataLock.current === currentSong.videoId) {
+          if (metadataLock.current === currentSong.videoId && isDisplayTitleValid(fullSong.title)) {
             updateCurrentSongMetadata(fullSong);
           }
         } catch (e) {
@@ -5227,7 +6025,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       };
       fetchMeta();
     }
-  }, [currentSong?.videoId, currentSong?.title, user?.display_name, updateCurrentSongMetadata]);
+  }, [currentSong?.videoId, currentSong?.title, user?.display_name, updateCurrentSongMetadata, isDisplayTitleValid]);
 
   const showControlsFor = useCallback((ms = 3500) => {
     setShowControls(true);
@@ -5315,17 +6113,37 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         buildAndLoad(
           initialTitle,
           initialThumbnail,
-          'YouTube',
+          (route?.params as any)?.initialChannelTitle || 'YouTube',
         );
+
+        // Fetch channel logo & full metadata in parallel in background so channel logo appears immediately
+        fetchYouTubeMetadata(initialVideoId, user?.display_name, isDisplayTitleValid(initialTitle) ? initialTitle : undefined)
+          .then((meta) => {
+            if (meta) {
+              if (meta.channelLogo) {
+                setFetchedChannelLogo(meta.channelLogo);
+              }
+              if (meta.channelUrl) {
+                setFetchedChannelUrl(meta.channelUrl);
+              }
+              updateCurrentSongMetadata({
+                ...meta,
+                title: isDisplayTitleValid(meta.title) ? meta.title : initialTitle,
+                addedBy: user?.display_name ?? 'You',
+                source: 'youtube',
+              });
+            }
+          })
+          .catch((e) => console.warn('🎵 Initial metadata fetch failed:', e));
       } else {
         // YouTube: WebView interception — no title captured. Fetch metadata then load.
         const fallbackThumb = `https://i.ytimg.com/vi/${initialVideoId}/maxresdefault.jpg`;
         buildAndLoad('Loading...', fallbackThumb, 'YouTube');
 
         // Fetch real metadata in parallel and update once resolved
-        fetchYouTubeMetadata(initialVideoId, user?.display_name)
+        fetchYouTubeMetadata(initialVideoId, user?.display_name, isDisplayTitleValid(initialTitle) ? initialTitle : undefined)
           .then((meta) => {
-            if (meta?.title) {
+            if (meta?.title && isDisplayTitleValid(meta.title)) {
               updateCurrentSongMetadata({
                 ...meta,
                 addedBy: user?.display_name ?? 'You',
@@ -5336,18 +6154,24 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           .catch((e) => console.warn('🎵 Initial metadata fetch failed:', e));
       }
     }
-  }, [isConnected, initialVideoId, initialSource, initialTitle, initialThumbnail, isDJMode, loadSong, updateCurrentSongMetadata, user?.display_name]);
+  }, [isConnected, initialVideoId, initialSource, initialTitle, initialThumbnail, isDJMode, loadSong, updateCurrentSongMetadata, user?.display_name, isDisplayTitleValid]);
 
   useEffect(() => {
     if (currentSong?.videoId) {
+      const isInitialSong = Boolean(initialVideoId && currentSong.videoId === initialVideoId);
       const isSameAsInitialOrActive =
-        lastResetSongVideoIdRef.current === currentSong.videoId &&
-        (lastLoadedStreamVideoId.current === currentSong.videoId || currentDirectFetchId.current === currentSong.videoId || Boolean(directStreamUrl));
+        isInitialSong ||
+        Boolean(activeVideoId && currentSong.videoId === activeVideoId) ||
+        Boolean(currentDirectFetchId.current && currentSong.videoId === currentDirectFetchId.current) ||
+        Boolean(lastLoadedStreamVideoId.current && currentSong.videoId === lastLoadedStreamVideoId.current) ||
+        (lastResetSongVideoIdRef.current === currentSong.videoId && Boolean(directStreamUrl));
 
       if (isSameAsInitialOrActive) {
         console.log(`🎵 [MusicRoom] currentSong confirmed for active video: ${currentSong.videoId} — preserving active stream & playback`);
         setShowRelated(false);
         setPlayerError(null);
+        lastResetSongVideoIdRef.current = currentSong.videoId;
+        lastTransitionVideoIdRef.current = currentSong.videoId;
         return;
       }
 
@@ -5364,8 +6188,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       setVideoDisplayMode('fit');
       try { playerRef.current?.stopVideo?.(); } catch (_) {}
       try { TrackPlayer.pause(); } catch (_) {}
+      console.log('🖼️ [THUMB] Resetting overlay in song reset effect for currentSong:', currentSong.videoId);
       setShowThumbnailOverlay(true);
+      setShowSpinner(true);
+      loaderFadeAnim.setValue(1);
+      innerThumbFadeAnim.setValue(1);
       thumbnailFadeAnim.setValue(1);
+      isThumbnailFadingRef.current = false;
       setIsPlayerReady(false);
       setIsTrackPlayerReady(false); // ✅ Block WebView until audio is ready
       setMediaFullySynced(false);
@@ -5399,12 +6228,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, []);
 
   useEffect(() => {
-    if (isPlayerReady && isConnected && !songPlaybackStartedRef.current && (isDJMode || isDJ)) {
+    if (isPlayerReady && isConnected && !songPlaybackStartedRef.current && (isDJMode || isDJ) && thumbnailHoldComplete) {
       songPlaybackStartedRef.current = true;
       setIsSyncing(false);
-      setTimeout(() => syncPlay(livePositionRef.current || 0), 400);
+      const curVid = currentSong?.videoId || initialVideoId;
+      if (lastSyncPlayedVideoIdRef.current !== curVid) {
+        lastSyncPlayedVideoIdRef.current = curVid;
+        setTimeout(() => syncPlay(livePositionRef.current || 0), 400);
+      }
     }
-  }, [isPlayerReady, isConnected, isDJMode, isDJ, syncPlay]);
+  }, [isPlayerReady, isConnected, isDJMode, isDJ, syncPlay, thumbnailHoldComplete, currentSong?.videoId, initialVideoId]);
 
   useEffect(() => {
     if (isPlayerReady && (isDJ || isDJMode) && currentSong && isPlaying && !isSyncing) {
@@ -5454,23 +6287,29 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         toggleCenterMode(false);
         return true;
       }
-      if (showDiscovery) { setShowDiscovery(false); setDiscoveryInitialUrl(null); return true; }
+      if (showDiscovery) {
+        setShowDiscovery(false);
+        setDiscoveryInitialUrl(null);
+        setDiscoveryInitialTab(null);
+        setShowTabSelect(true);
+        return true;
+      }
+      if (showTabSelect) {
+        setShowTabSelect(false);
+        return true;
+      }
       if (showSettingsModal) { setShowSettingsModal(false); return true; }
       if (fullscreen) {
         handleToggleFullscreen();
         return true;
       }
       if (showLeaveConfirm) { setShowLeaveConfirm(false); return true; }
-      if (!isInitialVideoStartedRef.current) {
-        console.log('⏳ [MusicRoom] Back press ignored — initial video starting');
-        return true;
-      }
       handleMinimize();
       return true;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => { backHandler.remove(); };
-  }, [showDiscovery, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm, showSettingsModal, isCenterMode, toggleCenterMode, handleMinimize, handleToggleFullscreen]);
+  }, [showDiscovery, showTabSelect, fullscreen, isMinimized, previewData.visible, stickerPickerVisible, stickerSpacerHeight, showLeaveConfirm, showSettingsModal, isCenterMode, toggleCenterMode, handleMinimize, handleToggleFullscreen]);
 
   useEffect(() => {
     const unsubscribe = musicWebSocketService.onMessage((msg) => {
@@ -5860,14 +6699,12 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     try {
       const t = livePosition;
       if (isPlaying) {
-        if (currentSong?.source === 'drive') {
-          try { playerRef.current?.pauseVideo?.(); } catch (_) {}
-        }
+        // Instant local command — don't wait for socket round-trip
+        try { playerRef.current?.pauseVideo?.(); } catch (_) {}
         syncPause(t);
       } else {
-        if (currentSong?.source === 'drive') {
-          try { playerRef.current?.playVideo?.(); } catch (_) {}
-        }
+        // Instant local command — don't wait for socket round-trip
+        try { playerRef.current?.playVideo?.(); } catch (_) {}
         syncPlay(t);
       }
     } catch (e) {
@@ -6319,7 +7156,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               </View>
             </View>
 
-            {/* 3rd Item: Picture-in-Picture Mode */}
+            {/* Picture-in-Picture Mode */}
             <TouchableOpacity
               activeOpacity={0.7}
               onPress={() => handleTogglePip(!pipEnabled)}
@@ -6358,12 +7195,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     Picture-in-Picture
                   </Text>
                   <Text style={{ color: textSecondary, fontSize: 11.5, marginTop: 1 }}>
-                    Floating player when minimized
+                    Floating player when outside the app
                   </Text>
                 </View>
               </View>
 
-              {/* Right Corner: Switch (pointerEvents="none" so any tap on switch triggers the row's handleTogglePip cleanly) */}
+              {/* Right Corner: Switch */}
               <View pointerEvents="none">
                 <Switch
                   value={pipEnabled}
@@ -6373,7 +7210,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               </View>
             </TouchableOpacity>
 
-            {/* 3rd Item: Live Lyrics in Center Mode */}
+            {/* Live Lyrics in Center Mode */}
             <TouchableOpacity
               activeOpacity={0.7}
               onPress={() => handleToggleCenterLyrics(!centerLyricsEnabled)}
@@ -6494,19 +7331,490 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     );
   };
 
+  const renderThumbnailOverlay = () => {
+    if (!showThumbnailOverlay || (showRelated && (playerState === 'ended' || !!playerError)) || !!playerError) {
+      return null;
+    }
+    console.log(`🖼️ [THUMB_RENDER] Rendering overlay for activeVideoId: ${activeVideoId}, isLoading: ${!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete}, isPlayerReady: ${isPlayerReady}`);
+
+    const isDrive = (currentSong?.source || initialSource) === 'drive';
+    // Best available URI — fall through every source so bleed is always populated
+    const thumbUri =
+      thumbFallbackUri ||
+      displayedThumbnailUrl ||
+      (activeVideoId && !isDrive ? `https://i.ytimg.com/vi/${activeVideoId}/maxresdefault.jpg` : null) ||
+      (activeVideoId && isDrive ? `https://drive.google.com/thumbnail?id=${activeVideoId}&sz=w1280` : null);
+
+    const isLoading = isDrive
+      ? (!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete)
+      : (!isPlayerReady || !mediaFullySynced || isDirectLoading || !thumbnailHoldComplete);
+
+    const isGpuTheme = roomTheme === 'cinema' || roomTheme === 'rave';
+
+    return (
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            backgroundColor: '#000000',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 40,
+          },
+        ]}
+        pointerEvents="none"
+      >
+        {!!thumbUri && (
+          <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center' }]}>
+            {isDrive ? (
+              <Image
+                source={{ uri: thumbUri }}
+                style={{ width: '100%', height: '100%' }}
+                resizeMode="contain"
+              />
+            ) : (
+              <FastImage
+                source={{ uri: thumbUri, priority: FastImage.priority.high }}
+                style={{ width: '100%', height: '100%' }}
+                resizeMode={FastImage.resizeMode.contain}
+                onError={() => {
+                  if (!thumbFallbackUri && activeVideoId) {
+                    setThumbFallbackUri(`https://i.ytimg.com/vi/${activeVideoId}/hqdefault.jpg`);
+                  }
+                }}
+              />
+            )}
+          </View>
+        )}
+
+        {/* White Spinner — shown while loading */}
+        {showSpinner && (
+          <View
+            style={{ position: 'absolute' }}
+            pointerEvents="none"
+          >
+            <ActivityIndicator size="large" color="#FFFFFF" />
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderQualityModal = () => (
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.55)', justifyContent: 'center', alignItems: 'center', zIndex: 10002, elevation: 60 }]}>
+      <TouchableWithoutFeedback onPress={() => setShowQualityOptions(false)}>
+        <View style={StyleSheet.absoluteFill} />
+      </TouchableWithoutFeedback>
+      <View style={{
+        width: '88%',
+        maxWidth: 270,
+        maxHeight: '90%',
+        backgroundColor: 'rgba(12, 15, 22, 0.78)',
+        borderRadius: 12,
+        paddingHorizontal: 8,
+        paddingTop: 10,
+        paddingBottom: 8,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.14)',
+        zIndex: 61,
+      }}>
+        {/* Floating close button exceeding the top-right edge */}
+        <TouchableOpacity
+          onPress={() => setShowQualityOptions(false)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{
+            position: 'absolute',
+            top: -11,
+            right: -11,
+            width: 24,
+            height: 24,
+            borderRadius: 12,
+            backgroundColor: '#1E232E',
+            borderWidth: 1.5,
+            borderColor: 'rgba(255, 255, 255, 0.3)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 70,
+            elevation: 6,
+          }}
+        >
+          <Icon name="close" size={13} color="#FFFFFF" />
+        </TouchableOpacity>
+
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+          contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}
+        >
+          {/* Auto — first cell in the 3×3 grid */}
+          <TouchableOpacity
+            onPress={() => handleSelectQuality('auto')}
+            activeOpacity={0.7}
+            style={{
+              width: '30%',
+              marginHorizontal: '1.5%',
+              marginVertical: 4.5,
+              height: 27,
+              borderRadius: 6,
+              justifyContent: 'center',
+              alignItems: 'center',
+              backgroundColor: videoQuality === 'auto' ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
+              borderWidth: 1,
+              borderColor: videoQuality === 'auto' ? '#38BDF8' : 'rgba(255, 255, 255, 0.08)',
+            }}
+          >
+            <Text style={{
+              fontSize: 10.5,
+              fontWeight: videoQuality === 'auto' ? '700' : '600',
+              color: videoQuality === 'auto' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
+            }}>Auto</Text>
+          </TouchableOpacity>
+
+          {dynamicQualityOptions.map((opt) => {
+            const isSelected = (videoQuality === opt.key) ||
+              (videoQuality === 'highres' && opt.key === 'hd2160') ||
+              (videoQuality === 'hd2160' && opt.key === 'highres') ||
+              (videoQuality === opt.label);
+
+            return (
+              <TouchableOpacity
+                key={opt.key}
+                onPress={() => handleSelectQuality(opt.key)}
+                activeOpacity={0.7}
+                style={{
+                  width: '30%',
+                  marginHorizontal: '1.5%',
+                  marginVertical: 4.5,
+                  height: 27,
+                  borderRadius: 6,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  backgroundColor: isSelected ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
+                  borderWidth: 1,
+                  borderColor: isSelected ? '#38BDF8' : 'rgba(255, 255, 255, 0.06)',
+                }}
+              >
+                <Text style={{
+                  fontSize: 10.5,
+                  fontWeight: isSelected ? '700' : '500',
+                  color: isSelected ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
+                }}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </View>
+  );
+
+  const handleDashCutoff = useCallback(async (fallbackUrl: string) => {
+    // If the user is already authenticated with YouTube, don't interrupt — re-extract fresh DASH stream
+    try {
+      const isAuthed = await checkYouTubeAuth();
+      if (isAuthed) {
+        console.log('🎬 [MusicRoom] YouTube authenticated: clearing skip flag and re-extracting fresh DASH stream');
+        await setHasSkippedYtLogin(false);
+        hasSkippedYtLoginRef.current = false;
+        setHasSkippedYtLoginState(false);
+        const targetVideoId = currentSong?.videoId || initialVideoId;
+        if (targetVideoId) {
+          extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
+            if (res && res.url) {
+              setDirectStreamUrl(res.url);
+              setDirectStreamHeaders(res.headers);
+              setDirectStreamType(res.streamType || 'mp4');
+            }
+          }).catch(() => {});
+        }
+        return;
+      }
+    } catch (_) {}
+
+    // User is guest (not logged in to YouTube) and DASH 59s cutoff occurred
+    console.log('🎬 [MusicRoom] Guest DASH cutoff at', livePositionRef.current, '— presenting quality / login prompt');
+    const currentPos = livePositionRef.current || 0;
+    ytPromptPausePosRef.current = currentPos;
+    ytPromptWallTimeRef.current = Date.now();
+    pendingFallbackProgUrlRef.current = fallbackUrl;
+
+    // Pause player locally
+    try {
+      playerRef.current?.pauseVideo?.();
+    } catch (_) {}
+    isPlayingRef.current = false;
+
+    // Room sync rule:
+    // If alone: pause room playback so when they resume, it continues from this exact second.
+    // If with other participants: pause locally only, so other participants are not interrupted.
+    const isAlone = !participants || participants.length <= 1;
+    if (isAlone && (isDJ || isDJMode)) {
+      syncPause(currentPos);
+    }
+
+    setShowYtQualityPrompt(true);
+  }, [currentSong?.videoId, initialVideoId, isDJ, isDJMode, participants, syncPause]);
+
+  const handleChooseLowerQuality = useCallback(async () => {
+    console.log('🎬 [MusicRoom] User chose to watch in lower quality (360p)');
+    setShowYtQualityPrompt(false);
+    await setHasSkippedYtLogin(true);
+    hasSkippedYtLoginRef.current = true;
+    setHasSkippedYtLoginState(true);
+
+    const isAlone = !participants || participants.length <= 1;
+    let targetPos = ytPromptPausePosRef.current || 0;
+    if (!isAlone) {
+      // Catch up with other participants in the room
+      const elapsed = (Date.now() - (ytPromptWallTimeRef.current || Date.now())) / 1000;
+      const basePos = roomState.position || position || targetPos;
+      targetPos = roomState.isPlaying ? (basePos + elapsed) : basePos;
+      if (duration > 0) {
+        targetPos = Math.min(targetPos, Math.max(0, duration - 1));
+      }
+    }
+
+    // Switch to progressive 360p stream
+    setAvailableQualities(['360p']);
+    setVideoQuality('360p');
+
+    const progUrl = pendingFallbackProgUrlRef.current || fallbackProgressiveUrlRef.current || directFallbackUrl;
+    if (progUrl) {
+      setDirectStreamUrl(progUrl);
+      setDirectStreamType('mp4');
+    } else {
+      const targetVideoId = currentSong?.videoId || initialVideoId;
+      if (targetVideoId) {
+        extractVideoStreamUrlClientSide(targetVideoId, true).then((res) => {
+          const pUrl = res?.fallbackProgressiveUrl || res?.url;
+          if (pUrl) {
+            setDirectStreamUrl(pUrl);
+            setDirectStreamType('mp4');
+          }
+        }).catch(() => {});
+      }
+    }
+
+    // Smartly seek and resume playback
+    setTimeout(() => {
+      try {
+        playerRef.current?.seekTo?.(targetPos);
+        const shouldPlay = isAlone ? true : (roomState.isPlaying ?? true);
+        if (shouldPlay) {
+          playerRef.current?.playVideo?.();
+          isPlayingRef.current = true;
+          if (isAlone && (isDJ || isDJMode)) {
+            syncPlay(targetPos);
+          }
+        }
+      } catch (_) {}
+    }, 400);
+  }, [currentSong?.videoId, initialVideoId, participants, roomState.isPlaying, roomState.position, position, duration, isDJ, isDJMode, syncPlay]);
+
+  const handleYouTubeLoginSuccess = useCallback(async () => {
+    if (isHandlingYtLoginSuccessRef.current) return;
+    isHandlingYtLoginSuccessRef.current = true;
+    console.log('🎉 [MusicRoom] YouTube login successful! Resuming in HD DASH stream');
+    setShowYtQualityPrompt(false);
+    setShowDiscovery(false);
+    setIsDiscoveryLoginFlow(false);
+    await setHasSkippedYtLogin(false);
+    hasSkippedYtLoginRef.current = false;
+    setHasSkippedYtLoginState(false);
+
+    const isAlone = !participants || participants.length <= 1;
+    let targetPos = ytPromptPausePosRef.current || 0;
+    if (!isAlone) {
+      // Catch up with other participants in the room
+      const elapsed = (Date.now() - (ytPromptWallTimeRef.current || Date.now())) / 1000;
+      const basePos = roomState.position || position || targetPos;
+      targetPos = roomState.isPlaying ? (basePos + elapsed) : basePos;
+      if (duration > 0) {
+        targetPos = Math.min(targetPos, Math.max(0, duration - 1));
+      }
+    }
+
+    const targetVideoId = currentSong?.videoId || initialVideoId;
+    if (targetVideoId) {
+      extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache to get authenticated streams */).then((res) => {
+        if (res?.dashUrl) {
+          setDirectStreamUrl(res.dashUrl);
+          setDirectStreamHeaders(res.headers);
+          setDirectStreamType('mpd');
+          if (res.streams && res.streams.length > 0) {
+            const qKeys = res.streams.map((s: any) => heightToQualityKey(s.height));
+            setAvailableQualities(Array.from(new Set(['auto', ...qKeys])));
+          }
+        } else if (res?.url) {
+          setDirectStreamUrl(res.url);
+          setDirectStreamHeaders(res.headers);
+          setDirectStreamType(res.streamType || 'mp4');
+        }
+        setTimeout(() => {
+          try {
+            playerRef.current?.seekTo?.(targetPos);
+            const shouldPlay = isAlone ? true : (roomState.isPlaying ?? true);
+            if (shouldPlay) {
+              playerRef.current?.playVideo?.();
+              isPlayingRef.current = true;
+              if (isAlone && (isDJ || isDJMode)) {
+                syncPlay(targetPos);
+              }
+            }
+          } catch (_) {}
+          isHandlingYtLoginSuccessRef.current = false;
+        }, 400);
+      }).catch(() => {
+        isHandlingYtLoginSuccessRef.current = false;
+      });
+    } else {
+      isHandlingYtLoginSuccessRef.current = false;
+    }
+  }, [currentSong?.videoId, initialVideoId, participants, roomState.isPlaying, roomState.position, position, duration, isDJ, isDJMode, syncPlay]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('YOUTUBE_LOGIN_SUCCESS', () => {
+      console.log('🎉 [MusicRoom] YOUTUBE_LOGIN_SUCCESS received from Discovery Screen!');
+      handleYouTubeLoginSuccess();
+    });
+    return () => sub.remove();
+  }, [handleYouTubeLoginSuccess]);
+
+  const handleOpenYouTubeLoginDiscovery = useCallback(() => {
+    setShowYtQualityPrompt(false);
+    setIsDiscoveryLoginFlow(true);
+    setDiscoveryInitialTab('youtube');
+    setDiscoveryInitialUrl('https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=https%3A%2F%2Fm.youtube.com%2F');
+    setShowDiscovery(true);
+  }, []);
+
+  const renderYtQualityPrompt = () => {
+    if (!showYtQualityPrompt) return null;
+
+    return (
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            backgroundColor: 'rgba(0, 0, 0, 0.88)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 16,
+            zIndex: 10001,
+            elevation: 50,
+          },
+        ]}
+      >
+        <View
+          style={{
+            width: '100%',
+            maxWidth: fullscreen ? 360 : 320,
+            backgroundColor: 'rgba(23, 23, 27, 0.96)',
+            borderRadius: 14,
+            paddingVertical: fullscreen ? 16 : 12,
+            paddingHorizontal: fullscreen ? 18 : 14,
+            borderWidth: 1,
+            borderColor: 'rgba(255, 255, 255, 0.12)',
+            alignItems: 'center',
+          }}
+        >
+          {/* Header row: Icon & Title */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 6 }}>
+            <Icon name="logo-youtube" size={20} color="#FF0000" />
+            <Text style={{ color: '#FFFFFF', fontSize: 13.5, fontWeight: '700' }}>
+              Sign in for HD Quality
+            </Text>
+          </View>
+
+          {/* Description text */}
+          <Text
+            style={{
+              color: 'rgba(255, 255, 255, 0.78)',
+              fontSize: 11,
+              lineHeight: 15,
+              textAlign: 'center',
+              marginBottom: 12,
+            }}
+          >
+            Sign in with YouTube to enjoy HD streaming Freely or skip to continue watching in lower quality.
+          </Text>
+
+          {/* Action Buttons */}
+          <View style={{ flexDirection: 'row', width: '100%', gap: 8 }}>
+            <TouchableOpacity
+              onPress={handleChooseLowerQuality}
+              activeOpacity={0.75}
+              style={{
+                flex: 1,
+                paddingVertical: 8,
+                borderRadius: 8,
+                backgroundColor: 'rgba(255, 255, 255, 0.10)',
+                borderWidth: 1,
+                borderColor: 'rgba(255, 255, 255, 0.18)',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text
+                style={{
+                  color: 'rgba(255, 255, 255, 0.85)',
+                  fontSize: 11,
+                  fontWeight: '600',
+                }}
+                numberOfLines={1}
+              >
+                skip signin
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleOpenYouTubeLoginDiscovery}
+              activeOpacity={0.8}
+              style={{
+                flex: 1.1,
+                paddingVertical: 8,
+                borderRadius: 8,
+                backgroundColor: '#FF0000',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'row',
+                gap: 5,
+              }}
+            >
+              <Icon name="person-circle-outline" size={14} color="#FFFFFF" />
+              <Text
+                style={{
+                  color: '#FFFFFF',
+                  fontSize: 11.5,
+                  fontWeight: '700',
+                }}
+                numberOfLines={1}
+              >
+                Sign In
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderPlayerContent = () => {
-    if (!activeVideoId) {
+    if (!activeVideoId && roomTheme !== 'cinema' && roomTheme !== 'rave') {
       return null;
     }
 
     if ((currentSong?.source || initialSource) === 'drive' && !directStreamUrl) {
+      if (!activeVideoId) return null;
+      const curDriveSession = currentSong?.playSessionId || (activeVideoId ? `${activeVideoId}_${trackPlayCounterRef.current}` : 'drive');
       return (
         <DrivePlayer
-          key={`drive_${activeVideoId}`}
+          key={`drive_${curDriveSession}`}
           ref={playerRef}
           fileId={activeVideoId || ''}
           play={isPlaying && !playerError && thumbnailHoldComplete}
-          muted={isMuted}
+          muted={effectiveMuted}
           isFullscreen={fullscreen}
           resizeMode={isMinimized ? 'cover' : 'contain'}
           onAspectRatio={handleAspectRatio}
@@ -6575,11 +7883,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     }
 
     const isNativeDirectVideo = currentSong?.source !== 'drive' && (currentSong?.source as string) !== 'embed';
-    if (directStreamUrl || isDirectLoading || (isNativeDirectVideo && !playerError)) {
+    if (directStreamUrl || isDirectLoading || (isNativeDirectVideo && !playerError) || roomTheme === 'cinema' || roomTheme === 'rave') {
+      const curDirectSession = currentSong?.playSessionId || (activeVideoId ? `${activeVideoId}_${trackPlayCounterRef.current}` : 'vid');
       return (
         <DirectVideoPlayer
-          key="direct_music_player"
-          videoId={activeVideoId}
+          key={`direct_music_player_${curDirectSession}`}
+          videoId={activeVideoId || null}
           ref={playerRef}
           videoUri={directStreamUrl || ''}
           fallbackUri={directFallbackUrl || fallbackProgressiveUrlRef.current || directStreamsListRef.current.find(s => s.has_audio)?.url || null}
@@ -6588,13 +7897,15 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           headers={directStreamHeaders}
           play={isPlaying && !playerError && thumbnailHoldComplete && !!directStreamUrl}
           quality={videoQuality}
-          muted={isMuted}
+          muted={effectiveMuted}
           initialPosition={initialRoomPosition || 0}
           isFullscreen={fullscreen}
           resizeMode={isMinimized ? 'cover' : 'contain'}
           aspectRatio={detectedAspectRatio || 1.7777}
+          roomTheme={roomTheme}
           bleedEnabled={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen}
-          contentRect={roomTheme === 'rave' && !isMinimized && !isSystemPip && !fullscreen ? raveContentRect : undefined}
+          bleedDarkness={0.55}
+          contentRect={!isMinimized && !isSystemPip && !fullscreen ? videoContentRect : undefined}
           bbdCropPercent={detectedCropPercent}
           bbdHorizCropPercent={detectedHorizCropPercent}
           displayMode={videoDisplayMode === 'fit' ? 0 : 1}
@@ -6608,6 +7919,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           }}
           onQualitiesAvailable={(qualities) => {
             if (directStreamsListRef.current.length > 0) return;
+            if (hasSkippedYtLoginRef.current) return;
             if (qualities && qualities.length > 0) {
               const qKeys = qualities.map((q: string) => {
                 const h = parseInt(q.replace(/\D/g, ''), 10);
@@ -6617,7 +7929,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             }
           }}
           onReady={() => {
-            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+            if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
               console.log('🛡️ [DirectVideoPlayer] Stale onReady ignored for', activeVideoId, '(stream loaded for:', lastLoadedStreamVideoId.current, ')');
               return;
             }
@@ -6630,16 +7942,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             const state = isPlaying ? 'playing' : 'paused';
             setPlayerState(state);
             playerStateRef.current = state;
-            if (isPlaying && thumbnailHoldCompleteRef.current) {
+            if (thumbnailHoldCompleteRef.current) {
               songStartTimeRef.current = Date.now();
               try { playerRef.current?.playVideo?.(); } catch (_) {}
-              if (isDJ || isDJMode || isDJRef.current || isDJModeRef.current) {
+              const curVid = activeVideoId || initialVideoId;
+              if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && lastSyncPlayedVideoIdRef.current !== curVid) {
+                lastSyncPlayedVideoIdRef.current = curVid;
                 syncPlay(0);
               }
-            } else if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && thumbnailHoldCompleteRef.current) {
-              songStartTimeRef.current = Date.now();
-              try { playerRef.current?.playVideo?.(); } catch (_) {}
-              syncPlay(0);
             }
 
             if (!isDJ && !isDJMode && joinSnapshot && joinSnapshot.videoId === currentSong?.videoId && !joinSnapshotConsumed.current) {
@@ -6662,7 +7972,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           }}
           onStateChange={onPlayerStateChange}
           onProgress={(currentTime, dur) => {
-            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+            if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
               return;
             }
             if (dur > 0 && !isNaN(dur)) setDuration(dur);
@@ -6692,7 +8002,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             }
           }}
           onEnd={() => {
-            if (!activeVideoId || lastLoadedStreamVideoId.current !== activeVideoId) {
+            if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
               return;
             }
             handleSongPlaybackEnded();
@@ -6708,15 +8018,20 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             const targetVideoId = currentSong?.videoId || initialVideoId;
             if (targetVideoId) {
               const fallbackUrl = fallbackProgressiveUrlRef.current || directFallbackUrl;
-              // If DASH stream encounters an error, immediately switch to the unthrottled ANDROID progressive stream
-              // for this specific video. Do NOT re-enter DASH in an infinite loop!
-              if (fallbackUrl && directStreamType === 'mpd') {
-                console.log('🎬 [MusicRoomScreen] DASH stream error at pos', livePositionRef.current, '— switching directly to unthrottled ANDROID progressive stream (360p)');
-                setAvailableQualities(['360p']);
-                setVideoQuality('360p');
-                setDirectStreamUrl(fallbackUrl);
-                setDirectStreamType('mp4');
-                return;
+              // If DASH stream encounters an error (typically guest CDN 403 at ~59s):
+              if (directStreamType === 'mpd') {
+                if (hasSkippedYtLoginRef.current && fallbackUrl) {
+                  console.log('🎬 [MusicRoomScreen] DASH stream error & user previously skipped login: switching directly to 360p');
+                  setAvailableQualities(['360p']);
+                  setVideoQuality('360p');
+                  setDirectStreamUrl(fallbackUrl);
+                  setDirectStreamType('mp4');
+                  return;
+                }
+                if (fallbackUrl) {
+                  handleDashCutoff(fallbackUrl);
+                  return;
+                }
               }
 
               extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
@@ -6737,13 +8052,14 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       return null;
     }
 
+    const curYtSession = currentSong?.playSessionId || (activeVideoId ? `${activeVideoId}_${trackPlayCounterRef.current}` : 'yt');
     return (
       <YoutubePlayer
-        key={`yt_${activeVideoId}`}
+        key={`yt_${curYtSession}`}
         ref={playerRef}
         videoId={activeVideoId || ''}
         play={isPlaying && !playerError && thumbnailHoldComplete}
-        muted={isMuted}
+        muted={effectiveMuted}
         initialPosition={livePositionRef.current || 0}
         quality={videoQuality}
         isFullscreen={fullscreen}
@@ -6865,8 +8181,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         hidden={fullscreen || isSystemPip}
       />
 
-      {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (cinema | dark | light) ── */}
-      {!isMinimized && !fullscreen && roomTheme !== 'rave' && (
+      {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (dark fallback only; cinema & rave rendered by GPU) ── */}
+      {!isMinimized && !fullscreen && roomTheme !== 'rave' && roomTheme !== 'cinema' && (
         <View
           style={[StyleSheet.absoluteFill, isSystemPip && { opacity: 0 }]}
           pointerEvents="none"
@@ -6881,15 +8197,89 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         </View>
       )}
 
-      {/* ── 2. VIDEO LAYER (Background ONLY for Rave theme blurred bleed) ── */}
-      {roomTheme === 'rave' && !isSystemPip && !fullscreen && (
-        <Reanimated.View
-          style={[{ zIndex: 0, elevation: 0 }, playerLayerAnimatedStyle]}
-          pointerEvents="none"
-        >
-          {renderPlayerContent()}
-        </Reanimated.View>
-      )}
+
+      {/* ── 2. VIDEO LAYER (Single Unified Layer — Edge-to-Edge Bleed & Smooth Zero-Restart Switching) ── */}
+      <Reanimated.View
+        style={[
+          {
+            zIndex: isSystemPip ? 99999 : (isMinimized ? 99999 : (fullscreen ? 99999 : 0)),
+            elevation: isSystemPip ? 99999 : (isMinimized ? 30 : (fullscreen ? 99999 : 0)),
+          },
+          playerLayerAnimatedStyle,
+        ]}
+        pointerEvents={isSystemPip ? 'auto' : (isMinimized ? 'none' : (fullscreen ? 'box-none' : 'none'))}
+      >
+        {renderPlayerContent()}
+
+        {/* Fullscreen Video Controls & Overlays */}
+        {fullscreen && !isMinimized && !isSystemPip && (
+          <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+            {/* Fullscreen Tap-to-toggle Backdrop */}
+            <TouchableWithoutFeedback
+              onPress={() => {
+                if (showControls) {
+                  setShowControls(false);
+                  if (controlTimer.current) clearTimeout(controlTimer.current);
+                } else {
+                  showControlsFor(4000);
+                }
+              }}
+            >
+              <View style={StyleSheet.absoluteFill} />
+            </TouchableWithoutFeedback>
+
+            {/* Fullscreen Thumbnail Overlay (smooth transitions between songs in landscape) */}
+            {renderThumbnailOverlay()}
+
+            {/* Fullscreen Video Controls */}
+            {isPlayerReady && !showThumbnailOverlay && (
+              <VideoControls
+                visible={showControls && !playerError && !showQualityOptions}
+                isPlaying={isPlaying}
+                isEnded={playerState === 'ended'}
+                canControl={effectiveIsDJ && isPlayerReady}
+                isBuffering={Boolean((isBuffering || isReseeking || seekingRef.current || !isPlayerReady) && !!currentSong)}
+                position={livePosition}
+                duration={duration}
+                isLive={directStreamType === 'm3u8'}
+                isMuted={isMuted}
+                onToggleMute={handleToggleMute}
+                onPlayPause={handlePlayPause}
+                onSeek={handleSeek}
+                onNext={handleNext}
+                onToggleFullscreen={handleToggleFullscreen}
+                onShowRelated={() => {}}
+                onSettings={() => {
+                  setShowControls(false);
+                  if (controlTimer.current) clearTimeout(controlTimer.current);
+                  setShowQualityOptions(prev => !prev);
+                }}
+                qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
+                isFullscreen={true}
+                isDrivePlayer={currentSong?.source === 'drive'}
+                title={currentSong?.title}
+                onSingleTap={() => {
+                  if (showControls) {
+                    setShowControls(false);
+                    if (controlTimer.current) clearTimeout(controlTimer.current);
+                  } else {
+                    showControlsFor(4000);
+                  }
+                }}
+                onKeepControlsAlive={() => showControlsFor(4000)}
+              />
+            )}
+
+            {/* Fullscreen Quality Grid Modal */}
+            {showQualityOptions && !playerError && currentSong?.source !== 'drive' && (
+              renderQualityModal()
+            )}
+
+            {/* Fullscreen YouTube HD / Guest Lower Quality Prompt */}
+            {renderYtQualityPrompt()}
+          </View>
+        )}
+      </Reanimated.View>
 
       <KeyboardWrapperView
         {...keyboardWrapperProps}
@@ -6899,10 +8289,10 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             : isMinimized
             ? StyleSheet.absoluteFill
             : fullscreen
-            ? [StyleSheet.absoluteFill, { zIndex: 9999, elevation: 9999 }]
+            ? [StyleSheet.absoluteFill, { opacity: 0 }]
             : [s.inner, { paddingTop: stableTopInset, paddingBottom: stableBottomInset, zIndex: 20 }]
         }
-        pointerEvents={isSystemPip ? 'none' : (showSettingsModal ? 'box-none' : (isMinimized ? 'box-none' : 'auto'))}
+        pointerEvents={isSystemPip ? 'none' : (fullscreen ? 'none' : (showSettingsModal ? 'box-none' : (isMinimized ? 'box-none' : 'auto')))}
       >
         <Reanimated.View style={[{ flex: 1 }, fullscreen && { zIndex: 9999, elevation: 9999 }, mainContentLiftStyle]} pointerEvents={isMinimized ? 'box-none' : 'auto'}>
           {!isMinimized && renderLeaveModal()}
@@ -6934,7 +8324,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     />
                   </TouchableOpacity>
 
-                  {/* 2. Room Participants Button */}
+                  {/* 2. Room Participants Button with live count badge */}
                   <TouchableOpacity
                     onPress={() => setParticipantsModalVisible(true)}
                     style={s.headerSlot}
@@ -6942,59 +8332,54 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                     activeOpacity={0.7}
                     accessibilityLabel="View participants"
                   >
-                    <Icon name="people" size={23} color={themeIconColor} />
+                    <View style={{ position: 'relative', justifyContent: 'center', alignItems: 'center' }}>
+                      <Icon name="people" size={23} color={themeIconColor} />
+                      <View
+                        style={{
+                          position: 'absolute',
+                          top: -1,
+                          right: 0,
+                          minWidth: 14,
+                          height: 14,
+                          borderRadius: 7,
+                          backgroundColor: '#FFFFFF',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          paddingHorizontal: 2.5,
+                          borderWidth: 1,
+                          borderColor: isLight ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.35)',
+                        }}
+                        pointerEvents="none"
+                      >
+                        <Text
+                          style={{
+                            color: '#000000',
+                            fontSize: 8.5,
+                            fontWeight: '900',
+                            textAlign: 'center',
+                            includeFontPadding: false,
+                            lineHeight: 10,
+                          }}
+                        >
+                          {(participants?.length || 0) > 0 ? (participants.length > 99 ? '99+' : participants.length) : 1}
+                        </Text>
+                      </View>
+                    </View>
                   </TouchableOpacity>
                 </View>
 
-                {/* 3. Center: App Name in Text (Normal) OR Active Speakers on Mic (When mic active) */}
+                {/* 3. Center: App Name in Text */}
                 <View style={s.headerCenterSlot} pointerEvents="box-none">
-                  {activeMicSpeakers.length === 0 ? (
-                    <View
-                      accessible={true}
-                      accessibilityRole="header"
-                      accessibilityLabel="YOUTELITE"
-                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
-                    >
-                      <Text style={s.headerBrandText}>YOUT</Text>
-                      <Text style={[s.headerBrandText, { marginHorizontal: 1.4 }]}>E</Text>
-                      <Text style={s.headerBrandText}>LITE</Text>
-                    </View>
-                  ) : (
-                    <View style={s.activeMicRow}>
-                      {activeMicSpeakers.slice(0, 4).map((speaker) => (
-                        <TouchableOpacity
-                          key={`header-mic-spk-${speaker.user_id}`}
-                          onPress={() => handleAvatarPress(speaker.avatar, speaker.avatar_sticker, speaker.name)}
-                          style={{ position: 'relative' }}
-                          activeOpacity={0.8}
-                        >
-                          <AvatarWithFallback
-                            uri={speaker.avatar}
-                            displayName={speaker.name}
-                            sticker={speaker.avatar_sticker}
-                            style={{
-                              width: 26,
-                              height: 26,
-                              borderRadius: 13,
-                              borderWidth: 2,
-                              borderColor: '#10B981',
-                            }}
-                          />
-                          <View style={{
-                            position: 'absolute',
-                            bottom: -1,
-                            right: -1,
-                            width: 8,
-                            height: 8,
-                            borderRadius: 4,
-                            backgroundColor: '#10B981',
-                            borderWidth: 1.5,
-                            borderColor: '#000',
-                          }} />
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
+                  <View
+                    accessible={true}
+                    accessibilityRole="header"
+                    accessibilityLabel="YOUTELITE"
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Text style={s.headerBrandText}>YOUT</Text>
+                    <Text style={[s.headerBrandText, { marginHorizontal: 1.4 }]}>E</Text>
+                    <Text style={s.headerBrandText}>LITE</Text>
+                  </View>
                 </View>
 
                 {/* Right Group: Search Songs & Room Settings (shifted right) */}
@@ -7003,7 +8388,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   <TouchableOpacity
                     onPress={() => {
                       setShowRelated(false);
-                      setShowDiscovery(true);
+                      setShowTabSelect(true);
                     }}
                     style={s.headerSlot}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -7036,63 +8421,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               fullscreen && { zIndex: 9999, elevation: 9999 },
               videoContainerAnimatedStyle,
             ]}
-            {...(isMinimized && pipEnabled && !isSystemPip && !pipDismissed ? miniPanResponder.panHandlers : {})}
           >
             {/* ─── Clean Thumbnail + White Spinner Overlay (Zero Black Screen, Zero Text) ─── */}
-            {showThumbnailOverlay && !(showRelated && (playerState === 'ended' || !!playerError)) && !playerError && (
-              <Animated.View
-                style={[
-                  StyleSheet.absoluteFill,
-                  {
-                    backgroundColor: '#0a0a0a',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    zIndex: 40,
-                    opacity: thumbnailFadeAnim,
-                  },
-                ]}
-                pointerEvents="none"
-              >
-                {(currentSong?.source || initialSource) === 'drive' ? (
-                  <>
-                    {displayedThumbnailUrl ? (
-                      <Animated.View style={[StyleSheet.absoluteFill, { opacity: innerThumbFadeAnim }]}>
-                        <Image
-                          source={{ uri: displayedThumbnailUrl }}
-                          style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
-                          resizeMode="cover"
-                        />
-                      </Animated.View>
-                    ) : null}
-                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.38)' }]} />
-                    {(!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete) && (
-                      <ActivityIndicator size="large" color="#FFFFFF" />
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {displayedThumbnailUrl ? (
-                      <Animated.View style={[StyleSheet.absoluteFill, { opacity: innerThumbFadeAnim }]}>
-                        <FastImage
-                          source={{ uri: thumbFallbackUri || displayedThumbnailUrl, priority: FastImage.priority.high }}
-                          style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
-                          resizeMode={FastImage.resizeMode.cover}
-                          onError={() => {
-                            if (!thumbFallbackUri && activeVideoId) {
-                              setThumbFallbackUri(`https://i.ytimg.com/vi/${activeVideoId}/hqdefault.jpg`);
-                            }
-                          }}
-                        />
-                      </Animated.View>
-                    ) : null}
-                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.38)' }]} />
-                    {(!isPlayerReady || !mediaFullySynced || isDirectLoading || !thumbnailHoldComplete) && (
-                      <ActivityIndicator size="large" color="#FFFFFF" />
-                    )}
-                  </>
-                )}
-              </Animated.View>
-            )}
+            {!fullscreen && renderThumbnailOverlay()}
 
             {/* Error overlay — hidden when related grid is showing */}
             {playerError && !showRelated && (
@@ -7116,7 +8447,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                       navigation.navigate('YouTubeDiscovery', { 
                         requireDriveAuth: true, 
                         pendingDriveVideo: currentSong,
-                        roomCode: roomCode
+                        roomCode: roomCode,
+                        skipSplash: true,
+                        fromMusicRoom: true,
                       });
                     }}
                     style={{ marginTop: 8, backgroundColor: '#4285F4', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10, flexDirection: 'row', alignItems: 'center' }}
@@ -7131,7 +8464,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                         if (autoSkipTimer.current) clearTimeout(autoSkipTimer.current);
                         setPlayerError(null);
                         setShowRelated(false);
-                        setShowDiscovery(true);
+                        setShowTabSelect(true);
                       }}
                       style={{ marginTop: 8, backgroundColor: '#31313100', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24, elevation: 10 }}
                     >
@@ -7200,117 +8533,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               </Reanimated.View>
             )}
 
-            {/* Floating Mini-Player Overlay Controls (Android System PiP Style) */}
-            {isMinimized && pipEnabled && !isSystemPip && !pipDismissed && (
-              <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-                {/* Background Tap Area: Single tap toggles controls; double tap maximizes back to room */}
-                <Pressable
-                  onPress={handlePipTap}
-                  style={StyleSheet.absoluteFill}
-                  accessibilityLabel="Tap for controls, double tap to return to music room"
-                />
-
-                {/* Android System PiP Style Controls Scrim */}
-                {pipControlsVisible && (
-                  <View
-                    style={[
-                      StyleSheet.absoluteFill,
-                      {
-                        backgroundColor: 'rgba(0, 0, 0, 0.52)',
-                        borderRadius: 16,
-                        justifyContent: 'space-between',
-                        padding: 8,
-                      },
-                    ]}
-                    pointerEvents="box-none"
-                  >
-                    {/* Top Row: Left = Expand/Return to Room, Right = Close PiP */}
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' }} pointerEvents="box-none">
-                      {/* Top-Left: Expand / Return to Room */}
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (pipControlsTimeoutRef.current) clearTimeout(pipControlsTimeoutRef.current);
-                          setPipControlsVisible(false);
-                          DeviceEventEmitter.emit('minimize_music_room', false);
-                        }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: 14,
-                          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-                          borderWidth: 1,
-                          borderColor: 'rgba(255, 255, 255, 0.25)',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                        }}
-                        accessibilityLabel="Return to room"
-                      >
-                        <Icon name="expand-outline" size={15} color="#FFFFFF" />
-                      </TouchableOpacity>
-
-                      {/* Top-Right: Close PiP */}
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (pipControlsTimeoutRef.current) clearTimeout(pipControlsTimeoutRef.current);
-                          setPipControlsVisible(false);
-                          setPipDismissed(true);
-                          pipDismissedSV.value = 1;
-                          DeviceEventEmitter.emit('pip_dismissed', true);
-                          closeSystemPip();
-                        }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: 14,
-                          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-                          borderWidth: 1,
-                          borderColor: 'rgba(255, 255, 255, 0.25)',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                        }}
-                        accessibilityLabel="Close PiP"
-                      >
-                        <Icon name="close" size={15} color="#FFFFFF" />
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Bottom-Center Play/Pause Button */}
-                    <TouchableOpacity
-                      onPress={() => {
-                        resetPipControlsTimeout();
-                        handlePlayPause();
-                      }}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                      style={{
-                        position: 'absolute',
-                        bottom: 8,
-                        alignSelf: 'center',
-                        width: 32,
-                        height: 32,
-                        borderRadius: 16,
-                        backgroundColor: 'rgba(0, 0, 0, 0.72)',
-                        borderWidth: 1,
-                        borderColor: 'rgba(255, 255, 255, 0.3)',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                      }}
-                      accessibilityLabel={isPlaying ? "Pause video" : "Play video"}
-                    >
-                      <Icon
-                        name={isPlaying ? "pause" : "play"}
-                        size={16}
-                        color="#FFFFFF"
-                        style={!isPlaying ? { marginLeft: 1.5 } : undefined}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {!isMinimized && !isSystemPip && !showRelated && isPlayerReady && !showThumbnailOverlay && (
+            {!fullscreen && !isMinimized && !isSystemPip && !showRelated && isPlayerReady && !showThumbnailOverlay && (
               <VideoControls
                 visible={showControls && !playerError && !showQualityOptions}
                 isPlaying={isPlaying}
@@ -7345,7 +8568,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   setShowQualityOptions(prev => !prev);
                 }}
                 qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
-                isFullscreen={fullscreen}
+                isFullscreen={false}
                 isDrivePlayer={currentSong?.source === 'drive'}
                 title={currentSong?.title}
                 onSingleTap={() => {
@@ -7357,6 +8580,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   }
                 }}
                 onKeepControlsAlive={() => showControlsFor(3500)}
+                onZoomToggle={() => handleSelectAspectMode(videoDisplayMode === 'zoom' ? 'fit' : 'zoom')}
+                isZoom={videoDisplayMode === 'zoom'}
               />
             )}
 
@@ -7382,7 +8607,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 path) instead of only pinning it into a queue that nothing
                 would ever auto-advance from. */}
             {showRelated && !fullscreen && currentSong?.source !== 'drive' && (
-              <View style={s.relatedOverlay}>
+              <View style={[s.relatedOverlay, (roomTheme === 'cinema' || roomTheme === 'rave') && { backgroundColor: 'transparent' }]}>
 
                 {isLoadingRelated && relatedVideos.length === 0 && queue.length === 0 && (
                   <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }]}>
@@ -7428,205 +8653,12 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
 
             {/* ─── Compact Translucent Quality Grid Overlay (4x3) ─── */}
             {/* Fix 2: Guard against Drive source — Drive has no quality ladder */}
-            {showQualityOptions && !playerError && currentSong?.source !== 'drive' && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.55)', justifyContent: 'center', alignItems: 'center', zIndex: 10002, elevation: 60 }]}>
-                <TouchableWithoutFeedback onPress={() => setShowQualityOptions(false)}>
-                  <View style={StyleSheet.absoluteFill} />
-                </TouchableWithoutFeedback>
-                <View style={{
-                  width: '88%',
-                  maxWidth: 270,
-                  maxHeight: '90%',
-                  backgroundColor: 'rgba(12, 15, 22, 0.78)',
-                  borderRadius: 12,
-                  paddingHorizontal: 8,
-                  paddingTop: 10,
-                  paddingBottom: 8,
-                  borderWidth: 1,
-                  borderColor: 'rgba(255, 255, 255, 0.14)',
-                  zIndex: 61,
-                }}>
-                  {/* Floating close button exceeding the top-right edge */}
-                  <TouchableOpacity
-                    onPress={() => setShowQualityOptions(false)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    style={{
-                      position: 'absolute',
-                      top: -11,
-                      right: -11,
-                      width: 24,
-                      height: 24,
-                      borderRadius: 12,
-                      backgroundColor: '#1E232E',
-                      borderWidth: 1.5,
-                      borderColor: 'rgba(255, 255, 255, 0.3)',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      zIndex: 70,
-                      elevation: 6,
-                    }}
-                  >
-                    <Icon name="close" size={13} color="#FFFFFF" />
-                  </TouchableOpacity>
-
-                  {/* Top Bar: Auto Button (Top Left) + Centered QUALITY Title */}
-                  <View style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    marginBottom: 8,
-                    paddingHorizontal: '1.5%',
-                  }}>
-                    {/* Top Left: Auto Button (exact same dimensions as grid buttons) */}
-                    <TouchableOpacity
-                      onPress={() => handleSelectQuality('auto')}
-                      activeOpacity={0.7}
-                      style={{
-                        width: '22%',
-                        height: 27,
-                        borderRadius: 6,
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        backgroundColor: videoQuality === 'auto' ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
-                        borderWidth: 1,
-                        borderColor: videoQuality === 'auto' ? '#38BDF8' : 'rgba(255, 255, 255, 0.08)',
-                      }}
-                    >
-                      <Text style={{
-                        fontSize: 10.5,
-                        fontWeight: videoQuality === 'auto' ? '700' : '600',
-                        color: videoQuality === 'auto' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
-                      }}>
-                        Auto
-                      </Text>
-                    </TouchableOpacity>
-
-                    {/* Centered Quality Title */}
-                    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                      <Text style={{
-                        fontSize: 9.5,
-                        fontWeight: '700',
-                        color: 'rgba(255, 255, 255, 0.7)',
-                        letterSpacing: 1,
-                        textAlign: 'center',
-                      }}>
-                        QUALITY {liveExactResolution && liveExactResolution !== 'Auto' ? `• ${liveExactResolution}` : ''}
-                      </Text>
-                    </View>
-
-                    {/* Right spacer to balance the Auto button width so QUALITY stays dead-centered */}
-                    <View style={{ width: '22%' }} />
-                  </View>
-
-                  <ScrollView
-                    showsVerticalScrollIndicator={false}
-                    bounces={false}
-                    contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}
-                  >
-                    {dynamicQualityOptions.map((opt) => {
-                      const isSelected = (videoQuality === opt.key) ||
-                        (videoQuality === 'highres' && opt.key === 'hd2160') ||
-                        (videoQuality === 'hd2160' && opt.key === 'highres') ||
-                        (videoQuality === opt.label);
-
-                      return (
-                        <TouchableOpacity
-                          key={opt.key}
-                          onPress={() => handleSelectQuality(opt.key)}
-                          activeOpacity={0.7}
-                          style={{
-                            width: '22%',
-                            marginHorizontal: '1.5%',
-                            marginVertical: 4.5,
-                            height: 27,
-                            borderRadius: 6,
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            backgroundColor: isSelected ? 'rgba(2, 132, 199, 0.95)' : 'rgba(255, 255, 255, 0.10)',
-                            borderWidth: 1,
-                            borderColor: isSelected ? '#38BDF8' : 'rgba(255, 255, 255, 0.06)',
-                          }}
-                        >
-                          <Text style={{
-                            fontSize: 10.5,
-                            fontWeight: isSelected ? '700' : '500',
-                            color: isSelected ? '#FFFFFF' : 'rgba(255, 255, 255, 0.90)',
-                          }}>
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-
-                  {/* Aspect Ratio / Display Mode: Rave (Dynamic) vs Zoom to Fill */}
-                  <View style={{
-                    marginTop: 8,
-                    paddingTop: 8,
-                    borderTopWidth: 1,
-                    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-                  }}>
-                    <Text style={{
-                      fontSize: 9,
-                      fontWeight: '700',
-                      color: 'rgba(255, 255, 255, 0.6)',
-                      letterSpacing: 0.8,
-                      textAlign: 'center',
-                      marginBottom: 6,
-                    }}>
-                      DISPLAY MODE
-                    </Text>
-                    <View style={{
-                      flexDirection: 'row',
-                      backgroundColor: 'rgba(255, 255, 255, 0.06)',
-                      borderRadius: 7,
-                      padding: 2.5,
-                      gap: 4,
-                    }}>
-                      <TouchableOpacity
-                        onPress={() => handleSelectAspectMode('fit')}
-                        activeOpacity={0.7}
-                        style={{
-                          flex: 1,
-                          height: 26,
-                          borderRadius: 5,
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          backgroundColor: videoDisplayMode === 'fit' ? 'rgba(124, 58, 237, 0.95)' : 'transparent',
-                        }}
-                      >
-                        <Text style={{
-                          fontSize: 10,
-                          fontWeight: videoDisplayMode === 'fit' ? '700' : '500',
-                          color: videoDisplayMode === 'fit' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.75)',
-                        }}>
-                          Fit Mode
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => handleSelectAspectMode('zoom')}
-                        activeOpacity={0.7}
-                        style={{
-                          flex: 1,
-                          height: 26,
-                          borderRadius: 5,
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          backgroundColor: videoDisplayMode === 'zoom' ? 'rgba(2, 132, 199, 0.95)' : 'transparent',
-                        }}
-                      >
-                        <Text style={{
-                          fontSize: 10,
-                          fontWeight: videoDisplayMode === 'zoom' ? '700' : '500',
-                          color: videoDisplayMode === 'zoom' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.75)',
-                        }}>
-                          Zoom to Fill
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
-              </View>
+            {!fullscreen && showQualityOptions && !playerError && currentSong?.source !== 'drive' && (
+              renderQualityModal()
             )}
+
+            {/* In-Video YouTube HD / Guest Lower Quality Prompt */}
+            {!fullscreen && renderYtQualityPrompt()}
           </Reanimated.View>
 
           {!fullscreen && !isMinimized && (
@@ -7895,8 +8927,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                                       style={s.messageAvatar} 
                                     />
                                     {sender?.is_dj && (
-                                      <View style={{ position: 'absolute', top: -10, right: -4 }}>
-                                        <Icon name="star" size={14} color="#fff" />
+                                      <View style={{ position: 'absolute', top: -11, right: -3, transform: [{ rotate: '15deg' }] }}>
+                                        <Text style={{ fontSize: 16, includeFontPadding: false }}>👑</Text>
                                       </View>
                                     )}
                                   </TouchableOpacity>
@@ -8239,107 +9271,139 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             />
           )}
 
-          {/* ── LIVE SYNCED LYRICS IN CENTER MODE ── */}
-          {centerLyricsEnabled && (() => {
+          {/* ── CENTER MODE OVERLAYS (VIRAL POP TITLE & LIVE LYRICS) ── */}
+          {(() => {
             // Dynamic video geometry: calculate exact visible video content boundaries
             const screenDims = Dimensions.get('screen');
             const screenW = Math.min(screenDims.width, screenDims.height);
             const defaultVideoH = screenW * (9 / 16);
-            const isWidescreen = Boolean(isPlayerReady && thumbnailHoldComplete && videoDisplayMode === 'fit' && detectedAspectRatio && detectedAspectRatio > 1.82);
-            const contentH = isWidescreen ? Math.round(screenW / (detectedAspectRatio as number)) : dynamicVideoHeight;
+            const contentH = resolvedTargetVideoH;
             const centerDeltaY = Math.max(0, ((windowHeight - contentH) / 2) - (stableTopInset + 58));
 
             // Visible video top and bottom inside Reanimated.View (which has top inset = stableTopInset)
             const videoTopInParent = 58 + centerDeltaY;
             const videoBottomInParent = videoTopInParent + contentH;
 
-            // Only display verified song name while the song is active and not finished
+            // Song state & verified lyrics status
             const isSongFinished = playerState === 'ended' || playerStateRef.current === 'ended' || (!isPlaying && !isPlayerReady);
             const hasVerifiedLyrics = !isSongFinished && (lyricsState.hasLyrics || lyricsState.hasPlainLyrics) && !lyricsState.isMismatch;
-            const songName = hasVerifiedLyrics && lyricsState.trackName ? lyricsState.trackName : null;
+            const verifiedTrackName = hasVerifiedLyrics && lyricsState.trackName ? lyricsState.trackName : null;
+            const verifiedArtistName = hasVerifiedLyrics && lyricsState.artistName ? cleanArtistName(lyricsState.artistName) : null;
+
+            // Always resolve title & artist: from lyrics if verified, or from video info as fallback
+            const rawCandidateTitle = isDisplayTitleValid(currentSong?.title)
+              ? currentSong!.title
+              : (isDisplayTitleValid(displayTitle) ? displayTitle : undefined);
+
+            const popInfo = parseViralPopTitleInfo(
+              rawCandidateTitle,
+              currentSong?.channelTitle,
+              verifiedTrackName,
+              verifiedArtistName
+            );
+
             const resolvedArtist =
+              verifiedArtistName ||
+              popInfo.artist ||
               cleanArtistName(lyricsState.artistName) ||
               extractArtistFromTitle(currentSong?.title) ||
               cleanArtistName(currentSong?.channelTitle) ||
               '';
 
-            // Song title positioning above video:
-            // Halve the distance to the video so the title sits comfortably close to the video
-            // and dynamically adjusts with video height
-            const titleBlockH = 20; // 1-line song name
+            // Viral Pop Title positioning above video
+            const titleBlockH = popInfo.title.length > 28 ? 56 : 34;
             const spaceAbove = videoTopInParent;
-            const titleGapToVideo = Math.max(12, Math.round((spaceAbove - titleBlockH) / 4));
-            const titleTop = songName && spaceAbove > titleBlockH + 10
-              ? videoTopInParent - titleBlockH - titleGapToVideo
+            const titleGapToVideo = Math.max(12, Math.min(24, Math.round((spaceAbove - titleBlockH) / 3)));
+            const titleTop = spaceAbove > titleBlockH + 6
+              ? Math.max(10, videoTopInParent - titleBlockH - titleGapToVideo)
               : null;
 
             // Position lyrics container 12px below bottom edge of video
             const lyricsTop = videoBottomInParent + 12;
 
+            // Only show title & lyrics overlays if the lyrics button (centerLyricsEnabled) is ON.
+            // If the lyrics button is OFF -> show ONLY the video (nothing above or below)!
+            const canShowTitle = centerLyricsEnabled && titleTop !== null && Boolean(popInfo.title);
+            const canShowLyrics = centerLyricsEnabled;
+
             return (
               <>
-                {/* Song title — ONLY verified song name, centered in empty space above video */}
-                {titleTop !== null && songName && (
+                {/* ── 1. VIRAL POP STYLE SONG TITLE (Only if lyrics button is enabled; matches or not found) ── */}
+                {canShowTitle && (
                   <Reanimated.View
                     style={[
                       {
                         position: 'absolute',
                         top: titleTop,
-                        left: 20,
-                        right: 20,
+                        left: 12,
+                        right: 12,
+                        paddingHorizontal: 16,
                         zIndex: 25,
                         alignItems: 'center',
+                        justifyContent: 'center',
+                        overflow: 'visible',
                       },
-                      centerLyricsAnimatedStyle,
+                      centerTitleAnimatedStyle,
                     ]}
                     pointerEvents="none"
                   >
+                    {/* Viral Pop Headline: Very Bold Pure White Font for All Themes */}
                     <Text
-                      numberOfLines={1}
+                      numberOfLines={2}
+                      ellipsizeMode="tail"
                       style={{
-                        fontSize: 12.5,
-                        fontWeight: '600',
-                        color: 'rgba(255,255,255,0.95)',
+                        width: '100%',
+                        fontSize: popInfo.title.length > 28 ? 18.5 : 21.5,
+                        fontWeight: '900',
+                        color: '#FFFFFF',
                         textAlign: 'center',
                         letterSpacing: 0.2,
+                        lineHeight: popInfo.title.length > 28 ? 26 : 30,
+                        includeFontPadding: false,
+                        overflow: 'visible',
+                        textShadowColor: 'rgba(0, 0, 0, 0.95)',
+                        textShadowOffset: { width: 0, height: 2 },
+                        textShadowRadius: 10,
                       }}
                     >
-                      {songName}
+                      {popInfo.title}
                     </Text>
                   </Reanimated.View>
                 )}
 
-                {/* Lyrics panel — dynamically hugs bottom edge of video */}
-                <Reanimated.View
-                  style={[
-                    {
-                      position: 'absolute',
-                      top: lyricsTop,
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      zIndex: 25,
-                    },
-                    centerLyricsAnimatedStyle,
-                  ]}
-                  pointerEvents={isCenterMode ? 'auto' : 'none'}
-                >
-                  <CenterLyricsView
-                    lines={lyricsState.lines}
-                    currentPosition={livePosition}
-                    isPlaying={isPlaying}
-                    isLoading={lyricsState.isLoading}
-                    instrumental={lyricsState.instrumental}
-                    hasLyrics={lyricsState.hasLyrics}
-                    hasPlainLyrics={lyricsState.hasPlainLyrics}
-                    plainLyrics={lyricsState.plainLyrics}
-                    artistName={resolvedArtist}
-                    trackName={lyricsState.trackName || currentSong?.title || ''}
-                    isDark={isDark}
-                    isMismatch={lyricsState.isMismatch}
-                    fadeHeight={contentH / 2}
-                  />
-                </Reanimated.View>
+                {/* ── 2. LYRICS PANEL (Only when lyrics switch is ON and lyrics are verified/loading) ── */}
+                {canShowLyrics && (
+                  <Reanimated.View
+                    style={[
+                      {
+                        position: 'absolute',
+                        top: lyricsTop,
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        zIndex: 25,
+                      },
+                      centerLyricsAnimatedStyle,
+                    ]}
+                    pointerEvents={isCenterMode ? 'auto' : 'none'}
+                  >
+                    <CenterLyricsView
+                      lines={lyricsState.lines}
+                      currentPosition={livePosition}
+                      isPlaying={isPlaying}
+                      isLoading={lyricsState.isLoading}
+                      instrumental={lyricsState.instrumental}
+                      hasLyrics={lyricsState.hasLyrics}
+                      hasPlainLyrics={lyricsState.hasPlainLyrics}
+                      plainLyrics={lyricsState.plainLyrics}
+                      artistName={resolvedArtist}
+                      trackName={lyricsState.trackName || currentSong?.title || ''}
+                      isDark={isDark}
+                      isMismatch={lyricsState.isMismatch}
+                      fadeHeight={contentH / 2}
+                    />
+                  </Reanimated.View>
+                )}
               </>
             );
           })()}
@@ -8367,21 +9431,74 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           </View>
         )}
 
+        {/* WATCH TOGETHER TAB SELECT OVERLAY */}
+        {showTabSelect && (
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              { zIndex: 99998, elevation: 99998, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' },
+            ]}
+          >
+            <WatchTogetherTabSelectScreen
+              skipSplash={true}
+              route={{ params: { roomCode, skipSplash: true, fromMusicRoom: true } }}
+              onBack={() => {
+                setShowTabSelect(false);
+                StatusBar.setTranslucent(true);
+                StatusBar.setBarStyle('light-content');
+                StatusBar.setBackgroundColor('transparent');
+                pinNavBarColor('#00000000', true);
+              }}
+              onSelectTab={(tab: any) => {
+                setShowTabSelect(false);
+                setDiscoveryInitialTab(tab);
+                setDiscoveryInitialUrl(null);
+                setShowDiscovery(true);
+              }}
+            />
+          </View>
+        )}
+
         {/* DISCOVERY OVERLAY */}
         {showDiscovery && (
           <View
             style={[
               StyleSheet.absoluteFill,
-              { zIndex: 99999, elevation: 99999, backgroundColor: '#020912' },
+              { zIndex: 99999, elevation: 99999, backgroundColor: isDark ? '#0F0F0F' : '#FFFFFF' },
             ]}
           >
             <YouTubeDiscoveryScreen
               navigation={{
-                goBack: () => { setShowDiscovery(false); setDiscoveryInitialUrl(null); },
+                goBack: () => {
+                  setShowDiscovery(false);
+                  setDiscoveryInitialUrl(null);
+                  setDiscoveryInitialTab(null);
+                  if (isDiscoveryLoginFlow) {
+                    setIsDiscoveryLoginFlow(false);
+                    checkYouTubeAuth().then((isAuthed) => {
+                      if (isAuthed) {
+                        handleYouTubeLoginSuccess();
+                      } else {
+                        setShowYtQualityPrompt(true);
+                      }
+                    });
+                  } else {
+                    setShowTabSelect(true);
+                  }
+                },
                 addListener: () => () => {},
                 setOptions: () => {},
               } as any}
-              route={{ params: { roomCode, initialUrl: discoveryInitialUrl } } as any}
+              route={{
+                params: {
+                  roomCode,
+                  initialUrl: discoveryInitialUrl,
+                  initialTab: discoveryInitialTab,
+                  skipSplash: true,
+                  fromMusicRoom: true,
+                  requireYouTubeAuth: isDiscoveryLoginFlow,
+                },
+              } as any}
             />
           </View>
         )}
@@ -8458,19 +9575,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           />
         )}
       </KeyboardWrapperView>
-
-      {/* ── 2. VIDEO LAYER (Topmost Layer for Cinema/Dark/Light & PiP — Zero Header Overlap) ── */}
-      {(roomTheme !== 'rave' || isSystemPip || fullscreen) && (
-        <Reanimated.View
-          style={[
-            { zIndex: isSystemPip ? 99999 : 40, elevation: isSystemPip ? 99999 : 8 },
-            playerLayerAnimatedStyle,
-          ]}
-          pointerEvents={isSystemPip ? 'auto' : 'none'}
-        >
-          {renderPlayerContent()}
-        </Reanimated.View>
-      )}
 
       {!isMinimized && renderSettingsModal()}
 
@@ -8590,12 +9694,15 @@ const s = StyleSheet.create({
     fontFamily: 'poppins-bold',
     fontWeight: '900',
     fontSize: 28,
-    color: 'rgba(255,255,255,0.5)',
+    color: 'rgba(255,255,255,0.7)',
     letterSpacing: 1.2,
     includeFontPadding: false,
     
   },
   activeMicRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, paddingVertical: 2.5, borderRadius: 18, backgroundColor: 'rgba(16, 185, 129, 0.12)', borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.35)' },
+  videoInfoMicRow:   { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 5, paddingVertical: 1.5, borderRadius: 12, backgroundColor: 'rgba(16, 185, 129, 0.12)', borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.35)' },
+  videoInfoMicMore:  { minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#10B981', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2 },
+  videoInfoMicMoreText: { fontSize: 8.5, fontWeight: '700', color: '#fff', includeFontPadding: false },
   headerRight:       { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerIconBtn:     { padding: 6, position: 'relative' },
   badge:             { position: 'absolute', top: 2, right: 2, backgroundColor: '#4597f5f6', borderRadius: 9, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: '#000', paddingHorizontal: 2 },

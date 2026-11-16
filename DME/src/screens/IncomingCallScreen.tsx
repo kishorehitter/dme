@@ -50,6 +50,13 @@ export default function IncomingCallScreen() {
   const vibrationRef    = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    DeviceEventEmitter.emit('incoming_call_active', true);
+    return () => {
+      DeviceEventEmitter.emit('incoming_call_active', false);
+    };
+  }, []);
+
+  useEffect(() => {
     if (call_id) {
       setIsCallMissed(_action === 'missed_call');
       isHandled.current = false;

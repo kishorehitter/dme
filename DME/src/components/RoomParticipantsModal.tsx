@@ -4,6 +4,7 @@ import {
   FlatList, Dimensions
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import Toast from 'react-native-toast-message';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AvatarWithFallback from './AvatarWithFallback';
@@ -150,12 +151,11 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                     style={[
                       styles.avatar,
                       isSpeakingNow && styles.avatarSpeaking,
-                      !isSpeakingNow && isSpeaker && styles.avatarSpeaker,
                     ]}
                   />
                   {item.is_dj && (
-                    <View style={styles.djBadge}>
-                      <Icon name="star" size={8} color="#FFD700" />
+                    <View style={styles.crownEmojiContainer}>
+                      <Text style={styles.crownEmojiText}>👑</Text>
                     </View>
                   )}
                   {isSpeakingNow && (
@@ -171,7 +171,7 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                   </View>
                   <Text style={styles.roleText}>
                     {item.is_dj
-                      ? '👑 Room Leader'
+                      ? 'Room Leader'
                       : isSpeakingNow
                       ? '🎙️ Speaking now'
                       : isSpeaker
@@ -188,7 +188,7 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                       onPress={() => handleSwitchDJ(item)}
                       activeOpacity={0.7}
                     >
-                      <Icon name="star" size={13} color="#FACC15" />
+                      <MaterialCommunityIcon name="crown" size={13} color="#FACC15" />
                       <Text style={styles.makeDjText}>Make Leader</Text>
                     </TouchableOpacity>
 
@@ -217,7 +217,6 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                   </View>
                 ) : item.is_dj ? (
                   <View style={styles.djBadgePill}>
-                    <Icon name="star" size={12} color="#FACC15" />
                     <Text style={styles.djBadgePillText}>Leader</Text>
                   </View>
                 ) : (
@@ -270,7 +269,7 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
 
             {/* Glowing Golden Emblem */}
             <View style={styles.crownEmblemWrap}>
-              <Icon name="star" size={26} color="#FACC15" />
+              <MaterialCommunityIcon name="crown" size={28} color="#FACC15" />
             </View>
 
             <Text style={styles.confirmTitle}>
@@ -313,7 +312,7 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                 }}
                 activeOpacity={0.8}
               >
-                <Icon name="star" size={14} color="#000" style={{ marginRight: 5 }} />
+                <MaterialCommunityIcon name="crown" size={15} color="#000" style={{ marginRight: 5 }} />
                 <Text style={styles.transferBtnText}>Make Leader</Text>
               </TouchableOpacity>
             </View>
@@ -518,27 +517,26 @@ const dynamicStyles = (
     width: 38,
     height: 38,
     borderRadius: 19,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.15)',
-  },
-  avatarSpeaker: {
-    borderColor: '#4597f5',
-    borderWidth: 1.5,
+    borderWidth: 0,
+    borderColor: 'transparent',
   },
   avatarSpeaking: {
     borderColor: '#10B981',
     borderWidth: 2,
   },
-  djBadge: {
+  crownEmojiContainer: {
     position: 'absolute',
-    top: -3,
-    right: -3,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 7,
-    padding: 1.5,
-    borderWidth: 1,
-    borderColor: '#FFD700',
-    zIndex: 2,
+    top: -15,
+    right: -2,
+    zIndex: 10,
+    transform: [{ rotate: '15deg' }],
+  },
+  crownEmojiText: {
+    fontSize: 18,
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0, 0, 0, 0.45)',
+    textShadowOffset: { width: 0, height: 1.5 },
+    textShadowRadius: 3,
   },
   speakingIndicatorDot: {
     position: 'absolute',
@@ -593,19 +591,24 @@ const dynamicStyles = (
   djBadgePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 9,
-    paddingVertical: 4.5,
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
     borderRadius: 12,
-    backgroundColor: 'rgba(234, 179, 8, 0.15)',
+    backgroundColor: isDark ? '#FFFFFF' : '#0F172A',
     borderWidth: 1,
-    borderColor: 'rgba(234, 179, 8, 0.4)',
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.9)' : 'rgba(15, 23, 42, 0.9)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.18,
+    shadowRadius: 2.5,
+    elevation: 2,
   },
   djBadgePillText: {
-    color: '#FACC15',
+    color: isDark ? '#0F172A' : '#FFFFFF',
     fontSize: 11,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    includeFontPadding: false,
   },
   micActionBtn: {
     flexDirection: 'row',

@@ -1,11 +1,16 @@
 package com.DME;
 
 import android.content.Intent;
+import android.content.Context;
+import android.media.AudioManager;
 import android.os.Build;
 
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.WritableMap;
 
 public class MusicServiceModule extends ReactContextBaseJavaModule {
 
@@ -92,5 +97,36 @@ public class MusicServiceModule extends ReactContextBaseJavaModule {
         Intent intent = new Intent(reactContext, MusicForegroundService.class);
         intent.setAction(MusicForegroundService.ACTION_STOP);
         reactContext.startService(intent);
+    }
+
+    @ReactMethod
+    public void reacquireAudioFocus() {
+        if (MusicForegroundService.instance != null) {
+            MusicForegroundService.instance.requestAudioFocusInternal();
+        }
+    }
+
+    @ReactMethod
+    public void setInterruptionMuted(boolean muted) {
+        com.DME.shaders.DualSurfaceVideoView.setGlobalInterruptionMuted(muted);
+    }
+
+    @ReactMethod
+    public void isExternalAudioActive(Promise promise) {
+        try {
+            AudioManager am = (AudioManager) reactContext.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int mode = am.getMode();
+                boolean isCall = (mode == AudioManager.MODE_IN_CALL || 
+                                 mode == AudioManager.MODE_RINGTONE);
+                WritableMap map = Arguments.createMap();
+                map.putBoolean("isCall", isCall);
+                promise.resolve(map);
+                return;
+            }
+        } catch (Exception ignored) {}
+        WritableMap map = Arguments.createMap();
+        map.putBoolean("isCall", false);
+        promise.resolve(map);
     }
 }

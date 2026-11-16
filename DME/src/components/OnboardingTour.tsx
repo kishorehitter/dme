@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
+import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 
@@ -28,22 +29,24 @@ export type TourStepKey = 'fab' | 'trivia' | 'play' | 'statusTab';
 const STEPS: {
   key: TourStepKey;
   icon: string;
+  iconFamily?: 'Ionicons' | 'MaterialIcons';
   title: string;
   description: string;
   tipPosition: 'top' | 'bottom';
 }[] = [
   {
     key: 'play',
-    icon: 'play-circle-outline',
+    icon: 'ondemand-video',
+    iconFamily: 'MaterialIcons',
     title: 'Watch Together',
-    description: 'Create or join a room to discover content, listen to music, and watch videos with your friends in real time.',
+    description: 'Create or join a room to Learn, listen to music, and watch movies with your friends in real time.',
     tipPosition: 'top',
   },
   {
     key: 'trivia',
-    icon: 'help-circle-outline',
+    icon: 'book',
     title: 'Knowledge Quest',
-    description: 'Challenge yourself with general knowledge questions! Tap here to start a solo quiz and test your knowledge across topics.',
+    description: 'Practice previous years government exam questions, take timed mock tests, create contests and challenge with friends and groups.',
     tipPosition: 'top',
   },
   {
@@ -259,7 +262,11 @@ const OnboardingTour: React.FC<OnboardingTourProps> = ({ targets, onFinished }) 
             end={{ x: 1, y: 0 }}
             style={styles.cardHeader}
           >
-            <Icon name={step.icon} size={22} color="#fff" />
+            {step.iconFamily === 'MaterialIcons' ? (
+              <MaterialIcon name={step.icon} size={22} color="#fff" />
+            ) : (
+              <Icon name={step.icon} size={22} color="#fff" />
+            )}
             <Text style={styles.cardTitle}>{step.title}</Text>
             <Text style={styles.stepIndicator}>{stepIdx + 1}/{STEPS.length}</Text>
           </LinearGradient>

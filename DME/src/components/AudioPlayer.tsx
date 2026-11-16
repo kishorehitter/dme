@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Text, Animated } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Text, Animated, DeviceEventEmitter } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import RNFS from 'react-native-fs';
 import audioRecorder from '../modules/AudioRecorder';
@@ -25,8 +25,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
   const [isCompleted, setIsCompleted] = useState(false);
   const [isReady, setIsReady] = useState(false);
   
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const resetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<any>(null);
+  const resetTimeoutRef = useRef<any>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const trackRef = useRef<View>(null);
 
@@ -42,6 +42,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
       audioRecorder.stopPlaying();
     } catch {}
     stopTimer();
+    DeviceEventEmitter.emit('audio_message_playing', false);
   };
 
   const resetPlayer = () => {
@@ -50,8 +51,20 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
     progressAnim.setValue(0);
     setIsPlaying(false);
     setIsCompleted(false);
+    DeviceEventEmitter.emit('audio_message_playing', false);
     currentlyPlayingAudioRef = null;
   };
+
+  useEffect(() => {
+    return () => {
+      stopTimer();
+      if (currentlyPlayingAudioRef?.id === String(messageId)) {
+        try { audioRecorder.stopPlaying(); } catch {}
+        DeviceEventEmitter.emit('audio_message_playing', false);
+        currentlyPlayingAudioRef = null;
+      }
+    };
+  }, [messageId]);
 
   const handlePress = async () => {
     if (isCompleted) resetPlayer();
@@ -86,6 +99,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
       setIsLoading(false);
       setIsPlaying(true);
       setIsReady(true);
+      DeviceEventEmitter.emit('audio_message_playing', true);
 
       currentlyPlayingAudioRef = {
         id: String(messageId),
@@ -109,6 +123,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ mediaUrl, themeColor = '#4597
     } catch (err) {
       console.error('Audio play error:', err);
       setIsLoading(false);
+      DeviceEventEmitter.emit('audio_message_playing', false);
     }
   };
 

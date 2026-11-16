@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -30,6 +31,47 @@ import com.facebook.react.uimanager.events.RCTEventEmitter
 
 class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.Listener {
 
+    companion object {
+        private val activeInstances = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DualSurfaceVideoView, Boolean>())
+        @Volatile
+        private var isGlobalInterruptionMuted: Boolean = false
+
+        @JvmStatic
+        fun registerInstance(view: DualSurfaceVideoView) {
+            synchronized(activeInstances) {
+                activeInstances.add(view)
+            }
+            view.post {
+                view.applyMuteState()
+            }
+        }
+
+        @JvmStatic
+        fun unregisterInstance(view: DualSurfaceVideoView) {
+            synchronized(activeInstances) {
+                activeInstances.remove(view)
+            }
+        }
+
+        @JvmStatic
+        fun setGlobalInterruptionMuted(muted: Boolean) {
+            android.util.Log.i("DualSurfaceVideoView", "setGlobalInterruptionMuted: muted=$muted, activeCount=${synchronized(activeInstances) { activeInstances.size }}")
+            isGlobalInterruptionMuted = muted
+            val mainHandler = Handler(Looper.getMainLooper())
+            mainHandler.post {
+                val views = synchronized(activeInstances) {
+                    activeInstances.toList()
+                }
+                for (v in views) {
+                    v.applyMuteState()
+                }
+            }
+        }
+
+        @JvmStatic
+        fun isGlobalInterruptionMuted(): Boolean = isGlobalInterruptionMuted
+    }
+
     var videoAspectRatio: Float = 16f / 9f
         private set
 
@@ -49,17 +91,15 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             return android.graphics.Rect(0, top, decorW, top + h)
         }
 
-        // Only use contentRect if bleed is enabled AND the view is actually fullscreen (rave mode)
-        if (renderer.bleedEnabled && windowRect.height() > decorH * 0.75f) {
-            val cr = renderer.contentRect
-            if (cr != null && cr.width() > 0 && cr.height() > 0) {
-                val left = Math.max(windowRect.left, windowRect.left + cr.left.toInt())
-                val top = Math.max(windowRect.top, windowRect.top + cr.top.toInt())
-                val right = Math.min(windowRect.right, windowRect.left + cr.right.toInt())
-                val bottom = Math.min(windowRect.bottom, windowRect.top + cr.bottom.toInt())
-                if (right > left && bottom > top) {
-                    return android.graphics.Rect(left, top, right, bottom)
-                }
+        // Use contentRect whenever provided to map exact video bounds on screen
+        val cr = renderer.contentRect
+        if (cr != null && cr.width() > 0 && cr.height() > 0) {
+            val left = Math.max(windowRect.left, windowRect.left + cr.left.toInt())
+            val top = Math.max(windowRect.top, windowRect.top + cr.top.toInt())
+            val right = Math.min(windowRect.right, windowRect.left + cr.right.toInt())
+            val bottom = Math.min(windowRect.bottom, windowRect.top + cr.bottom.toInt())
+            if (right > left && bottom > top) {
+                return android.graphics.Rect(left, top, right, bottom)
             }
         }
 
@@ -104,7 +144,11 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             attachSurfaceToPlayer()
         }
         glSurfaceView.setRenderer(renderer)
-        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        glSurfaceView.renderMode = if (renderer.roomTheme == "cinema") {
+            GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        } else {
+            GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        }
 
         renderer.onBbdResultListener = { ar, cropPct, horizCropPct ->
             val event = Arguments.createMap().apply {
@@ -119,12 +163,45 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             glSurfaceView,
             LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
+        registerInstance(this)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        registerInstance(this)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        unregisterInstance(this)
+    }
+
+    fun applyMuteState() {
+        val effectiveMuted = isMutedProp || isGlobalInterruptionMuted
+        val targetVolume = if (effectiveMuted) 0f else currentVolumeProp
+        player?.volume = targetVolume
+        android.util.Log.i("DualSurfaceVideoView", "applyMuteState: isMutedProp=$isMutedProp, isGlobalInterruptionMuted=$isGlobalInterruptionMuted -> targetVolume=$targetVolume")
+    }
+
+    override fun requestLayout() {
+        super.requestLayout()
+        if (width == 0 || height == 0) {
+            post(measureAndLayout)
+        }
+    }
+
+    private val measureAndLayout = Runnable {
+        measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+        )
+        layout(left, top, right, bottom)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         glSurfaceView.requestRender()
-        if (w > 0 && h > 0) {
+        if (w > 0 && h > 0 && com.DME.MainActivity.isPipEnabled && com.DME.MainActivity.currentActivityInstance?.isInPictureInPictureMode == true) {
             post {
                 com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
             }
@@ -133,14 +210,7 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        if (translationY != 0f) {
-            val loc = IntArray(2)
-            getLocationInWindow(loc)
-            if (loc[1] <= 0) {
-                translationY = 0f
-            }
-        }
-        if (changed && com.DME.MainActivity.isPipEnabled) {
+        if (changed && com.DME.MainActivity.isPipEnabled && com.DME.MainActivity.currentActivityInstance?.isInPictureInPictureMode == true) {
             post {
                 com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
             }
@@ -151,13 +221,19 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         val existing = player
         if (existing != null) return existing
 
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
         val newPlayer = ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(audioAttributes, false)
             .build()
             .apply {
                 addListener(this@DualSurfaceVideoView)
                 playWhenReady = isPlayingProp
-                volume = if (isMutedProp) 0f else currentVolumeProp
+                volume = if (isMutedProp || isGlobalInterruptionMuted) 0f else currentVolumeProp
             }
         player = newPlayer
         attachSurfaceToPlayer()
@@ -295,14 +371,12 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
 
     fun setMuted(muted: Boolean) {
         isMutedProp = muted
-        player?.volume = if (muted) 0f else currentVolumeProp
+        applyMuteState()
     }
 
     fun setVolume(volume: Float) {
         currentVolumeProp = volume.coerceIn(0f, 1f)
-        if (!isMutedProp) {
-            player?.volume = currentVolumeProp
-        }
+        applyMuteState()
     }
 
     private var currentPlaybackRateProp: Float = 1.0f
@@ -424,8 +498,23 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
         return digits.toIntOrNull() ?: 0
     }
 
+    fun setRoomTheme(theme: String) {
+        renderer.roomTheme = theme
+        glSurfaceView.renderMode = if (theme == "cinema") {
+            GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        } else {
+            GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        }
+        glSurfaceView.requestRender()
+    }
+
     fun setBleedEnabled(enabled: Boolean) {
         renderer.bleedEnabled = enabled
+        glSurfaceView.requestRender()
+    }
+
+    fun setIsTransparentBackground(transparent: Boolean) {
+        renderer.isTransparentBackground = transparent
         glSurfaceView.requestRender()
     }
 
@@ -475,19 +564,27 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
 
     // ── ExoPlayer Player.Listener Callbacks ──
 
-    override fun onRenderedFirstFrame() {
+    private fun sendReadyEvent() {
         if (!hasFiredReady) {
             hasFiredReady = true
-            val isLive = player?.isCurrentMediaItemLive == true
-            val durationSec = (player?.duration?.coerceAtLeast(0) ?: 0) / 1000.0
+            val isLive = (player?.isCurrentMediaItemLive == true) || (currentUri?.contains(".m3u8") == true) || (currentUri?.contains("hls") == true)
+            val durationSec = if (isLive) 0.0 else ((player?.duration?.coerceAtLeast(0) ?: 0) / 1000.0)
             val event = Arguments.createMap().apply {
                 putDouble("duration", durationSec)
                 putBoolean("isLive", isLive)
             }
             sendEvent("onReady", event)
         }
-        post {
-            com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+    }
+
+    override fun onRenderedFirstFrame() {
+        renderer.isPlaybackActive = true
+        glSurfaceView.requestRender()
+        sendReadyEvent()
+        if (com.DME.MainActivity.isPipEnabled && com.DME.MainActivity.currentActivityInstance?.isInPictureInPictureMode == true) {
+            post {
+                com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
+            }
         }
     }
 
@@ -496,10 +593,6 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             val ar = videoSize.width.toFloat() / videoSize.height.toFloat()
             videoAspectRatio = ar
             renderer.videoAspectRatio = ar
-            if (ar >= 1.82f) {
-                // Native widescreen stream (>= 1.82) has no baked black bars
-                renderer.resetBbd()
-            }
             glSurfaceView.requestRender()
             post {
                 com.DME.MainActivity.currentActivityInstance?.refreshPipParams()
@@ -523,6 +616,9 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
 
     override fun onTracksChanged(tracks: Tracks) {
         val qualities = ArrayList<String>()
+        var hasSelectedAudio = false
+        var audioGroupToSelect: Tracks.Group? = null
+
         for (group in tracks.groups) {
             if (group.type == C.TRACK_TYPE_VIDEO) {
                 for (i in 0 until group.length) {
@@ -543,6 +639,14 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
                         }
                     }
                 }
+            } else if (group.type == C.TRACK_TYPE_AUDIO) {
+                val f = if (group.length > 0) group.getTrackFormat(0) else null
+                android.util.Log.i("DualSurfaceVideoView", "Audio track group: selected=${group.isSelected}, supported=${group.isSupported}, count=${group.length}, sampleMime=${f?.sampleMimeType}, containerMime=${f?.containerMimeType}, codecs=${f?.codecs}, rate=${f?.sampleRate}, ch=${f?.channelCount}")
+                if (group.isSelected) {
+                    hasSelectedAudio = true
+                } else if (audioGroupToSelect == null && group.isSupported) {
+                    audioGroupToSelect = group
+                }
             }
         }
         if (qualities.isNotEmpty()) {
@@ -554,6 +658,18 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
             sendEvent("onQualitiesAvailable", event)
         }
 
+        // If audio track is not automatically selected by ExoPlayer, force select it
+        if (!hasSelectedAudio && audioGroupToSelect != null) {
+            android.util.Log.i("DualSurfaceVideoView", "Explicitly selecting audio track group")
+            player?.let { p ->
+                val audioOverride = TrackSelectionOverride(audioGroupToSelect.mediaTrackGroup, listOf(0))
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon()
+                    .addOverride(audioOverride)
+                    .build()
+            }
+        }
+
         if (currentQualityProp != "auto") {
             setQuality(currentQualityProp)
         }
@@ -562,18 +678,27 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
     override fun onPlaybackStateChanged(playbackState: Int) {
         when (playbackState) {
             Player.STATE_READY -> {
-                renderer.isPlaybackActive = true
-                glSurfaceView.requestRender()
-                if (!hasFiredReady) {
-                    hasFiredReady = true
-                    val isLive = (player?.isCurrentMediaItemLive == true) || (currentUri?.contains(".m3u8") == true) || (currentUri?.contains("hls") == true)
-                    val durationSec = if (isLive) 0.0 else ((player?.duration?.coerceAtLeast(0) ?: 0) / 1000.0)
-                    val event = Arguments.createMap().apply {
-                        putDouble("duration", durationSec)
-                        putBoolean("isLive", isLive)
-                    }
-                    sendEvent("onReady", event)
+                // Check if this stream has a video track
+                val hasVideoTrack = player?.currentTracks?.isTypeSupported(C.TRACK_TYPE_VIDEO) == true ||
+                        player?.currentTracks?.isTypeSelected(C.TRACK_TYPE_VIDEO) == true
+                if (!hasVideoTrack) {
+                    // Audio-only streams will never fire onRenderedFirstFrame
+                    renderer.isPlaybackActive = true
+                    glSurfaceView.requestRender()
+                    sendReadyEvent()
+                } else {
+                    // For video streams, DO NOT set isPlaybackActive or requestRender here!
+                    // Wait for onRenderedFirstFrame() so the actual decoded frame is ready on SurfaceTexture.
+                    // Fallback after 1500ms in case backgrounded or display surface off.
+                    postDelayed({
+                        if (!hasFiredReady && player?.playbackState == Player.STATE_READY) {
+                            renderer.isPlaybackActive = true
+                            glSurfaceView.requestRender()
+                            sendReadyEvent()
+                        }
+                    }, 1500)
                 }
+
                 val bufferEvent = Arguments.createMap().apply {
                     putBoolean("isBuffering", false)
                 }
@@ -609,13 +734,8 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
                     val currentPos = p.currentPosition / 1000.0
                     val isLive = (p.isCurrentMediaItemLive) || (currentUri?.contains(".m3u8") == true) || (currentUri?.contains("hls") == true)
                     val dur = if (isLive) 0.0 else ((p.duration.coerceAtLeast(0)) / 1000.0)
-                    if (!hasFiredReady && (currentPos > 0 || dur > 0 || isLive)) {
-                        hasFiredReady = true
-                        val readyEvt = Arguments.createMap().apply {
-                            putDouble("duration", dur)
-                            putBoolean("isLive", isLive)
-                        }
-                        sendEvent("onReady", readyEvt)
+                    if (!hasFiredReady && (currentPos > 0 || isLive)) {
+                        sendReadyEvent()
                     }
                     val event = Arguments.createMap().apply {
                         putDouble("currentTime", if (isLive) 0.0 else currentPos)
@@ -678,6 +798,7 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
     }
 
     fun cleanup() {
+        unregisterInstance(this)
         progressRunnable?.let { handler.removeCallbacks(it) }
         player?.stop()
         player?.release()

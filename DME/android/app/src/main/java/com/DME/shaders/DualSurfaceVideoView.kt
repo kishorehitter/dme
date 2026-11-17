@@ -718,9 +718,18 @@ class DualSurfaceVideoView(context: Context) : FrameLayout(context), Player.List
     }
 
     override fun onPlayerError(error: PlaybackException) {
-        android.util.Log.e("DualSurfaceVideoView", "ExoPlayer error: ${error.message}", error)
+        val fullMessage = buildString {
+            append(error.message ?: "Unknown playback error")
+            var cause: Throwable? = error.cause
+            while (cause != null) {
+                append(" -> ")
+                append(cause.message ?: cause.javaClass.simpleName)
+                cause = cause.cause
+            }
+        }
+        android.util.Log.e("DualSurfaceVideoView", "ExoPlayer error: $fullMessage (code ${error.errorCode})", error)
         val event = Arguments.createMap().apply {
-            putString("error", error.message ?: "Unknown playback error")
+            putString("error", fullMessage)
             putInt("errorCode", error.errorCode)
         }
         sendEvent("onError", event)

@@ -49,6 +49,15 @@ export interface RoomState {
   allowedSpeakers: number[];
 }
 
+export const resolveSongSource = (source?: string, videoId?: string): 'youtube' | 'drive' => {
+  if (source === 'drive') return 'drive';
+  if (source === 'youtube') return 'youtube';
+  if (videoId && (videoId.length > 15 || videoId.includes('-') || (videoId.includes('_') && videoId.length > 15))) {
+    return 'drive';
+  }
+  return 'youtube';
+};
+
 // Backend sends queue items as snake_case
 // ({ song, added_by_id, added_by_name, added_by_avatar, pinned_at }).
 // This normalizes to the camelCase QueueItem shape the rest of the app uses,
@@ -57,8 +66,15 @@ export interface RoomState {
 // the UI during a rolling deploy.
 const normalizeQueueItem = (raw: any): QueueItem => {
   if (raw && raw.song) {
+    const s = raw.song;
+    const isDrive = resolveSongSource(s.source, s.videoId) === 'drive';
     return {
-      song: raw.song,
+      song: {
+        ...s,
+        source: isDrive ? 'drive' : (s.source || 'youtube'),
+        title: s.title || (isDrive ? 'Drive Video' : 'YouTube Video'),
+        channelTitle: s.channelTitle || (isDrive ? 'Google Drive' : 'YouTube'),
+      },
       addedById: raw.added_by_id,
       addedByName: raw.added_by_name ?? 'Someone',
       addedByAvatar: raw.added_by_avatar,
@@ -67,8 +83,14 @@ const normalizeQueueItem = (raw: any): QueueItem => {
     };
   }
   // Legacy shape: queue item WAS the Song itself.
+  const isDrive = raw ? resolveSongSource(raw.source, raw.videoId) === 'drive' : false;
   return {
-    song: raw,
+    song: raw ? {
+      ...raw,
+      source: isDrive ? 'drive' : (raw.source || 'youtube'),
+      title: raw.title || (isDrive ? 'Drive Video' : 'YouTube Video'),
+      channelTitle: raw.channelTitle || (isDrive ? 'Google Drive' : 'YouTube'),
+    } : raw,
     addedById: -1,
     addedByName: raw?.addedBy ?? 'Someone',
     addedByAvatar: undefined,
@@ -154,10 +176,12 @@ export const useMusicRoom = (
           setRoomState(prev => {
             const incomingVideo = message.data.current_video;
             const isSame = incomingVideo && prev.currentSong?.videoId === incomingVideo.videoId;
+            const isDriveVideo = incomingVideo ? resolveSongSource(incomingVideo.source, incomingVideo.videoId) === 'drive' : false;
             const currentVideo = incomingVideo ? {
-              source: 'youtube',
               ...incomingVideo,
-              source: incomingVideo.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube',
+              source: isDriveVideo ? 'drive' : (incomingVideo.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube'),
+              title: incomingVideo.title || (isDriveVideo ? 'Drive Video' : 'YouTube Video'),
+              channelTitle: incomingVideo.channelTitle || (isDriveVideo ? 'Google Drive' : 'YouTube'),
               playSessionId: isSame && prev.currentSong?.playSessionId
                 ? prev.currentSong.playSessionId
                 : (incomingVideo.playSessionId || `${incomingVideo.videoId}_${Date.now()}`),
@@ -203,10 +227,12 @@ export const useMusicRoom = (
             const incoming = message.data.video;
             if (!incoming) return prev;
             const isSame = prev.currentSong?.videoId === incoming.videoId;
+            const isDrive = resolveSongSource(incoming.source, incoming.videoId) === 'drive';
             const updatedSong: Song = {
-              source: 'youtube',
               ...incoming,
-              source: incoming.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube',
+              source: isDrive ? 'drive' : (incoming.source || (isSame ? prev.currentSong?.source : undefined) || 'youtube'),
+              title: incoming.title || (isDrive ? 'Drive Video' : 'YouTube Video'),
+              channelTitle: incoming.channelTitle || (isDrive ? 'Google Drive' : 'YouTube'),
               playSessionId: isSame && prev.currentSong?.playSessionId
                 ? prev.currentSong.playSessionId
                 : (incoming.playSessionId || `${incoming.videoId}_${Date.now()}`),
@@ -283,10 +309,14 @@ export const useMusicRoom = (
         case 'aux_passed':
           if (isPlayerReadyRef) isPlayerReadyRef.current = false;
           const nextSongFromMsg = message.data.next_song;
+          const isNextDrive = nextSongFromMsg ? resolveSongSource(nextSongFromMsg.source, nextSongFromMsg.videoId) === 'drive' : false;
           setRoomState(prev => ({
             ...prev,
             currentSong: nextSongFromMsg ? {
               ...nextSongFromMsg,
+              source: isNextDrive ? 'drive' : (nextSongFromMsg.source || 'youtube'),
+              title: nextSongFromMsg.title || (isNextDrive ? 'Drive Video' : 'YouTube Video'),
+              channelTitle: nextSongFromMsg.channelTitle || (isNextDrive ? 'Google Drive' : 'YouTube'),
               playSessionId: `${nextSongFromMsg.videoId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
             } : null,
             roomName: message.data.room_name || prev.roomName,
@@ -338,8 +368,12 @@ export const useMusicRoom = (
 
   // DJ Controls
   const loadSong = useCallback((song: Song, customRoomName?: string) => { // ✅ Added param
+    const isDrive = resolveSongSource(song.source, song.videoId) === 'drive';
     const songWithSession: Song = {
       ...song,
+      source: isDrive ? 'drive' : (song.source || 'youtube'),
+      title: song.title || (isDrive ? 'Drive Video' : 'YouTube Video'),
+      channelTitle: song.channelTitle || (isDrive ? 'Google Drive' : 'YouTube'),
       playSessionId: `${song.videoId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
     };
     setRoomState(prev => ({
@@ -349,7 +383,7 @@ export const useMusicRoom = (
       position: 0,
       isPlaying: false
     }));
-    musicWebSocketService.loadVideo(song, customRoomName); // ✅ Pass to service
+    musicWebSocketService.loadVideo(songWithSession, customRoomName); // ✅ Pass to service
   }, []);
 
   const syncPlay = useCallback((position: number) => {

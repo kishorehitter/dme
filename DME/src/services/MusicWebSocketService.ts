@@ -150,6 +150,7 @@ class MusicWebSocketService {
     thumbnail: string;
     channelTitle: string;
     addedBy: string;
+    source?: string;
   }) {
     this.send({ type: 'queue_add', song });
   }
@@ -164,6 +165,7 @@ class MusicWebSocketService {
     thumbnail: string;
     channelTitle: string;
     addedBy: string;
+    source?: string;
   }) {
     this.send({ type: 'pin_video', song });
   }

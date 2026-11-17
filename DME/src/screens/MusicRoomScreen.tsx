@@ -471,7 +471,6 @@ const isPlaceholderSongTitle = (title?: string | null, excludedNames?: (string |
     t === 'Initializing...' ||
     t === 'YouTube Video' ||
     t === 'Watch Party' ||
-    t === 'Drive Video' ||
     t === 'Now Playing' ||
     t === 'Music Room' ||
     t.toLowerCase().endsWith("'s room") ||
@@ -683,7 +682,7 @@ const getSongThumbnail = (item?: any): string | null => {
     if (cleaned) return cleaned;
   }
   if (s.videoId) {
-    if (s.source === 'drive') {
+    if (s.source === 'drive' || s.videoId.length > 15) {
       return `https://drive.google.com/thumbnail?id=${s.videoId}&sz=w1280`;
     }
     return `https://i.ytimg.com/vi/${s.videoId}/maxresdefault.jpg`;
@@ -2094,8 +2093,25 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const { roomState, isConnected, isLoading, playerRef, loadSong, syncPlay, syncPause, syncSeek, addToQueue, pinVideo, unpinVideo, passAux, updateCurrentSongMetadata, updateMicPermission, switchDJ, joinSnapshot } = useMusicRoom(roomCode, user?.id ?? 0, isPlayerReadyRef, playerReadyTime, isAdPlayingRef, isDJBackgroundedRef);
   const { isDJ, currentSong, isPlaying, position, queue, participants, roomName, allowedSpeakers } = roomState;
   const isPlayingRef = useRef(isPlaying);
-  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   const activeVideoId = currentSong?.videoId || initialVideoId;
+  const isDriveVideo = (currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive';
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+    const newState = isPlaying ? 'playing' : 'paused';
+    playerStateRef.current = newState;
+    setPlayerState(prev => (prev === 'ended' ? prev : newState));
+
+    if (isPlaying) {
+      showControlsForRef.current(3500);
+    } else {
+      setShowControls(true);
+      if (controlTimer.current) {
+        clearTimeout(controlTimer.current);
+        controlTimer.current = null;
+      }
+    }
+  }, [isPlaying]);
 
   // Authoritative DJ state: WebSocket isDJ when connected, otherwise route param isDJMode
   const effectiveIsDJ = isConnected ? isDJ : Boolean(isDJMode);
@@ -2171,21 +2187,31 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       const curSession = currentSong?.playSessionId || (curVid ? `${curVid}_${trackPlayCounterRef.current}` : 'vid');
       if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && lastSyncPlayedVideoIdRef.current !== curSession) {
         lastSyncPlayedVideoIdRef.current = curSession;
-        syncPlay(0);
+        syncPlay(livePositionRef.current || 0);
       }
     }
   }, [thumbnailHoldComplete, isPlayerReady, isPlaying, isDJ, isDJMode, syncPlay, currentSong?.playSessionId, currentSong?.videoId, initialVideoId]);
 
   const isDisplayTitleValid = useCallback(
-    (t?: string | null): boolean => {
+    (t?: string | null, source?: string, videoId?: string): boolean => {
+      const isDrive = source === 'drive' || (videoId && videoId.length > 15);
+      if (isDrive) {
+        if (!t || typeof t !== 'string') return false;
+        const s = t.trim();
+        return Boolean(s && s !== 'Loading...' && s !== 'Initializing...');
+      }
       return !isPlaceholderSongTitle(t, [user?.display_name]);
     },
     [user?.display_name]
   );
 
-  const displayTitle = isDisplayTitleValid(currentSong?.title)
+  const isCurrentDriveSong = (currentSong?.source || (currentSong?.videoId && currentSong.videoId.length > 15)) === 'drive';
+
+  const displayTitle = isDisplayTitleValid(currentSong?.title, currentSong?.source, currentSong?.videoId)
     ? currentSong!.title
-    : (isDisplayTitleValid(initialTitle) ? initialTitle! : 'Loading...');
+    : (isCurrentDriveSong
+        ? (currentSong?.title || 'Drive Video')
+        : (isDisplayTitleValid(initialTitle, initialSource, initialVideoId) ? initialTitle! : 'Loading...'));
 
   const isDJRef = useRef(effectiveIsDJ);
   isDJRef.current = effectiveIsDJ;
@@ -2331,7 +2357,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         return currentSong.thumbnail;
       }
       if (currentSong?.videoId) {
-        if (currentSong?.source === 'drive') {
+        if (currentSong?.source === 'drive' || currentSong.videoId.length > 15) {
           return `https://drive.google.com/thumbnail?id=${currentSong.videoId}&sz=w1280`;
         }
         return `https://i.ytimg.com/vi/${currentSong.videoId}/maxresdefault.jpg`;
@@ -2345,7 +2371,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           return nextSong.thumbnail;
         }
         if (nextSong?.videoId) {
-          if (nextSong?.source === 'drive') {
+          if (nextSong?.source === 'drive' || (nextSong.videoId && nextSong.videoId.length > 15)) {
             return `https://drive.google.com/thumbnail?id=${nextSong.videoId}&sz=w1280`;
           }
           return `https://i.ytimg.com/vi/${nextSong.videoId}/maxresdefault.jpg`;
@@ -2357,7 +2383,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       const vid = initialVideoId;
       const src = initialSource;
       if (vid) {
-        if (src === 'drive') {
+        if (src === 'drive' || vid.length > 15) {
           return `https://drive.google.com/thumbnail?id=${vid}&sz=w1280`;
         }
         return `https://i.ytimg.com/vi/${vid}/maxresdefault.jpg`;
@@ -2634,7 +2660,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     if (!centerLyricsEnabled) return;
     const activeTitle = currentSong?.title;
     const activeId = currentSong?.videoId;
-    if (!activeTitle || activeTitle === 'Initializing...') {
+    if (!activeTitle || activeTitle === 'Initializing...' || currentSong?.source === 'drive' || (activeId && activeId.length > 15)) {
       setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
       return;
     }
@@ -3685,7 +3711,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   };
 
   const handleChannelPress = () => {
-    if (currentSong?.source === 'drive') {
+    if (currentSong?.source === 'drive' || (currentSong?.videoId && currentSong.videoId.length > 15)) {
       Toast.show({ type: 'info', text1: 'Google Drive file has no channel' });
       return;
     }
@@ -3706,7 +3732,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   const renderNpBar = () => {
     const pinnerName = currentSong?.addedBy || 'Someone';
     const pinner = participants.find(p => p.name === currentSong?.addedBy) || user;
-    const logoUri = currentSong?.channelLogo || fetchedChannelLogo || initialThumbnail || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null);
+    const isDriveBar = (currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive';
+    const logoUri = currentSong?.channelLogo || (isDriveBar ? null : fetchedChannelLogo) || (isDriveBar ? (currentSong?.thumbnail || (activeVideoId ? `https://drive.google.com/thumbnail?id=${activeVideoId}&sz=w1280` : null)) : (initialThumbnail || currentSong?.thumbnail || (initialVideoId ? `https://img.youtube.com/vi/${initialVideoId}/hqdefault.jpg` : null)));
 
     return (
       <Reanimated.View
@@ -4115,6 +4142,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   // latest showControlsFor without needing it declared yet at this point
   // in the component body.
   const showControlsForRef = useRef<(ms?: number) => void>(() => {});
+  const showControlsRef = useRef(false);
 
   const playerGestureResponder = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => true,
@@ -4139,8 +4167,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
           // If related overlay is open, tapping the mini player closes it
           setShowRelated(false);
         } else {
-          // Otherwise, toggle playback controls
-          showControlsForRef.current(3500);
+          // Toggle playback controls cleanly
+          if (showControlsRef.current) {
+            setShowControls(false);
+            showControlsRef.current = false;
+            if (controlTimer.current) {
+              clearTimeout(controlTimer.current);
+              controlTimer.current = null;
+            }
+          } else {
+            showControlsForRef.current(3500);
+          }
         }
       } else if (Math.abs(gestureState.dx) > 40 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
         // Swipe detected! Open the related videos grid instantly (Rave UX)
@@ -4212,7 +4249,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     const targetVideoId = currentSong?.videoId || initialVideoId;
-    const targetSource = currentSong?.source || initialSource || 'youtube';
+    const isDrive = (currentSong?.source || (targetVideoId && targetVideoId.length > 15) || initialSource) === 'drive';
+    const targetSource = isDrive ? 'drive' : (currentSong?.source || initialSource || 'youtube');
 
     if (!targetVideoId) {
       setDirectStreamUrl(null);
@@ -4715,6 +4753,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
     const nextThumb = getSongThumbnail(nextItem);
     const targetVideoId = nextItem?.videoId || (nextItem?.song && nextItem.song.videoId) || null;
+    const isDriveTarget = (nextItem?.source || (nextItem?.song && nextItem.song.source)) === 'drive' || (targetVideoId && targetVideoId.length > 15);
     const currentVid = currentSong?.videoId || initialVideoId;
     if (targetVideoId) {
       lastTransitionVideoIdRef.current = targetVideoId;
@@ -4728,6 +4767,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       lastLoadedStreamVideoId.current = null;
     } else if (targetVideoId && targetVideoId === currentVid) {
       lastLoadedStreamVideoId.current = targetVideoId;
+    }
+    if (isDriveTarget) {
+      setFetchedChannelLogo(null);
+      setFetchedChannelUrl(null);
     }
     setLyricsState({ lines: [], isLoading: false, instrumental: false, hasLyrics: false, hasPlainLyrics: false, isMismatch: false });
     console.log('🖼️ [THUMB] Resetting overlay in startSongTransition for targetVideoId:', targetVideoId);
@@ -4900,14 +4943,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       };
     }
 
-    const isDrive = (currentSong?.source || initialSource) === 'drive';
+    const isDrive = (currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive';
     const curH = animatedVideoHeightSV.value;
     const shiftY = collapseProgress.value * 58;
 
     // Cinema Theme: Full-screen GPU Subsurface Liquid Glass is the permanent room backdrop.
     // It must NEVER be moved off-screen or shrunk, so it remains visible when room opens,
     // between songs, when queue ends, or when related panel is open!
-    if (roomTheme === 'cinema' && !isDrive) {
+    if (roomTheme === 'cinema' && (!isDrive || Boolean(directStreamUrl))) {
       return {
         position: 'absolute',
         left: 0,
@@ -4978,7 +5021,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     const centerDeltaY = Math.max(0, ((windowHeight - curH) / 2) - (stableTopInset + 58));
     const translateY = -shiftY + (centerModeProgress.value * centerDeltaY);
 
-    if ((roomTheme === 'rave' || roomTheme === 'dark') && !isDrive) {
+    if ((roomTheme === 'rave' || roomTheme === 'dark') && (!isDrive || Boolean(directStreamUrl))) {
       return {
         position: 'absolute',
         left: 0,
@@ -5647,8 +5690,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     const targetVid = currentSong?.videoId || initialVideoId;
-    const targetSrc = currentSong?.source || initialSource;
-    if (!targetVid || targetSrc === 'drive') {
+    const isDrive = (currentSong?.source || (targetVid && targetVid.length > 15) || initialSource) === 'drive';
+    if (!targetVid || isDrive) {
       setFetchedChannelLogo(null);
       setFetchedChannelUrl(null);
       return;
@@ -5792,14 +5835,31 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [isConnected, isDJ, isPlaying, currentSong?.videoId, syncPlay, playerState, isPlayerReadyRef, mediaFullySynced, isReseeking]);
 
   const handleSelectSong = useCallback(async (song: Song, forcePlay = false) => {
+    const isDrive = song.source === 'drive' || (song.videoId && song.videoId.length > 15);
     const hasActiveVideo = !!currentSongRef.current?.videoId && playerState !== 'ended';
 
     if (forcePlay || (!hasActiveVideo && queue.length === 0)) {
       startSongTransition(song);
-      let richSong = song;
-      const isPlaceholder = !isDisplayTitleValid(song.title);
+      let richSong: Song = {
+        ...song,
+        source: isDrive ? 'drive' : (song.source || 'youtube'),
+        title: song.title || (isDrive ? 'Drive Video' : 'YouTube Video'),
+        channelTitle: song.channelTitle || (isDrive ? 'Google Drive' : 'YouTube'),
+      };
+      const isPlaceholder = !isDisplayTitleValid(richSong.title, richSong.source, richSong.videoId);
 
-      if (!isPlaceholder && song.channelTitle && song.channelTitle !== 'Loading...') {
+      if (isDrive) {
+        if (richSong.videoId === loadedAudioSessionRef.current) {
+          loadedAudioSessionRef.current = null;
+          (globalThis as any).loadedAudioSessionId = null;
+          setAudioReloadToken(t => t + 1);
+        }
+        currentDirectFetchId.current = null;
+        lastLoadedStreamVideoId.current = null;
+        lastResetSongVideoIdRef.current = null;
+        setIsSyncing(true);
+        loadSong(richSong, currentRoomName);
+      } else if (!isPlaceholder && song.channelTitle && song.channelTitle !== 'Loading...') {
         // Metadata already known (History, Likes, Discovery, Queue): load song immediately with ZERO network delay!
         if (richSong.videoId === loadedAudioSessionRef.current) {
           loadedAudioSessionRef.current = null;
@@ -5813,15 +5873,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         loadSong(richSong, currentRoomName);
 
         // Background update for channel logo or extra metadata without delaying video playback
-        if (song.source !== 'drive') {
-          fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name, song.title).then((meta) => {
-            if (meta && meta.videoId === song.videoId && isDisplayTitleValid(meta.title)) {
-              if (meta.channelLogo) setFetchedChannelLogo(meta.channelLogo);
-              if (meta.channelUrl) setFetchedChannelUrl(meta.channelUrl);
-              updateCurrentSongMetadata(meta);
-            }
-          }).catch(() => {});
-        }
+        fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name, song.title).then((meta) => {
+          if (meta && meta.videoId === song.videoId && isDisplayTitleValid(meta.title)) {
+            if (meta.channelLogo) setFetchedChannelLogo(meta.channelLogo);
+            if (meta.channelUrl) setFetchedChannelUrl(meta.channelUrl);
+            updateCurrentSongMetadata(meta);
+          }
+        }).catch(() => {});
       } else {
         richSong = await fetchYouTubeMetadata(song.videoId, song.addedBy ?? user?.display_name, isPlaceholder ? undefined : song.title);
         richSong.addedBy = song.addedBy ?? user?.display_name;
@@ -5837,13 +5895,13 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         loadSong(richSong, currentRoomName);
       }
     } else {
-      addToQueue({ ...song, addedBy: song.addedBy ?? user?.display_name ?? 'Someone' });
+      addToQueue({ ...song, source: isDrive ? 'drive' : (song.source || 'youtube'), addedBy: song.addedBy ?? user?.display_name ?? 'Someone' });
     }
-    if (song?.videoId) {
+    if (song?.videoId && !isDrive) {
       fetchRelatedRef.current(song.videoId);
     }
     Keyboard.dismiss();
-  }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName, startSongTransition]);
+  }, [isDJ, isDJMode, loadSong, addToQueue, user?.display_name, playerState, queue, currentRoomName, startSongTransition, isDisplayTitleValid]);
 
   useEffect(() => {
     // ── Shared handler for play/pause triggered by lock screen / notification ──
@@ -6009,14 +6067,17 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
   }, [queue, playerState, isDJ, isDJMode, passAux, startSongTransition]);
 
   useEffect(() => {
+    const isDrive = currentSong?.source === 'drive' || (currentSong?.videoId && currentSong.videoId.length > 15);
+    if (isDrive) return; // Never fetch YouTube metadata for Google Drive files!
+
     if (currentSong?.videoId && metadataLock.current !== currentSong.videoId &&
-        !isDisplayTitleValid(currentSong.title)) {
+        !isDisplayTitleValid(currentSong.title, currentSong?.source, currentSong?.videoId)) {
       const fetchMeta = async () => {
         try {
           metadataLock.current = currentSong.videoId;
           const fullSong = await fetchYouTubeMetadata(currentSong.videoId, currentSong?.addedBy ?? user?.display_name);
           fullSong.addedBy = currentSong.addedBy ?? user?.display_name ?? 'Someone';
-          if (metadataLock.current === currentSong.videoId && isDisplayTitleValid(fullSong.title)) {
+          if (metadataLock.current === currentSong.videoId && isDisplayTitleValid(fullSong.title, fullSong.source, fullSong.videoId)) {
             updateCurrentSongMetadata(fullSong);
           }
         } catch (e) {
@@ -6025,14 +6086,16 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
       };
       fetchMeta();
     }
-  }, [currentSong?.videoId, currentSong?.title, user?.display_name, updateCurrentSongMetadata, isDisplayTitleValid]);
+  }, [currentSong?.videoId, currentSong?.title, currentSong?.source, user?.display_name, updateCurrentSongMetadata, isDisplayTitleValid]);
 
   const showControlsFor = useCallback((ms = 3500) => {
     setShowControls(true);
+    showControlsRef.current = true;
     if (controlTimer.current) clearTimeout(controlTimer.current);
     controlTimer.current = setTimeout(() => {
-      if (playerStateRef.current !== 'paused') {
+      if (isPlayingRef.current) {
         setShowControls(false);
+        showControlsRef.current = false;
       }
     }, ms) as any;
   }, []);
@@ -6044,9 +6107,14 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     showControlsForRef.current = showControlsFor;
   }, [showControlsFor]);
 
+  useEffect(() => {
+    showControlsRef.current = showControls;
+  }, [showControls]);
+
   // Ensure controls are hidden when a new video loads/changes; only show on manual tap
   useEffect(() => {
     setShowControls(false);
+    showControlsRef.current = false;
     if (controlTimer.current) {
       clearTimeout(controlTimer.current);
       controlTimer.current = null;
@@ -6158,15 +6226,10 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
 
   useEffect(() => {
     if (currentSong?.videoId) {
-      const isInitialSong = Boolean(initialVideoId && currentSong.videoId === initialVideoId);
-      const isSameAsInitialOrActive =
-        isInitialSong ||
-        Boolean(activeVideoId && currentSong.videoId === activeVideoId) ||
-        Boolean(currentDirectFetchId.current && currentSong.videoId === currentDirectFetchId.current) ||
-        Boolean(lastLoadedStreamVideoId.current && currentSong.videoId === lastLoadedStreamVideoId.current) ||
-        (lastResetSongVideoIdRef.current === currentSong.videoId && Boolean(directStreamUrl));
+      const isInitialSong = Boolean(initialVideoId && currentSong.videoId === initialVideoId && lastResetSongVideoIdRef.current === null);
+      const isSameAsActive = Boolean(lastResetSongVideoIdRef.current && currentSong.videoId === lastResetSongVideoIdRef.current);
 
-      if (isSameAsInitialOrActive) {
+      if (isInitialSong || isSameAsActive) {
         console.log(`🎵 [MusicRoom] currentSong confirmed for active video: ${currentSong.videoId} — preserving active stream & playback`);
         setShowRelated(false);
         setPlayerError(null);
@@ -7337,13 +7400,13 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     }
     console.log(`🖼️ [THUMB_RENDER] Rendering overlay for activeVideoId: ${activeVideoId}, isLoading: ${!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete}, isPlayerReady: ${isPlayerReady}`);
 
-    const isDrive = (currentSong?.source || initialSource) === 'drive';
+    const isDrive = (currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive';
     // Best available URI — fall through every source so bleed is always populated
     const thumbUri =
       thumbFallbackUri ||
       displayedThumbnailUrl ||
-      (activeVideoId && !isDrive ? `https://i.ytimg.com/vi/${activeVideoId}/maxresdefault.jpg` : null) ||
-      (activeVideoId && isDrive ? `https://drive.google.com/thumbnail?id=${activeVideoId}&sz=w1280` : null);
+      (activeVideoId && isDrive ? `https://drive.google.com/thumbnail?id=${activeVideoId}&sz=w1280` : null) ||
+      (activeVideoId && !isDrive ? `https://i.ytimg.com/vi/${activeVideoId}/maxresdefault.jpg` : null);
 
     const isLoading = isDrive
       ? (!isPlayerReady || !mediaFullySynced || !thumbnailHoldComplete)
@@ -7510,29 +7573,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
   );
 
   const handleDashCutoff = useCallback(async (fallbackUrl: string) => {
-    // If the user is already authenticated with YouTube, don't interrupt — re-extract fresh DASH stream
-    try {
-      const isAuthed = await checkYouTubeAuth();
-      if (isAuthed) {
-        console.log('🎬 [MusicRoom] YouTube authenticated: clearing skip flag and re-extracting fresh DASH stream');
-        await setHasSkippedYtLogin(false);
-        hasSkippedYtLoginRef.current = false;
-        setHasSkippedYtLoginState(false);
-        const targetVideoId = currentSong?.videoId || initialVideoId;
-        if (targetVideoId) {
-          extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
-            if (res && res.url) {
-              setDirectStreamUrl(res.url);
-              setDirectStreamHeaders(res.headers);
-              setDirectStreamType(res.streamType || 'mp4');
-            }
-          }).catch(() => {});
-        }
-        return;
-      }
-    } catch (_) {}
-
-    // User is guest (not logged in to YouTube) and DASH 59s cutoff occurred
+    // User is guest (or DASH stream encountered 403 cutoff)
     console.log('🎬 [MusicRoom] Guest DASH cutoff at', livePositionRef.current, '— presenting quality / login prompt');
     const currentPos = livePositionRef.current || 0;
     ytPromptPausePosRef.current = currentPos;
@@ -7575,6 +7616,16 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       }
     }
 
+    livePositionRef.current = targetPos;
+    setLivePosition(targetPos);
+    const targetVideoId = currentSong?.videoId || initialVideoId;
+    if (targetVideoId) {
+      lastSyncPlayedVideoIdRef.current = targetVideoId;
+    }
+    if (isAlone && (isDJ || isDJMode)) {
+      syncPlay(targetPos);
+    }
+
     // Switch to progressive 360p stream
     setAvailableQualities(['360p']);
     setVideoQuality('360p');
@@ -7584,7 +7635,6 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       setDirectStreamUrl(progUrl);
       setDirectStreamType('mp4');
     } else {
-      const targetVideoId = currentSong?.videoId || initialVideoId;
       if (targetVideoId) {
         extractVideoStreamUrlClientSide(targetVideoId, true).then((res) => {
           const pUrl = res?.fallbackProgressiveUrl || res?.url;
@@ -7635,7 +7685,16 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       }
     }
 
+    livePositionRef.current = targetPos;
+    setLivePosition(targetPos);
     const targetVideoId = currentSong?.videoId || initialVideoId;
+    if (targetVideoId) {
+      lastSyncPlayedVideoIdRef.current = targetVideoId;
+    }
+    if (isAlone && (isDJ || isDJMode)) {
+      syncPlay(targetPos);
+    }
+
     if (targetVideoId) {
       extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache to get authenticated streams */).then((res) => {
         if (res?.dashUrl) {
@@ -7693,110 +7752,115 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
     if (!showYtQualityPrompt) return null;
 
     return (
-      <View
-        style={[
-          StyleSheet.absoluteFill,
-          {
-            backgroundColor: 'rgba(0, 0, 0, 0.88)',
-            justifyContent: 'center',
-            alignItems: 'center',
-            paddingHorizontal: 16,
-            zIndex: 10001,
-            elevation: 50,
-          },
-        ]}
+      <Modal
+        visible={showYtQualityPrompt}
+        transparent={true}
+        statusBarTranslucent={true}
+        animationType="fade"
+        onRequestClose={() => {}}
       >
         <View
           style={{
-            width: '100%',
-            maxWidth: fullscreen ? 360 : 320,
-            backgroundColor: 'rgba(23, 23, 27, 0.96)',
-            borderRadius: 14,
-            paddingVertical: fullscreen ? 16 : 12,
-            paddingHorizontal: fullscreen ? 18 : 14,
-            borderWidth: 1,
-            borderColor: 'rgba(255, 255, 255, 0.12)',
+            flex: 1,
+            backgroundColor: 'rgba(0, 0, 0, 0.88)',
+            justifyContent: 'center',
             alignItems: 'center',
+            paddingHorizontal: 20,
           }}
         >
-          {/* Header row: Icon & Title */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 6 }}>
-            <Icon name="logo-youtube" size={20} color="#FF0000" />
-            <Text style={{ color: '#FFFFFF', fontSize: 13.5, fontWeight: '700' }}>
-              Sign in for HD Quality
-            </Text>
-          </View>
-
-          {/* Description text */}
-          <Text
+          <View
             style={{
-              color: 'rgba(255, 255, 255, 0.78)',
-              fontSize: 11,
-              lineHeight: 15,
-              textAlign: 'center',
-              marginBottom: 12,
+              width: '100%',
+              maxWidth: 340,
+              backgroundColor: 'rgba(23, 23, 27, 0.98)',
+              borderRadius: 16,
+              paddingVertical: 18,
+              paddingHorizontal: 18,
+              borderWidth: 1,
+              borderColor: 'rgba(255, 255, 255, 0.15)',
+              alignItems: 'center',
+              elevation: 25,
             }}
           >
-            Sign in with YouTube to enjoy HD streaming Freely or skip to continue watching in lower quality.
-          </Text>
+            {/* Header row: Icon & Title */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+              <Icon name="logo-youtube" size={22} color="#FF0000" />
+              <Text style={{ color: '#FFFFFF', fontSize: 14.5, fontWeight: '700' }}>
+                Sign in for HD Quality
+              </Text>
+            </View>
 
-          {/* Action Buttons */}
-          <View style={{ flexDirection: 'row', width: '100%', gap: 8 }}>
-            <TouchableOpacity
-              onPress={handleChooseLowerQuality}
-              activeOpacity={0.75}
+            {/* Description text */}
+            <Text
               style={{
-                flex: 1,
-                paddingVertical: 8,
-                borderRadius: 8,
-                backgroundColor: 'rgba(255, 255, 255, 0.10)',
-                borderWidth: 1,
-                borderColor: 'rgba(255, 255, 255, 0.18)',
-                alignItems: 'center',
-                justifyContent: 'center',
+                color: 'rgba(255, 255, 255, 0.82)',
+                fontSize: 12,
+                lineHeight: 16.5,
+                textAlign: 'center',
+                marginBottom: 16,
               }}
             >
-              <Text
-                style={{
-                  color: 'rgba(255, 255, 255, 0.85)',
-                  fontSize: 11,
-                  fontWeight: '600',
-                }}
-                numberOfLines={1}
-              >
-                skip signin
-              </Text>
-            </TouchableOpacity>
+              Sign in with YouTube to enjoy HD streaming Freely or skip to continue watching in lower quality.
+            </Text>
 
-            <TouchableOpacity
-              onPress={handleOpenYouTubeLoginDiscovery}
-              activeOpacity={0.8}
-              style={{
-                flex: 1.1,
-                paddingVertical: 8,
-                borderRadius: 8,
-                backgroundColor: '#FF0000',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'row',
-                gap: 5,
-              }}
-            >
-              <Icon name="person-circle-outline" size={14} color="#FFFFFF" />
-              <Text
+            {/* Action Buttons */}
+            <View style={{ flexDirection: 'row', width: '100%', gap: 10 }}>
+              <TouchableOpacity
+                onPress={handleChooseLowerQuality}
+                activeOpacity={0.75}
                 style={{
-                  color: '#FFFFFF',
-                  fontSize: 11.5,
-                  fontWeight: '700',
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: 'rgba(255, 255, 255, 0.12)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(255, 255, 255, 0.20)',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
-                numberOfLines={1}
               >
-                Sign In
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={{
+                    color: 'rgba(255, 255, 255, 0.90)',
+                    fontSize: 12,
+                    fontWeight: '600',
+                  }}
+                  numberOfLines={1}
+                >
+                  skip signin
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleOpenYouTubeLoginDiscovery}
+                activeOpacity={0.8}
+                style={{
+                  flex: 1.1,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: '#FF0000',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexDirection: 'row',
+                  gap: 6,
+                }}
+              >
+                <Icon name="person-circle-outline" size={16} color="#FFFFFF" />
+                <Text
+                  style={{
+                    color: '#FFFFFF',
+                    fontSize: 12,
+                    fontWeight: '700',
+                  }}
+                  numberOfLines={1}
+                >
+                  Sign In
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      </View>
+      </Modal>
     );
   };
 
@@ -7805,7 +7869,9 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       return null;
     }
 
-    if ((currentSong?.source || initialSource) === 'drive' && !directStreamUrl) {
+    const isDriveActive = (currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive';
+
+    if (isDriveActive && !directStreamUrl) {
       if (!activeVideoId) return null;
       const curDriveSession = currentSong?.playSessionId || (activeVideoId ? `${activeVideoId}_${trackPlayCounterRef.current}` : 'drive');
       return (
@@ -7813,10 +7879,11 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
           key={`drive_${curDriveSession}`}
           ref={playerRef}
           fileId={activeVideoId || ''}
-          play={isPlaying && !playerError && thumbnailHoldComplete}
+          play={isPlaying && !playerError}
           muted={effectiveMuted}
           isFullscreen={fullscreen}
           resizeMode={isMinimized ? 'cover' : 'contain'}
+          roomTheme={roomTheme}
           onAspectRatio={handleAspectRatio}
           onReady={(dur?: number) => {
             if (!activeVideoId || (lastLoadedStreamVideoId.current && lastLoadedStreamVideoId.current !== activeVideoId)) {
@@ -7836,6 +7903,11 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             const state = isPlaying ? 'playing' : 'paused';
             setPlayerState(state);
             playerStateRef.current = state;
+
+            // Immediately dismiss overlay for Drive WebView player
+            onLayoutAndAspectSettled();
+            setShowThumbnailOverlay(false);
+            setShowSpinner(false);
 
             if (livePositionRef.current > 1) {
               const currentPos = livePositionRef.current;
@@ -7882,7 +7954,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
       );
     }
 
-    const isNativeDirectVideo = currentSong?.source !== 'drive' && (currentSong?.source as string) !== 'embed';
+    const isNativeDirectVideo = !isDriveActive && (currentSong?.source as string) !== 'embed';
     if (directStreamUrl || isDirectLoading || (isNativeDirectVideo && !playerError) || roomTheme === 'cinema' || roomTheme === 'rave') {
       const curDirectSession = currentSong?.playSessionId || (activeVideoId ? `${activeVideoId}_${trackPlayCounterRef.current}` : 'vid');
       return (
@@ -7948,7 +8020,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
               const curVid = activeVideoId || initialVideoId;
               if ((isDJ || isDJMode || isDJRef.current || isDJModeRef.current) && lastSyncPlayedVideoIdRef.current !== curVid) {
                 lastSyncPlayedVideoIdRef.current = curVid;
-                syncPlay(0);
+                syncPlay(livePositionRef.current || 0);
               }
             }
 
@@ -8008,7 +8080,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             handleSongPlaybackEnded();
           }}
           onError={(err) => {
-            if ((currentSong?.source || initialSource) === 'drive') {
+            if ((currentSong?.source || (activeVideoId && activeVideoId.length > 15) || initialSource) === 'drive') {
               console.warn('⚠️ [DirectVideoPlayer] Error on Drive stream, falling back to DrivePlayer:', err);
               setDirectStreamUrl(null);
               setDirectStreamHeaders(undefined);
@@ -8017,7 +8089,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
             console.warn('[MusicRoomScreen] DirectVideoPlayer error:', err);
             const targetVideoId = currentSong?.videoId || initialVideoId;
             if (targetVideoId) {
-              const fallbackUrl = fallbackProgressiveUrlRef.current || directFallbackUrl;
+              const fallbackUrl = fallbackProgressiveUrlRef.current || directFallbackUrl || directStreamsListRef.current.find(s => s.has_audio)?.url;
               // If DASH stream encounters an error (typically guest CDN 403 at ~59s):
               if (directStreamType === 'mpd') {
                 if (hasSkippedYtLoginRef.current && fallbackUrl) {
@@ -8028,10 +8100,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                   setDirectStreamType('mp4');
                   return;
                 }
-                if (fallbackUrl) {
-                  handleDashCutoff(fallbackUrl);
-                  return;
-                }
+                handleDashCutoff(fallbackUrl || '');
+                return;
               }
 
               extractVideoStreamUrlClientSide(targetVideoId, true /* bypassCache */).then((res) => {
@@ -8181,8 +8251,8 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
         hidden={fullscreen || isSystemPip}
       />
 
-      {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (dark fallback only; cinema & rave rendered by GPU) ── */}
-      {!isMinimized && !fullscreen && roomTheme !== 'rave' && roomTheme !== 'cinema' && (
+      {/* ── 1. AMBIENT DISCO FLUID AURORA OVERLAY (rendered by GPU for native direct; AmbientDisco for dark & Drive HTML5) ── */}
+      {!isMinimized && !fullscreen && ((roomTheme !== 'rave' && roomTheme !== 'cinema') || (isDriveVideo && !directStreamUrl)) && (
         <View
           style={[StyleSheet.absoluteFill, isSystemPip && { opacity: 0 }]}
           pointerEvents="none"
@@ -8256,7 +8326,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 }}
                 qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
                 isFullscreen={true}
-                isDrivePlayer={currentSong?.source === 'drive'}
+                isDrivePlayer={isDriveVideo}
                 title={currentSong?.title}
                 onSingleTap={() => {
                   if (showControls) {
@@ -8569,7 +8639,7 @@ const sendLottieSticker = useCallback((sticker: Sticker) => {
                 }}
                 qualityLabel={(liveExactResolution ? getMinimalQualityLabel(liveExactResolution) : getMinimalQualityLabel(videoQuality)) || 'Auto'}
                 isFullscreen={false}
-                isDrivePlayer={currentSong?.source === 'drive'}
+                isDrivePlayer={isDriveVideo}
                 title={currentSong?.title}
                 onSingleTap={() => {
                   if (showControls) {

@@ -25,10 +25,11 @@ interface Props {
   onAspectRatio?: (aspectRatio: number) => void;
   isFullscreen?: boolean;
   resizeMode?: 'contain' | 'cover';
+  roomTheme?: 'cinema' | 'rave' | 'dark';
 }
 
 const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
-  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, onAspectRatio, isFullscreen = false, resizeMode = 'contain' } = props;
+  const { fileId, play, muted = false, onReady, onStateChange, onProgress, onError, onStreamResolved, onAspectRatio, isFullscreen = false, resizeMode = 'contain', roomTheme = 'rave' } = props;
   const webViewRef = useRef<WebView>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -43,6 +44,16 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
   }
 
   const initialUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+  const getCanvasStyle = () => {
+    if (roomTheme === 'dark') {
+      return 'display: none !important; opacity: 0;';
+    }
+    if (roomTheme === 'cinema') {
+      return 'display: block !important; opacity: 0.35; filter: blur(50px) brightness(0.40) saturate(1.2);';
+    }
+    return 'display: block !important; opacity: 0.85; filter: blur(40px) brightness(0.60) saturate(1.5);';
+  };
 
   const html = `
 <!DOCTYPE html>
@@ -60,10 +71,9 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
     height: 130%;
     object-fit: cover;
     background: transparent;
-    filter: blur(40px) brightness(0.60) saturate(1.5);
-    opacity: 0.85;
     z-index: 1;
     transform: translateZ(0);
+    ${getCanvasStyle()}
   }
   #dmevideo {
     position: absolute;
@@ -94,6 +104,7 @@ const DrivePlayer = forwardRef<DrivePlayerRef, Props>((props, ref) => {
 <canvas id="bg-canvas" width="64" height="36"></canvas>
 <video
   id="dmevideo"
+  autoplay
   playsinline
   webkit-playsinline
   preload="auto"
@@ -411,6 +422,31 @@ attachEvents();
     const mode = resizeMode === 'cover' ? 'cover' : 'contain';
     inject(`(function(){ var v = document.getElementById('dmevideo'); if (v) v.style.objectFit = '${mode}'; })()`);
   }, [resizeMode]);
+
+  React.useEffect(() => {
+    if (!webViewRef.current) return;
+    const theme = roomTheme || 'rave';
+    const js = `
+      (function() {
+        var c = document.getElementById('bg-canvas');
+        if (!c) return;
+        if ('${theme}' === 'dark') {
+          c.style.display = 'none';
+          c.style.opacity = '0';
+        } else if ('${theme}' === 'cinema') {
+          c.style.display = 'block';
+          c.style.opacity = '0.35';
+          c.style.filter = 'blur(50px) brightness(0.40) saturate(1.2)';
+        } else {
+          c.style.display = 'block';
+          c.style.opacity = '0.85';
+          c.style.filter = 'blur(40px) brightness(0.60) saturate(1.5)';
+        }
+      })();
+      true;
+    `;
+    webViewRef.current.injectJavaScript(js);
+  }, [roomTheme]);
 
   React.useEffect(() => {
     return () => {

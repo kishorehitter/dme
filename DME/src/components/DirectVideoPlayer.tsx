@@ -558,7 +558,13 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       errText.includes('Response code: 403') ||
       errText.includes('HttpDataSourceException');
 
-    console.warn(`[DirectVideoPlayer] Native ExoPlayer error (${codeNum}${isHttpError ? ', HTTP Error/403' : ''}):`, errText || codeNum);
+    const isMpdStream =
+      streamType === 'mpd' ||
+      streamTypeRef.current === 'mpd' ||
+      playableSource?.type === 'mpd' ||
+      Boolean(videoUri && (videoUri.endsWith('.mpd') || videoUri.includes('<MPD') || videoUri.startsWith('data:application/dash+xml')));
+
+    console.warn(`[DirectVideoPlayer] Native ExoPlayer error (${codeNum}${isHttpError ? ', HTTP Error/403' : ''}, isMpd=${isMpdStream}):`, errText || codeNum);
     setIsBuffering(false);
 
     // Cancel any pending quality-switch debounce immediately
@@ -567,8 +573,18 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       qualityDebounceTimer.current = null;
     }
 
+    // CRITICAL FIX: For DASH (MPD) streams, ANY HTTP 403 is the guest CDN cutoff.
+    // Do NOT swallow the error by reverting track to AUTO or attempting seek recovery!
+    // Swallowing it traps the player in STATE_IDLE and prevents the Login / Quality prompt from showing.
+    if (isMpdStream && isHttpError) {
+      console.warn('[DirectVideoPlayer] DASH guest CDN 403 cutoff detected — immediately notifying parent onError');
+      onError?.(err);
+      return;
+    }
+
     // Step 1: If player was locked to a specific track resolution, revert to AUTO in-place
-    if (selectedVideoTrackRef.current.type !== SelectedVideoTrackType.AUTO) {
+    // ONLY for non-MPD / non-403 streams (where a track resolution might simply be unsupported)
+    if (!isMpdStream && !isHttpError && selectedVideoTrackRef.current.type !== SelectedVideoTrackType.AUTO) {
       const failedHeight = selectedVideoTrackRef.current.value;
       if (failedHeight) {
         blockedQualityHeightsRef.current.add(failedHeight);
@@ -589,14 +605,14 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       return;
     }
 
-    // Attempt in-stream seek recovery (up to 2 attempts, but NOT for HTTP 403 where stream is dead)
+    // Attempt in-stream seek recovery (up to 2 attempts, but NOT for HTTP 403 or dead DASH streams)
     const now = Date.now();
     if (now - lastRecoveryTimeRef.current > 15000) {
       recoveryAttemptsRef.current = 0;
     }
     lastRecoveryTimeRef.current = now;
 
-    if (recoveryAttemptsRef.current < 2 && !isHttpError) {
+    if (recoveryAttemptsRef.current < 2 && !isHttpError && !isMpdStream) {
       recoveryAttemptsRef.current++;
       const capturedPos = positionRef.current;
       recoveryPositionRef.current = capturedPos;
@@ -616,8 +632,11 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
       return;
     }
 
-    // Step 3: If fallbackUri is available and hasn't been applied yet, apply it before failing
-    if (fallbackUri && playableSource?.uri !== fallbackUri) {
+    // Step 3: If fallbackUri is available and hasn't been applied yet, apply it before failing.
+    // NOTE: For DASH streams (MPD), do NOT auto-switch to fallbackUri inside DirectVideoPlayer!
+    // When guest DASH cutoff (HTTP 403) occurs at ~59s/1min, parent (MusicRoomScreen) must show
+    // the login overlay over the frozen 1-minute frame without resetting the player to 0:00.
+    if (!isMpdStream && fallbackUri && playableSource?.uri !== fallbackUri) {
       const capturedPos = positionRef.current;
       console.warn(`[DirectVideoPlayer] Recovery exhausted — switching to fallback progressive stream at pos ${capturedPos.toFixed(2)}s`);
       recoveryAttemptsRef.current = 0;
@@ -730,7 +749,7 @@ const DirectVideoPlayer = forwardRef<DirectVideoPlayerRef, Props>((props, ref) =
           quality={quality}
           muted={muted}
           volume={currentVol}
-          initialPosition={playableSource?.startPosition || 0}
+          initialPosition={playableSource?.startPosition ?? (initialPosition || 0)}
           roomTheme={props.roomTheme}
           bleedEnabled={bleedEnabled}
           isTransparentBackground={isTransparentBackground}

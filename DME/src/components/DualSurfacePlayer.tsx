@@ -215,8 +215,9 @@ const DualSurfacePlayer = forwardRef<DualSurfacePlayerRef, DualSurfacePlayerProp
     return {
       uri: videoUri,
       headers: headers || undefined,
+      startPosition: (initialPosition && initialPosition > 0) ? initialPosition : undefined,
     };
-  }, [videoUri, headers]);
+  }, [videoUri, headers, initialPosition]);
 
   return (
     <NativeDualSurfaceVideoView

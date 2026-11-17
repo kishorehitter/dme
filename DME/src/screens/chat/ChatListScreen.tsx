@@ -2430,6 +2430,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({ navigation, rout
                     avatarSticker: item.is_group ? null : item.other_user?.avatar_sticker,
                     isGroup: item.is_group,
                     otherUser: item.is_group ? null : item.other_user,
+                    messageRequestStatus: (item as any).message_request_status,
+                    messageRequestSenderId: (item as any).message_request_sender_id,
+                    friendStatus: item.other_user?.friend_status,
                   });
                 }
               }}

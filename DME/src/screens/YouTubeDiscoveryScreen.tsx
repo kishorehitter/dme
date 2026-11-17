@@ -131,7 +131,17 @@ const TabLoadingView = ({ color = '#FF3B3B', isDark = false, text }: { color?: s
 
 const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
   const { theme, isDark } = useTheme();
-  const { roomCode, requireDriveAuth, pendingDriveVideo: initialPendingVideo, initialUrl, initialTab } = route.params || {};
+  const {
+    roomCode,
+    requireDriveAuth,
+    pendingDriveVideo: initialPendingVideo,
+    initialUrl,
+    initialTab,
+    isDJ: isDJParam,
+    isSongPlaying: isSongPlayingParam,
+  } = route.params || {};
+  const isDJ = Boolean(isDJParam ?? (globalThis as any).isMusicRoomDJ ?? false);
+  const isSongPlaying = Boolean(isSongPlayingParam ?? (globalThis as any).isMusicRoomSongPlaying ?? false);
   const isFlow2 = !!roomCode;
   const isFromMusicRoom = Boolean(isFlow2 || route?.params?.fromMusicRoom || route?.params?.skipSplash || (globalThis as any).activeMusicRoomCode);
   const shouldSkipSplash = Boolean(isFromMusicRoom || initialTab);
@@ -1512,7 +1522,11 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 {selectedItem?.title || 'YouTube Video'}
               </Text>
               <Text style={[styles.overlaySubtitle, { color: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.65)' }]}>
-                {isFlow2 ? 'Add this video to the lobby queue?' : 'Start a new lobby with this video!'}
+                {isFlow2
+                  ? (isDJ
+                      ? (isSongPlaying ? 'Choose to add to queue or skip & play now' : 'Choose to play now or add to queue')
+                      : 'Add this video to the room queue?')
+                  : 'Start a new lobby with this video!'}
               </Text>
 
               {/* Short Plain Text Note over the button */}
@@ -1557,9 +1571,10 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                 </TouchableOpacity>
               )}
 
-              {/* Flow 2 — Add to Queue / Play Now (reduced size, clean horizontal buttons) */}
+              {/* Flow 2 — Music Room: Add to Queue / Skip & Play / Play Now */}
               {isFlow2 && (
                 <View style={styles.flow2BtnRow}>
+                  {/* Button 1: Add to Queue (Always visible for both Participant and Leader) */}
                   <TouchableOpacity
                     style={[styles.overlayActionBtn, { flex: 1, marginTop: 0 }]}
                     onPress={handleAddToQueue}
@@ -1577,29 +1592,39 @@ const YouTubeDiscoveryScreen = ({ navigation, route }: any) => {
                     </LinearGradient>
                   </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={[styles.overlayActionBtn, { flex: 1, marginTop: 0 }]}
-                    onPress={handlePlayNowInFlow2}
-                    disabled={isPartyActionLoading}
-                    activeOpacity={0.85}
-                  >
-                    <LinearGradient
-                      colors={['#b10000', '#FF007F']}
-                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                      style={styles.overlayActionBtnGrad}
+                  {/* Button 2: Skip & Play / Play Now (ONLY visible for Leader / DJ) */}
+                  {isDJ && (
+                    <TouchableOpacity
+                      style={[styles.overlayActionBtn, { flex: 1, marginTop: 0 }]}
+                      onPress={handlePlayNowInFlow2}
+                      disabled={isPartyActionLoading}
+                      activeOpacity={0.85}
                     >
-                      <View style={styles.actionBtnRow}>
-                        {isPartyActionLoading ? (
-                          <ActivityIndicator size={16} color="#fff" style={{ marginRight: 6 }} />
-                        ) : (
-                          <Icon name="play" size={16} color="#fff" style={{ marginRight: 6 }} />
-                        )}
-                        <Text style={styles.overlayActionBtnText}>
-                          {isPartyActionLoading ? 'Starting...' : 'Play Now'}
-                        </Text>
-                      </View>
-                    </LinearGradient>
-                  </TouchableOpacity>
+                      <LinearGradient
+                        colors={['#b10000', '#FF007F']}
+                        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                        style={styles.overlayActionBtnGrad}
+                      >
+                        <View style={styles.actionBtnRow}>
+                          {isPartyActionLoading ? (
+                            <ActivityIndicator size={16} color="#fff" style={{ marginRight: 6 }} />
+                          ) : (
+                            <Icon
+                              name={isSongPlaying ? 'play-skip-forward' : 'play'}
+                              size={16}
+                              color="#fff"
+                              style={{ marginRight: 6 }}
+                            />
+                          )}
+                          <Text style={styles.overlayActionBtnText}>
+                            {isPartyActionLoading
+                              ? 'Starting...'
+                              : (isSongPlaying ? 'Skip & Play' : 'Play Now')}
+                          </Text>
+                        </View>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             </>

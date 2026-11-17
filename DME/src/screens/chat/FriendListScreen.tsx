@@ -17,7 +17,6 @@ import {
   InteractionManager,
   Platform,
 } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { chatAPI, callsAPI } from '../../services/api';
 import { colors, spacing, borderRadius, fontSize } from '../../utils/theme';
@@ -51,10 +50,10 @@ const AnimatedAddButton = ({
 
   const runPop = () => {
     Animated.sequence([
-      Animated.timing(scaleAnim, { toValue: 1.4, duration: 120, useNativeDriver: true, easing: Easing.out(Easing.back(2)) }),
-      Animated.timing(scaleAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(scaleAnim, { toValue: 1.3, duration: 100, useNativeDriver: true, easing: Easing.out(Easing.back(2)) }),
+      Animated.timing(scaleAnim, { toValue: 1, duration: 180, useNativeDriver: true }),
     ]).start();
-    Animated.timing(checkAnim, { toValue: 1, duration: 300, useNativeDriver: true, easing: Easing.out(Easing.cubic) }).start();
+    Animated.timing(checkAnim, { toValue: 1, duration: 250, useNativeDriver: true, easing: Easing.out(Easing.cubic) }).start();
   };
 
   const handleAdd = () => {
@@ -67,7 +66,7 @@ const AnimatedAddButton = ({
       <Animated.View style={[s.pendingPill, { transform: [{ scale: scaleAnim }] }]}>
         <Icon name="time-outline" size={13} color="#FF9800" />
         <Text style={s.pendingPillText}>Sent</Text>
-        <TouchableOpacity onPress={onCancel} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <TouchableOpacity onPress={onCancel} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Icon name="close-circle" size={15} color={theme.icon} />
         </TouchableOpacity>
       </Animated.View>
@@ -77,10 +76,10 @@ const AnimatedAddButton = ({
   if (friendStatus === 'received_pending') {
     return (
       <View style={s.choiceRow}>
-        <TouchableOpacity style={s.acceptBtn} onPress={onAdd}>
+        <TouchableOpacity style={s.acceptBtn} onPress={onAdd} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Icon name="checkmark" size={14} color={theme.textPrimary} />
         </TouchableOpacity>
-        <TouchableOpacity style={s.rejectBtn} onPress={onCancel}>
+        <TouchableOpacity style={s.rejectBtn} onPress={onCancel} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Icon name="close" size={14} color={theme.textPrimary} />
         </TouchableOpacity>
       </View>
@@ -99,7 +98,12 @@ const AnimatedAddButton = ({
   // none
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-      <TouchableOpacity style={s.addPersonBtn} onPress={handleAdd}>
+      <TouchableOpacity
+        style={s.addPersonBtn}
+        onPress={handleAdd}
+        activeOpacity={0.6}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      >
         <Icon name="person-add" size={18} color={theme.primary} />
       </TouchableOpacity>
     </Animated.View>
@@ -176,31 +180,14 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // ── Bounce animation for search button ────────────────────────────────────
-  const findBtnBounceAnim = useRef(new Animated.Value(1)).current;
+  const searchDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Cleanup debounce timer on unmount
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      const bounceLoop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(findBtnBounceAnim, {
-            toValue: 1.12,
-            duration: 600,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(findBtnBounceAnim, {
-            toValue: 1,
-            duration: 600,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-        ])
-      );
-      bounceLoop.start();
-      return () => bounceLoop.stop();
-    });
-    return () => task.cancel();
-  }, [findBtnBounceAnim]);
+    return () => {
+      if (searchDebounceTimer.current) clearTimeout(searchDebounceTimer.current);
+    };
+  }, []);
 
   // ── Fallback: fetch conversationId for call invite ──────────────────────────
   useEffect(() => {
@@ -386,26 +373,34 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     }
   }, [route?.params?.initialTab, route?.params?.tab]);
 
-  // ── Find new friend manually ──────────────────────────────────────────────────
-  const handleFindNewFriend = async () => {
-    const query = searchQuery.trim();
-    if (!query) return;
+  // ── Auto-search: triggers when user types ≥ 3 characters ─────────────────
+  const handleAutoSearch = useCallback(async (query: string) => {
+    const q = query.trim();
+    if (q.length < 3) {
+      setSearchResults([]);
+      setIsNewFriendSearchActive(false);
+      return;
+    }
 
     setIsSearching(true);
     setIsNewFriendSearchActive(true);
     try {
       const token = await AsyncStorage.getItem('access_token');
       const res = await fetch(
-        getApiUrl(`chat/users/search/?q=${encodeURIComponent(query)}`),
+        getApiUrl(`chat/users/search/?q=${encodeURIComponent(q)}`),
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (res.ok) {
         const data = await res.json();
-        // Strict case-insensitive matching by username
-        const exactMatch = Array.isArray(data)
-          ? data.filter(u => (u.username || '').toLowerCase() === query.toLowerCase())
+        // Substring match: include any user whose username or display_name contains the query
+        const lowerQ = q.toLowerCase();
+        const matches = Array.isArray(data)
+          ? data.filter(u =>
+              (u.username || '').toLowerCase().includes(lowerQ) ||
+              (u.display_name || '').toLowerCase().includes(lowerQ)
+            )
           : [];
-        setSearchResults(exactMatch);
+        setSearchResults(matches);
       } else {
         setSearchResults([]);
       }
@@ -415,9 +410,10 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
     } finally {
       setIsSearching(false);
     }
-  };
+  }, []);
 
   const handleClearSearch = () => {
+    if (searchDebounceTimer.current) clearTimeout(searchDebounceTimer.current);
     setSearchQuery('');
     setSearchResults([]);
     setIsNewFriendSearchActive(false);
@@ -451,6 +447,9 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
         avatarSticker: user.avatar_sticker,
         isGroup: false,
         otherUser: user,
+        messageRequestStatus: (conversation as any)?.message_request_status,
+        messageRequestSenderId: (conversation as any)?.message_request_sender_id,
+        friendStatus: user.friend_status || 'none',
       });
     } catch {
       Alert.alert('Error', 'Failed to start conversation');
@@ -458,35 +457,41 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
   };
 
   const handleAddFriend = async (userId: number) => {
+    // 1. Optimistic UI update immediately
+    setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'sent_pending' } : u));
+    showToast('Friend Request Sent');
+
     try {
+      // 2. Fire API request immediately in background
       await chatAPI.sendFriendRequest(userId);
-      setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'sent_pending' } : u));
-      showToast('Friend Request Sent');
       DeviceEventEmitter.emit('friend_request_updated', { action: 'sent' });
-      // Reload sent requests and switch to Sent tab
-      await loadFriendRequests();
-      // Small delay so user sees the toast first, then switch tab
-      setTimeout(() => {
-        setIsNewFriendSearchActive(false);
-        setSearchResults([]);
-        setSearchQuery('');
-        setActiveTab('requests');
-      }, 900);
-    } catch {
-      Alert.alert('Error', 'Failed to send friend request');
+      loadFriendRequests();
+    } catch (err: any) {
+      console.warn('Send friend request error:', err);
+      const errMsg = err?.response?.data?.error;
+      // If already sent or already friends, keep state
+      if (typeof errMsg === 'string' && (errMsg.toLowerCase().includes('already') || errMsg.toLowerCase().includes('exist'))) {
+        loadFriendRequests();
+      } else {
+        // Revert optimistic update on real failure
+        setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
+        Alert.alert('Error', typeof errMsg === 'string' ? errMsg : 'Failed to send friend request');
+      }
     }
   };
 
   const handleCancelFriendRequest = async (userId: number) => {
+    // 1. Optimistic UI update immediately
+    setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
+    showToast('Friend Request Cancelled');
+
     try {
       await chatAPI.cancelFriendRequestByUserId(userId);
+      DeviceEventEmitter.emit('friend_request_updated', { action: 'cancelled' });
+      loadFriendRequests();
     } catch (err) {
       console.warn('Cancel friend request error (non-critical):', err);
     }
-    // Update UI optimistically regardless
-    setSearchResults(prev => prev.map(u => u.id === userId ? { ...u, friend_status: 'none' } : u));
-    showToast('Friend Request Cancelled');
-    DeviceEventEmitter.emit('friend_request_updated', { action: 'cancelled' });
   };
 
   const handleAcceptFriendRequest = async (requestId: number) => {
@@ -809,37 +814,28 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
             value={searchQuery}
             onChangeText={v => {
               setSearchQuery(v);
-              if (isNewFriendSearchActive) {
-                setIsNewFriendSearchActive(false);
-                setSearchResults([]);
+              if (!isGroupMode) {
+                // Clear previous debounce timer
+                if (searchDebounceTimer.current) clearTimeout(searchDebounceTimer.current);
+                if (v.trim().length < 3) {
+                  // Below threshold: clear results immediately
+                  setSearchResults([]);
+                  setIsNewFriendSearchActive(false);
+                } else {
+                  // Debounce 350ms then auto-search
+                  searchDebounceTimer.current = setTimeout(() => {
+                    handleAutoSearch(v);
+                  }, 350);
+                }
               }
             }}
             autoCapitalize="none"
             autoCorrect={false}
           />
           {searchQuery.length > 0 && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              {!isGroupMode && (
-                <TouchableOpacity 
-                  onPress={handleFindNewFriend}
-                  activeOpacity={0.8}
-                >
-                  <Animated.View style={{ transform: [{ scale: findBtnBounceAnim }] }}>
-                    <LinearGradient
-                      colors={['#FF4081', '#00E676']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={s.findNewBtn}
-                    >
-                      <Text style={s.findNewText}>Tap to Find</Text>
-                    </LinearGradient>
-                  </Animated.View>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity onPress={handleClearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Icon name="close-circle" size={18} color={theme.icon} />
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity onPress={handleClearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Icon name="close-circle" size={18} color={theme.icon} />
+            </TouchableOpacity>
           )}
         </View>
       </View>
@@ -876,6 +872,8 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
           maxToRenderPerBatch={10}
           windowSize={7}
           removeClippedSubviews={Platform.OS === 'android'}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           renderItem={
             isGroupMode
               ? renderSearchResult
@@ -908,8 +906,10 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
               <Text style={s.emptyTitle}>
                 {isNewFriendSearchActive
                   ? 'No users found'
-                  : searchQuery.trim()
+                  : searchQuery.trim() && searchQuery.trim().length >= 3
                   ? 'No matches found'
+                  : searchQuery.trim().length > 0
+                  ? 'Keep typing…'
                   : activeTab === 'friends'
                   ? 'No friends yet'
                   : activeTab === 'approve'
@@ -918,9 +918,11 @@ export const FriendListScreen: React.FC<FriendListScreenProps> = ({ navigation, 
               </Text>
               <Text style={s.emptySub}>
                 {isNewFriendSearchActive
-                  ? 'Try searching a different exact username'
-                  : searchQuery.trim()
-                  ? 'No matching people in your list'
+                  ? 'No users match that name or username'
+                  : searchQuery.trim() && searchQuery.trim().length >= 3
+                  ? 'No matching people found'
+                  : searchQuery.trim().length > 0
+                  ? `Type ${3 - searchQuery.trim().length} more character${3 - searchQuery.trim().length === 1 ? '' : 's'} to search`
                   : activeTab === 'friends'
                   ? 'Search for people and send friend requests'
                   : activeTab === 'approve' ? 'Incoming friend requests appear here'
@@ -1100,19 +1102,6 @@ const dynamicStyles = (theme: import('../../utils/theme').ThemeColors) => StyleS
     elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4,
   },
   floatBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
-  findNewBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    marginRight: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  findNewText: {
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
   toastOverlay: {
     flex: 1,
     justifyContent: 'center',

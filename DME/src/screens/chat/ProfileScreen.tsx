@@ -401,6 +401,7 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
       }
 
       if (convId) {
+        const localConv = localDatabase.getConversationById(convId);
         navigation.navigate('ChatRoom', {
           conversationId: convId,
           name: displayNameFromProfile(profile),
@@ -408,6 +409,9 @@ const ProfileScreenComponent: React.FC<ProfileScreenProps> = ({
           avatarSticker: profile.avatar_sticker,
           isGroup: false,
           otherUser: profile,
+          messageRequestStatus: localConv?.message_request_status || (profile as any)?.message_request_status,
+          messageRequestSenderId: localConv?.message_request_sender_id || (profile as any)?.message_request_sender_id,
+          friendStatus: profile.friend_status,
         });
       } else {
         Alert.alert('Error', 'Could not open chat room');

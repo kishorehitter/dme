@@ -54,7 +54,7 @@ const DiscoBallLoadingView = ({ isDark = false, bgColor }: { isDark?: boolean; b
 export default function WatchTogetherTabSelectScreen({ navigation, route, onSelectTab, onBack, skipSplash = false }: any) {
   const { isDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const { roomCode } = route?.params || {};
+  const { roomCode, isDJ, isSongPlaying } = route?.params || {};
 
   const bg = isDark ? '#0F0F0F' : '#FFFFFF';
   const headerBorder = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
@@ -112,7 +112,12 @@ export default function WatchTogetherTabSelectScreen({ navigation, route, onSele
       setTimeout(() => setLoadingTab(null), 350);
       onSelectTab(tab);
     } else {
-      navigation?.navigate?.('YouTubeDiscovery', { initialTab: tab, roomCode });
+      navigation?.navigate?.('YouTubeDiscovery', {
+        initialTab: tab,
+        roomCode,
+        isDJ: isDJ ?? (globalThis as any).isMusicRoomDJ ?? false,
+        isSongPlaying: isSongPlaying ?? (globalThis as any).isMusicRoomSongPlaying ?? false,
+      });
     }
   };
 

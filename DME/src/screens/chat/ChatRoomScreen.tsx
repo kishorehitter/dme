@@ -239,6 +239,65 @@ const NEW_CHAT_STICKERS = [
 const FRESH_CHAT_STICKERS = NEW_CHAT_STICKERS;
 const STICKER_DRAWER_HEIGHT = 286;
 
+const quickStickerLottieCache = new Map<string, any>();
+// Preload the 12 quick stickers immediately at module level
+NEW_CHAT_STICKERS.forEach(st => {
+  fetch(st.url)
+    .then(r => r.json())
+    .then(json => {
+      quickStickerLottieCache.set(st.url, json);
+    })
+    .catch(() => {});
+});
+
+const QuickStickerItem = React.memo(({ st, onSend }: { st: typeof NEW_CHAT_STICKERS[0]; onSend: (s: any) => void }) => {
+  const [data, setData] = useState<any>(() => quickStickerLottieCache.get(st.url) || null);
+
+  useEffect(() => {
+    let active = true;
+    if (!quickStickerLottieCache.has(st.url)) {
+      fetch(st.url)
+        .then(r => r.json())
+        .then(json => {
+          quickStickerLottieCache.set(st.url, json);
+          if (active) setData(json);
+        })
+        .catch(() => {});
+    } else if (!data) {
+      setData(quickStickerLottieCache.get(st.url));
+    }
+    return () => {
+      active = false;
+    };
+  }, [st.url, data]);
+
+  return (
+    <TouchableOpacity
+      style={{
+        width: 52,
+        height: 52,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      onPress={() => onSend(st)}
+      activeOpacity={0.6}
+    >
+      {data ? (
+        <LottieView
+          source={data}
+          autoPlay={true}
+          loop={true}
+          style={{ width: 48, height: 48 }}
+          resizeMode="contain"
+          cacheComposition
+        />
+      ) : (
+        <Text style={{ fontSize: 32, textAlign: 'center' }}>{st.emoji}</Text>
+      )}
+    </TouchableOpacity>
+  );
+});
+
 
 
 const SENT_COLOR = '#B0B0B0';
@@ -1044,11 +1103,34 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
   }, []);
   const [otherUser, setOtherUser] = useState<OtherUser | null>(route.params?.otherUser || null);
+  const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(() => {
+    if (route.params?.messageRequestStatus) return route.params.messageRequestStatus;
+    try {
+      const cached = localDatabase.getConversationById(Number(conversationId));
+      return (cached as any)?.message_request_status || null;
+    } catch {
+      return null;
+    }
+  }); // null | 'pending' | 'accepted' | 'rejected'
+  const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(() => {
+    if (route.params?.messageRequestSenderId) return route.params.messageRequestSenderId;
+    try {
+      const cached = localDatabase.getConversationById(Number(conversationId));
+      return (cached as any)?.message_request_sender_id || null;
+    } catch {
+      return null;
+    }
+  });
   const [friendStatus, setFriendStatus] = useState<string>(() => {
     if (route.params?.isGroup) return 'friends';
+    if (route.params?.friendStatus) return route.params.friendStatus;
     if (route.params?.otherUser?.friend_status) return route.params.otherUser.friend_status;
     if (route.params?.messageRequestStatus === 'pending') return 'none';
-    return 'friends'; // Default to normal chat unless explicitly pending
+    try {
+      const cached = localDatabase.getConversationById(Number(conversationId));
+      if ((cached as any)?.message_request_status === 'pending') return 'none';
+    } catch {}
+    return 'none';
   });
   const [headerHasStatus, setHeaderHasStatus] = useState(false);
   const [headerStatuses, setHeaderStatuses] = useState<any[]>([]);
@@ -1113,12 +1195,6 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
     }
   }, [isGroup, otherUser?.id, route.params?.otherUser?.id, fetchDynamicFriendStatus]);
 
-  const [messageRequestStatus, setMessageRequestStatus] = useState<string | null>(
-    route.params?.messageRequestStatus || null
-  ); // null | 'pending' | 'accepted' | 'rejected'
-  const [messageRequestSenderId, setMessageRequestSenderId] = useState<number | null>(
-    route.params?.messageRequestSenderId || null
-  );
   const [isUserBlocked, setIsUserBlocked] = useState(false); // Whether current user blocked other
   const [amIBlocked, setAmIBlocked] = useState(false); // Whether other user blocked current user
   const [lastSeenPrivacy, setLastSeenPrivacy] = useState<'everyone' | 'nobody'>('everyone');
@@ -1641,6 +1717,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
           setMessageRequestStatus(data.message_request_status || null);
           setMessageRequestSenderId(data.message_request_sender_id || null);
+          if (data.message_request_status) {
+            localDatabase.updateConversationMessageRequest(
+              Number(conversationId),
+              data.message_request_status,
+              data.message_request_sender_id || null
+            );
+          }
 
           // Check if user is blocked (from params or API)
           const params = route?.params;
@@ -1921,6 +2004,12 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
             }
             return arr;
           });
+          if (wsMsg.data?.is_message_request) {
+            Keyboard.dismiss();
+            setMessageRequestStatus('pending');
+            setMessageRequestSenderId(currentUser?.id || null);
+            localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser?.id || null);
+          }
           // Do NOT call loadConversationDetails() here — it triggers 3 network calls
           // (getConversation, checkBlockStatus, checkIfAmIBlocked) and causes a 1-2s JS
           // thread stall that freezes the input every time you send a message.
@@ -2085,18 +2174,23 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         break;
       }
       case 'message_request_status': {
-        const { status: reqStatus, sender_id: reqSenderId } = wsMsg.data;
+        const reqStatus = wsMsg.data?.status;
+        const reqSenderId = wsMsg.data?.sender_id ?? wsMsg.data?.sender?.id ?? null;
         setMessageRequestStatus(reqStatus);
         setMessageRequestSenderId(reqSenderId);
+        localDatabase.updateConversationMessageRequest(Number(conversationId), reqStatus, reqSenderId);
         if (reqStatus === 'accepted') {
           setFriendStatus('friends');
         }
         break;
       }
       case 'message_request_created': {
-        const { status: reqStatus, sender_id: reqSenderId } = wsMsg.data;
+        const reqStatus = wsMsg.data?.status || 'pending';
+        const reqSenderId = wsMsg.data?.sender_id ?? wsMsg.data?.sender?.id ?? null;
+        Keyboard.dismiss();
         setMessageRequestStatus(reqStatus);
         setMessageRequestSenderId(reqSenderId);
+        localDatabase.updateConversationMessageRequest(Number(conversationId), reqStatus, reqSenderId);
         break;
       }
       case 'friend_request_update': {
@@ -2173,6 +2267,14 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
       clearInputRef.current?.();
     }
     setHighlightMessageId(null); // Clear any active highlight when sending a new message
+
+    // Gating check: if sending 1st message to non-friend, immediately dismiss Gboard and cover with Message Request Pending
+    if (!isGroup && friendStatus !== 'friends' && messageRequestStatus !== 'accepted') {
+      Keyboard.dismiss();
+      setMessageRequestStatus('pending');
+      setMessageRequestSenderId(currentUser?.id || null);
+      localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser?.id || null);
+    }
 
     // ── Optimistic Message (Sent immediately to UI at 0ms) ──
     uniqueCounter++;
@@ -2287,6 +2389,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
               if (nm.is_message_request) {
                 setMessageRequestStatus('pending');
                 setMessageRequestSenderId(currentUser!.id);
+                localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser!.id);
               }
             } else {
               setMessages(prev =>
@@ -2616,6 +2719,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
 
   */  // ── Send a Lottie sticker (no upload — URL stored in content) ─────────────
   const sendLottieSticker = useCallback(async (sticker: Sticker) => {
+    // Gating check: if sending 1st message to non-friend, immediately dismiss Gboard and cover with Message Request Pending
+    if (!isGroup && friendStatus !== 'friends' && messageRequestStatus !== 'accepted') {
+      Keyboard.dismiss();
+      setMessageRequestStatus('pending');
+      setMessageRequestSenderId(currentUser?.id || null);
+      localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser?.id || null);
+    }
     uniqueCounter++;
     const localId = `lsticker_${Date.now()}_${uniqueCounter}`;
     const tempId = Date.now() + uniqueCounter + 2000000000;
@@ -2683,6 +2793,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         if (nm.is_message_request) {
           setMessageRequestStatus('pending');
           setMessageRequestSenderId(currentUser!.id);
+          localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser!.id);
         }
       } else {
         // Non-critical: mark as failed
@@ -2705,6 +2816,13 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
   // ── Send a Remote GIF (stored in content, message_type = 'image') ────────
   const sendGifMessage = useCallback(async (gifUrl: string) => {
     setStickerPickerVisible(false);
+    // Gating check: if sending 1st message to non-friend, immediately dismiss Gboard and cover with Message Request Pending
+    if (!isGroup && friendStatus !== 'friends' && messageRequestStatus !== 'accepted') {
+      Keyboard.dismiss();
+      setMessageRequestStatus('pending');
+      setMessageRequestSenderId(currentUser?.id || null);
+      localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser?.id || null);
+    }
     uniqueCounter++;
     const localId = `gif_${Date.now()}_${uniqueCounter}`;
     const tempId = Date.now() + uniqueCounter + 1000000000;
@@ -2761,6 +2879,7 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         if (nm.is_message_request) {
           setMessageRequestStatus('pending');
           setMessageRequestSenderId(currentUser!.id);
+          localDatabase.updateConversationMessageRequest(Number(conversationId), 'pending', currentUser!.id);
         }
       } else {
         setMessages(prev =>
@@ -6241,34 +6360,25 @@ const ChatRoomScreenComponent: React.FC<any> = ({ navigation, route }) => {
         </View>
       ) : (
         <>
-          {hasLoadedInitialMessages && messages.length === 0 && (
+          {messages.length === 0 && (
             <View style={s.quickStickersRowWrapper}>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={s.quickStickersScrollRow}
+                keyboardShouldPersistTaps="handled"
               >
                 {NEW_CHAT_STICKERS.map((st) => (
-                  <TouchableOpacity
+                  <QuickStickerItem
                     key={st.id}
-                    style={s.quickStickerCard}
-                    onPress={() => sendLottieSticker(st)}
-                    activeOpacity={0.7}
-                  >
-                    <LottieView
-                      source={{ uri: st.url }}
-                      autoPlay={true}
-                      loop={true}
-                      style={s.quickStickerLottie}
-                      resizeMode="contain"
-                    />
-                    <Text style={s.quickStickerCardLabel}>{st.emoji}</Text>
-                  </TouchableOpacity>
+                    st={st}
+                    onSend={sendLottieSticker}
+                  />
                 ))}
               </ScrollView>
             </View>
           )}
-          {!isGroup && friendStatus !== 'friends' && messageRequestStatus === 'pending' ? (
+          {!isGroup && messageRequestStatus === 'pending' ? (
             /* Scenario A & B: Message request banner */
             <View style={{
               width: '100%',

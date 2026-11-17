@@ -107,6 +107,16 @@ export const localDatabase = {
       } catch (err) {
         // Column already exists, safe to ignore
       }
+      try {
+        db.execute('ALTER TABLE conversations ADD COLUMN message_request_status TEXT;');
+      } catch (err) {
+        // Column already exists, safe to ignore
+      }
+      try {
+        db.execute('ALTER TABLE conversations ADD COLUMN message_request_sender_id INTEGER;');
+      } catch (err) {
+        // Column already exists, safe to ignore
+      }
 
       // Create Messages Table
       db.execute(`
@@ -211,11 +221,13 @@ export const localDatabase = {
       const otherUserStr = toPrimitiveJsonString(conv.other_user);
       const isGroupNum = conv.is_group ? 1 : 0;
       const unreadCountNum = toPrimitiveNumber(conv.unread_count, 0);
+      const msgReqStatus = toPrimitiveString((conv as any).message_request_status);
+      const msgReqSenderId = toPrimitiveNullableNumber((conv as any).message_request_sender_id);
 
       db.execute(
         `INSERT INTO conversations (
-          id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id, message_request_status, message_request_sender_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = COALESCE(excluded.name, conversations.name),
           is_group = excluded.is_group,
@@ -226,7 +238,9 @@ export const localDatabase = {
           updated_at = COALESCE(excluded.updated_at, conversations.updated_at),
           other_user = COALESCE(excluded.other_user, conversations.other_user),
           last_message_status = COALESCE(excluded.last_message_status, conversations.last_message_status),
-          last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id);`,
+          last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id),
+          message_request_status = COALESCE(excluded.message_request_status, conversations.message_request_status),
+          message_request_sender_id = COALESCE(excluded.message_request_sender_id, conversations.message_request_sender_id);`,
         [
           convId,
           nameStr,
@@ -239,6 +253,8 @@ export const localDatabase = {
           otherUserStr,
           lastMsgStatus,
           lastMsgSenderId,
+          msgReqStatus,
+          msgReqSenderId,
         ]
       );
     } catch (error) {
@@ -288,11 +304,13 @@ export const localDatabase = {
           const otherUserStr = toPrimitiveJsonString(conv.other_user);
           const isGroupNum = conv.is_group ? 1 : 0;
           const unreadCountNum = toPrimitiveNumber(conv.unread_count, 0);
+          const msgReqStatus = toPrimitiveString((conv as any).message_request_status);
+          const msgReqSenderId = toPrimitiveNullableNumber((conv as any).message_request_sender_id);
 
           tx.execute(
             `INSERT INTO conversations (
-              id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              id, name, is_group, profile_picture, last_message_content, last_message_timestamp, unread_count, updated_at, other_user, last_message_status, last_message_sender_id, message_request_status, message_request_sender_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name = COALESCE(excluded.name, conversations.name),
               is_group = excluded.is_group,
@@ -303,7 +321,9 @@ export const localDatabase = {
               updated_at = COALESCE(excluded.updated_at, conversations.updated_at),
               other_user = COALESCE(excluded.other_user, conversations.other_user),
               last_message_status = COALESCE(excluded.last_message_status, conversations.last_message_status),
-              last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id);`,
+              last_message_sender_id = COALESCE(excluded.last_message_sender_id, conversations.last_message_sender_id),
+              message_request_status = COALESCE(excluded.message_request_status, conversations.message_request_status),
+              message_request_sender_id = COALESCE(excluded.message_request_sender_id, conversations.message_request_sender_id);`,
             [
               convId,
               nameStr,
@@ -316,6 +336,8 @@ export const localDatabase = {
               otherUserStr,
               lastMsgStatus,
               lastMsgSenderId,
+              msgReqStatus,
+              msgReqSenderId,
             ]
           );
         }
@@ -356,10 +378,62 @@ export const localDatabase = {
           : null,
         unread_count: Number(row.unread_count || 0),
         updated_at: String(row.updated_at || ''),
+        message_request_status: (row.message_request_status as string) || null,
+        message_request_sender_id: row.message_request_sender_id ? Number(row.message_request_sender_id) : null,
       })) as Conversation[];
     } catch (error) {
       console.error('❌ Error getting conversations:', error);
       return [];
+    }
+  },
+
+  /**
+   * Retrieves a single conversation by id.
+   */
+  getConversationById(id: number): Conversation | null {
+    try {
+      const { results } = db.execute('SELECT * FROM conversations WHERE id = ? LIMIT 1;', [id]);
+      if (!results || results.length === 0) return null;
+      const row = results[0] as any;
+      return {
+        id: Number(row.id),
+        name: (row.name as string) || null,
+        is_group: row.is_group === 1,
+        profile_picture: (row.profile_picture as string) || null,
+        other_user: row.other_user ? JSON.parse(String(row.other_user)) : null,
+        is_locked: row.is_locked === 1,
+        message_request_status: (row.message_request_status as string) || null,
+        message_request_sender_id: row.message_request_sender_id ? Number(row.message_request_sender_id) : null,
+        last_message: row.last_message_content
+          ? {
+              id: 0,
+              content: String(row.last_message_content),
+              message_type: 'text',
+              created_at: String(row.last_message_timestamp || ''),
+              sender_id: row.last_message_sender_id ? Number(row.last_message_sender_id) : null,
+              status: String(row.last_message_status || 'sent'),
+            }
+          : null,
+        unread_count: Number(row.unread_count || 0),
+        updated_at: String(row.updated_at || ''),
+      } as Conversation;
+    } catch (error) {
+      console.error(`❌ Error getting conversation ${id}:`, error);
+      return null;
+    }
+  },
+
+  /**
+   * Updates message request status and sender id for a conversation.
+   */
+  updateConversationMessageRequest(id: number, status: string | null, senderId: number | null) {
+    try {
+      db.execute(
+        'UPDATE conversations SET message_request_status = ?, message_request_sender_id = ? WHERE id = ?;',
+        [status, senderId, id]
+      );
+    } catch (error) {
+      console.error(`❌ Error updating message request status for conv ${id}:`, error);
     }
   },
 

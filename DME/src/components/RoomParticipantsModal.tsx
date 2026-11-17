@@ -203,12 +203,12 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                       <Icon
                         name={isSpeaker ? 'mic' : 'mic-off'}
                         size={14}
-                        color={isSpeaker ? '#10B981' : 'rgba(255,255,255,0.4)'}
+                        color={isSpeaker ? (isDark ? '#10B981' : '#047857') : (isDark ? 'rgba(255,255,255,0.45)' : '#475569')}
                       />
                       <Text
                         style={[
                           styles.micActionText,
-                          { color: isSpeaker ? '#10B981' : 'rgba(255,255,255,0.4)' },
+                          { color: isSpeaker ? (isDark ? '#10B981' : '#047857') : (isDark ? 'rgba(255,255,255,0.45)' : '#475569') },
                         ]}
                       >
                         {isSpeaker ? 'Allowed' : 'Muted'}
@@ -224,7 +224,7 @@ const RoomParticipantsModal: React.FC<RoomParticipantsModalProps> = ({
                     <Icon
                       name={isSpeaker ? (isSpeakingNow ? 'volume-high' : 'mic') : 'headset-outline'}
                       size={14}
-                      color={isSpeakingNow ? '#10B981' : isSpeaker ? '#4597f5' : 'rgba(255,255,255,0.3)'}
+                      color={isSpeakingNow ? '#10B981' : isSpeaker ? (isDark ? '#4597f5' : '#2563EB') : (isDark ? 'rgba(255,255,255,0.35)' : '#64748B')}
                     />
                   </View>
                 )}
@@ -456,20 +456,20 @@ const dynamicStyles = (
     left: 0,
     right: 0,
     height: Math.round(Dimensions.get('window').height * 0.55),
-    backgroundColor: theme.surface,
+    backgroundColor: isDark ? (theme.surface || '#1C1C1E') : '#FFFFFF',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderTopWidth: 1,
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: Math.max(16, insets.bottom + 8),
     elevation: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: isDark ? 0.35 : 0.12,
     shadowRadius: 10,
   },
   header: {
@@ -484,7 +484,7 @@ const dynamicStyles = (
     gap: 8,
   },
   title: {
-    color: theme.textPrimary,
+    color: isDark ? '#FFFFFF' : '#0F172A',
     fontSize: 16.5,
     fontWeight: 'bold',
   },
@@ -492,13 +492,13 @@ const dynamicStyles = (
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: 'rgba(16,185,129,0.12)',
+    backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(16,185,129,0.15)',
     paddingHorizontal: 7,
     paddingVertical: 2.5,
     borderRadius: 10,
   },
   speakerCountText: {
-    color: '#10B981',
+    color: isDark ? '#10B981' : '#059669',
     fontSize: 10,
     fontWeight: '600',
   },
@@ -507,7 +507,7 @@ const dynamicStyles = (
     alignItems: 'center',
     paddingVertical: 9,
     borderBottomWidth: 0.5,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
   },
   avatarContainer: {
     position: 'relative',
@@ -547,7 +547,7 @@ const dynamicStyles = (
     borderRadius: 4.5,
     backgroundColor: '#10B981',
     borderWidth: 1.5,
-    borderColor: '#1C1C1E',
+    borderColor: isDark ? '#1C1C1E' : '#FFFFFF',
     zIndex: 2,
   },
   infoCol: {
@@ -558,12 +558,12 @@ const dynamicStyles = (
     alignItems: 'center',
   },
   name: {
-    color: theme.textPrimary,
+    color: isDark ? '#FFFFFF' : '#0F172A',
     fontSize: 13.5,
     fontWeight: '600',
   },
   roleText: {
-    color: 'rgba(255,255,255,0.45)',
+    color: isDark ? 'rgba(255,255,255,0.45)' : '#64748B',
     fontSize: 11,
     marginTop: 2,
   },
@@ -579,12 +579,12 @@ const dynamicStyles = (
     paddingHorizontal: 8,
     paddingVertical: 4.5,
     borderRadius: 14,
-    backgroundColor: 'rgba(234, 179, 8, 0.12)',
+    backgroundColor: isDark ? 'rgba(234, 179, 8, 0.12)' : 'rgba(234, 179, 8, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(234, 179, 8, 0.35)',
+    borderColor: isDark ? 'rgba(234, 179, 8, 0.35)' : 'rgba(202, 138, 4, 0.40)',
   },
   makeDjText: {
-    color: '#FACC15',
+    color: isDark ? '#FACC15' : '#B45309',
     fontSize: 11,
     fontWeight: '700',
   },
@@ -620,12 +620,12 @@ const dynamicStyles = (
     borderWidth: 1,
   },
   micActionBtnActive: {
-    backgroundColor: 'rgba(16,185,129,0.12)',
-    borderColor: 'rgba(16,185,129,0.3)',
+    backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(16,185,129,0.14)',
+    borderColor: isDark ? 'rgba(16,185,129,0.35)' : 'rgba(16,185,129,0.45)',
   },
   micActionBtnMuted: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(100, 116, 139, 0.10)',
+    borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(100, 116, 139, 0.28)',
   },
   micActionText: {
     fontSize: 11,
@@ -635,9 +635,11 @@ const dynamicStyles = (
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: isDark ? 0 : 0.5,
+    borderColor: isDark ? 'transparent' : 'rgba(0,0,0,0.08)',
   },
   inviteFriendsBtn: {
     backgroundColor: '#4597f5f6',

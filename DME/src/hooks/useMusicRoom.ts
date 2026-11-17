@@ -107,7 +107,8 @@ export const useMusicRoom = (
   isPlayerReadyRef?: React.MutableRefObject<boolean>,
   playerReadyTimeRef?: React.MutableRefObject<number>,
   isAdPlayingRef?: React.MutableRefObject<boolean>,
-  isDJBackgroundedRef?: React.MutableRefObject<boolean>
+  isDJBackgroundedRef?: React.MutableRefObject<boolean>,
+  onParticipantEvent?: (event: 'joined' | 'left', name: string) => void
 ) => {
   const [roomState, setRoomState] = useState<RoomState>(() => {
     const cached = musicWebSocketService.getLastRoomState();
@@ -129,6 +130,12 @@ export const useMusicRoom = (
 
   const roomStateRef = useRef(roomState);
   const userIdRef = useRef(userId);
+  const previousParticipantsRef = useRef<Participant[]>([]);
+  const onParticipantEventRef = useRef(onParticipantEvent);
+
+  useEffect(() => {
+    onParticipantEventRef.current = onParticipantEvent;
+  }, [onParticipantEvent]);
 
   useEffect(() => {
     roomStateRef.current = roomState;
@@ -206,6 +213,8 @@ export const useMusicRoom = (
             isPlaying: message.data.is_playing,
             receivedAt: Date.now(), // ✅ timestamp for drift compensation
           });
+          // Seed participant ref so first participant_update can diff correctly
+          previousParticipantsRef.current = message.data.participants ?? [];
           break;
 
         case 'mic_permission_update':
@@ -329,6 +338,26 @@ export const useMusicRoom = (
           const updatedParticipants = message.data.participants;
           const myParticipant = updatedParticipants
             .find((p: Participant) => p.user_id === currentUserId);
+
+          // Diff to detect who left or joined
+          const prevParticipants = previousParticipantsRef.current;
+          if (prevParticipants.length > 0 && onParticipantEventRef.current) {
+            // Who left?
+            prevParticipants.forEach((prev: Participant) => {
+              const stillHere = updatedParticipants.find((p: Participant) => p.user_id === prev.user_id);
+              if (!stillHere && prev.user_id !== currentUserId) {
+                onParticipantEventRef.current!('left', prev.name);
+              }
+            });
+            // Who joined?
+            updatedParticipants.forEach((curr: Participant) => {
+              const wasHere = prevParticipants.find((p: Participant) => p.user_id === curr.user_id);
+              if (!wasHere && curr.user_id !== currentUserId) {
+                onParticipantEventRef.current!('joined', curr.name);
+              }
+            });
+          }
+          previousParticipantsRef.current = updatedParticipants;
 
           setRoomState(prev => ({
             ...prev,

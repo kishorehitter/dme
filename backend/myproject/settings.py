@@ -260,19 +260,9 @@ CORS_EXPOSE_HEADERS = [
 
 # ─── Django Channels ──────────────────────────────────────────────────────────
 
-if IS_DEVELOPMENT:
-    CHANNEL_LAYERS = {
+ CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels.layers.InMemoryChannelLayer',
-        }
-    }
-else:
-    CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels_redis.core.RedisChannelLayer',
-            'CONFIG': {
-                'hosts': [env('REDIS_URL', default='redis://localhost:6379')],
-            },
         }
     }
 

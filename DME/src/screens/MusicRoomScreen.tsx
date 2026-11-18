@@ -5929,7 +5929,8 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
         }
 
         const nowMs = Date.now();
-        if (isDJ && isPlaying && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && thumbnailHoldCompleteRef.current && (nowMs - lastSyncBroadcastTimeRef.current >= 1500)) {
+        const isAloneNow = !participants || participants.length <= 1;
+        if (isDJ && isPlaying && !isAloneNow && !isAdPlayingRef.current && !seekingRef.current && !isReseeking && !isUserAction.current && thumbnailHoldCompleteRef.current && (nowMs - lastSyncBroadcastTimeRef.current >= 3000)) {
           lastSyncBroadcastTimeRef.current = nowMs;
           syncPlay(pos ?? 0);
         }
@@ -5937,7 +5938,7 @@ const MusicRoomScreen = ({ route, navigation, isMinimized }: any) => {
     }, 500);
 
     return () => clearInterval(interval);
-  }, [isConnected, isDJ, isPlaying, currentSong?.videoId, syncPlay, playerState, isPlayerReadyRef, mediaFullySynced, isReseeking]);
+  }, [isConnected, isDJ, isPlaying, currentSong?.videoId, syncPlay, playerState, isPlayerReadyRef, mediaFullySynced, isReseeking, participants]);
 
   const handleSelectSong = useCallback(async (song: Song, forcePlay = false) => {
     const isDrive = song.source === 'drive' || (song.videoId && song.videoId.length > 15);

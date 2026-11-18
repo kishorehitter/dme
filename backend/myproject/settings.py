@@ -260,11 +260,11 @@ CORS_EXPOSE_HEADERS = [
 
 # ─── Django Channels ──────────────────────────────────────────────────────────
 
- CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels.layers.InMemoryChannelLayer',
-        }
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
     }
+}
 
 # ─── Firebase ─────────────────────────────────────────────────────────────────
 
